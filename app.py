@@ -3,8 +3,8 @@
 5 Second Beauty — Packing Station
 Production web app for packing video recording & lookup.
 """
-import os,csv,json,hashlib,secrets,time
-from datetime import datetime
+import os,csv,json,hashlib,secrets,time,threading
+from datetime import datetime,timedelta
 from functools import wraps
 from flask import Flask,request,jsonify,send_file,redirect,session
 
@@ -16,8 +16,46 @@ USERS_FILE=os.path.join(DATA_DIR,"users.json")
 STATIONS_FILE=os.path.join(DATA_DIR,"stations.json")
 SECRET_KEY=os.environ.get("SECRET_KEY",secrets.token_hex(32))
 PORT=int(os.environ.get("PORT",8080))
+RETENTION_DAYS=int(os.environ.get("RETENTION_DAYS",30))
 
 for d in [DATA_DIR,VIDEO_DIR,PHOTO_DIR]: os.makedirs(d,exist_ok=True)
+
+def cleanup_old_files():
+    """Delete video/photo files older than RETENTION_DAYS"""
+    cutoff=time.time()-RETENTION_DAYS*86400
+    deleted=0;freed=0
+    for folder in [VIDEO_DIR,PHOTO_DIR]:
+        if not os.path.exists(folder): continue
+        for f in os.listdir(folder):
+            fp=os.path.join(folder,f)
+            try:
+                if os.path.getmtime(fp)<cutoff:
+                    sz=os.path.getsize(fp)
+                    os.remove(fp)
+                    deleted+=1;freed+=sz
+            except: pass
+    # Clean old log entries
+    if os.path.exists(LOG_FILE):
+        cutoff_date=(datetime.now()-timedelta(days=RETENTION_DAYS)).strftime('%Y-%m-%d')
+        try:
+            with open(LOG_FILE) as f: rows=list(csv.DictReader(f))
+            kept=[r for r in rows if r.get("date","")>=cutoff_date]
+            if len(kept)<len(rows):
+                with open(LOG_FILE,"w") as f:
+                    w=csv.DictWriter(f,fieldnames=["tracking_number","station","date","time","duration_seconds","video_file","photo_file","worker"])
+                    w.writeheader();w.writerows(kept)
+        except: pass
+    if deleted>0: print("Cleanup: deleted",deleted,"files, freed",round(freed/(1024*1024),1),"MB")
+    return {"deleted":deleted,"freed_mb":round(freed/(1024*1024),1)}
+
+def cleanup_loop():
+    while True:
+        time.sleep(3600)
+        try: cleanup_old_files()
+        except: pass
+
+cleanup_thread=threading.Thread(target=cleanup_loop,daemon=True)
+cleanup_thread.start()
 if not os.path.exists(LOG_FILE):
     with open(LOG_FILE,"w") as f: f.write("tracking_number,station,date,time,duration_seconds,video_file,photo_file,worker\n")
 
@@ -266,6 +304,38 @@ def api_pw():
     if u not in users: return jsonify({"ok":False})
     users[u]["password"]=_h(p);svj(USERS_FILE,users)
     return jsonify({"ok":True})
+
+@app.route("/api/storage")
+@req_role("admin")
+def api_storage():
+    vcount=0;vsize=0;pcount=0;psize=0
+    oldest=None;newest=None
+    if os.path.exists(VIDEO_DIR):
+        for f in os.listdir(VIDEO_DIR):
+            fp=os.path.join(VIDEO_DIR,f);vcount+=1;vsize+=os.path.getsize(fp)
+            mt=os.path.getmtime(fp)
+            if oldest is None or mt<oldest: oldest=mt
+            if newest is None or mt>newest: newest=mt
+    if os.path.exists(PHOTO_DIR):
+        for f in os.listdir(PHOTO_DIR):
+            fp=os.path.join(PHOTO_DIR,f);pcount+=1;psize+=os.path.getsize(fp)
+    total=(vsize+psize)/(1024*1024)
+    return jsonify({
+        "videos":vcount,"photos":pcount,
+        "video_size_mb":round(vsize/(1024*1024),1),
+        "photo_size_mb":round(psize/(1024*1024),1),
+        "total_mb":round(total,1),
+        "total_gb":round(total/1024,2),
+        "retention_days":RETENTION_DAYS,
+        "oldest":datetime.fromtimestamp(oldest).strftime('%Y-%m-%d') if oldest else None,
+        "newest":datetime.fromtimestamp(newest).strftime('%Y-%m-%d') if newest else None
+    })
+
+@app.route("/api/cleanup",methods=["POST"])
+@req_role("admin")
+def api_cleanup():
+    r=cleanup_old_files()
+    return jsonify({"ok":True,"deleted":r["deleted"],"freed_mb":r["freed_mb"]})
 
 @app.route("/media/video/<fn>")
 @req_role("admin","cs")
@@ -810,6 +880,11 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 <div class="sec-t">📅 Daily Summary (Last 14 Days)</div>
 <div id="dailyTable"><div class="ld"><div class="spn"></div></div></div>
 </div>
+
+<div class="sec" id="storageSection" style="display:none">
+<div class="sec-t">💾 Storage</div>
+<div class="w-grid" id="storageGrid"></div>
+</div>
 </div>
 
 <script>
@@ -868,6 +943,14 @@ fetch('/api/analytics').then(function(r){return r.json()}).then(function(d){
             '<div class="d-table"><table><thead><tr><th>Date</th><th>Packages</th><th>Avg Time</th><th>Volume</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
     }
 });
+fetch('/api/storage').then(function(r){return r.json()}).then(function(s){
+    document.getElementById('storageSection').style.display='block';
+    document.getElementById('storageGrid').innerHTML=
+        '<div class="w-card"><div class="w-top"><div class="w-name">Videos</div></div><div class="w-stats"><div class="w-stat hl"><div class="val">'+s.videos+'</div><div class="lab">Files</div></div><div class="w-stat"><div class="val">'+s.video_size_mb+' MB</div><div class="lab">Size</div></div></div></div>'+
+        '<div class="w-card"><div class="w-top"><div class="w-name">Photos</div></div><div class="w-stats"><div class="w-stat hl"><div class="val">'+s.photos+'</div><div class="lab">Files</div></div><div class="w-stat"><div class="val">'+s.photo_size_mb+' MB</div><div class="lab">Size</div></div></div></div>'+
+        '<div class="w-card"><div class="w-top"><div class="w-name">Total Storage</div></div><div class="w-stats"><div class="w-stat hl"><div class="val">'+s.total_gb+' GB</div><div class="lab">Used</div></div><div class="w-stat"><div class="val">'+s.retention_days+' days</div><div class="lab">Retention</div></div></div></div>'+
+        '<div class="w-card"><div class="w-top"><div class="w-name">Date Range</div></div><div class="w-stats"><div class="w-stat"><div class="val">'+(s.oldest||'-')+'</div><div class="lab">Oldest</div></div><div class="w-stat"><div class="val">'+(s.newest||'-')+'</div><div class="lab">Newest</div></div></div></div>';
+}).catch(function(){});
 </script></body></html>'''
 
 if __name__=="__main__":
