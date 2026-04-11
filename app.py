@@ -1,21 +1,12 @@
 #!/usr/bin/env python3
 """
-5 Second Beauty - Packing Station
-===================================
-Production web app for packing video recording.
-
-Roles:
-  worker:  select station > scan > record > save
-  cs:      search recordings by tracking number
-  admin:   search + manage users + stations
-
-Run:    python3 app.py
-Deploy: gunicorn -w 4 -b 0.0.0.0:8080 app:app
+5 Second Beauty — Packing Station
+Production web app for packing video recording & lookup.
 """
 import os,csv,json,hashlib,secrets,time
 from datetime import datetime
 from functools import wraps
-from flask import Flask,request,jsonify,send_file,redirect,session,make_response
+from flask import Flask,request,jsonify,send_file,redirect,session
 
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
 VIDEO_DIR=os.path.join(DATA_DIR,"videos")
@@ -26,18 +17,18 @@ STATIONS_FILE=os.path.join(DATA_DIR,"stations.json")
 SECRET_KEY=os.environ.get("SECRET_KEY",secrets.token_hex(32))
 PORT=int(os.environ.get("PORT",8080))
 
-for d in [DATA_DIR,VIDEO_DIR,PHOTO_DIR]:
-    os.makedirs(d,exist_ok=True)
-
+for d in [DATA_DIR,VIDEO_DIR,PHOTO_DIR]: os.makedirs(d,exist_ok=True)
 if not os.path.exists(LOG_FILE):
-    with open(LOG_FILE,"w") as f:
-        f.write("tracking_number,station,date,time,duration_seconds,video_file,photo_file,worker\n")
+    with open(LOG_FILE,"w") as f: f.write("tracking_number,station,date,time,duration_seconds,video_file,photo_file,worker\n")
 
 def _h(pw): return hashlib.sha256(pw.encode()).hexdigest()
-
 def _init(path,default):
     if not os.path.exists(path):
         with open(path,"w") as f: json.dump(default,f,indent=2)
+def ldj(p):
+    with open(p) as f: return json.load(f)
+def svj(p,d):
+    with open(p,"w") as f: json.dump(d,f,indent=2)
 
 _init(USERS_FILE,{
     "admin":{"password":_h("admin123"),"role":"admin","name":"Admin"},
@@ -51,11 +42,6 @@ _init(USERS_FILE,{
 })
 _init(STATIONS_FILE,{"S1":"Station 1","S2":"Station 2","S3":"Station 3","S4":"Station 4","S5":"Station 5","S6":"Station 6"})
 
-def ldj(p):
-    with open(p) as f: return json.load(f)
-def svj(p,d):
-    with open(p,"w") as f: json.dump(d,f,indent=2)
-
 app=Flask(__name__)
 app.secret_key=SECRET_KEY
 app.config["MAX_CONTENT_LENGTH"]=250*1024*1024
@@ -66,7 +52,6 @@ def req_login(f):
         if "user" not in session: return redirect("/")
         return f(*a,**k)
     return d
-
 def req_role(*roles):
     def w(f):
         @wraps(f)
@@ -77,37 +62,28 @@ def req_role(*roles):
         return d
     return w
 
-# ── PAGES ─────────────────────────────────────────────────
 @app.route("/")
 def index():
     if "user" not in session: return LOGIN_HTML
     if session.get("role")=="worker":
         if "station" not in session:
-            return STATION_HTML.replace("{{NAME}}",session["name"])
-        return (WORKER_HTML
-            .replace("{{NAME}}",session["name"])
-            .replace("{{STATION}}",session.get("station_name",""))
-            .replace("{{SID}}",session.get("station","S0")))
+            return STATION_HTML.replace("__NAME__",session["name"])
+        return WORKER_HTML.replace("__NAME__",session["name"]).replace("__STATION__",session.get("station_name","")).replace("__SID__",session.get("station","S0"))
     return redirect("/dashboard")
 
 @app.route("/dashboard")
 @req_role("admin","cs")
 def dashboard():
-    disp="inline-block" if session.get("role")=="admin" else "none"
-    return (DASH_HTML
-        .replace("{{NAME}}",session.get("name",""))
-        .replace("{{ADMIN_VIS}}",disp))
+    disp="flex" if session.get("role")=="admin" else "none"
+    return DASH_HTML.replace("__NAME__",session.get("name","")).replace("__ADMIN_VIS__",disp)
 
 @app.route("/users")
 @req_role("admin")
 def users_page(): return USERS_HTML
 
 @app.route("/logout")
-def logout():
-    session.clear()
-    return redirect("/")
+def logout(): session.clear(); return redirect("/")
 
-# ── AUTH API ──────────────────────────────────────────────
 @app.route("/api/login",methods=["POST"])
 def api_login():
     d=request.get_json();u=d.get("username","").strip().lower();p=d.get("password","")
@@ -131,7 +107,6 @@ def api_station():
 @req_login
 def api_stations(): return jsonify(ldj(STATIONS_FILE))
 
-# ── UPLOAD API ────────────────────────────────────────────
 @app.route("/api/upload",methods=["POST"])
 @req_login
 def api_upload():
@@ -139,24 +114,22 @@ def api_upload():
     sta=request.form.get("station",session.get("station","S0"))
     dur=request.form.get("duration","0")
     wrk=session.get("name","Unknown")
-    if not trk: return jsonify({"ok":False,"error":"No tracking"})
-    fn=f"{sta}_{trk}";now=datetime.now()
+    if not trk: return jsonify({"ok":False})
+    fn=sta+"_"+trk;now=datetime.now()
     vf=request.files.get("video");vn=None
     if vf:
-        vn=f"{fn}.webm";vp=os.path.join(VIDEO_DIR,vn)
-        if os.path.exists(vp):vn=f"{fn}_{now.strftime('%H%M%S')}.webm";vp=os.path.join(VIDEO_DIR,vn)
+        vn=fn+".webm";vp=os.path.join(VIDEO_DIR,vn)
+        if os.path.exists(vp):vn=fn+"_"+now.strftime('%H%M%S')+".webm";vp=os.path.join(VIDEO_DIR,vn)
         vf.save(vp)
     pf=request.files.get("photo");pn=None
     if pf:
-        pn=f"{fn}.jpg";pp=os.path.join(PHOTO_DIR,pn)
-        if os.path.exists(pp):pn=f"{fn}_{now.strftime('%H%M%S')}.jpg";pp=os.path.join(PHOTO_DIR,pn)
+        pn=fn+".jpg";pp=os.path.join(PHOTO_DIR,pn)
+        if os.path.exists(pp):pn=fn+"_"+now.strftime('%H%M%S')+".jpg";pp=os.path.join(PHOTO_DIR,pn)
         pf.save(pp)
     with open(LOG_FILE,"a") as f:
-        f.write(f"{trk},{sta},{now.strftime('%Y-%m-%d')},{now.strftime('%H:%M:%S')},{dur},{vn},{pn},{wrk}\n")
-    print(f"[{sta}] {wrk}: {trk} ({dur}s)")
+        f.write(trk+","+sta+","+now.strftime('%Y-%m-%d')+","+now.strftime('%H:%M:%S')+","+str(dur)+","+str(vn)+","+str(pn)+","+wrk+"\n")
     return jsonify({"ok":True})
 
-# ── SEARCH API ────────────────────────────────────────────
 @app.route("/api/search/<trk>")
 @req_role("admin","cs")
 def api_search(trk):
@@ -166,12 +139,12 @@ def api_search(trk):
             if t in f.lower():
                 fp=os.path.join(VIDEO_DIR,f);mb=os.path.getsize(fp)/(1024*1024)
                 s=f.split("_")[0] if "_" in f else "?"
-                r["videos"].append({"filename":f,"size_mb":round(mb,1),"url":f"/media/video/{f}","station":s})
+                r["videos"].append({"filename":f,"size_mb":round(mb,1),"url":"/media/video/"+f,"station":s})
     if os.path.exists(PHOTO_DIR):
         for f in sorted(os.listdir(PHOTO_DIR)):
             if t in f.lower():
                 s=f.split("_")[0] if "_" in f else "?"
-                r["photos"].append({"filename":f,"url":f"/media/photo/{f}","station":s})
+                r["photos"].append({"filename":f,"url":"/media/photo/"+f,"station":s})
     if os.path.exists(LOG_FILE):
         with open(LOG_FILE) as cf:
             for row in csv.DictReader(cf):
@@ -196,7 +169,6 @@ def api_stats():
     tp=len(os.listdir(PHOTO_DIR)) if os.path.exists(PHOTO_DIR) else 0
     return jsonify({"total_videos":tv,"total_photos":tp,"total_size_mb":round(ts/(1024*1024),1)})
 
-# ── USER MGMT API ────────────────────────────────────────
 @app.route("/api/users")
 @req_role("admin")
 def api_users():
@@ -210,7 +182,7 @@ def api_add():
     n=d.get("name",u);role=d.get("role","worker")
     if not u or not p: return jsonify({"ok":False,"error":"Required"})
     users=ldj(USERS_FILE)
-    if u in users: return jsonify({"ok":False,"error":"Exists"})
+    if u in users: return jsonify({"ok":False,"error":"Already exists"})
     users[u]={"password":_h(p),"role":role,"name":n};svj(USERS_FILE,users)
     return jsonify({"ok":True})
 
@@ -227,249 +199,464 @@ def api_del():
 @req_role("admin")
 def api_pw():
     d=request.get_json();u=d.get("username","");p=d.get("password","")
-    if not p: return jsonify({"ok":False,"error":"Required"})
+    if not p: return jsonify({"ok":False})
     users=ldj(USERS_FILE)
     if u not in users: return jsonify({"ok":False})
     users[u]["password"]=_h(p);svj(USERS_FILE,users)
     return jsonify({"ok":True})
 
-# ── MEDIA ─────────────────────────────────────────────────
 @app.route("/media/video/<fn>")
 @req_role("admin","cs")
-def sv(fn):
+def serve_v(fn):
     p=os.path.join(VIDEO_DIR,fn)
     return send_file(p,mimetype="video/webm") if os.path.exists(p) else ("",404)
 
 @app.route("/media/photo/<fn>")
 @req_role("admin","cs")
-def sp(fn):
+def serve_p(fn):
     p=os.path.join(PHOTO_DIR,fn)
     return send_file(p,mimetype="image/jpeg") if os.path.exists(p) else ("",404)
 
-# ╔═══════════════════════════════════════════════════════╗
-# ║  HTML                                                 ║
-# ╚═══════════════════════════════════════════════════════╝
-_F='<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">'
-_V=":root{--bg:#0b0e14;--c:#151921;--c2:#1a1f2b;--bd:#252b37;--t:#dfe4ed;--t2:#6b7a90;--bl:#3b82f6;--bl2:#60a5fa;--gn:#10b981;--rd:#ef4444;--or:#f59e0b;--pu:#8b5cf6;--r:14px}"
+# ══════════════════════════════════════════════════════════
+# HTML TEMPLATES (no f-strings to avoid escaping nightmares)
+# ══════════════════════════════════════════════════════════
 
-LOGIN_HTML=f'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">{_F}
-<title>Packing Station - Login</title><style>*{{margin:0;padding:0;box-sizing:border-box}}{_V}
-body{{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#0b0e14,#111827,#0b0e14);color:var(--t);display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden}}
-.g{{position:fixed;width:500px;height:500px;border-radius:50%;filter:blur(120px);opacity:.15;pointer-events:none}}
-.g1{{top:-100px;right:-100px;background:var(--bl)}}.g2{{bottom:-100px;left:-100px;background:var(--pu)}}
-.box{{position:relative;z-index:1;width:100%;max-width:420px;padding:20px}}
-.br{{text-align:center;margin-bottom:36px}}
-.br-logo{{width:70px;height:70px;background:linear-gradient(135deg,var(--bl),var(--pu));border-radius:18px;display:flex;align-items:center;justify-content:center;font-size:34px;margin:0 auto 18px;box-shadow:0 8px 30px rgba(59,130,246,.25)}}
-.br-n{{font-size:26px;font-weight:800;letter-spacing:-.5px}}.br-s{{font-size:13px;color:var(--t2);margin-top:5px}}
-.cd{{background:var(--c);border:1px solid var(--bd);border-radius:var(--r);padding:32px 28px}}
-.cd-t{{font-size:18px;font-weight:700;margin-bottom:3px}}.cd-s{{font-size:12px;color:var(--t2);margin-bottom:24px}}
-.f{{margin-bottom:16px}}.f label{{display:block;font-size:11px;font-weight:600;color:var(--t2);margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}}
-.f input{{width:100%;background:var(--bg);border:2px solid var(--bd);border-radius:10px;padding:13px 15px;font-size:15px;color:var(--t);font-family:inherit;outline:none;transition:border .2s}}
-.f input:focus{{border-color:var(--bl)}}.f input::placeholder{{color:#3a4252}}
-.btn{{width:100%;border:none;border-radius:10px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;background:linear-gradient(135deg,var(--bl),#6366f1);color:white;margin-top:6px}}
-.btn:hover{{opacity:.9}}.btn:active{{transform:scale(.98)}}
-.err{{color:var(--rd);font-size:12px;margin-top:10px;min-height:16px;text-align:center}}
-.ft{{text-align:center;margin-top:20px;font-size:11px;color:#2a3040}}
+_FONT = '<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">'
+
+LOGIN_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Packing Station</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;display:flex;align-items:center;justify-content:center;min-height:100vh;overflow:hidden}
+.glow{position:fixed;border-radius:50%;filter:blur(100px);opacity:.12;pointer-events:none}
+.g1{width:600px;height:600px;top:-200px;right:-150px;background:#4f46e5}
+.g2{width:400px;height:400px;bottom:-100px;left:-100px;background:#7c3aed}
+.wrap{position:relative;z-index:1;width:100%;max-width:440px;padding:24px}
+.logo{text-align:center;margin-bottom:36px}
+.logo-box{width:80px;height:80px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:22px;display:inline-flex;align-items:center;justify-content:center;font-size:40px;box-shadow:0 12px 40px rgba(79,70,229,.3);margin-bottom:18px}
+.logo h1{font-size:30px;font-weight:800;letter-spacing:-.5px}
+.logo p{font-size:14px;color:#6b7a90;margin-top:4px}
+.card{background:rgba(21,25,33,.8);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.06);border-radius:20px;padding:40px 36px}
+.card h2{font-size:22px;font-weight:700;margin-bottom:4px}
+.card .sub{font-size:13px;color:#6b7a90;margin-bottom:28px}
+.field{margin-bottom:20px}
+.field label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin-bottom:7px;text-transform:uppercase;letter-spacing:.6px}
+.field input{width:100%;background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:12px;padding:15px 18px;font-size:16px;color:#e4e8f1;font-family:inherit;outline:none;transition:all .2s}
+.field input:focus{border-color:#4f46e5;box-shadow:0 0 0 3px rgba(79,70,229,.15)}
+.field input::placeholder{color:#3a4252}
+.btn{width:100%;border:none;border-radius:12px;padding:16px;font-size:16px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .15s}
+.btn-primary{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:white;margin-top:8px;box-shadow:0 4px 20px rgba(79,70,229,.3)}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 6px 28px rgba(79,70,229,.4)}
+.btn-primary:active{transform:scale(.98)}
+.err{color:#f43f5e;font-size:13px;margin-top:14px;text-align:center;min-height:18px}
+.foot{text-align:center;margin-top:28px;font-size:11px;color:#2a3040}
 </style></head><body>
-<div class="g g1"></div><div class="g g2"></div>
-<div class="box"><div class="br"><div class="br-logo">📦</div><div class="br-n">Packing Station</div><div class="br-s">5 Second Beauty — Warehouse System</div></div>
-<div class="cd"><div class="cd-t">Welcome back</div><div class="cd-s">Sign in to start your shift</div>
-<div class="f"><label>Username</label><input type="text" id="u" placeholder="Enter username" autofocus></div>
-<div class="f"><label>Password</label><input type="password" id="p" placeholder="Enter password"></div>
-<button class="btn" onclick="go()">Sign In</button><div class="err" id="e"></div></div>
-<div class="ft">5 Second Beauty © 2025</div></div>
-<script>document.getElementById('p').onkeydown=e=>{{if(e.key==='Enter')go()}};
-document.getElementById('u').onkeydown=e=>{{if(e.key==='Enter')document.getElementById('p').focus()}};
-async function go(){{const u=document.getElementById('u').value.trim(),p=document.getElementById('p').value;
-if(!u||!p){{document.getElementById('e').textContent='Enter username and password';return}}
-const r=await fetch('/api/login',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{username:u,password:p}})}});
-const d=await r.json();if(d.ok)location.href='/';else document.getElementById('e').textContent=d.error}}</script></body></html>'''
+<div class="glow g1"></div><div class="glow g2"></div>
+<div class="wrap">
+<div class="logo"><div class="logo-box">📦</div><h1>Packing Station</h1><p>5 Second Beauty — Warehouse System</p></div>
+<div class="card">
+<h2>Welcome back</h2><p class="sub">Sign in to start your shift</p>
+<div class="field"><label>Username</label><input type="text" id="u" placeholder="Enter your username" autofocus></div>
+<div class="field"><label>Password</label><input type="password" id="p" placeholder="Enter your password"></div>
+<button class="btn btn-primary" id="loginBtn">Sign In</button>
+<div class="err" id="e"></div>
+</div>
+<div class="foot">5 Second Beauty &copy; 2025</div>
+</div>
+<script>
+document.getElementById('p').addEventListener('keydown',function(e){if(e.key==='Enter')login()});
+document.getElementById('u').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('p').focus()});
+document.getElementById('loginBtn').addEventListener('click',login);
+async function login(){
+    var u=document.getElementById('u').value.trim(),p=document.getElementById('p').value;
+    if(!u||!p){document.getElementById('e').textContent='Please enter username and password';return}
+    var r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+    var d=await r.json();
+    if(d.ok)window.location.href='/';
+    else document.getElementById('e').textContent=d.error;
+}
+</script></body></html>'''
 
-STATION_HTML=f'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">{_F}
-<title>Select Station</title><style>*{{margin:0;padding:0;box-sizing:border-box}}{_V}
-body{{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#0b0e14,#111827,#0b0e14);color:var(--t);display:flex;align-items:center;justify-content:center;height:100vh}}
-.c{{text-align:center;padding:20px;width:100%;max-width:600px}}
-.gr{{font-size:14px;color:var(--t2);margin-bottom:3px}}.ti{{font-size:30px;font-weight:800;margin-bottom:6px}}
-.su{{font-size:15px;color:var(--t2);margin-bottom:36px}}
-.sg{{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}}
-.sb{{background:var(--c);border:2px solid var(--bd);border-radius:14px;padding:24px 14px;cursor:pointer;transition:all .2s;text-align:center}}
-.sb:hover{{border-color:var(--bl);background:var(--c2);transform:translateY(-2px)}}.sb:active{{transform:scale(.97)}}
-.si{{font-size:30px;margin-bottom:8px}}.sl{{font-size:15px;font-weight:700}}.sid{{font-size:11px;color:var(--t2);margin-top:3px}}
-.out{{position:fixed;top:16px;right:16px;color:var(--t2);text-decoration:none;font-size:12px;border:1px solid var(--bd);padding:5px 12px;border-radius:7px}}
+# ── STATION SELECT ────────────────────────────────────────
+STATION_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Select Station</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.wrap{text-align:center;padding:24px;width:100%;max-width:700px}
+.hi{font-size:16px;color:#6b7a90;margin-bottom:4px}
+.hi b{color:#a5b4fc}
+.title{font-size:34px;font-weight:800;margin-bottom:8px}
+.sub{font-size:16px;color:#6b7a90;margin-bottom:44px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:16px}
+.s-btn{background:rgba(21,25,33,.8);border:2px solid rgba(255,255,255,.06);border-radius:18px;padding:32px 16px;cursor:pointer;transition:all .25s;text-align:center}
+.s-btn:hover{border-color:#4f46e5;background:rgba(79,70,229,.08);transform:translateY(-4px);box-shadow:0 8px 30px rgba(79,70,229,.15)}
+.s-btn:active{transform:scale(.96)}
+.s-icon{font-size:36px;margin-bottom:12px}
+.s-name{font-size:17px;font-weight:700}
+.s-id{font-size:12px;color:#6b7a90;margin-top:4px}
+.out{position:fixed;top:20px;right:20px;color:#6b7a90;text-decoration:none;font-size:13px;border:1px solid rgba(255,255,255,.08);padding:8px 16px;border-radius:10px;transition:all .2s}
+.out:hover{color:#e4e8f1;border-color:rgba(255,255,255,.15)}
 </style></head><body>
 <a href="/logout" class="out">Logout</a>
-<div class="c"><div class="gr">Hello, {{{{NAME}}}} 👋</div><div class="ti">Select Your Station</div>
-<div class="su">Choose where you're working today</div><div class="sg" id="g"></div></div>
-<script>async function ld(){{const r=await fetch('/api/stations');const d=await r.json();
-const g=document.getElementById('g');const ic=['📦','🏷️','📋','🔖','📮','✉️'];let i=0;
-for(const[id,nm]of Object.entries(d)){{const b=document.createElement('div');b.className='sb';
-b.innerHTML='<div class="si">'+ic[i%6]+'</div><div class="sl">'+nm+'</div><div class="sid">'+id+'</div>';
-b.onclick=async()=>{{const r=await fetch('/api/select-station',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{station:id}})}});
-const d=await r.json();if(d.ok)location.href='/'}};g.appendChild(b);i++}}}}ld();</script></body></html>'''
+<div class="wrap">
+<div class="hi">Hello, <b>__NAME__</b> 👋</div>
+<div class="title">Select Your Station</div>
+<div class="sub">Choose the packing station you are working at today</div>
+<div class="grid" id="g"></div>
+</div>
+<script>
+var icons=['📦','🏷️','📋','🔖','📮','✉️'];
+fetch('/api/stations').then(function(r){return r.json()}).then(function(d){
+    var g=document.getElementById('g');var i=0;
+    Object.keys(d).forEach(function(id){
+        var btn=document.createElement('div');btn.className='s-btn';
+        btn.innerHTML='<div class="s-icon">'+icons[i%6]+'</div><div class="s-name">'+d[id]+'</div><div class="s-id">'+id+'</div>';
+        btn.addEventListener('click',function(){
+            fetch('/api/select-station',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({station:id})})
+            .then(function(r){return r.json()}).then(function(r){if(r.ok)location.href='/'});
+        });
+        g.appendChild(btn);i++;
+    });
+});
+</script></body></html>'''
 
-WORKER_HTML=f'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">{_F}
-<title>Packing Station</title><style>*{{margin:0;padding:0;box-sizing:border-box}}{_V}
-html,body{{height:100%;overflow:hidden}}
-body{{font-family:'Inter',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:background .4s}}
-body.sr{{background:var(--bg)}}body.sc{{background:#1a0a0a}}body.sd{{background:#061a0f}}body.su{{background:var(--bg)}}
-.x{{display:none;text-align:center;padding:24px;width:100%}}.x.on{{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh}}
-.tb{{position:fixed;top:0;left:0;right:0;padding:10px 18px;display:flex;justify-content:space-between;align-items:center;z-index:10}}
-.bg{{background:var(--c);border:1.5px solid var(--bd);border-radius:50px;padding:6px 16px;font-size:12px;font-weight:700;color:var(--bl2)}}
-.tr{{display:flex;gap:8px;align-items:center}}
-.ci{{display:flex;align-items:center;gap:4px;font-size:11px;padding:4px 9px;border-radius:14px;background:rgba(0,0,0,.3)}}
-.cd{{width:6px;height:6px;border-radius:50%}}.co .cd{{background:var(--gn)}}.co span{{color:var(--gn)}}.ce .cd{{background:var(--rd)}}.ce span{{color:var(--rd)}}
-.ob{{background:none;border:1px solid var(--bd);border-radius:7px;padding:4px 10px;font-size:11px;color:var(--t2);cursor:pointer;font-family:inherit}}
-.pv{{position:fixed;bottom:12px;left:12px;width:140px;border-radius:9px;overflow:hidden;border:2px solid var(--bd);opacity:.35;transition:all .3s}}
-.pv video{{width:100%;display:block}}body.sc .pv{{width:180px;opacity:1;border-color:var(--rd)}}
-.ri{{width:100px;height:100px;background:var(--c);border-radius:24px;display:flex;align-items:center;justify-content:center;font-size:48px;margin-bottom:24px;border:2.5px solid var(--bd)}}
-.rt{{font-size:36px;font-weight:800;margin-bottom:8px}}.rs{{font-size:17px;color:var(--t2);margin-bottom:32px}}
-.iw{{width:100%;max-width:460px}}
-.ip{{width:100%;background:var(--c);border:3px solid var(--bl);border-radius:12px;padding:16px 20px;font-size:20px;color:var(--t);font-family:inherit;text-align:center;outline:none}}
-.ip:focus{{border-color:var(--bl2);box-shadow:0 0 20px rgba(59,130,246,.2)}}.ip::placeholder{{color:#3a4252}}
-.ht{{margin-top:12px;font-size:13px;color:var(--t2)}}
-.pd{{display:inline-block;width:6px;height:6px;background:var(--bl);border-radius:50%;margin-right:6px;animation:pls 1.5s ease infinite}}
-@keyframes pls{{0%,100%{{opacity:.3;transform:scale(1)}}50%{{opacity:1;transform:scale(1.3)}}}}
-.ct{{margin-top:32px;font-size:13px;color:var(--t2)}}.ct b{{color:var(--bl2)}}
-.rp{{display:flex;align-items:center;gap:10px;background:rgba(239,68,68,.12);border:2px solid rgba(239,68,68,.35);border-radius:50px;padding:9px 22px;margin-bottom:24px;animation:rpl 1.5s ease infinite}}
-@keyframes rpl{{0%,100%{{border-color:rgba(239,68,68,.35)}}50%{{border-color:rgba(239,68,68,.75)}}}}
-.rd{{width:13px;height:13px;background:var(--rd);border-radius:50%;animation:bk 1s ease infinite}}
-@keyframes bk{{0%,100%{{opacity:1}}50%{{opacity:.25}}}}.rl{{font-size:17px;font-weight:700;color:var(--rd)}}
-.rk{{font-size:42px;font-weight:900;color:#f1f5f9;margin-bottom:10px;letter-spacing:.5px}}
-.rm{{font-size:64px;font-weight:900;color:var(--rd);font-feature-settings:'tnum';margin-bottom:18px}}
-.ss{{display:flex;flex-direction:column;gap:9px;margin-top:14px}}
-.st{{display:flex;align-items:center;gap:9px;font-size:17px;color:#6b7a90}}.st.nw{{color:#f1f5f9;font-weight:700}}
-.sic{{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;background:var(--c);border:2px solid var(--bd);flex-shrink:0}}
-.st.ok .sic{{background:#065f46;border-color:var(--gn)}}.st.nw .sic{{background:#7c2d12;border-color:var(--or);animation:spl 1.5s ease infinite}}
-@keyframes spl{{0%,100%{{box-shadow:0 0 0 0 rgba(249,115,22,.25)}}50%{{box-shadow:0 0 0 6px rgba(249,115,22,0)}}}}
-.hi{{position:absolute;top:-9999px;left:-9999px}}
-.di{{width:100px;height:100px;background:#065f46;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:52px;margin-bottom:18px;animation:pp .4s cubic-bezier(.175,.885,.32,1.275)}}
-@keyframes pp{{0%{{transform:scale(0)}}100%{{transform:scale(1)}}}}.dt{{font-size:36px;font-weight:800;color:var(--gn);margin-bottom:5px}}
-.dk{{font-size:24px;font-weight:700;margin-bottom:5px}}.df{{font-size:15px;color:var(--t2);margin-bottom:24px}}.dn{{font-size:15px;color:var(--t2)}}
-.us{{width:40px;height:40px;border:3px solid var(--bd);border-top-color:var(--bl);border-radius:50%;animation:sp .8s linear infinite;margin-bottom:18px}}
-@keyframes sp{{to{{transform:rotate(360deg)}}}}.ut{{font-size:20px;font-weight:700;margin-bottom:5px}}.uu{{font-size:14px;color:var(--t2)}}
+# ── WORKER PACKING SCREEN ────────────────────────────────
+WORKER_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+''' + _FONT + '''
+<title>Packing Station</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden}
+body{font-family:'DM Sans',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:background .4s}
+body.sr{background:#0c0f16}body.sc{background:#1c0a0f}body.sd{background:#061a0f}body.su{background:#0c0f16}
+.x{display:none;text-align:center;padding:24px;width:100%}
+.x.on{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh}
+.top{position:fixed;top:0;left:0;right:0;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;z-index:10}
+.badge{background:rgba(79,70,229,.15);border:1.5px solid rgba(79,70,229,.3);border-radius:50px;padding:8px 20px;font-size:13px;font-weight:700;color:#a5b4fc}
+.top-r{display:flex;gap:10px;align-items:center}
+.cam{display:flex;align-items:center;gap:5px;font-size:12px;padding:6px 12px;border-radius:20px;background:rgba(0,0,0,.3)}
+.cam-d{width:7px;height:7px;border-radius:50%}
+.cam.ok .cam-d{background:#10b981}.cam.ok span{color:#10b981}
+.cam.err .cam-d{background:#f43f5e}.cam.err span{color:#f43f5e}
+.out-b{background:none;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:6px 14px;font-size:12px;color:#6b7a90;cursor:pointer;font-family:inherit}
+.pv{position:fixed;bottom:16px;left:16px;width:150px;border-radius:12px;overflow:hidden;border:2px solid rgba(255,255,255,.06);opacity:.35;transition:all .3s}
+.pv video{width:100%;display:block}
+body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
+
+.r-icon{width:120px;height:120px;background:rgba(21,25,33,.8);border-radius:30px;display:flex;align-items:center;justify-content:center;font-size:56px;margin-bottom:32px;border:2.5px solid rgba(255,255,255,.06)}
+.r-title{font-size:40px;font-weight:800;margin-bottom:10px}
+.r-sub{font-size:18px;color:#6b7a90;margin-bottom:36px}
+.inp-w{width:100%;max-width:500px}
+.inp{width:100%;background:rgba(21,25,33,.8);border:3px solid #4f46e5;border-radius:16px;padding:20px 24px;font-size:24px;color:#e4e8f1;font-family:inherit;text-align:center;outline:none;transition:all .2s}
+.inp:focus{border-color:#818cf8;box-shadow:0 0 30px rgba(79,70,229,.25)}
+.inp::placeholder{color:#3a4252}
+.hint{margin-top:14px;font-size:14px;color:#6b7a90}
+.pd{display:inline-block;width:8px;height:8px;background:#4f46e5;border-radius:50%;margin-right:8px;animation:pls 1.5s ease infinite}
+@keyframes pls{0%,100%{opacity:.3;transform:scale(1)}50%{opacity:1;transform:scale(1.3)}}
+.ctr{margin-top:36px;font-size:14px;color:#6b7a90}.ctr b{color:#a5b4fc}
+
+.rp{display:flex;align-items:center;gap:12px;background:rgba(244,63,94,.1);border:2px solid rgba(244,63,94,.3);border-radius:50px;padding:12px 28px;margin-bottom:28px;animation:rpls 1.5s ease infinite}
+@keyframes rpls{0%,100%{border-color:rgba(244,63,94,.3)}50%{border-color:rgba(244,63,94,.7)}}
+.rd{width:15px;height:15px;background:#f43f5e;border-radius:50%;animation:bk 1s ease infinite}
+@keyframes bk{0%,100%{opacity:1}50%{opacity:.2}}
+.rl{font-size:18px;font-weight:800;color:#f43f5e;letter-spacing:1px}
+.rk{font-size:48px;font-weight:900;color:#f1f5f9;margin-bottom:14px;letter-spacing:.5px}
+.rm{font-size:72px;font-weight:900;color:#f43f5e;font-feature-settings:'tnum';margin-bottom:20px}
+.steps{display:flex;flex-direction:column;gap:12px;margin-top:16px}
+.step{display:flex;align-items:center;gap:12px;font-size:18px;color:#6b7a90}
+.step.now{color:#f1f5f9;font-weight:700}
+.si{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;background:rgba(21,25,33,.8);border:2px solid rgba(255,255,255,.08);flex-shrink:0}
+.step.ok .si{background:#065f46;border-color:#10b981}
+.step.now .si{background:#7c2d12;border-color:#f59e0b;animation:spls 1.5s ease infinite}
+@keyframes spls{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.2)}50%{box-shadow:0 0 0 8px rgba(245,158,11,0)}}
+.hinp{position:absolute;top:-9999px;left:-9999px}
+
+.d-icon{width:120px;height:120px;background:#065f46;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:60px;margin-bottom:24px;animation:pop .4s cubic-bezier(.175,.885,.32,1.275)}
+@keyframes pop{0%{transform:scale(0)}100%{transform:scale(1)}}
+.dt{font-size:40px;font-weight:800;color:#10b981;margin-bottom:6px}
+.dk{font-size:26px;font-weight:700;margin-bottom:6px}
+.dd{font-size:16px;color:#6b7a90;margin-bottom:28px}
+.dn{font-size:16px;color:#6b7a90}
+
+.us{width:48px;height:48px;border:4px solid rgba(255,255,255,.08);border-top-color:#4f46e5;border-radius:50%;animation:sp .8s linear infinite;margin-bottom:20px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.ut{font-size:22px;font-weight:700;margin-bottom:6px}
+.uu{font-size:15px;color:#6b7a90}
 </style></head><body class="sr">
-<div class="tb"><div class="bg">{{{{STATION}}}} — {{{{NAME}}}}</div><div class="tr"><div class="ci" id="cm"><div class="cd"></div><span>Camera</span></div><button class="ob" onclick="location.href='/logout'">End Shift</button></div></div>
+<div class="top"><div class="badge">__STATION__ — __NAME__</div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span>Camera</span></div><button class="out-b" onclick="location.href='/logout'">End Shift</button></div></div>
 <div class="pv"><video id="pv" autoplay muted playsinline></video></div>
-<div class="x on" id="xr"><div class="ri">📦</div><div class="rt">Scan Tracking Number</div><div class="rs">Scan the barcode to start recording</div><div class="iw"><input class="ip" id="mi" placeholder="Waiting for scan..." autofocus autocomplete="off"></div><div class="ht"><span class="pd"></span>Scanner ready</div><div class="ct">Recorded: <b id="cn">0</b></div></div>
-<div class="x" id="xc"><div class="rp"><div class="rd"></div><div class="rl">RECORDING</div></div><div class="rk" id="rk"></div><div class="rm" id="rm">00:00</div><div class="ss"><div class="st ok"><div class="sic">✓</div><span>Scan tracking number</span></div><div class="st nw"><div class="sic">2</div><span>Pack the order in front of the camera</span></div><div class="st"><div class="sic">3</div><span>Scan again to finish</span></div></div><input class="hi" id="ri" autocomplete="off"></div>
-<div class="x" id="xu"><div class="us"></div><div class="ut">Saving...</div><div class="uu">Please wait</div></div>
-<div class="x" id="xd"><div class="di">✓</div><div class="dt">Saved!</div><div class="dk" id="dk"></div><div class="df" id="dd"></div><div class="dn">Next order...</div></div>
+
+<div class="x on" id="xr"><div class="r-icon">📦</div><div class="r-title">Scan Tracking Number</div><div class="r-sub">Scan the barcode to start recording</div><div class="inp-w"><input class="inp" id="mi" placeholder="Waiting for scan..." autofocus autocomplete="off"></div><div class="hint"><span class="pd"></span>Scanner ready</div><div class="ctr">Recorded: <b id="cn">0</b></div></div>
+
+<div class="x" id="xc"><div class="rp"><div class="rd"></div><div class="rl">RECORDING</div></div><div class="rk" id="rk"></div><div class="rm" id="rmm">00:00</div><div class="steps"><div class="step ok"><div class="si">✓</div><span>Scan tracking number</span></div><div class="step now"><div class="si">2</div><span>Pack the order in front of the camera</span></div><div class="step"><div class="si">3</div><span>Scan again to finish</span></div></div><input class="hinp" id="ri" autocomplete="off"></div>
+
+<div class="x" id="xu"><div class="us"></div><div class="ut">Saving recording...</div><div class="uu">Please wait</div></div>
+
+<div class="x" id="xd"><div class="d-icon">✓</div><div class="dt">Saved!</div><div class="dk" id="dkk"></div><div class="dd" id="ddd"></div><div class="dn">Next order...</div></div>
+
 <script>
-let st='r',ti=null,t0=0,n=0,mr=null,ch=[],sm=null,ct='';
-const mi=document.getElementById('mi'),ri=document.getElementById('ri');
-const X={{r:document.getElementById('xr'),c:document.getElementById('xc'),u:document.getElementById('xu'),d:document.getElementById('xd')}};
-function go(s){{st=s;document.body.className=s==='c'?'sc':s==='d'?'sd':s==='u'?'su':'sr';Object.keys(X).forEach(k=>X[k].classList.toggle('on',k===s));if(s==='r'){{mi.value='';setTimeout(()=>mi.focus(),100)}}if(s==='c'){{ri.value='';setTimeout(()=>ri.focus(),100)}}}}
-document.addEventListener('click',()=>{{if(st==='r')mi.focus();if(st==='c')ri.focus()}});
-setInterval(()=>{{if(st==='r'&&document.activeElement!==mi)mi.focus();if(st==='c'&&document.activeElement!==ri)ri.focus()}},400);
-async function ic(){{try{{sm=await navigator.mediaDevices.getUserMedia({{video:{{width:{{ideal:1280}},height:{{ideal:720}}}},audio:false}});document.getElementById('pv').srcObject=sm;document.getElementById('cm').className='ci co'}}catch(e){{document.getElementById('cm').className='ci ce'}}}}ic();
-function sr(t){{if(!sm){{alert('No camera');return}}ct=t;ch=[];mr=new MediaRecorder(sm,{{mimeType:'video/webm;codecs=vp8'}});mr.ondataavailable=e=>{{if(e.data.size>0)ch.push(e.data)}};mr.start(1000);t0=Date.now();stmr();document.getElementById('rk').textContent=t;go('c')}}
-async function stp(){{return new Promise(r=>{{mr.onstop=()=>r();mr.stop()}})}}
-function cp(){{const v=document.getElementById('pv'),c=document.createElement('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);return new Promise(r=>c.toBlob(r,'image/jpeg',.9))}}
-async function ul(){{go('u');const dur=Math.round((Date.now()-t0)/1000);const vb=new Blob(ch,{{type:'video/webm'}});const pb=await cp();
-const fd=new FormData();fd.append('tracking',ct);fd.append('station','{{{{SID}}}}');fd.append('duration',dur);fd.append('video',vb,ct+'.webm');if(pb)fd.append('photo',pb,ct+'.jpg');
-try{{const r=await fetch('/api/upload',{{method:'POST',body:fd}});const d=await r.json();if(d.ok){{n++;document.getElementById('cn').textContent=n;document.getElementById('dk').textContent=ct;document.getElementById('dd').textContent='Duration: '+dur+'s';go('d');setTimeout(()=>go('r'),3000)}}else{{alert('Failed');go('r')}}}}catch(e){{alert('Upload failed');go('r')}}}}
-mi.addEventListener('keydown',e=>{{if(e.key==='Enter'){{const t=mi.value.trim();if(t)sr(t)}}}});
-ri.addEventListener('keydown',async e=>{{if(e.key!=='Enter')return;const t=ri.value.trim();if(!t)return;sptmr();if(t===ct){{await stp();await ul()}}else{{await stp();await ul();setTimeout(()=>sr(t),500)}}}});
-function stmr(){{sptmr();ti=setInterval(()=>{{const s=Math.floor((Date.now()-t0)/1000);document.getElementById('rm').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}},200)}}
-function sptmr(){{if(ti){{clearInterval(ti);ti=null}}}}
+var st='r',ti=null,t0=0,n=0,mr=null,ch=[],sm=null,ct='';
+var mi=document.getElementById('mi'),ri=document.getElementById('ri');
+var X={r:document.getElementById('xr'),c:document.getElementById('xc'),u:document.getElementById('xu'),d:document.getElementById('xd')};
+function go(s){st=s;document.body.className=s==='c'?'sc':s==='d'?'sd':s==='u'?'su':'sr';
+for(var k in X)X[k].classList.toggle('on',k===s);
+if(s==='r'){mi.value='';setTimeout(function(){mi.focus()},100)}
+if(s==='c'){ri.value='';setTimeout(function(){ri.focus()},100)}}
+document.addEventListener('click',function(){if(st==='r')mi.focus();if(st==='c')ri.focus()});
+setInterval(function(){if(st==='r'&&document.activeElement!==mi)mi.focus();if(st==='c'&&document.activeElement!==ri)ri.focus()},400);
+function initCam(){navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720}},audio:false}).then(function(s){sm=s;document.getElementById('pv').srcObject=s;document.getElementById('cm').className='cam ok'}).catch(function(){document.getElementById('cm').className='cam err'})}
+initCam();
+function startRec(t){if(!sm){alert('No camera');return}ct=t;ch=[];mr=new MediaRecorder(sm,{mimeType:'video/webm;codecs=vp8'});mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};mr.start(1000);t0=Date.now();startTmr();document.getElementById('rk').textContent=t;go('c')}
+function stopRec(){return new Promise(function(res){mr.onstop=res;mr.stop()})}
+function capPhoto(){var v=document.getElementById('pv'),c=document.createElement('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);return new Promise(function(res){c.toBlob(res,'image/jpeg',.9)})}
+function upload(){go('u');var dur=Math.round((Date.now()-t0)/1000);var vb=new Blob(ch,{type:'video/webm'});
+capPhoto().then(function(pb){var fd=new FormData();fd.append('tracking',ct);fd.append('station','__SID__');fd.append('duration',dur);fd.append('video',vb,ct+'.webm');if(pb)fd.append('photo',pb,ct+'.jpg');
+return fetch('/api/upload',{method:'POST',body:fd})}).then(function(r){return r.json()}).then(function(d){
+if(d.ok){n++;document.getElementById('cn').textContent=n;document.getElementById('dkk').textContent=ct;document.getElementById('ddd').textContent='Duration: '+dur+'s';go('d');setTimeout(function(){go('r')},3000)}
+else{alert('Failed');go('r')}}).catch(function(){alert('Upload failed');go('r')})}
+mi.addEventListener('keydown',function(e){if(e.key==='Enter'){var t=mi.value.trim();if(t)startRec(t)}});
+ri.addEventListener('keydown',function(e){if(e.key!=='Enter')return;var t=ri.value.trim();if(!t)return;stopTmr();
+if(t===ct){stopRec().then(upload)}else{stopRec().then(upload).then(function(){setTimeout(function(){startRec(t)},500)})}});
+function startTmr(){stopTmr();ti=setInterval(function(){var s=Math.floor((Date.now()-t0)/1000);document.getElementById('rmm').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')},200)}
+function stopTmr(){if(ti){clearInterval(ti);ti=null}}
 </script></body></html>'''
 
-DASH_HTML=f'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">{_F}
-<title>Search Recordings</title><style>*{{margin:0;padding:0;box-sizing:border-box}}{_V}
-body{{font-family:'Inter',sans-serif;background:var(--bg);color:var(--t);min-height:100vh}}
-.hd{{background:var(--c);border-bottom:1px solid var(--bd);padding:12px 20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}}
-.lo{{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:700}}
-.li{{width:34px;height:34px;background:linear-gradient(135deg,var(--bl),#6366f1);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:17px}}
-.hr{{display:flex;gap:12px;align-items:center}}.sts{{display:flex;gap:12px;font-size:11px;color:var(--t2)}}.sts b{{color:var(--bl2)}}
-.nl{{color:var(--pu);text-decoration:none;font-size:11px;padding:4px 9px;border:1px solid var(--bd);border-radius:6px}}
-.ol{{color:var(--t2);text-decoration:none;font-size:11px}}
-.sr{{padding:22px 20px 16px;max-width:660px;margin:0 auto}}.sb{{display:flex;gap:8px}}
-.sb input{{flex:1;background:var(--c);border:2px solid var(--bd);border-radius:var(--r);padding:12px 14px;font-size:16px;color:var(--t);font-family:inherit;outline:none}}
-.sb input:focus{{border-color:var(--bl)}}.sb input::placeholder{{color:#3a4252}}
-.sb button{{background:linear-gradient(135deg,var(--bl),#6366f1);border:none;border-radius:var(--r);padding:12px 20px;font-size:14px;font-weight:700;color:white;cursor:pointer;font-family:inherit}}
-.cn{{padding:0 20px 36px;max-width:860px;margin:0 auto}}
-.rc{{background:var(--c);border:1px solid var(--bd);border-radius:var(--r);margin-bottom:12px;overflow:hidden;animation:fu .3s ease}}
-@keyframes fu{{from{{opacity:0;transform:translateY(8px)}}to{{opacity:1;transform:translateY(0)}}}}
-.rh{{padding:12px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--bd)}}
-.rl{{font-size:16px;font-weight:700;letter-spacing:.3px}}.rm{{font-size:11px;color:var(--t2);display:flex;gap:8px;align-items:center}}
-.rb{{padding:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px}}@media(max-width:600px){{.rb{{grid-template-columns:1fr}}}}
-.mb{{border-radius:7px;overflow:hidden;background:var(--bg);border:1px solid var(--bd)}}.mb video,.mb img{{width:100%;display:block}}
-.ml{{padding:6px 10px;font-size:10px;color:var(--t2);border-top:1px solid var(--bd)}}
-.stt{{font-size:13px;font-weight:600;color:var(--t2);margin:18px 0 8px}}
-.tbl{{width:100%;background:var(--c);border:1px solid var(--bd);border-radius:var(--r);overflow:hidden}}
-.tbl table{{width:100%;border-collapse:collapse}}.tbl th{{background:var(--c2);padding:8px 12px;font-size:10px;font-weight:600;color:var(--t2);text-align:left;border-bottom:1px solid var(--bd);text-transform:uppercase;letter-spacing:.3px}}
-.tbl td{{padding:8px 12px;font-size:12px;border-bottom:1px solid var(--bd)}}.tbl tr:last-child td{{border-bottom:none}}.tbl tr:hover td{{background:var(--c2)}}
-.cr{{cursor:pointer}}.tc{{font-weight:600;color:var(--bl2)}}.sn{{font-weight:600;color:var(--or)}}.wn{{color:var(--t2)}}
-.bg{{display:inline-block;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:600}}
-.bg-g{{background:rgba(16,185,129,.1);color:var(--gn)}}.bg-s{{background:rgba(245,158,11,.1);color:var(--or)}}
-.em{{text-align:center;padding:44px 16px;color:var(--t2)}}.em .ei{{font-size:32px;margin-bottom:8px}}.em .et{{font-size:14px;font-weight:600;color:var(--t)}}
-.ld{{text-align:center;padding:26px;color:var(--t2)}}
-.spn{{width:24px;height:24px;border:3px solid var(--bd);border-top-color:var(--bl);border-radius:50%;animation:sp .8s linear infinite;margin:0 auto 6px}}
-@keyframes sp{{to{{transform:rotate(360deg)}}}}
+# ── DASHBOARD ─────────────────────────────────────────────
+DASH_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Search Recordings</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.hdr{background:rgba(21,25,33,.9);backdrop-filter:blur(10px);border-bottom:1px solid rgba(255,255,255,.06);padding:16px 28px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;position:sticky;top:0;z-index:10}
+.logo{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:800}
+.logo-i{width:36px;height:36px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
+.hdr-r{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.stat-pills{display:flex;gap:8px}
+.pill{display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:20px;padding:6px 14px;font-size:12px;color:#6b7a90}
+.pill b{color:#a5b4fc}
+.nav-btn{color:#a5b4fc;text-decoration:none;font-size:13px;font-weight:600;padding:8px 16px;border:1.5px solid rgba(79,70,229,.3);border-radius:10px;background:rgba(79,70,229,.08);transition:all .2s;display:__ADMIN_VIS__}
+.nav-btn:hover{background:rgba(79,70,229,.15);border-color:rgba(79,70,229,.5)}
+.out-link{color:#6b7a90;text-decoration:none;font-size:13px;padding:8px 14px;border:1px solid rgba(255,255,255,.06);border-radius:10px;transition:all .2s}
+.out-link:hover{color:#e4e8f1;border-color:rgba(255,255,255,.12)}
+
+.search-area{padding:32px 28px 20px;max-width:720px;margin:0 auto}
+.sb{display:flex;gap:10px}
+.sb input{flex:1;background:rgba(21,25,33,.8);border:2px solid rgba(255,255,255,.06);border-radius:14px;padding:16px 20px;font-size:18px;color:#e4e8f1;font-family:inherit;outline:none;transition:all .2s}
+.sb input:focus{border-color:#4f46e5;box-shadow:0 0 0 3px rgba(79,70,229,.1)}
+.sb input::placeholder{color:#3a4252}
+.sb button{background:linear-gradient(135deg,#4f46e5,#7c3aed);border:none;border-radius:14px;padding:16px 28px;font-size:16px;font-weight:700;color:white;cursor:pointer;font-family:inherit;box-shadow:0 4px 16px rgba(79,70,229,.25);transition:all .15s}
+.sb button:hover{transform:translateY(-1px)}
+
+.content{padding:0 28px 40px;max-width:920px;margin:0 auto}
+.rc{background:rgba(21,25,33,.8);border:1px solid rgba(255,255,255,.06);border-radius:16px;margin-bottom:16px;overflow:hidden;animation:fu .3s ease}
+@keyframes fu{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.rc-h{padding:16px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,.04)}
+.rc-t{font-size:18px;font-weight:800;letter-spacing:.3px}
+.rc-m{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.rc-m span{font-size:12px;color:#6b7a90;background:rgba(255,255,255,.04);padding:3px 10px;border-radius:8px}
+.tag{padding:3px 10px;border-radius:8px;font-size:11px;font-weight:700}
+.tag-s{background:rgba(245,158,11,.1);color:#f59e0b}
+.tag-g{background:rgba(16,185,129,.1);color:#10b981}
+.rc-b{padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:600px){.rc-b{grid-template-columns:1fr}}
+.mb{border-radius:10px;overflow:hidden;background:#0c0f16;border:1px solid rgba(255,255,255,.04)}
+.mb video,.mb img{width:100%;display:block}
+.ml{padding:8px 14px;font-size:12px;color:#6b7a90;border-top:1px solid rgba(255,255,255,.04)}
+
+.sec-t{font-size:15px;font-weight:700;color:#6b7a90;margin:24px 0 12px;display:flex;align-items:center;gap:8px}
+.tbl{width:100%;background:rgba(21,25,33,.8);border:1px solid rgba(255,255,255,.06);border-radius:14px;overflow:hidden}
+.tbl table{width:100%;border-collapse:collapse}
+.tbl th{background:rgba(255,255,255,.02);padding:12px 16px;font-size:11px;font-weight:700;color:#6b7a90;text-align:left;border-bottom:1px solid rgba(255,255,255,.04);text-transform:uppercase;letter-spacing:.4px}
+.tbl td{padding:12px 16px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.03)}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr:hover td{background:rgba(79,70,229,.04)}
+.tbl tr{cursor:pointer;transition:background .15s}
+.tc{font-weight:700;color:#a5b4fc}
+.sn{font-weight:600;color:#f59e0b}
+.wn{color:#6b7a90}
+.empty{text-align:center;padding:52px 20px;color:#6b7a90}
+.empty .ei{font-size:40px;margin-bottom:10px}
+.empty .et{font-size:16px;font-weight:600;color:#e4e8f1}
+.ld{text-align:center;padding:32px;color:#6b7a90}
+.spn{width:28px;height:28px;border:3px solid rgba(255,255,255,.06);border-top-color:#4f46e5;border-radius:50%;animation:sp .8s linear infinite;margin:0 auto 8px}
+@keyframes sp{to{transform:rotate(360deg)}}
 </style></head><body>
-<div class="hd"><div class="lo"><div class="li">🔍</div>Search Recordings</div><div class="hr"><div class="sts">🎥 <b id="sv">-</b> &nbsp;📸 <b id="sph">-</b> &nbsp;💾 <b id="ss">-</b></div><a href="/users" class="nl" style="display:{{{{ADMIN_VIS}}}}">👥 Users</a><a href="/logout" class="ol">Logout ({{{{NAME}}}})</a></div></div>
-<div class="sr"><div class="sb"><input type="text" id="si" placeholder="Enter tracking number..." autofocus><button onclick="ds()">Search</button></div></div>
-<div class="cn"><div id="res"></div><div class="stt">🕐 Recent Recordings</div><div id="rl"><div class="ld"><div class="spn"></div>Loading...</div></div></div>
+<div class="hdr">
+<div class="logo"><div class="logo-i">🔍</div>Search Recordings</div>
+<div class="hdr-r">
+<div class="stat-pills"><div class="pill">🎥 <b id="sv">-</b></div><div class="pill">📸 <b id="sph">-</b></div><div class="pill">💾 <b id="ss">-</b></div></div>
+<a href="/users" class="nav-btn">👥 Manage Users</a>
+<a href="/logout" class="out-link">Logout (__NAME__)</a>
+</div></div>
+<div class="search-area"><div class="sb"><input type="text" id="si" placeholder="Enter tracking number..." autofocus><button id="searchBtn">Search</button></div></div>
+<div class="content"><div id="res"></div><div class="sec-t">🕐 Recent Recordings</div><div id="rl"><div class="ld"><div class="spn"></div>Loading...</div></div></div>
 <script>
-const si=document.getElementById('si');si.onkeydown=e=>{{if(e.key==='Enter')ds()}};
-async function ds(){{const q=si.value.trim();if(!q)return;document.getElementById('res').innerHTML='<div class="ld"><div class="spn"></div>Searching...</div>';
-const r=await fetch('/api/search/'+encodeURIComponent(q));const d=await r.json();
-if(!d.videos.length&&!d.photos.length){{document.getElementById('res').innerHTML='<div class="em"><div class="ei">🔍</div><div class="et">No results for '+d.tracking+'</div></div>';return}}
-let h='';for(let i=0;i<d.videos.length;i++){{const v=d.videos[i],p=d.photos[i]||null,l=d.log[i]||null;
-h+='<div class="rc"><div class="rh"><span class="rl">'+d.tracking+'</span><div class="rm">'+(l?'<span>'+l.date+'</span><span>'+l.duration_seconds+'s</span>':'')+(l&&l.worker?'<span>👤 '+l.worker+'</span>':'')+'<span class="bg bg-s">'+v.station+'</span><span class="bg bg-g">✓</span></div></div><div class="rb"><div class="mb"><video controls preload="metadata"><source src="'+v.url+'" type="video/webm"></video><div class="ml">🎥 '+v.size_mb+' MB</div></div>'+(p?'<div class="mb"><img src="'+p.url+'"><div class="ml">📸 Photo</div></div>':'')+'</div></div>'}}
-document.getElementById('res').innerHTML=h}}
-async function lr(){{const r=await fetch('/api/recent');const d=await r.json();if(!d.length){{document.getElementById('rl').innerHTML='<div class="em"><div class="ei">📭</div><div class="et">No recordings</div></div>';return}}
-let rows=d.map(r=>'<tr class="cr" onclick="si.value=\''+r.tracking_number+'\';ds()"><td class="tc">'+r.tracking_number+'</td><td class="sn">'+(r.station||'-')+'</td><td class="wn">'+(r.worker||'-')+'</td><td>'+(r.date||'-')+'</td><td>'+(r.time||'-')+'</td><td>'+(r.duration_seconds||'-')+'s</td></tr>').join('');
-document.getElementById('rl').innerHTML='<div class="tbl"><table><thead><tr><th>Tracking</th><th>Station</th><th>Worker</th><th>Date</th><th>Time</th><th>Duration</th></tr></thead><tbody>'+rows+'</tbody></table></div>'}}
-async function ls(){{const r=await fetch('/api/stats');const d=await r.json();document.getElementById('sv').textContent=d.total_videos;document.getElementById('sph').textContent=d.total_photos;document.getElementById('ss').textContent=d.total_size_mb+' MB'}}
-lr();ls();
+var si=document.getElementById('si');
+si.addEventListener('keydown',function(e){if(e.key==='Enter')doSearch()});
+document.getElementById('searchBtn').addEventListener('click',doSearch);
+
+function doSearch(){
+    var q=si.value.trim();if(!q)return;
+    document.getElementById('res').innerHTML='<div class="ld"><div class="spn"></div>Searching...</div>';
+    fetch('/api/search/'+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
+        if(!d.videos.length&&!d.photos.length){document.getElementById('res').innerHTML='<div class="empty"><div class="ei">🔍</div><div class="et">No results for '+d.tracking+'</div></div>';return}
+        var h='';
+        for(var i=0;i<d.videos.length;i++){
+            var v=d.videos[i],p=d.photos[i]||null,l=d.log[i]||null;
+            h+='<div class="rc"><div class="rc-h"><span class="rc-t">'+d.tracking+'</span><div class="rc-m">';
+            if(l){h+='<span>'+l.date+'</span><span>'+l.duration_seconds+'s</span>'}
+            if(l&&l.worker)h+='<span>👤 '+l.worker+'</span>';
+            h+='<span class="tag tag-s">'+v.station+'</span><span class="tag tag-g">✓ Found</span>';
+            h+='</div></div><div class="rc-b"><div class="mb"><video controls preload="metadata"><source src="'+v.url+'" type="video/webm"></video><div class="ml">🎥 Video · '+v.size_mb+' MB</div></div>';
+            if(p)h+='<div class="mb"><img src="'+p.url+'"><div class="ml">📸 Photo</div></div>';
+            h+='</div></div>';
+        }
+        document.getElementById('res').innerHTML=h;
+    });
+}
+
+function loadRecent(){
+    fetch('/api/recent').then(function(r){return r.json()}).then(function(d){
+        if(!d.length){document.getElementById('rl').innerHTML='<div class="empty"><div class="ei">📭</div><div class="et">No recordings yet</div></div>';return}
+        var rows='';
+        d.forEach(function(r){
+            rows+='<tr data-t="'+r.tracking_number+'"><td class="tc">'+r.tracking_number+'</td><td class="sn">'+(r.station||'-')+'</td><td class="wn">'+(r.worker||'-')+'</td><td>'+(r.date||'-')+'</td><td>'+(r.time||'-')+'</td><td>'+(r.duration_seconds||'-')+'s</td></tr>';
+        });
+        document.getElementById('rl').innerHTML='<div class="tbl"><table><thead><tr><th>Tracking</th><th>Station</th><th>Worker</th><th>Date</th><th>Time</th><th>Duration</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+        document.querySelectorAll('tr[data-t]').forEach(function(row){
+            row.addEventListener('click',function(){si.value=this.dataset.t;doSearch()});
+        });
+    });
+}
+
+function loadStats(){
+    fetch('/api/stats').then(function(r){return r.json()}).then(function(d){
+        document.getElementById('sv').textContent=d.total_videos;
+        document.getElementById('sph').textContent=d.total_photos;
+        document.getElementById('ss').textContent=d.total_size_mb+' MB';
+    });
+}
+loadRecent();loadStats();
 </script></body></html>'''
 
-USERS_HTML=f'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">{_F}
-<title>Users</title><style>*{{margin:0;padding:0;box-sizing:border-box}}{_V}
-body{{font-family:'Inter',sans-serif;background:var(--bg);color:var(--t);padding:20px;max-width:680px;margin:0 auto}}
-.bk{{color:var(--bl2);text-decoration:none;font-size:12px;display:inline-block;margin-bottom:14px}}
-h1{{font-size:20px;margin-bottom:18px}}
-.cd{{background:var(--c);border:1px solid var(--bd);border-radius:var(--r);padding:18px;margin-bottom:16px}}
-.cd h2{{font-size:12px;color:var(--t2);margin-bottom:12px;text-transform:uppercase;letter-spacing:.3px}}
-table{{width:100%;border-collapse:collapse}}th{{text-align:left;padding:7px 8px;font-size:10px;color:var(--t2);border-bottom:1px solid var(--bd);text-transform:uppercase}}
-td{{padding:7px 8px;font-size:12px;border-bottom:1px solid var(--bd)}}tr:last-child td{{border-bottom:none}}
-.rb{{padding:1px 6px;border-radius:4px;font-size:9px;font-weight:600}}.ra{{background:rgba(99,102,241,.1);color:#818cf8}}.rw{{background:rgba(245,158,11,.1);color:var(--or)}}.rc{{background:rgba(16,185,129,.1);color:var(--gn)}}
-.db{{background:none;border:1px solid var(--rd);color:var(--rd);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;font-family:inherit}}
-.cb{{background:none;border:1px solid var(--bl);color:var(--bl);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;font-family:inherit;margin-right:4px}}
-.fr{{display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap}}
-.fr input,.fr select{{background:var(--bg);border:1px solid var(--bd);border-radius:7px;padding:8px 10px;color:var(--t);font-size:12px;font-family:inherit;outline:none;flex:1;min-width:90px}}
-.ab{{background:var(--gn);border:none;border-radius:7px;padding:8px 14px;color:white;font-weight:600;cursor:pointer;font-family:inherit;font-size:12px}}
-.mg{{font-size:11px;margin-top:5px;min-height:14px}}.mg.ok{{color:var(--gn)}}.mg.er{{color:var(--rd)}}
+# ── USERS MANAGEMENT ──────────────────────────────────────
+USERS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Manage Users</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh;padding:28px;max-width:760px;margin:0 auto}
+.back{color:#a5b4fc;text-decoration:none;font-size:14px;font-weight:600;display:inline-flex;align-items:center;gap:6px;margin-bottom:20px;padding:8px 14px;border-radius:10px;background:rgba(79,70,229,.08);border:1px solid rgba(79,70,229,.2);transition:all .2s}
+.back:hover{background:rgba(79,70,229,.15)}
+h1{font-size:26px;font-weight:800;margin-bottom:24px}
+.card{background:rgba(21,25,33,.8);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:24px;margin-bottom:20px}
+.card h2{font-size:14px;font-weight:700;color:#6b7a90;margin-bottom:16px;text-transform:uppercase;letter-spacing:.5px}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:10px 12px;font-size:11px;font-weight:700;color:#6b7a90;border-bottom:1px solid rgba(255,255,255,.04);text-transform:uppercase;letter-spacing:.3px}
+td{padding:12px;font-size:14px;border-bottom:1px solid rgba(255,255,255,.03)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(79,70,229,.03)}
+.role{padding:4px 10px;border-radius:8px;font-size:11px;font-weight:700;display:inline-block}
+.r-admin{background:rgba(99,102,241,.1);color:#818cf8}
+.r-worker{background:rgba(245,158,11,.1);color:#f59e0b}
+.r-cs{background:rgba(16,185,129,.1);color:#10b981}
+.actions{display:flex;gap:6px;flex-wrap:wrap}
+.act-btn{border:none;padding:6px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .15s}
+.act-pw{background:rgba(79,70,229,.1);color:#a5b4fc;border:1px solid rgba(79,70,229,.2)}
+.act-pw:hover{background:rgba(79,70,229,.2)}
+.act-del{background:rgba(244,63,94,.08);color:#f43f5e;border:1px solid rgba(244,63,94,.2)}
+.act-del:hover{background:rgba(244,63,94,.15)}
+.add-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:500px){.add-form{grid-template-columns:1fr}}
+.add-form input,.add-form select{background:rgba(11,14,20,.8);border:1.5px solid rgba(255,255,255,.06);border-radius:10px;padding:12px 14px;color:#e4e8f1;font-size:14px;font-family:inherit;outline:none;transition:all .2s}
+.add-form input:focus,.add-form select:focus{border-color:#4f46e5}
+.add-form input::placeholder{color:#3a4252}
+.add-form select{cursor:pointer}
+.add-btn{grid-column:1/-1;background:linear-gradient(135deg,#10b981,#059669);border:none;border-radius:10px;padding:13px;color:white;font-weight:700;cursor:pointer;font-family:inherit;font-size:14px;margin-top:4px;transition:all .15s}
+.add-btn:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(16,185,129,.25)}
+.msg{font-size:13px;margin-top:10px;grid-column:1/-1;min-height:16px}
+.msg.ok{color:#10b981}.msg.err{color:#f43f5e}
 </style></head><body>
-<a href="/dashboard" class="bk">← Back</a><h1>👥 Users</h1>
-<div class="cd"><h2>Current Users</h2><table id="ut"><tbody></tbody></table></div>
-<div class="cd"><h2>Add User</h2><div class="fr"><input id="nu" placeholder="Username"><input type="password" id="np" placeholder="Password"><input id="nn" placeholder="Display Name"><select id="nr"><option value="worker">Worker</option><option value="cs">CS</option><option value="admin">Admin</option></select><button class="ab" onclick="au()">Add</button></div><div class="mg" id="am"></div></div>
+<a href="/dashboard" class="back">← Back to Dashboard</a>
+<h1>👥 User Management</h1>
+<div class="card"><h2>Current Users</h2><table><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Actions</th></tr></thead><tbody id="ut"></tbody></table></div>
+<div class="card"><h2>Add New User</h2>
+<div class="add-form">
+<input type="text" id="nu" placeholder="Username">
+<input type="password" id="np" placeholder="Password">
+<input type="text" id="nn" placeholder="Display Name">
+<select id="nr"><option value="worker">Worker</option><option value="cs">Customer Service</option><option value="admin">Admin</option></select>
+<button class="add-btn" id="addBtn">+ Add User</button>
+<div class="msg" id="am"></div>
+</div></div>
 <script>
-async function ld(){{const r=await fetch('/api/users');const d=await r.json();let rows='';
-for(const[k,v]of Object.entries(d)){{const rc=v.role==='admin'?'ra':v.role==='cs'?'rc':'rw';
-rows+='<tr><td><b>'+k+'</b></td><td>'+v.name+'</td><td><span class="rb '+rc+'">'+v.role+'</span></td><td>'+(k!=='admin'?'<button class="cb" onclick="cp(\''+k+'\')">PW</button><button class="db" onclick="dl(\''+k+'\')">Del</button>':'')+'</td></tr>'}}
-document.querySelector('#ut tbody').innerHTML=rows}}
-async function au(){{const u=document.getElementById('nu').value.trim(),p=document.getElementById('np').value,n=document.getElementById('nn').value.trim()||u,rl=document.getElementById('nr').value,m=document.getElementById('am');
-if(!u||!p){{m.className='mg er';m.textContent='Required';return}}
-const r=await fetch('/api/users/add',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{username:u,password:p,name:n,role:rl}})}});
-const d=await r.json();if(d.ok){{m.className='mg ok';m.textContent='Added!';ld();document.getElementById('nu').value='';document.getElementById('np').value='';document.getElementById('nn').value=''}}else{{m.className='mg er';m.textContent=d.error}}}}
-async function dl(u){{if(!confirm('Delete "'+u+'"?'))return;await fetch('/api/users/delete',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{username:u}})}});ld()}}
-async function cp(u){{const p=prompt('New password for "'+u+'":');if(!p)return;const r=await fetch('/api/users/pw',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{username:u,password:p}})}});const d=await r.json();alert(d.ok?'Changed!':d.error)}}
-ld();
+function loadUsers(){
+    fetch('/api/users').then(function(r){return r.json()}).then(function(d){
+        var rows='';
+        Object.keys(d).forEach(function(k){
+            var v=d[k];
+            var rc=v.role==='admin'?'r-admin':v.role==='cs'?'r-cs':'r-worker';
+            rows+='<tr><td><b>'+k+'</b></td><td>'+v.name+'</td><td><span class="role '+rc+'">'+v.role+'</span></td><td>';
+            if(k!=='admin'){
+                rows+='<div class="actions"><button class="act-btn act-pw" data-u="'+k+'" data-a="pw">Change Password</button><button class="act-btn act-del" data-u="'+k+'" data-a="del">Delete</button></div>';
+            }
+            rows+='</td></tr>';
+        });
+        document.getElementById('ut').innerHTML=rows;
+        document.querySelectorAll('[data-a="pw"]').forEach(function(b){
+            b.addEventListener('click',function(){changePw(this.dataset.u)});
+        });
+        document.querySelectorAll('[data-a="del"]').forEach(function(b){
+            b.addEventListener('click',function(){delUser(this.dataset.u)});
+        });
+    });
+}
+document.getElementById('addBtn').addEventListener('click',function(){
+    var u=document.getElementById('nu').value.trim();
+    var p=document.getElementById('np').value;
+    var n=document.getElementById('nn').value.trim()||u;
+    var rl=document.getElementById('nr').value;
+    var m=document.getElementById('am');
+    if(!u||!p){m.className='msg err';m.textContent='Username and password are required';return}
+    fetch('/api/users/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p,name:n,role:rl})})
+    .then(function(r){return r.json()}).then(function(d){
+        if(d.ok){m.className='msg ok';m.textContent='User added successfully!';loadUsers();document.getElementById('nu').value='';document.getElementById('np').value='';document.getElementById('nn').value=''}
+        else{m.className='msg err';m.textContent=d.error||'Failed to add user'}
+    });
+});
+function delUser(u){
+    if(!confirm('Are you sure you want to delete "'+u+'"?'))return;
+    fetch('/api/users/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u})})
+    .then(function(){loadUsers()});
+}
+function changePw(u){
+    var p=prompt('Enter new password for "'+u+'":');
+    if(!p)return;
+    fetch('/api/users/pw',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})})
+    .then(function(r){return r.json()}).then(function(d){alert(d.ok?'Password changed!':'Failed')});
+}
+loadUsers();
 </script></body></html>'''
 
 if __name__=="__main__":
     print("="*50)
-    print("📦 5 Second Beauty — Packing Station")
+    print("5 Second Beauty - Packing Station")
     print("="*50)
-    print(f"\n📂 Data: {DATA_DIR}")
-    print(f"🌐 http://localhost:{PORT}")
+    print("Data:",DATA_DIR)
+    print("URL: http://localhost:"+str(PORT))
     try:
         import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.connect(("8.8.8.8",80))
-        print(f"📱 Network: http://{s.getsockname()[0]}:{PORT}");s.close()
+        print("Net: http://"+s.getsockname()[0]+":"+str(PORT));s.close()
     except:pass
-    print(f"\n👤 admin/admin123  📞 cs1/cs123  👷 worker1-6/pack1-6")
+    print("Admin: admin/admin123  CS: cs1/cs123  Workers: worker1-6/pack1-6")
     print("="*50)
     app.run(host="0.0.0.0",port=PORT,debug=False,threaded=True)
