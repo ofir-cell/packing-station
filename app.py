@@ -117,11 +117,9 @@ def _legacy_sha256(pw):
 def _verify(pw,stored):
     """Verify password against stored hash. Supports both bcrypt and legacy sha256."""
     if not stored: return False
-    # bcrypt hashes start with $2a$, $2b$, $2y$
     if stored.startswith("$2"):
         try: return bcrypt.checkpw(pw.encode(),stored.encode())
         except: return False
-    # Legacy SHA256 (64 hex chars) - constant-time compare
     if len(stored)==64:
         return secrets.compare_digest(stored,_legacy_sha256(pw))
     return False
@@ -129,6 +127,13 @@ def _verify(pw,stored):
 def _gen_pw():
     """Generate a strong random password."""
     return secrets.token_urlsafe(12)
+
+def _gen_badge_token():
+    """Generate a barcode-friendly badge token: 16 alphanumeric chars in 4-char groups.
+    Excludes ambiguous chars (0/O, 1/I/l) for visual scanning fallback."""
+    alphabet="23456789ABCDEFGHJKLMNPQRSTUVWXYZ"  # 32 chars
+    raw="".join(secrets.choice(alphabet) for _ in range(16))
+    return raw[:4]+"-"+raw[4:8]+"-"+raw[8:12]+"-"+raw[12:16]
 
 def _init(path,default):
     if not os.path.exists(path):
@@ -157,6 +162,9 @@ if not os.path.exists(USERS_FILE):
         pw=_gen_pw()
         _generated[u]=pw
         _data[u]={"password":_h(pw),"role":info["role"],"name":info["name"]}
+        # Workers get a badge token; admin/cs use password login
+        if info["role"]=="worker":
+            _data[u]["badge_token"]=_gen_badge_token()
     with open(USERS_FILE,"w") as f: json.dump(_data,f,indent=2)
     print("="*70,flush=True)
     print("INITIAL PASSWORDS GENERATED - SAVE THESE NOW (shown only once):",flush=True)
@@ -262,11 +270,24 @@ def req_role(*roles):
 
 @app.route("/")
 def index():
-    if "user" not in session: return LOGIN_HTML
+    if "user" not in session:
+        # If this machine has a station configured, send to badge login by default
+        if request.cookies.get("machine_station"):
+            return redirect("/badge-login")
+        return LOGIN_HTML
     if session.get("role")=="worker":
-        if "station" not in session:
-            return STATION_HTML.replace("__NAME__",session["name"])
-        return WORKER_HTML.replace("__NAME__",session["name"]).replace("__STATION__",session.get("station_name","")).replace("__SID__",session.get("station","S0"))
+        # If station already chosen for this session, go to worker page
+        if "station" in session:
+            return WORKER_HTML.replace("__NAME__",session["name"]).replace("__STATION__",session.get("station_name","")).replace("__SID__",session.get("station","S0"))
+        # Auto-assign station from machine cookie if set
+        machine_sta=request.cookies.get("machine_station","")
+        if machine_sta:
+            stations=ldj(STATIONS_FILE)
+            if machine_sta in stations:
+                session["station"]=machine_sta;session["station_name"]=stations[machine_sta]
+                return WORKER_HTML.replace("__NAME__",session["name"]).replace("__STATION__",stations[machine_sta]).replace("__SID__",machine_sta)
+        # Fallback: manual station picker
+        return STATION_HTML.replace("__NAME__",session["name"])
     return redirect("/dashboard")
 
 @app.route("/dashboard")
@@ -461,7 +482,7 @@ def analytics_page():
 @req_role("admin")
 def api_users():
     u=ldj(USERS_FILE)
-    return jsonify({k:{"name":v["name"],"role":v["role"]} for k,v in u.items()})
+    return jsonify({k:{"name":v["name"],"role":v["role"],"has_badge":bool(v.get("badge_token"))} for k,v in u.items()})
 
 @app.route("/api/users/add",methods=["POST"])
 @req_role("admin")
@@ -469,10 +490,18 @@ def api_add():
     d=request.get_json();u=d.get("username","").strip().lower();p=d.get("password","")
     n=d.get("name",u);role=d.get("role","worker")
     if not u or not p: return jsonify({"ok":False,"error":"Required"})
+    if not re.match(r'^[a-z0-9_\-]{2,32}$',u):
+        return jsonify({"ok":False,"error":"Username: lowercase letters, digits, _ -, 2-32 chars"})
+    if role not in ("admin","cs","worker"):
+        return jsonify({"ok":False,"error":"Invalid role"})
     users=ldj(USERS_FILE)
     if u in users: return jsonify({"ok":False,"error":"Already exists"})
-    users[u]={"password":_h(p),"role":role,"name":n};svj(USERS_FILE,users)
-    return jsonify({"ok":True})
+    users[u]={"password":_h(p),"role":role,"name":n}
+    # Workers automatically get a badge token for scan-to-login
+    if role=="worker":
+        users[u]["badge_token"]=_gen_badge_token()
+    svj(USERS_FILE,users)
+    return jsonify({"ok":True,"badge_token":users[u].get("badge_token")})
 
 @app.route("/api/users/delete",methods=["POST"])
 @req_role("admin")
@@ -492,6 +521,189 @@ def api_pw():
     if u not in users: return jsonify({"ok":False})
     users[u]["password"]=_h(p);svj(USERS_FILE,users)
     return jsonify({"ok":True})
+
+@app.route("/api/users/badge",methods=["POST"])
+@req_role("admin")
+def api_badge_regen():
+    """Regenerate (or generate first time) a badge token for a worker.
+    Use cases: lost badge, leaked token, switching from password to badge auth."""
+    d=request.get_json();u=d.get("username","")
+    users=ldj(USERS_FILE)
+    if u not in users: return jsonify({"ok":False,"error":"User not found"})
+    if users[u]["role"]!="worker":
+        return jsonify({"ok":False,"error":"Badges are for workers only"})
+    users[u]["badge_token"]=_gen_badge_token()
+    svj(USERS_FILE,users)
+    return jsonify({"ok":True,"badge_token":users[u]["badge_token"]})
+
+@app.route("/api/users/badge/revoke",methods=["POST"])
+@req_role("admin")
+def api_badge_revoke():
+    """Remove a worker's badge token (e.g. employee left). They'll need a password to log in."""
+    d=request.get_json();u=d.get("username","")
+    users=ldj(USERS_FILE)
+    if u not in users: return jsonify({"ok":False,"error":"User not found"})
+    if "badge_token" in users[u]: del users[u]["badge_token"]
+    svj(USERS_FILE,users)
+    return jsonify({"ok":True})
+
+@app.route("/api/badge-login",methods=["POST"])
+def api_badge_login():
+    """Log in a worker by scanning their badge. No auth required (the token IS the auth)."""
+    d=request.get_json() or {}
+    token=(d.get("token") or "").strip().upper()
+    if not token or not re.match(r'^[A-Z0-9\-]{8,32}$',token):
+        return jsonify({"ok":False,"error":"Invalid badge"})
+    users=ldj(USERS_FILE)
+    matched_u=None
+    for u,info in users.items():
+        stored=info.get("badge_token","")
+        if stored and secrets.compare_digest(stored.upper(),token):
+            matched_u=u;break
+    if not matched_u:
+        # Brief delay to slow down brute force attempts
+        time.sleep(0.5)
+        return jsonify({"ok":False,"error":"Badge not recognized"})
+    user=users[matched_u]
+    session["user"]=matched_u;session["role"]=user["role"];session["name"]=user["name"]
+    return jsonify({"ok":True,"role":user["role"],"name":user["name"]})
+
+@app.route("/badge-login")
+def badge_login_page():
+    return BADGE_LOGIN_HTML
+
+@app.route("/users/badges")
+@req_role("admin")
+def users_badges_page():
+    return USERS_BADGES_HTML.replace("__NAME__",session.get("name",""))
+
+@app.route("/api/users/badge/pdf/<u>")
+@req_role("admin")
+def api_badge_pdf(u):
+    """Generate a printable badge PDF for one worker (single label, ID-card sized, ~3.5x2 inches)."""
+    users=ldj(USERS_FILE)
+    if u not in users: return ("",404)
+    info=users[u]
+    token=info.get("badge_token")
+    if not token: return jsonify({"ok":False,"error":"User has no badge token"}),400
+    try:
+        from io import BytesIO
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.units import inch
+        import barcode
+        from barcode.writer import ImageWriter
+        # Generate barcode image (Code 128, scanner-friendly)
+        bio=BytesIO()
+        bc=barcode.Code128(token,writer=ImageWriter())
+        bc.write(bio,options={"module_height":12.0,"module_width":0.4,"font_size":8,"text_distance":3.0,"quiet_zone":3})
+        bio.seek(0)
+        from reportlab.lib.utils import ImageReader
+        img=ImageReader(bio)
+        # Build PDF: ID-card sized (3.5x2 inches) on Letter page, centered
+        out=BytesIO()
+        c=canvas.Canvas(out,pagesize=letter)
+        page_w,page_h=letter
+        card_w,card_h=3.5*inch,2.0*inch
+        x=(page_w-card_w)/2;y=(page_h-card_h)/2
+        # Card border
+        c.setStrokeColorRGB(0.2,0.2,0.2);c.setLineWidth(1)
+        c.rect(x,y,card_w,card_h)
+        # Header (top stripe)
+        c.setFillColorRGB(0.31,0.27,0.90);c.rect(x,y+card_h-0.4*inch,card_w,0.4*inch,fill=1,stroke=0)
+        c.setFillColorRGB(1,1,1);c.setFont("Helvetica-Bold",11)
+        c.drawCentredString(x+card_w/2,y+card_h-0.27*inch,"PACKING STATION")
+        # Worker name
+        c.setFillColorRGB(0,0,0);c.setFont("Helvetica-Bold",16)
+        c.drawCentredString(x+card_w/2,y+card_h-0.7*inch,info["name"])
+        c.setFont("Helvetica",9);c.setFillColorRGB(0.4,0.4,0.4)
+        c.drawCentredString(x+card_w/2,y+card_h-0.88*inch,"@"+u)
+        # Barcode image
+        c.drawImage(img,x+0.25*inch,y+0.15*inch,width=card_w-0.5*inch,height=0.85*inch,preserveAspectRatio=True,mask='auto')
+        c.showPage();c.save()
+        out.seek(0)
+        return send_file(out,mimetype="application/pdf",download_name="badge_"+u+".pdf",as_attachment=False)
+    except Exception as e:
+        print("Badge PDF error:",e,flush=True)
+        return jsonify({"ok":False,"error":"PDF generation failed: "+str(e)[:100]}),500
+
+@app.route("/api/users/badge/sheet")
+@req_role("admin")
+def api_badge_sheet():
+    """Generate a sheet of badges - all workers with badges, on Avery 5160 layout (30 per page)."""
+    try:
+        from io import BytesIO
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.units import inch
+        import barcode
+        from barcode.writer import ImageWriter
+        from reportlab.lib.utils import ImageReader
+        users=ldj(USERS_FILE)
+        workers=[(u,info) for u,info in users.items() if info.get("badge_token")]
+        if not workers:
+            return jsonify({"ok":False,"error":"No workers with badges yet"}),400
+        # Avery 5160: 30 labels per page, 3 cols x 10 rows
+        # Label size: 2.625" x 1.0", with margins
+        out=BytesIO()
+        c=canvas.Canvas(out,pagesize=letter)
+        margin_left=0.1875*inch;margin_top=0.5*inch
+        col_w=2.75*inch;row_h=1.0*inch
+        col_gap=0.125*inch
+        cols=3;rows=10
+        idx=0
+        for u,info in workers:
+            page_idx=idx//(cols*rows)
+            local=idx%(cols*rows)
+            row=local//cols;col=local%cols
+            if local==0 and idx>0: c.showPage()
+            x=margin_left+col*(col_w-col_gap+col_gap)
+            x=margin_left+col*col_w
+            y=letter[1]-margin_top-row_h-row*row_h
+            # Generate barcode for this worker
+            bio=BytesIO()
+            bc=barcode.Code128(info["badge_token"],writer=ImageWriter())
+            bc.write(bio,options={"module_height":8.0,"module_width":0.3,"font_size":6,"text_distance":2.0,"quiet_zone":2,"write_text":False})
+            bio.seek(0)
+            img=ImageReader(bio)
+            # Draw label content
+            c.setFillColorRGB(0,0,0);c.setFont("Helvetica-Bold",10)
+            c.drawString(x+0.1*inch,y+row_h-0.18*inch,info["name"])
+            c.setFont("Helvetica",7);c.setFillColorRGB(0.4,0.4,0.4)
+            c.drawString(x+0.1*inch,y+row_h-0.32*inch,"@"+u)
+            c.drawImage(img,x+0.1*inch,y+0.1*inch,width=col_w-0.2*inch,height=0.5*inch,preserveAspectRatio=True,mask='auto')
+            idx+=1
+        c.save()
+        out.seek(0)
+        return send_file(out,mimetype="application/pdf",download_name="badges_avery5160.pdf",as_attachment=False)
+    except Exception as e:
+        print("Badge sheet error:",e,flush=True)
+        return jsonify({"ok":False,"error":"PDF failed: "+str(e)[:100]}),500
+
+@app.route("/api/machine-station",methods=["GET","POST"])
+def api_machine_station():
+    """GET: read which station this machine is assigned to (from cookie).
+    POST (admin only): set the station for this machine - persists in a long-lived cookie."""
+    if request.method=="GET":
+        sta=request.cookies.get("machine_station","")
+        stations=ldj(STATIONS_FILE)
+        return jsonify({"station":sta,"station_name":stations.get(sta,""),"all_stations":stations})
+    # POST - admin only
+    if session.get("role")!="admin":
+        return jsonify({"ok":False,"error":"Admin required"}),403
+    d=request.get_json() or {}
+    sta=(d.get("station") or "").strip()
+    stations=ldj(STATIONS_FILE)
+    if sta and sta not in stations:
+        return jsonify({"ok":False,"error":"Unknown station"})
+    resp=jsonify({"ok":True,"station":sta})
+    if sta:
+        # 10-year cookie tied to this machine
+        resp.set_cookie("machine_station",sta,max_age=10*365*24*3600,httponly=False,samesite="Lax",secure=True)
+    else:
+        resp.delete_cookie("machine_station")
+    return resp
+
 
 @app.route("/api/storage")
 @req_role("admin")
@@ -1183,6 +1395,9 @@ tr:hover td{background:rgba(79,70,229,.03)}
 </style></head><body>
 <a href="/dashboard" class="back">← Back to Dashboard</a>
 <h1>👥 User Management</h1>
+<div style="text-align:center;margin-bottom:24px">
+<a href="/users/badges" style="display:inline-block;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:white;text-decoration:none;padding:12px 24px;border-radius:10px;font-weight:700;font-size:14px;box-shadow:0 4px 16px rgba(79,70,229,.3)">🎫 Manage Employee Badges</a>
+</div>
 <div class="card"><h2>Current Users</h2><table><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Actions</th></tr></thead><tbody id="ut"></tbody></table></div>
 <div class="card"><h2>Add New User</h2>
 <div class="add-form">
@@ -1711,6 +1926,263 @@ function load(){
     });
 }
 load();
+</script></body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# BADGE LOGIN + ADMIN BADGE MANAGEMENT HTML
+# ══════════════════════════════════════════════════════════
+
+BADGE_LOGIN_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Scan Your Badge</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%,#0c0f16 50%,#1e1b4b 100%);color:#e4e8f1;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.box{max-width:500px;width:100%;text-align:center}
+.logo{font-size:120px;margin-bottom:20px;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
+h1{font-size:36px;font-weight:800;margin-bottom:12px}
+.sub{color:#a5b4fc;font-size:18px;margin-bottom:40px;font-weight:500}
+.scan-area{background:rgba(255,255,255,.04);border:2px dashed rgba(165,180,252,.3);border-radius:24px;padding:50px 30px;margin-bottom:24px;transition:all .3s}
+.scan-area.focus{border-color:#a5b4fc;background:rgba(165,180,252,.08)}
+.scan-area.success{border-color:#10b981;background:rgba(16,185,129,.08)}
+.scan-area.error{border-color:#f43f5e;background:rgba(244,63,94,.08);animation:shake .4s}
+@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-10px)}75%{transform:translateX(10px)}}
+.scan-icon{font-size:64px;margin-bottom:16px}
+.scan-text{font-size:20px;font-weight:600;margin-bottom:8px}
+.scan-hint{color:#6b7a90;font-size:14px}
+input{position:absolute;opacity:0;pointer-events:none}
+.alt-link{color:#6b7a90;text-decoration:none;font-size:13px;display:inline-block;margin-top:20px;padding:8px 16px;border-radius:8px}
+.alt-link:hover{color:#a5b4fc;background:rgba(255,255,255,.04)}
+.toast{position:fixed;top:24px;left:50%;transform:translateX(-50%);background:#10b981;color:white;padding:14px 28px;border-radius:50px;font-weight:700;font-size:15px;box-shadow:0 10px 40px rgba(16,185,129,.4);z-index:100;display:none}
+.toast.err{background:#f43f5e;box-shadow:0 10px 40px rgba(244,63,94,.4)}
+</style></head><body>
+<div class="box">
+<div class="logo">🎫</div>
+<h1>Welcome!</h1>
+<div class="sub">Scan your employee badge to begin</div>
+<div class="scan-area focus" id="sa">
+<div class="scan-icon">📡</div>
+<div class="scan-text" id="st">Ready to scan</div>
+<div class="scan-hint">Hold your badge under the scanner</div>
+</div>
+<input type="text" id="tk" autofocus autocomplete="off" inputmode="none">
+<a href="/" class="alt-link">Use password instead</a>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+var inp=document.getElementById('tk'),sa=document.getElementById('sa'),st=document.getElementById('st');
+var buf="",lastKey=0,timer=null;
+
+function showToast(m,err){
+    var t=document.getElementById('toast');t.textContent=m;t.className=err?'toast err':'toast';t.style.display='block';
+    setTimeout(function(){t.style.display='none'},3000);
+}
+
+function tryLogin(token){
+    sa.className='scan-area';st.textContent='Verifying...';
+    fetch('/api/badge-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token})})
+    .then(function(r){return r.json()}).then(function(d){
+        if(d.ok){
+            sa.className='scan-area success';st.textContent='Welcome, '+d.name+'!';
+            showToast('Welcome '+d.name+' 👋');
+            setTimeout(function(){location.href='/'},800);
+        } else {
+            sa.className='scan-area error';st.textContent='Badge not recognized';
+            showToast(d.error||'Try again',true);
+            setTimeout(function(){sa.className='scan-area focus';st.textContent='Ready to scan';buf=""},1500);
+        }
+    }).catch(function(){
+        sa.className='scan-area error';st.textContent='Connection error';
+        setTimeout(function(){sa.className='scan-area focus';st.textContent='Ready to scan';buf=""},1500);
+    });
+}
+
+// Listen for keyboard input from USB barcode scanner
+// Scanners type fast (chars within ~10ms) and end with Enter
+document.addEventListener('keydown',function(e){
+    var now=Date.now();
+    // Reset buffer if too much time elapsed (manual typing vs scanner)
+    if(now-lastKey>300) buf="";
+    lastKey=now;
+    if(e.key==='Enter'){
+        if(buf.length>=8){
+            var token=buf.toUpperCase();
+            buf="";
+            tryLogin(token);
+        }
+        e.preventDefault();
+    } else if(e.key.length===1) {
+        buf+=e.key;
+        if(buf.length===1){sa.className='scan-area';st.textContent='Reading...'}
+        // Auto-reset display if user stops typing (didn't hit Enter)
+        clearTimeout(timer);
+        timer=setTimeout(function(){
+            if(buf.length>0&&Date.now()-lastKey>500){buf="";sa.className='scan-area focus';st.textContent='Ready to scan'}
+        },1500);
+    }
+});
+
+// Keep focus on the hidden input so the page is always "listening"
+inp.focus();
+setInterval(function(){if(document.activeElement!==inp)inp.focus()},500);
+</script></body></html>'''
+
+
+USERS_BADGES_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Employee Badges</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.nav{background:rgba(21,25,33,.8);border-bottom:1px solid rgba(255,255,255,.06);padding:14px 28px;display:flex;justify-content:space-between;align-items:center;backdrop-filter:blur(20px);position:sticky;top:0;z-index:50}
+.nav h1{font-size:20px;font-weight:800}
+.nav h1 span{color:#a5b4fc;margin-left:8px}
+.nav-r{display:flex;gap:12px;align-items:center}
+.nav-r a{color:#a5b4fc;text-decoration:none;font-weight:600;padding:8px 16px;border-radius:8px;background:rgba(79,70,229,.1);border:1px solid rgba(79,70,229,.2);font-size:13px}
+.nav-r a:hover{background:rgba(79,70,229,.2)}
+.wrap{max-width:1100px;margin:0 auto;padding:28px}
+.intro{background:rgba(79,70,229,.08);border:1px solid rgba(79,70,229,.2);border-radius:14px;padding:18px 22px;margin-bottom:24px;color:#a5b4fc;font-size:14px;line-height:1.6}
+.intro b{color:#e4e8f1}
+.actions-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;flex-wrap:wrap;gap:12px}
+h2{font-size:18px;font-weight:700}
+.btn{border:none;border-radius:10px;padding:11px 22px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .15s;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:white;box-shadow:0 4px 16px rgba(79,70,229,.3)}
+.btn-p:hover{transform:translateY(-1px)}
+.btn-s{background:rgba(255,255,255,.08);color:#e4e8f1;border:1px solid rgba(255,255,255,.1)}
+.btn-s:hover{background:rgba(255,255,255,.14)}
+.btn-d{background:rgba(244,63,94,.1);color:#fb7185;border:1.5px solid rgba(244,63,94,.2)}
+.btn-d:hover{background:rgba(244,63,94,.2)}
+.btn-sm{padding:7px 13px;font-size:12px}
+table{width:100%;background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:14px;border-collapse:separate;border-spacing:0;overflow:hidden}
+th,td{padding:14px 18px;text-align:left;border-bottom:1px solid rgba(255,255,255,.04)}
+th{background:rgba(11,14,20,.6);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:#6b7a90}
+tr:last-child td{border-bottom:none}
+.role-w{background:rgba(96,165,250,.15);color:#60a5fa;padding:3px 10px;border-radius:50px;font-size:11px;font-weight:700;text-transform:uppercase}
+.role-c{background:rgba(167,139,250,.15);color:#a78bfa;padding:3px 10px;border-radius:50px;font-size:11px;font-weight:700;text-transform:uppercase}
+.role-a{background:rgba(244,63,94,.15);color:#fb7185;padding:3px 10px;border-radius:50px;font-size:11px;font-weight:700;text-transform:uppercase}
+.has-badge{color:#34d399;font-weight:600}
+.no-badge{color:#6b7a90;font-style:italic}
+.actions{display:flex;gap:6px;flex-wrap:wrap}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:white;padding:14px 22px;border-radius:10px;font-weight:600;box-shadow:0 10px 40px rgba(16,185,129,.4);z-index:100;display:none}
+.toast.err{background:#f43f5e}
+.station-select{margin-bottom:24px;background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:18px 22px}
+.station-select h3{font-size:13px;font-weight:700;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
+.station-select .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.station-select select{background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:9px 14px;font-size:14px;color:#e4e8f1;font-family:inherit;outline:none}
+.station-select .current{font-size:14px;color:#34d399;font-weight:600}
+</style></head><body>
+<div class="nav"><h1>🎫 Employee Badges <span>__NAME__</span></h1>
+<div class="nav-r"><a href="/users">← Manage Users</a><a href="/dashboard">Dashboard</a></div></div>
+<div class="wrap">
+
+<div class="intro">
+💡 <b>How badges work:</b> Each worker gets a unique barcode they scan to log in.
+Workers don't need passwords — just scan the badge. Print them on Avery 5160 sticker sheets (30 per page).
+</div>
+
+<div class="station-select">
+<h3>📍 This Computer's Station</h3>
+<div class="row">
+<div class="current" id="curSta">Loading...</div>
+<select id="staSel"><option value="">-- Choose station --</option></select>
+<button class="btn btn-s btn-sm" id="setSta">Set as this machine's station</button>
+<button class="btn btn-d btn-sm" id="clrSta">Clear</button>
+</div>
+<div style="font-size:12px;color:#6b7a90;margin-top:8px">When set, workers who scan their badge on this machine will automatically be assigned to this station.</div>
+</div>
+
+<div class="actions-bar">
+<h2>Workers with Badges</h2>
+<a href="/api/users/badge/sheet" class="btn btn-p" target="_blank">🖨️ Print All Badges (Avery 5160)</a>
+</div>
+
+<table>
+<thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Badge</th><th>Actions</th></tr></thead>
+<tbody id="tb"><tr><td colspan="5" style="text-align:center;color:#6b7a90;padding:40px">Loading...</td></tr></tbody>
+</table>
+</div>
+
+<div class="toast" id="t"></div>
+<script>
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
+
+function loadStation(){
+    fetch('/api/machine-station').then(function(r){return r.json()}).then(function(d){
+        var cur=document.getElementById('curSta');
+        if(d.station)cur.innerHTML='✓ Currently set to: <b>'+d.station_name+' ('+d.station+')</b>';
+        else cur.innerHTML='<span style="color:#fbbf24">⚠️ No station assigned to this machine</span>';
+        var sel=document.getElementById('staSel');
+        sel.innerHTML='<option value="">-- Choose station --</option>';
+        Object.keys(d.all_stations).forEach(function(sid){
+            var o=document.createElement('option');o.value=sid;o.textContent=sid+' - '+d.all_stations[sid];
+            if(sid===d.station)o.selected=true;
+            sel.appendChild(o);
+        });
+    });
+}
+document.getElementById('setSta').addEventListener('click',function(){
+    var sta=document.getElementById('staSel').value;
+    if(!sta){toast('Pick a station first',true);return}
+    fetch('/api/machine-station',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({station:sta})})
+        .then(function(r){return r.json()}).then(function(d){
+            if(d.ok){toast('Station saved for this machine');loadStation()}else toast(d.error||'Failed',true);
+        });
+});
+document.getElementById('clrSta').addEventListener('click',function(){
+    if(!confirm('Clear station for this machine?'))return;
+    fetch('/api/machine-station',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({station:''})})
+        .then(function(r){return r.json()}).then(function(d){
+            if(d.ok){toast('Cleared');loadStation()}
+        });
+});
+
+function loadUsers(){
+    fetch('/api/users').then(function(r){return r.json()}).then(function(users){
+        var tb=document.getElementById('tb');
+        var rows=Object.keys(users).map(function(u){
+            var info=users[u];
+            var roleClass='role-'+(info.role==='admin'?'a':info.role==='cs'?'c':'w');
+            var badgeText=info.has_badge?'<span class="has-badge">✓ Active</span>':'<span class="no-badge">— None</span>';
+            var actions='';
+            if(info.role==='worker'){
+                if(info.has_badge){
+                    actions='<a class="btn btn-s btn-sm" href="/api/users/badge/pdf/'+u+'" target="_blank">🖨️ Print</a>'+
+                        '<button class="btn btn-d btn-sm" data-act="regen" data-u="'+u+'">↻ Regenerate</button>'+
+                        '<button class="btn btn-d btn-sm" data-act="revoke" data-u="'+u+'">✕ Revoke</button>';
+                } else {
+                    actions='<button class="btn btn-p btn-sm" data-act="regen" data-u="'+u+'">+ Issue Badge</button>';
+                }
+            } else {
+                actions='<span style="color:#6b7a90;font-size:12px">Badges are for workers</span>';
+            }
+            return '<tr><td><b>'+u+'</b></td><td>'+info.name+'</td><td><span class="'+roleClass+'">'+info.role+'</span></td><td>'+badgeText+'</td><td><div class="actions">'+actions+'</div></td></tr>';
+        });
+        tb.innerHTML=rows.join('')||'<tr><td colspan="5" style="text-align:center;color:#6b7a90;padding:40px">No users yet</td></tr>';
+        tb.querySelectorAll('button[data-act]').forEach(function(b){
+            b.addEventListener('click',function(){
+                var u=b.dataset.u,act=b.dataset.act;
+                if(act==='revoke'&&!confirm('Revoke badge for '+u+'? They will need a password to log in.'))return;
+                if(act==='regen'){
+                    fetch('/api/users/badge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u})})
+                        .then(function(r){return r.json()}).then(function(d){
+                            if(d.ok){toast('Badge issued. Print it next.');loadUsers()}else toast(d.error||'Failed',true);
+                        });
+                } else if(act==='revoke'){
+                    fetch('/api/users/badge/revoke',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u})})
+                        .then(function(r){return r.json()}).then(function(d){
+                            if(d.ok){toast('Badge revoked');loadUsers()}else toast(d.error||'Failed',true);
+                        });
+                }
+            });
+        });
+    });
+}
+loadStation();
+loadUsers();
 </script></body></html>'''
 
 
