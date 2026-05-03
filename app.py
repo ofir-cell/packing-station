@@ -3,10 +3,12 @@
 5 Second Beauty — Packing Station
 Production web app for packing video recording & lookup.
 """
-import os,csv,json,hashlib,secrets,time
-from datetime import datetime
+import os,csv,json,hashlib,secrets,time,threading,re,sys
+from datetime import datetime,timedelta
 from functools import wraps
 from flask import Flask,request,jsonify,send_file,redirect,session
+from werkzeug.utils import secure_filename
+import bcrypt
 
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
 VIDEO_DIR=os.path.join(DATA_DIR,"videos")
@@ -14,14 +16,120 @@ PHOTO_DIR=os.path.join(DATA_DIR,"photos")
 LOG_FILE=os.path.join(DATA_DIR,"packing_log.csv")
 USERS_FILE=os.path.join(DATA_DIR,"users.json")
 STATIONS_FILE=os.path.join(DATA_DIR,"stations.json")
-SECRET_KEY=os.environ.get("SECRET_KEY",secrets.token_hex(32))
+
+# FIX #1: SECRET_KEY must be set in environment - fail loud if missing.
+# Auto-generating it would invalidate all sessions on every restart.
+SECRET_KEY=os.environ.get("SECRET_KEY")
+if not SECRET_KEY:
+    print("FATAL: SECRET_KEY environment variable is not set.",file=sys.stderr)
+    print("Set it in Railway -> Variables. Generate one with: python -c \"import secrets;print(secrets.token_hex(32))\"",file=sys.stderr)
+    sys.exit(1)
+if len(SECRET_KEY)<32:
+    print("FATAL: SECRET_KEY too short (must be >=32 chars).",file=sys.stderr)
+    sys.exit(1)
+
 PORT=int(os.environ.get("PORT",8080))
+RETENTION_DAYS=int(os.environ.get("RETENTION_DAYS",30))
+
+# Cloudflare R2 cloud storage config (S3-compatible).
+# When configured, videos/photos are stored in R2 instead of local disk.
+# Saves ~95% on storage cost vs Railway Volume + zero egress fees.
+R2_BUCKET=os.environ.get("R2_BUCKET")
+R2_ENDPOINT=os.environ.get("R2_ENDPOINT")
+R2_ACCESS_KEY_ID=os.environ.get("R2_ACCESS_KEY_ID")
+R2_SECRET_ACCESS_KEY=os.environ.get("R2_SECRET_ACCESS_KEY")
+R2_PRESIGN_TTL=int(os.environ.get("R2_PRESIGN_TTL",3600))  # 1 hour
+r2=None
+_r2_vars=[R2_BUCKET,R2_ENDPOINT,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY]
+if any(_r2_vars):
+    if not all(_r2_vars):
+        print("FATAL: Partial R2 config. Set ALL of R2_BUCKET, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY (or none).",file=sys.stderr)
+        sys.exit(1)
+    try:
+        import boto3
+        from botocore.client import Config as BotoConfig
+        r2=boto3.client('s3',
+            endpoint_url=R2_ENDPOINT,
+            aws_access_key_id=R2_ACCESS_KEY_ID,
+            aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+            config=BotoConfig(signature_version='s3v4'),
+            region_name='auto'
+        )
+        print("R2 storage enabled: bucket="+R2_BUCKET,flush=True)
+    except Exception as e:
+        print("FATAL: R2 client init failed:",e,file=sys.stderr)
+        sys.exit(1)
+else:
+    print("R2 not configured - using local file storage at "+DATA_DIR,flush=True)
 
 for d in [DATA_DIR,VIDEO_DIR,PHOTO_DIR]: os.makedirs(d,exist_ok=True)
+
+def cleanup_old_files():
+    """Delete video/photo files older than RETENTION_DAYS.
+    When R2 is configured, file deletion is handled by R2 lifecycle rules.
+    This function only cleans the local CSV log of old rows in that case."""
+    cutoff=time.time()-RETENTION_DAYS*86400
+    deleted=0;freed=0
+    if not r2:  # only clean local files when not using R2
+        for folder in [VIDEO_DIR,PHOTO_DIR]:
+            if not os.path.exists(folder): continue
+            for f in os.listdir(folder):
+                fp=os.path.join(folder,f)
+                try:
+                    if os.path.getmtime(fp)<cutoff:
+                        sz=os.path.getsize(fp)
+                        os.remove(fp)
+                        deleted+=1;freed+=sz
+                except: pass
+    # Always clean old log entries
+    if os.path.exists(LOG_FILE):
+        cutoff_date=(datetime.now()-timedelta(days=RETENTION_DAYS)).strftime('%Y-%m-%d')
+        try:
+            with open(LOG_FILE) as f: rows=list(csv.DictReader(f))
+            kept=[r for r in rows if r.get("date","")>=cutoff_date]
+            if len(kept)<len(rows):
+                with open(LOG_FILE,"w") as f:
+                    w=csv.DictWriter(f,fieldnames=["tracking_number","station","date","time","duration_seconds","video_file","photo_file","worker"])
+                    w.writeheader();w.writerows(kept)
+        except: pass
+    if deleted>0: print("Cleanup: deleted",deleted,"files, freed",round(freed/(1024*1024),1),"MB")
+    return {"deleted":deleted,"freed_mb":round(freed/(1024*1024),1)}
+
+def cleanup_loop():
+    while True:
+        time.sleep(3600)
+        try: cleanup_old_files()
+        except: pass
+
+cleanup_thread=threading.Thread(target=cleanup_loop,daemon=True)
+cleanup_thread.start()
 if not os.path.exists(LOG_FILE):
     with open(LOG_FILE,"w") as f: f.write("tracking_number,station,date,time,duration_seconds,video_file,photo_file,worker\n")
 
-def _h(pw): return hashlib.sha256(pw.encode()).hexdigest()
+def _h(pw):
+    """Hash password with bcrypt (rounds=12)."""
+    return bcrypt.hashpw(pw.encode(),bcrypt.gensalt(rounds=12)).decode()
+
+def _legacy_sha256(pw):
+    """Legacy SHA256 hash - only used to verify pre-bcrypt passwords once for migration."""
+    return hashlib.sha256(pw.encode()).hexdigest()
+
+def _verify(pw,stored):
+    """Verify password against stored hash. Supports both bcrypt and legacy sha256."""
+    if not stored: return False
+    # bcrypt hashes start with $2a$, $2b$, $2y$
+    if stored.startswith("$2"):
+        try: return bcrypt.checkpw(pw.encode(),stored.encode())
+        except: return False
+    # Legacy SHA256 (64 hex chars) - constant-time compare
+    if len(stored)==64:
+        return secrets.compare_digest(stored,_legacy_sha256(pw))
+    return False
+
+def _gen_pw():
+    """Generate a strong random password."""
+    return secrets.token_urlsafe(12)
+
 def _init(path,default):
     if not os.path.exists(path):
         with open(path,"w") as f: json.dump(default,f,indent=2)
@@ -30,21 +138,44 @@ def ldj(p):
 def svj(p,d):
     with open(p,"w") as f: json.dump(d,f,indent=2)
 
-_init(USERS_FILE,{
-    "admin":{"password":_h("admin123"),"role":"admin","name":"Admin"},
-    "cs1":{"password":_h("cs123"),"role":"cs","name":"Customer Service"},
-    "worker1":{"password":_h("pack1"),"role":"worker","name":"Worker 1"},
-    "worker2":{"password":_h("pack2"),"role":"worker","name":"Worker 2"},
-    "worker3":{"password":_h("pack3"),"role":"worker","name":"Worker 3"},
-    "worker4":{"password":_h("pack4"),"role":"worker","name":"Worker 4"},
-    "worker5":{"password":_h("pack5"),"role":"worker","name":"Worker 5"},
-    "worker6":{"password":_h("pack6"),"role":"worker","name":"Worker 6"},
-})
+# On first run only: generate strong random passwords and print them once.
+# After this file exists, change passwords via the admin UI.
+if not os.path.exists(USERS_FILE):
+    _initial_users={
+        "admin":{"role":"admin","name":"Admin"},
+        "cs1":{"role":"cs","name":"Customer Service"},
+        "worker1":{"role":"worker","name":"Worker 1"},
+        "worker2":{"role":"worker","name":"Worker 2"},
+        "worker3":{"role":"worker","name":"Worker 3"},
+        "worker4":{"role":"worker","name":"Worker 4"},
+        "worker5":{"role":"worker","name":"Worker 5"},
+        "worker6":{"role":"worker","name":"Worker 6"},
+    }
+    _generated={}
+    _data={}
+    for u,info in _initial_users.items():
+        pw=_gen_pw()
+        _generated[u]=pw
+        _data[u]={"password":_h(pw),"role":info["role"],"name":info["name"]}
+    with open(USERS_FILE,"w") as f: json.dump(_data,f,indent=2)
+    print("="*70,flush=True)
+    print("INITIAL PASSWORDS GENERATED - SAVE THESE NOW (shown only once):",flush=True)
+    print("="*70,flush=True)
+    for u,p in _generated.items(): print("  "+u.ljust(10)+" -> "+p,flush=True)
+    print("="*70,flush=True)
+    print("Change them after first login via Admin -> Users.",flush=True)
+    print("="*70,flush=True)
+
 _init(STATIONS_FILE,{"S1":"Station 1","S2":"Station 2","S3":"Station 3","S4":"Station 4","S5":"Station 5","S6":"Station 6"})
 
 app=Flask(__name__)
 app.secret_key=SECRET_KEY
 app.config["MAX_CONTENT_LENGTH"]=250*1024*1024
+# Secure session cookie config - HTTPS only, no JS access, CSRF protection via SameSite
+app.config["SESSION_COOKIE_HTTPONLY"]=True
+app.config["SESSION_COOKIE_SECURE"]=True
+app.config["SESSION_COOKIE_SAMESITE"]="Lax"
+app.config["PERMANENT_SESSION_LIFETIME"]=timedelta(days=7)
 
 def req_login(f):
     @wraps(f)
@@ -88,7 +219,10 @@ def logout(): session.clear(); return redirect("/")
 def api_login():
     d=request.get_json();u=d.get("username","").strip().lower();p=d.get("password","")
     users=ldj(USERS_FILE);user=users.get(u)
-    if user and user["password"]==_h(p):
+    if user and _verify(p,user.get("password","")):
+        # Auto-upgrade legacy SHA256 hash to bcrypt on successful login
+        if user.get("password","").startswith("$2")==False:
+            users[u]["password"]=_h(p);svj(USERS_FILE,users)
         session["user"]=u;session["role"]=user["role"];session["name"]=user["name"]
         return jsonify({"ok":True,"role":user["role"]})
     return jsonify({"ok":False,"error":"Invalid username or password"})
@@ -114,18 +248,40 @@ def api_upload():
     sta=request.form.get("station",session.get("station","S0"))
     dur=request.form.get("duration","0")
     wrk=session.get("name","Unknown")
-    if not trk: return jsonify({"ok":False})
+    # FIX #4: Sanitize tracking number - allow only alphanumeric, dash, underscore
+    if not trk or not re.match(r'^[A-Za-z0-9_\-]{1,64}$',trk):
+        return jsonify({"ok":False,"error":"Invalid tracking number"})
+    sta=re.sub(r'[^A-Za-z0-9_\-]','',sta)[:16] or "S0"
     fn=sta+"_"+trk;now=datetime.now()
     vf=request.files.get("video");vn=None
     if vf:
-        vn=fn+".webm";vp=os.path.join(VIDEO_DIR,vn)
-        if os.path.exists(vp):vn=fn+"_"+now.strftime('%H%M%S')+".webm";vp=os.path.join(VIDEO_DIR,vn)
-        vf.save(vp)
+        if r2:
+            # R2 mode: always include timestamp to ensure uniqueness without an existence check
+            vn=fn+"_"+now.strftime('%H%M%S')+".webm"
+            try:
+                r2.upload_fileobj(vf.stream,R2_BUCKET,"videos/"+vn,
+                    ExtraArgs={'ContentType':'video/webm'})
+            except Exception as e:
+                print("R2 video upload failed:",e,flush=True)
+                return jsonify({"ok":False,"error":"Storage upload failed"})
+        else:
+            vn=fn+".webm";vp=os.path.join(VIDEO_DIR,vn)
+            if os.path.exists(vp):vn=fn+"_"+now.strftime('%H%M%S')+".webm";vp=os.path.join(VIDEO_DIR,vn)
+            vf.save(vp)
     pf=request.files.get("photo");pn=None
     if pf:
-        pn=fn+".jpg";pp=os.path.join(PHOTO_DIR,pn)
-        if os.path.exists(pp):pn=fn+"_"+now.strftime('%H%M%S')+".jpg";pp=os.path.join(PHOTO_DIR,pn)
-        pf.save(pp)
+        if r2:
+            pn=fn+"_"+now.strftime('%H%M%S')+".jpg"
+            try:
+                r2.upload_fileobj(pf.stream,R2_BUCKET,"photos/"+pn,
+                    ExtraArgs={'ContentType':'image/jpeg'})
+            except Exception as e:
+                print("R2 photo upload failed:",e,flush=True)
+                pn=None
+        else:
+            pn=fn+".jpg";pp=os.path.join(PHOTO_DIR,pn)
+            if os.path.exists(pp):pn=fn+"_"+now.strftime('%H%M%S')+".jpg";pp=os.path.join(PHOTO_DIR,pn)
+            pf.save(pp)
     with open(LOG_FILE,"a") as f:
         f.write(trk+","+sta+","+now.strftime('%Y-%m-%d')+","+now.strftime('%H:%M:%S')+","+str(dur)+","+str(vn)+","+str(pn)+","+wrk+"\n")
     return jsonify({"ok":True})
@@ -133,22 +289,25 @@ def api_upload():
 @app.route("/api/search/<trk>")
 @req_role("admin","cs")
 def api_search(trk):
+    """Search by tracking number using the CSV log as the index.
+    Works identically for R2 and local storage."""
     r={"tracking":trk,"videos":[],"photos":[],"log":[]};t=trk.lower()
-    if os.path.exists(VIDEO_DIR):
-        for f in sorted(os.listdir(VIDEO_DIR)):
-            if t in f.lower():
-                fp=os.path.join(VIDEO_DIR,f);mb=os.path.getsize(fp)/(1024*1024)
-                s=f.split("_")[0] if "_" in f else "?"
-                r["videos"].append({"filename":f,"size_mb":round(mb,1),"url":"/media/video/"+f,"station":s})
-    if os.path.exists(PHOTO_DIR):
-        for f in sorted(os.listdir(PHOTO_DIR)):
-            if t in f.lower():
-                s=f.split("_")[0] if "_" in f else "?"
-                r["photos"].append({"filename":f,"url":"/media/photo/"+f,"station":s})
+    seen_v=set();seen_p=set()
     if os.path.exists(LOG_FILE):
         with open(LOG_FILE) as cf:
             for row in csv.DictReader(cf):
-                if t in row.get("tracking_number","").lower(): r["log"].append(row)
+                if t in row.get("tracking_number","").lower():
+                    r["log"].append(row)
+                    vf=row.get("video_file","")
+                    pf=row.get("photo_file","")
+                    if vf and vf!="None" and vf not in seen_v:
+                        seen_v.add(vf)
+                        s=vf.split("_")[0] if "_" in vf else "?"
+                        r["videos"].append({"filename":vf,"url":"/media/video/"+vf,"station":s})
+                    if pf and pf!="None" and pf not in seen_p:
+                        seen_p.add(pf)
+                        s=pf.split("_")[0] if "_" in pf else "?"
+                        r["photos"].append({"filename":pf,"url":"/media/photo/"+pf,"station":s})
     return jsonify(r)
 
 @app.route("/api/recent")
@@ -168,6 +327,68 @@ def api_stats():
         for f in os.listdir(VIDEO_DIR):tv+=1;ts+=os.path.getsize(os.path.join(VIDEO_DIR,f))
     tp=len(os.listdir(PHOTO_DIR)) if os.path.exists(PHOTO_DIR) else 0
     return jsonify({"total_videos":tv,"total_photos":tp,"total_size_mb":round(ts/(1024*1024),1)})
+
+@app.route("/api/analytics")
+@req_role("admin","cs")
+def api_analytics():
+    recs=[]
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE) as f: recs=list(csv.DictReader(f))
+    today=datetime.now().strftime('%Y-%m-%d')
+    # Per worker stats
+    workers={}
+    workers_today={}
+    for r in recs:
+        w=r.get("worker","Unknown")
+        dur=0
+        try: dur=float(r.get("duration_seconds",0))
+        except: pass
+        if w not in workers: workers[w]={"count":0,"total_dur":0,"dates":set()}
+        workers[w]["count"]+=1
+        workers[w]["total_dur"]+=dur
+        workers[w]["dates"].add(r.get("date",""))
+        if r.get("date","")==today:
+            if w not in workers_today: workers_today[w]={"count":0,"total_dur":0}
+            workers_today[w]["count"]+=1
+            workers_today[w]["total_dur"]+=dur
+    # Per station stats
+    stations={}
+    for r in recs:
+        s=r.get("station","?")
+        if s not in stations: stations[s]={"count":0}
+        stations[s]["count"]+=1
+    # Build response
+    worker_list=[]
+    for w,d in workers.items():
+        avg=round(d["total_dur"]/d["count"],1) if d["count"]>0 else 0
+        td=workers_today.get(w,{"count":0,"total_dur":0})
+        avg_today=round(td["total_dur"]/td["count"],1) if td["count"]>0 else 0
+        worker_list.append({"name":w,"total":d["count"],"avg_seconds":avg,
+            "today":td["count"],"avg_today":avg_today,"days_worked":len(d["dates"])})
+    worker_list.sort(key=lambda x:x["today"],reverse=True)
+    station_list=[{"id":k,"count":v["count"]} for k,v in stations.items()]
+    # Daily totals (last 14 days)
+    daily={}
+    for r in recs:
+        dt=r.get("date","")
+        if dt not in daily: daily[dt]={"count":0,"total_dur":0}
+        daily[dt]["count"]+=1
+        try: daily[dt]["total_dur"]+=float(r.get("duration_seconds",0))
+        except: pass
+    daily_list=[]
+    for dt in sorted(daily.keys(),reverse=True)[:14]:
+        d=daily[dt]
+        avg=round(d["total_dur"]/d["count"],1) if d["count"]>0 else 0
+        daily_list.append({"date":dt,"count":d["count"],"avg_seconds":avg})
+    total_today=sum(v["count"] for v in workers_today.values())
+    return jsonify({"workers":worker_list,"stations":station_list,"daily":daily_list,
+        "total_today":total_today,"total_all":len(recs),"date":today})
+
+@app.route("/analytics")
+@req_role("admin","cs")
+def analytics_page():
+    disp="flex" if session.get("role")=="admin" else "none"
+    return ANALYTICS_HTML.replace("__NAME__",session.get("name","")).replace("__ADMIN_VIS__",disp)
 
 @app.route("/api/users")
 @req_role("admin")
@@ -205,17 +426,108 @@ def api_pw():
     users[u]["password"]=_h(p);svj(USERS_FILE,users)
     return jsonify({"ok":True})
 
+@app.route("/api/storage")
+@req_role("admin")
+def api_storage():
+    if r2:
+        # R2 mode: list objects with pagination
+        vcount=0;vsize=0;pcount=0;psize=0
+        oldest=None;newest=None
+        try:
+            paginator=r2.get_paginator('list_objects_v2')
+            for prefix,is_v in [('videos/',True),('photos/',False)]:
+                for page in paginator.paginate(Bucket=R2_BUCKET,Prefix=prefix):
+                    for obj in page.get('Contents',[]):
+                        sz=obj['Size'];mt=obj['LastModified'].timestamp()
+                        if is_v: vcount+=1; vsize+=sz
+                        else: pcount+=1; psize+=sz
+                        if oldest is None or mt<oldest: oldest=mt
+                        if newest is None or mt>newest: newest=mt
+        except Exception as e:
+            print("R2 list failed:",e,flush=True)
+            return jsonify({"error":"R2 listing failed","backend":"r2"}),500
+        total=(vsize+psize)/(1024*1024)
+        return jsonify({
+            "videos":vcount,"photos":pcount,
+            "video_size_mb":round(vsize/(1024*1024),1),
+            "photo_size_mb":round(psize/(1024*1024),1),
+            "total_mb":round(total,1),
+            "total_gb":round(total/1024,2),
+            "retention_days":RETENTION_DAYS,
+            "oldest":datetime.fromtimestamp(oldest).strftime('%Y-%m-%d') if oldest else None,
+            "newest":datetime.fromtimestamp(newest).strftime('%Y-%m-%d') if newest else None,
+            "backend":"r2","bucket":R2_BUCKET
+        })
+    # Local mode
+    vcount=0;vsize=0;pcount=0;psize=0
+    oldest=None;newest=None
+    if os.path.exists(VIDEO_DIR):
+        for f in os.listdir(VIDEO_DIR):
+            fp=os.path.join(VIDEO_DIR,f);vcount+=1;vsize+=os.path.getsize(fp)
+            mt=os.path.getmtime(fp)
+            if oldest is None or mt<oldest: oldest=mt
+            if newest is None or mt>newest: newest=mt
+    if os.path.exists(PHOTO_DIR):
+        for f in os.listdir(PHOTO_DIR):
+            fp=os.path.join(PHOTO_DIR,f);pcount+=1;psize+=os.path.getsize(fp)
+    total=(vsize+psize)/(1024*1024)
+    return jsonify({
+        "videos":vcount,"photos":pcount,
+        "video_size_mb":round(vsize/(1024*1024),1),
+        "photo_size_mb":round(psize/(1024*1024),1),
+        "total_mb":round(total,1),
+        "total_gb":round(total/1024,2),
+        "retention_days":RETENTION_DAYS,
+        "oldest":datetime.fromtimestamp(oldest).strftime('%Y-%m-%d') if oldest else None,
+        "newest":datetime.fromtimestamp(newest).strftime('%Y-%m-%d') if newest else None,
+        "backend":"local"
+    })
+
+@app.route("/api/cleanup",methods=["POST"])
+@req_role("admin")
+def api_cleanup():
+    r=cleanup_old_files()
+    return jsonify({"ok":True,"deleted":r["deleted"],"freed_mb":r["freed_mb"]})
+
 @app.route("/media/video/<fn>")
 @req_role("admin","cs")
 def serve_v(fn):
+    # FIX #4: Prevent path traversal - only allow safe filenames
+    fn=secure_filename(fn)
+    if not fn: return ("",404)
+    if r2:
+        try:
+            url=r2.generate_presigned_url('get_object',
+                Params={'Bucket':R2_BUCKET,'Key':'videos/'+fn},
+                ExpiresIn=R2_PRESIGN_TTL)
+            return redirect(url)
+        except Exception as e:
+            print("R2 presign failed:",e,flush=True)
+            return ("",404)
     p=os.path.join(VIDEO_DIR,fn)
-    return send_file(p,mimetype="video/webm") if os.path.exists(p) else ("",404)
+    real=os.path.realpath(p)
+    if not real.startswith(os.path.realpath(VIDEO_DIR)+os.sep): return ("",404)
+    return send_file(real,mimetype="video/webm") if os.path.exists(real) else ("",404)
 
 @app.route("/media/photo/<fn>")
 @req_role("admin","cs")
 def serve_p(fn):
+    # FIX #4: Prevent path traversal - only allow safe filenames
+    fn=secure_filename(fn)
+    if not fn: return ("",404)
+    if r2:
+        try:
+            url=r2.generate_presigned_url('get_object',
+                Params={'Bucket':R2_BUCKET,'Key':'photos/'+fn},
+                ExpiresIn=R2_PRESIGN_TTL)
+            return redirect(url)
+        except Exception as e:
+            print("R2 presign failed:",e,flush=True)
+            return ("",404)
     p=os.path.join(PHOTO_DIR,fn)
-    return send_file(p,mimetype="image/jpeg") if os.path.exists(p) else ("",404)
+    real=os.path.realpath(p)
+    if not real.startswith(os.path.realpath(PHOTO_DIR)+os.sep): return ("",404)
+    return send_file(real,mimetype="image/jpeg") if os.path.exists(real) else ("",404)
 
 # ══════════════════════════════════════════════════════════
 # HTML TEMPLATES (no f-strings to avoid escaping nightmares)
@@ -388,11 +700,26 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 @keyframes sp{to{transform:rotate(360deg)}}
 .ut{font-size:22px;font-weight:700;margin-bottom:6px}
 .uu{font-size:15px;color:#6b7a90}
+
+.w-icon{font-size:80px;margin-bottom:24px;animation:pop .5s cubic-bezier(.175,.885,.32,1.275)}
+.w-title{font-size:38px;font-weight:900;color:#e4e8f1;margin-bottom:8px}
+.w-sub{font-size:20px;color:#a5b4fc;margin-bottom:20px}
+.w-sub b{color:#818cf8}
+.w-msg{font-size:16px;color:#6b7a90;max-width:400px}
+
+.f-icon{font-size:80px;margin-bottom:24px;animation:pop .5s cubic-bezier(.175,.885,.32,1.275)}
+.f-title{font-size:38px;font-weight:900;color:#10b981;margin-bottom:8px}
+.f-sub{font-size:20px;color:#e4e8f1;margin-bottom:20px}
+.f-msg{font-size:16px;color:#6b7a90}
+body.sw{background:linear-gradient(135deg,#0c0f16,#111827)}
+body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
 </style></head><body class="sr">
-<div class="top"><div class="badge">__STATION__ — __NAME__</div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span>Camera</span></div><button class="out-b" onclick="location.href='/logout'">End Shift</button></div></div>
+<div class="top"><div class="badge">__STATION__ — __NAME__</div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span>Camera</span></div><button class="out-b" id="endBtn">End Shift</button></div></div>
 <div class="pv"><video id="pv" autoplay muted playsinline></video></div>
 
-<div class="x on" id="xr"><div class="r-icon">📦</div><div class="r-title">Scan Tracking Number</div><div class="r-sub">Scan the barcode to start recording</div><div class="inp-w"><input class="inp" id="mi" placeholder="Waiting for scan..." autofocus autocomplete="off"></div><div class="hint"><span class="pd"></span>Scanner ready</div><div class="ctr">Recorded: <b id="cn">0</b></div></div>
+<div class="x on" id="xw"><div class="w-icon">👋</div><div class="w-title">Welcome, __NAME__!</div><div class="w-sub">You are at <b>__STATION__</b></div><div class="w-msg">Have a great shift! Your camera is being set up...</div></div>
+
+<div class="x" id="xr"><div class="r-icon">📦</div><div class="r-title">Scan Tracking Number</div><div class="r-sub">Scan the barcode to start recording</div><div class="inp-w"><input class="inp" id="mi" placeholder="Waiting for scan..." autocomplete="off"></div><div class="hint"><span class="pd"></span>Scanner ready</div><div class="ctr">Recorded: <b id="cn">0</b></div></div>
 
 <div class="x" id="xc"><div class="rp"><div class="rd"></div><div class="rl">RECORDING</div></div><div class="rk" id="rk"></div><div class="rm" id="rmm">00:00</div><div class="steps"><div class="step ok"><div class="si">✓</div><span>Scan tracking number</span></div><div class="step now"><div class="si">2</div><span>Pack the order in front of the camera</span></div><div class="step"><div class="si">3</div><span>Scan again to finish</span></div></div><input class="hinp" id="ri" autocomplete="off"></div>
 
@@ -400,21 +727,25 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 
 <div class="x" id="xd"><div class="d-icon">✓</div><div class="dt">Saved!</div><div class="dk" id="dkk"></div><div class="dd" id="ddd"></div><div class="dn">Next order...</div></div>
 
+<div class="x" id="xf"><div class="f-icon">🌟</div><div class="f-title">Great job today!</div><div class="f-sub">Thank you for your hard work, __NAME__</div><div class="f-msg">Have a wonderful day! See you next time 👋</div></div>
+
 <script>
-var st='r',ti=null,t0=0,n=0,mr=null,ch=[],sm=null,ct='';
+var st='w',ti=null,t0=0,n=0,mr=null,ch=[],sm=null,ct='';
 var mi=document.getElementById('mi'),ri=document.getElementById('ri');
-var X={r:document.getElementById('xr'),c:document.getElementById('xc'),u:document.getElementById('xu'),d:document.getElementById('xd')};
-function go(s){st=s;document.body.className=s==='c'?'sc':s==='d'?'sd':s==='u'?'su':'sr';
+var X={w:document.getElementById('xw'),r:document.getElementById('xr'),c:document.getElementById('xc'),u:document.getElementById('xu'),d:document.getElementById('xd'),f:document.getElementById('xf')};
+function go(s){st=s;document.body.className=s==='c'?'sc':s==='d'?'sd':s==='u'?'su':s==='w'?'sw':s==='f'?'sf':'sr';
 for(var k in X)X[k].classList.toggle('on',k===s);
 if(s==='r'){mi.value='';setTimeout(function(){mi.focus()},100)}
 if(s==='c'){ri.value='';setTimeout(function(){ri.focus()},100)}}
+setTimeout(function(){go('r')},3000);
+document.getElementById('endBtn').addEventListener('click',function(){go('f');setTimeout(function(){location.href='/logout'},3500)});
 document.addEventListener('click',function(){if(st==='r')mi.focus();if(st==='c')ri.focus()});
 setInterval(function(){if(st==='r'&&document.activeElement!==mi)mi.focus();if(st==='c'&&document.activeElement!==ri)ri.focus()},400);
-function initCam(){navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720}},audio:false}).then(function(s){sm=s;document.getElementById('pv').srcObject=s;document.getElementById('cm').className='cam ok'}).catch(function(){document.getElementById('cm').className='cam err'})}
+function initCam(){navigator.mediaDevices.getUserMedia({video:{width:{ideal:854},height:{ideal:480},frameRate:{ideal:15,max:24}},audio:false}).then(function(s){sm=s;document.getElementById('pv').srcObject=s;document.getElementById('cm').className='cam ok'}).catch(function(){document.getElementById('cm').className='cam err'})}
 initCam();
-function startRec(t){if(!sm){alert('No camera');return}ct=t;ch=[];mr=new MediaRecorder(sm,{mimeType:'video/webm;codecs=vp8'});mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};mr.start(1000);t0=Date.now();startTmr();document.getElementById('rk').textContent=t;go('c')}
+function startRec(t){if(!sm){alert('No camera');return}ct=t;ch=[];mr=new MediaRecorder(sm,{mimeType:'video/webm;codecs=vp8',videoBitsPerSecond:500000});mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};mr.start(1000);t0=Date.now();startTmr();document.getElementById('rk').textContent=t;go('c')}
 function stopRec(){return new Promise(function(res){mr.onstop=res;mr.stop()})}
-function capPhoto(){var v=document.getElementById('pv'),c=document.createElement('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);return new Promise(function(res){c.toBlob(res,'image/jpeg',.9)})}
+function capPhoto(){var v=document.getElementById('pv'),c=document.createElement('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);return new Promise(function(res){c.toBlob(res,'image/jpeg',.7)})}
 function upload(){go('u');var dur=Math.round((Date.now()-t0)/1000);var vb=new Blob(ch,{type:'video/webm'});
 capPhoto().then(function(pb){var fd=new FormData();fd.append('tracking',ct);fd.append('station','__SID__');fd.append('duration',dur);fd.append('video',vb,ct+'.webm');if(pb)fd.append('photo',pb,ct+'.jpg');
 return fetch('/api/upload',{method:'POST',body:fd})}).then(function(r){return r.json()}).then(function(d){
@@ -469,7 +800,9 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 @media(max-width:600px){.rc-b{grid-template-columns:1fr}}
 .mb{border-radius:10px;overflow:hidden;background:#0c0f16;border:1px solid rgba(255,255,255,.04)}
 .mb video,.mb img{width:100%;display:block}
-.ml{padding:8px 14px;font-size:12px;color:#6b7a90;border-top:1px solid rgba(255,255,255,.04)}
+.ml{padding:8px 14px;font-size:12px;color:#6b7a90;border-top:1px solid rgba(255,255,255,.04);display:flex;justify-content:space-between;align-items:center}
+.dl-btn{color:#818cf8;text-decoration:none;font-size:12px;font-weight:700;padding:4px 12px;border-radius:8px;background:rgba(79,70,229,.1);border:1px solid rgba(79,70,229,.2);transition:all .15s}
+.dl-btn:hover{background:rgba(79,70,229,.2)}
 
 .sec-t{font-size:15px;font-weight:700;color:#6b7a90;margin:24px 0 12px;display:flex;align-items:center;gap:8px}
 .tbl{width:100%;background:rgba(21,25,33,.8);border:1px solid rgba(255,255,255,.06);border-radius:14px;overflow:hidden}
@@ -493,6 +826,7 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 <div class="logo"><div class="logo-i">🔍</div>Search Recordings</div>
 <div class="hdr-r">
 <div class="stat-pills"><div class="pill">🎥 <b id="sv">-</b></div><div class="pill">📸 <b id="sph">-</b></div><div class="pill">💾 <b id="ss">-</b></div></div>
+<a href="/analytics" class="nav-btn" style="display:flex">📊 Analytics</a>
 <a href="/users" class="nav-btn">👥 Manage Users</a>
 <a href="/logout" class="out-link">Logout (__NAME__)</a>
 </div></div>
@@ -515,7 +849,7 @@ function doSearch(){
             if(l){h+='<span>'+l.date+'</span><span>'+l.duration_seconds+'s</span>'}
             if(l&&l.worker)h+='<span>👤 '+l.worker+'</span>';
             h+='<span class="tag tag-s">'+v.station+'</span><span class="tag tag-g">✓ Found</span>';
-            h+='</div></div><div class="rc-b"><div class="mb"><video controls preload="metadata"><source src="'+v.url+'" type="video/webm"></video><div class="ml">🎥 Video · '+v.size_mb+' MB</div></div>';
+            h+='</div></div><div class="rc-b"><div class="mb"><video controls preload="metadata"><source src="'+v.url+'" type="video/webm"></video><div class="ml"><span>🎥 Video · '+v.size_mb+' MB</span><a href="'+v.url+'" download class="dl-btn">⬇ Download</a></div></div>';
             if(p)h+='<div class="mb"><img src="'+p.url+'"><div class="ml">📸 Photo</div></div>';
             h+='</div></div>';
         }
@@ -645,6 +979,158 @@ function changePw(u){
     .then(function(r){return r.json()}).then(function(d){alert(d.ok?'Password changed!':'Failed')});
 }
 loadUsers();
+</script></body></html>'''
+
+# ── ANALYTICS PAGE ────────────────────────────────────────
+ANALYTICS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Analytics</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.hdr{background:rgba(21,25,33,.9);backdrop-filter:blur(10px);border-bottom:1px solid rgba(255,255,255,.06);padding:16px 28px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;position:sticky;top:0;z-index:10}
+.logo{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:800}
+.logo-i{width:36px;height:36px;background:linear-gradient(135deg,#f59e0b,#ef4444);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
+.hdr-r{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.nav-btn{color:#a5b4fc;text-decoration:none;font-size:13px;font-weight:600;padding:8px 16px;border:1.5px solid rgba(79,70,229,.3);border-radius:10px;background:rgba(79,70,229,.08);transition:all .2s}
+.nav-btn:hover{background:rgba(79,70,229,.15)}
+.out-link{color:#6b7a90;text-decoration:none;font-size:13px;padding:8px 14px;border:1px solid rgba(255,255,255,.06);border-radius:10px}
+
+.content{padding:28px;max-width:1000px;margin:0 auto}
+
+.big-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:28px}
+.big-stat{background:rgba(21,25,33,.8);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:24px;text-align:center}
+.big-stat .num{font-size:42px;font-weight:900;line-height:1}
+.big-stat .lbl{font-size:13px;color:#6b7a90;margin-top:8px;font-weight:500}
+.c-blue .num{color:#818cf8}
+.c-green .num{color:#10b981}
+.c-orange .num{color:#f59e0b}
+.c-pink .num{color:#f43f5e}
+
+.sec{margin-bottom:28px}
+.sec-t{font-size:17px;font-weight:800;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+
+.w-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+.w-card{background:rgba(21,25,33,.8);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:20px;transition:all .2s}
+.w-card:hover{border-color:rgba(79,70,229,.2);background:rgba(21,25,33,.95)}
+.w-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.w-name{font-size:18px;font-weight:800}
+.w-badge{font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px}
+.w-active{background:rgba(16,185,129,.1);color:#10b981}
+.w-idle{background:rgba(255,255,255,.04);color:#6b7a90}
+.w-stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.w-stat{background:rgba(255,255,255,.03);border-radius:10px;padding:12px;text-align:center}
+.w-stat .val{font-size:24px;font-weight:800;color:#e4e8f1}
+.w-stat .lab{font-size:11px;color:#6b7a90;margin-top:2px;text-transform:uppercase;letter-spacing:.3px}
+.w-stat.hl .val{color:#818cf8}
+
+.d-table{width:100%;background:rgba(21,25,33,.8);border:1px solid rgba(255,255,255,.06);border-radius:14px;overflow:hidden}
+.d-table table{width:100%;border-collapse:collapse}
+.d-table th{background:rgba(255,255,255,.02);padding:12px 16px;font-size:11px;font-weight:700;color:#6b7a90;text-align:left;border-bottom:1px solid rgba(255,255,255,.04);text-transform:uppercase;letter-spacing:.4px}
+.d-table td{padding:12px 16px;font-size:14px;border-bottom:1px solid rgba(255,255,255,.03)}
+.d-table tr:last-child td{border-bottom:none}
+.d-table tr:hover td{background:rgba(79,70,229,.03)}
+.d-table .today{background:rgba(79,70,229,.06)}
+.d-table .today td{font-weight:700;color:#a5b4fc}
+.bar{height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden;margin-top:4px}
+.bar-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,#4f46e5,#818cf8)}
+
+.ld{text-align:center;padding:40px;color:#6b7a90}
+.spn{width:28px;height:28px;border:3px solid rgba(255,255,255,.06);border-top-color:#4f46e5;border-radius:50%;animation:sp .8s linear infinite;margin:0 auto 8px}
+@keyframes sp{to{transform:rotate(360deg)}}
+</style></head><body>
+<div class="hdr">
+<div class="logo"><div class="logo-i">📊</div>Analytics</div>
+<div class="hdr-r">
+<a href="/dashboard" class="nav-btn">🔍 Search</a>
+<a href="/users" class="nav-btn" style="display:__ADMIN_VIS__">👥 Users</a>
+<a href="/logout" class="out-link">Logout (__NAME__)</a>
+</div></div>
+
+<div class="content">
+<div class="big-stats" id="bigStats"><div class="ld"><div class="spn"></div>Loading...</div></div>
+
+<div class="sec">
+<div class="sec-t">👷 Worker Performance — Today</div>
+<div class="w-grid" id="workerGrid"><div class="ld"><div class="spn"></div></div></div>
+</div>
+
+<div class="sec">
+<div class="sec-t">📅 Daily Summary (Last 14 Days)</div>
+<div id="dailyTable"><div class="ld"><div class="spn"></div></div></div>
+</div>
+
+<div class="sec" id="storageSection" style="display:none">
+<div class="sec-t">💾 Storage</div>
+<div class="w-grid" id="storageGrid"></div>
+</div>
+</div>
+
+<script>
+fetch('/api/analytics').then(function(r){return r.json()}).then(function(d){
+    // Big stats
+    var avgAll=0;
+    if(d.workers.length){
+        var totalSec=0,totalCount=0;
+        d.workers.forEach(function(w){totalSec+=w.avg_seconds*w.total;totalCount+=w.total});
+        avgAll=totalCount?Math.round(totalSec/totalCount):0;
+    }
+    document.getElementById('bigStats').innerHTML=
+        '<div class="big-stat c-blue"><div class="num">'+d.total_today+'</div><div class="lbl">Packed Today</div></div>'+
+        '<div class="big-stat c-green"><div class="num">'+d.total_all+'</div><div class="lbl">Total All Time</div></div>'+
+        '<div class="big-stat c-orange"><div class="num">'+avgAll+'s</div><div class="lbl">Avg Pack Time</div></div>'+
+        '<div class="big-stat c-pink"><div class="num">'+d.workers.length+'</div><div class="lbl">Total Workers</div></div>';
+
+    // Worker cards
+    if(!d.workers.length){
+        document.getElementById('workerGrid').innerHTML='<div class="ld">No data yet</div>';
+    } else {
+        var maxToday=Math.max.apply(null,d.workers.map(function(w){return w.today}))||1;
+        var cards='';
+        d.workers.forEach(function(w){
+            var active=w.today>0;
+            cards+='<div class="w-card">'+
+                '<div class="w-top"><div class="w-name">'+w.name+'</div><span class="w-badge '+(active?'w-active':'w-idle')+'">'+(active?'Active today':'Idle')+'</span></div>'+
+                '<div class="w-stats">'+
+                '<div class="w-stat hl"><div class="val">'+w.today+'</div><div class="lab">Today</div></div>'+
+                '<div class="w-stat"><div class="val">'+w.avg_today+'s</div><div class="lab">Avg Today</div></div>'+
+                '<div class="w-stat"><div class="val">'+w.total+'</div><div class="lab">All Time</div></div>'+
+                '<div class="w-stat"><div class="val">'+w.avg_seconds+'s</div><div class="lab">Avg All</div></div>'+
+                '</div>'+
+                '<div class="bar"><div class="bar-fill" style="width:'+Math.round(w.today/maxToday*100)+'%"></div></div>'+
+                '</div>';
+        });
+        document.getElementById('workerGrid').innerHTML=cards;
+    }
+
+    // Daily table
+    if(!d.daily.length){
+        document.getElementById('dailyTable').innerHTML='<div class="ld">No data yet</div>';
+    } else {
+        var maxDay=Math.max.apply(null,d.daily.map(function(dy){return dy.count}))||1;
+        var rows='';
+        d.daily.forEach(function(dy){
+            var isToday=dy.date===d.date;
+            rows+='<tr class="'+(isToday?'today':'')+'">'+
+                '<td>'+(isToday?'📌 Today — ':'')+dy.date+'</td>'+
+                '<td><b>'+dy.count+'</b> packages</td>'+
+                '<td>'+dy.avg_seconds+'s avg</td>'+
+                '<td><div class="bar"><div class="bar-fill" style="width:'+Math.round(dy.count/maxDay*100)+'%"></div></div></td>'+
+                '</tr>';
+        });
+        document.getElementById('dailyTable').innerHTML=
+            '<div class="d-table"><table><thead><tr><th>Date</th><th>Packages</th><th>Avg Time</th><th>Volume</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    }
+});
+fetch('/api/storage').then(function(r){return r.json()}).then(function(s){
+    document.getElementById('storageSection').style.display='block';
+    document.getElementById('storageGrid').innerHTML=
+        '<div class="w-card"><div class="w-top"><div class="w-name">Videos</div></div><div class="w-stats"><div class="w-stat hl"><div class="val">'+s.videos+'</div><div class="lab">Files</div></div><div class="w-stat"><div class="val">'+s.video_size_mb+' MB</div><div class="lab">Size</div></div></div></div>'+
+        '<div class="w-card"><div class="w-top"><div class="w-name">Photos</div></div><div class="w-stats"><div class="w-stat hl"><div class="val">'+s.photos+'</div><div class="lab">Files</div></div><div class="w-stat"><div class="val">'+s.photo_size_mb+' MB</div><div class="lab">Size</div></div></div></div>'+
+        '<div class="w-card"><div class="w-top"><div class="w-name">Total Storage</div></div><div class="w-stats"><div class="w-stat hl"><div class="val">'+s.total_gb+' GB</div><div class="lab">Used</div></div><div class="w-stat"><div class="val">'+s.retention_days+' days</div><div class="lab">Retention</div></div></div></div>'+
+        '<div class="w-card"><div class="w-top"><div class="w-name">Date Range</div></div><div class="w-stats"><div class="w-stat"><div class="val">'+(s.oldest||'-')+'</div><div class="lab">Oldest</div></div><div class="w-stat"><div class="val">'+(s.newest||'-')+'</div><div class="lab">Newest</div></div></div></div>';
+}).catch(function(){});
 </script></body></html>'''
 
 if __name__=="__main__":
