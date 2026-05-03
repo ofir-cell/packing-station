@@ -3,8 +3,8 @@
 5 Second Beauty — Packing Station
 Production web app for packing video recording & lookup.
 """
-import os,csv,json,hashlib,secrets,time,threading
-from datetime import datetime,timedelta
+import os,csv,json,hashlib,secrets,time
+from datetime import datetime
 from functools import wraps
 from flask import Flask,request,jsonify,send_file,redirect,session
 
@@ -16,46 +16,8 @@ USERS_FILE=os.path.join(DATA_DIR,"users.json")
 STATIONS_FILE=os.path.join(DATA_DIR,"stations.json")
 SECRET_KEY=os.environ.get("SECRET_KEY",secrets.token_hex(32))
 PORT=int(os.environ.get("PORT",8080))
-RETENTION_DAYS=int(os.environ.get("RETENTION_DAYS",30))
 
 for d in [DATA_DIR,VIDEO_DIR,PHOTO_DIR]: os.makedirs(d,exist_ok=True)
-
-def cleanup_old_files():
-    """Delete video/photo files older than RETENTION_DAYS"""
-    cutoff=time.time()-RETENTION_DAYS*86400
-    deleted=0;freed=0
-    for folder in [VIDEO_DIR,PHOTO_DIR]:
-        if not os.path.exists(folder): continue
-        for f in os.listdir(folder):
-            fp=os.path.join(folder,f)
-            try:
-                if os.path.getmtime(fp)<cutoff:
-                    sz=os.path.getsize(fp)
-                    os.remove(fp)
-                    deleted+=1;freed+=sz
-            except: pass
-    # Clean old log entries
-    if os.path.exists(LOG_FILE):
-        cutoff_date=(datetime.now()-timedelta(days=RETENTION_DAYS)).strftime('%Y-%m-%d')
-        try:
-            with open(LOG_FILE) as f: rows=list(csv.DictReader(f))
-            kept=[r for r in rows if r.get("date","")>=cutoff_date]
-            if len(kept)<len(rows):
-                with open(LOG_FILE,"w") as f:
-                    w=csv.DictWriter(f,fieldnames=["tracking_number","station","date","time","duration_seconds","video_file","photo_file","worker"])
-                    w.writeheader();w.writerows(kept)
-        except: pass
-    if deleted>0: print("Cleanup: deleted",deleted,"files, freed",round(freed/(1024*1024),1),"MB")
-    return {"deleted":deleted,"freed_mb":round(freed/(1024*1024),1)}
-
-def cleanup_loop():
-    while True:
-        time.sleep(3600)
-        try: cleanup_old_files()
-        except: pass
-
-cleanup_thread=threading.Thread(target=cleanup_loop,daemon=True)
-cleanup_thread.start()
 if not os.path.exists(LOG_FILE):
     with open(LOG_FILE,"w") as f: f.write("tracking_number,station,date,time,duration_seconds,video_file,photo_file,worker\n")
 
@@ -207,68 +169,6 @@ def api_stats():
     tp=len(os.listdir(PHOTO_DIR)) if os.path.exists(PHOTO_DIR) else 0
     return jsonify({"total_videos":tv,"total_photos":tp,"total_size_mb":round(ts/(1024*1024),1)})
 
-@app.route("/api/analytics")
-@req_role("admin","cs")
-def api_analytics():
-    recs=[]
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE) as f: recs=list(csv.DictReader(f))
-    today=datetime.now().strftime('%Y-%m-%d')
-    # Per worker stats
-    workers={}
-    workers_today={}
-    for r in recs:
-        w=r.get("worker","Unknown")
-        dur=0
-        try: dur=float(r.get("duration_seconds",0))
-        except: pass
-        if w not in workers: workers[w]={"count":0,"total_dur":0,"dates":set()}
-        workers[w]["count"]+=1
-        workers[w]["total_dur"]+=dur
-        workers[w]["dates"].add(r.get("date",""))
-        if r.get("date","")==today:
-            if w not in workers_today: workers_today[w]={"count":0,"total_dur":0}
-            workers_today[w]["count"]+=1
-            workers_today[w]["total_dur"]+=dur
-    # Per station stats
-    stations={}
-    for r in recs:
-        s=r.get("station","?")
-        if s not in stations: stations[s]={"count":0}
-        stations[s]["count"]+=1
-    # Build response
-    worker_list=[]
-    for w,d in workers.items():
-        avg=round(d["total_dur"]/d["count"],1) if d["count"]>0 else 0
-        td=workers_today.get(w,{"count":0,"total_dur":0})
-        avg_today=round(td["total_dur"]/td["count"],1) if td["count"]>0 else 0
-        worker_list.append({"name":w,"total":d["count"],"avg_seconds":avg,
-            "today":td["count"],"avg_today":avg_today,"days_worked":len(d["dates"])})
-    worker_list.sort(key=lambda x:x["today"],reverse=True)
-    station_list=[{"id":k,"count":v["count"]} for k,v in stations.items()]
-    # Daily totals (last 14 days)
-    daily={}
-    for r in recs:
-        dt=r.get("date","")
-        if dt not in daily: daily[dt]={"count":0,"total_dur":0}
-        daily[dt]["count"]+=1
-        try: daily[dt]["total_dur"]+=float(r.get("duration_seconds",0))
-        except: pass
-    daily_list=[]
-    for dt in sorted(daily.keys(),reverse=True)[:14]:
-        d=daily[dt]
-        avg=round(d["total_dur"]/d["count"],1) if d["count"]>0 else 0
-        daily_list.append({"date":dt,"count":d["count"],"avg_seconds":avg})
-    total_today=sum(v["count"] for v in workers_today.values())
-    return jsonify({"workers":worker_list,"stations":station_list,"daily":daily_list,
-        "total_today":total_today,"total_all":len(recs),"date":today})
-
-@app.route("/analytics")
-@req_role("admin","cs")
-def analytics_page():
-    disp="flex" if session.get("role")=="admin" else "none"
-    return ANALYTICS_HTML.replace("__NAME__",session.get("name","")).replace("__ADMIN_VIS__",disp)
-
 @app.route("/api/users")
 @req_role("admin")
 def api_users():
@@ -304,38 +204,6 @@ def api_pw():
     if u not in users: return jsonify({"ok":False})
     users[u]["password"]=_h(p);svj(USERS_FILE,users)
     return jsonify({"ok":True})
-
-@app.route("/api/storage")
-@req_role("admin")
-def api_storage():
-    vcount=0;vsize=0;pcount=0;psize=0
-    oldest=None;newest=None
-    if os.path.exists(VIDEO_DIR):
-        for f in os.listdir(VIDEO_DIR):
-            fp=os.path.join(VIDEO_DIR,f);vcount+=1;vsize+=os.path.getsize(fp)
-            mt=os.path.getmtime(fp)
-            if oldest is None or mt<oldest: oldest=mt
-            if newest is None or mt>newest: newest=mt
-    if os.path.exists(PHOTO_DIR):
-        for f in os.listdir(PHOTO_DIR):
-            fp=os.path.join(PHOTO_DIR,f);pcount+=1;psize+=os.path.getsize(fp)
-    total=(vsize+psize)/(1024*1024)
-    return jsonify({
-        "videos":vcount,"photos":pcount,
-        "video_size_mb":round(vsize/(1024*1024),1),
-        "photo_size_mb":round(psize/(1024*1024),1),
-        "total_mb":round(total,1),
-        "total_gb":round(total/1024,2),
-        "retention_days":RETENTION_DAYS,
-        "oldest":datetime.fromtimestamp(oldest).strftime('%Y-%m-%d') if oldest else None,
-        "newest":datetime.fromtimestamp(newest).strftime('%Y-%m-%d') if newest else None
-    })
-
-@app.route("/api/cleanup",methods=["POST"])
-@req_role("admin")
-def api_cleanup():
-    r=cleanup_old_files()
-    return jsonify({"ok":True,"deleted":r["deleted"],"freed_mb":r["freed_mb"]})
 
 @app.route("/media/video/<fn>")
 @req_role("admin","cs")
@@ -520,26 +388,11 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 @keyframes sp{to{transform:rotate(360deg)}}
 .ut{font-size:22px;font-weight:700;margin-bottom:6px}
 .uu{font-size:15px;color:#6b7a90}
-
-.w-icon{font-size:80px;margin-bottom:24px;animation:pop .5s cubic-bezier(.175,.885,.32,1.275)}
-.w-title{font-size:38px;font-weight:900;color:#e4e8f1;margin-bottom:8px}
-.w-sub{font-size:20px;color:#a5b4fc;margin-bottom:20px}
-.w-sub b{color:#818cf8}
-.w-msg{font-size:16px;color:#6b7a90;max-width:400px}
-
-.f-icon{font-size:80px;margin-bottom:24px;animation:pop .5s cubic-bezier(.175,.885,.32,1.275)}
-.f-title{font-size:38px;font-weight:900;color:#10b981;margin-bottom:8px}
-.f-sub{font-size:20px;color:#e4e8f1;margin-bottom:20px}
-.f-msg{font-size:16px;color:#6b7a90}
-body.sw{background:linear-gradient(135deg,#0c0f16,#111827)}
-body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
 </style></head><body class="sr">
-<div class="top"><div class="badge">__STATION__ — __NAME__</div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span>Camera</span></div><button class="out-b" id="endBtn">End Shift</button></div></div>
+<div class="top"><div class="badge">__STATION__ — __NAME__</div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span>Camera</span></div><button class="out-b" onclick="location.href='/logout'">End Shift</button></div></div>
 <div class="pv"><video id="pv" autoplay muted playsinline></video></div>
 
-<div class="x on" id="xw"><div class="w-icon">👋</div><div class="w-title">Welcome, __NAME__!</div><div class="w-sub">You are at <b>__STATION__</b></div><div class="w-msg">Have a great shift! Your camera is being set up...</div></div>
-
-<div class="x" id="xr"><div class="r-icon">📦</div><div class="r-title">Scan Tracking Number</div><div class="r-sub">Scan the barcode to start recording</div><div class="inp-w"><input class="inp" id="mi" placeholder="Waiting for scan..." autocomplete="off"></div><div class="hint"><span class="pd"></span>Scanner ready</div><div class="ctr">Recorded: <b id="cn">0</b></div></div>
+<div class="x on" id="xr"><div class="r-icon">📦</div><div class="r-title">Scan Tracking Number</div><div class="r-sub">Scan the barcode to start recording</div><div class="inp-w"><input class="inp" id="mi" placeholder="Waiting for scan..." autofocus autocomplete="off"></div><div class="hint"><span class="pd"></span>Scanner ready</div><div class="ctr">Recorded: <b id="cn">0</b></div></div>
 
 <div class="x" id="xc"><div class="rp"><div class="rd"></div><div class="rl">RECORDING</div></div><div class="rk" id="rk"></div><div class="rm" id="rmm">00:00</div><div class="steps"><div class="step ok"><div class="si">✓</div><span>Scan tracking number</span></div><div class="step now"><div class="si">2</div><span>Pack the order in front of the camera</span></div><div class="step"><div class="si">3</div><span>Scan again to finish</span></div></div><input class="hinp" id="ri" autocomplete="off"></div>
 
@@ -547,18 +400,14 @@ body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
 
 <div class="x" id="xd"><div class="d-icon">✓</div><div class="dt">Saved!</div><div class="dk" id="dkk"></div><div class="dd" id="ddd"></div><div class="dn">Next order...</div></div>
 
-<div class="x" id="xf"><div class="f-icon">🌟</div><div class="f-title">Great job today!</div><div class="f-sub">Thank you for your hard work, __NAME__</div><div class="f-msg">Have a wonderful day! See you next time 👋</div></div>
-
 <script>
-var st='w',ti=null,t0=0,n=0,mr=null,ch=[],sm=null,ct='';
+var st='r',ti=null,t0=0,n=0,mr=null,ch=[],sm=null,ct='';
 var mi=document.getElementById('mi'),ri=document.getElementById('ri');
-var X={w:document.getElementById('xw'),r:document.getElementById('xr'),c:document.getElementById('xc'),u:document.getElementById('xu'),d:document.getElementById('xd'),f:document.getElementById('xf')};
-function go(s){st=s;document.body.className=s==='c'?'sc':s==='d'?'sd':s==='u'?'su':s==='w'?'sw':s==='f'?'sf':'sr';
+var X={r:document.getElementById('xr'),c:document.getElementById('xc'),u:document.getElementById('xu'),d:document.getElementById('xd')};
+function go(s){st=s;document.body.className=s==='c'?'sc':s==='d'?'sd':s==='u'?'su':'sr';
 for(var k in X)X[k].classList.toggle('on',k===s);
 if(s==='r'){mi.value='';setTimeout(function(){mi.focus()},100)}
 if(s==='c'){ri.value='';setTimeout(function(){ri.focus()},100)}}
-setTimeout(function(){go('r')},3000);
-document.getElementById('endBtn').addEventListener('click',function(){go('f');setTimeout(function(){location.href='/logout'},3500)});
 document.addEventListener('click',function(){if(st==='r')mi.focus();if(st==='c')ri.focus()});
 setInterval(function(){if(st==='r'&&document.activeElement!==mi)mi.focus();if(st==='c'&&document.activeElement!==ri)ri.focus()},400);
 function initCam(){navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720}},audio:false}).then(function(s){sm=s;document.getElementById('pv').srcObject=s;document.getElementById('cm').className='cam ok'}).catch(function(){document.getElementById('cm').className='cam err'})}
@@ -620,9 +469,7 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 @media(max-width:600px){.rc-b{grid-template-columns:1fr}}
 .mb{border-radius:10px;overflow:hidden;background:#0c0f16;border:1px solid rgba(255,255,255,.04)}
 .mb video,.mb img{width:100%;display:block}
-.ml{padding:8px 14px;font-size:12px;color:#6b7a90;border-top:1px solid rgba(255,255,255,.04);display:flex;justify-content:space-between;align-items:center}
-.dl-btn{color:#818cf8;text-decoration:none;font-size:12px;font-weight:700;padding:4px 12px;border-radius:8px;background:rgba(79,70,229,.1);border:1px solid rgba(79,70,229,.2);transition:all .15s}
-.dl-btn:hover{background:rgba(79,70,229,.2)}
+.ml{padding:8px 14px;font-size:12px;color:#6b7a90;border-top:1px solid rgba(255,255,255,.04)}
 
 .sec-t{font-size:15px;font-weight:700;color:#6b7a90;margin:24px 0 12px;display:flex;align-items:center;gap:8px}
 .tbl{width:100%;background:rgba(21,25,33,.8);border:1px solid rgba(255,255,255,.06);border-radius:14px;overflow:hidden}
@@ -646,7 +493,6 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 <div class="logo"><div class="logo-i">🔍</div>Search Recordings</div>
 <div class="hdr-r">
 <div class="stat-pills"><div class="pill">🎥 <b id="sv">-</b></div><div class="pill">📸 <b id="sph">-</b></div><div class="pill">💾 <b id="ss">-</b></div></div>
-<a href="/analytics" class="nav-btn" style="display:flex">📊 Analytics</a>
 <a href="/users" class="nav-btn">👥 Manage Users</a>
 <a href="/logout" class="out-link">Logout (__NAME__)</a>
 </div></div>
@@ -669,7 +515,7 @@ function doSearch(){
             if(l){h+='<span>'+l.date+'</span><span>'+l.duration_seconds+'s</span>'}
             if(l&&l.worker)h+='<span>👤 '+l.worker+'</span>';
             h+='<span class="tag tag-s">'+v.station+'</span><span class="tag tag-g">✓ Found</span>';
-            h+='</div></div><div class="rc-b"><div class="mb"><video controls preload="metadata"><source src="'+v.url+'" type="video/webm"></video><div class="ml"><span>🎥 Video · '+v.size_mb+' MB</span><a href="'+v.url+'" download class="dl-btn">⬇ Download</a></div></div>';
+            h+='</div></div><div class="rc-b"><div class="mb"><video controls preload="metadata"><source src="'+v.url+'" type="video/webm"></video><div class="ml">🎥 Video · '+v.size_mb+' MB</div></div>';
             if(p)h+='<div class="mb"><img src="'+p.url+'"><div class="ml">📸 Photo</div></div>';
             h+='</div></div>';
         }
@@ -799,158 +645,6 @@ function changePw(u){
     .then(function(r){return r.json()}).then(function(d){alert(d.ok?'Password changed!':'Failed')});
 }
 loadUsers();
-</script></body></html>'''
-
-# ── ANALYTICS PAGE ────────────────────────────────────────
-ANALYTICS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-''' + _FONT + '''
-<title>Analytics</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
-.hdr{background:rgba(21,25,33,.9);backdrop-filter:blur(10px);border-bottom:1px solid rgba(255,255,255,.06);padding:16px 28px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;position:sticky;top:0;z-index:10}
-.logo{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:800}
-.logo-i{width:36px;height:36px;background:linear-gradient(135deg,#f59e0b,#ef4444);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
-.hdr-r{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-.nav-btn{color:#a5b4fc;text-decoration:none;font-size:13px;font-weight:600;padding:8px 16px;border:1.5px solid rgba(79,70,229,.3);border-radius:10px;background:rgba(79,70,229,.08);transition:all .2s}
-.nav-btn:hover{background:rgba(79,70,229,.15)}
-.out-link{color:#6b7a90;text-decoration:none;font-size:13px;padding:8px 14px;border:1px solid rgba(255,255,255,.06);border-radius:10px}
-
-.content{padding:28px;max-width:1000px;margin:0 auto}
-
-.big-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:28px}
-.big-stat{background:rgba(21,25,33,.8);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:24px;text-align:center}
-.big-stat .num{font-size:42px;font-weight:900;line-height:1}
-.big-stat .lbl{font-size:13px;color:#6b7a90;margin-top:8px;font-weight:500}
-.c-blue .num{color:#818cf8}
-.c-green .num{color:#10b981}
-.c-orange .num{color:#f59e0b}
-.c-pink .num{color:#f43f5e}
-
-.sec{margin-bottom:28px}
-.sec-t{font-size:17px;font-weight:800;margin-bottom:14px;display:flex;align-items:center;gap:8px}
-
-.w-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
-.w-card{background:rgba(21,25,33,.8);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:20px;transition:all .2s}
-.w-card:hover{border-color:rgba(79,70,229,.2);background:rgba(21,25,33,.95)}
-.w-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
-.w-name{font-size:18px;font-weight:800}
-.w-badge{font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px}
-.w-active{background:rgba(16,185,129,.1);color:#10b981}
-.w-idle{background:rgba(255,255,255,.04);color:#6b7a90}
-.w-stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.w-stat{background:rgba(255,255,255,.03);border-radius:10px;padding:12px;text-align:center}
-.w-stat .val{font-size:24px;font-weight:800;color:#e4e8f1}
-.w-stat .lab{font-size:11px;color:#6b7a90;margin-top:2px;text-transform:uppercase;letter-spacing:.3px}
-.w-stat.hl .val{color:#818cf8}
-
-.d-table{width:100%;background:rgba(21,25,33,.8);border:1px solid rgba(255,255,255,.06);border-radius:14px;overflow:hidden}
-.d-table table{width:100%;border-collapse:collapse}
-.d-table th{background:rgba(255,255,255,.02);padding:12px 16px;font-size:11px;font-weight:700;color:#6b7a90;text-align:left;border-bottom:1px solid rgba(255,255,255,.04);text-transform:uppercase;letter-spacing:.4px}
-.d-table td{padding:12px 16px;font-size:14px;border-bottom:1px solid rgba(255,255,255,.03)}
-.d-table tr:last-child td{border-bottom:none}
-.d-table tr:hover td{background:rgba(79,70,229,.03)}
-.d-table .today{background:rgba(79,70,229,.06)}
-.d-table .today td{font-weight:700;color:#a5b4fc}
-.bar{height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden;margin-top:4px}
-.bar-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,#4f46e5,#818cf8)}
-
-.ld{text-align:center;padding:40px;color:#6b7a90}
-.spn{width:28px;height:28px;border:3px solid rgba(255,255,255,.06);border-top-color:#4f46e5;border-radius:50%;animation:sp .8s linear infinite;margin:0 auto 8px}
-@keyframes sp{to{transform:rotate(360deg)}}
-</style></head><body>
-<div class="hdr">
-<div class="logo"><div class="logo-i">📊</div>Analytics</div>
-<div class="hdr-r">
-<a href="/dashboard" class="nav-btn">🔍 Search</a>
-<a href="/users" class="nav-btn" style="display:__ADMIN_VIS__">👥 Users</a>
-<a href="/logout" class="out-link">Logout (__NAME__)</a>
-</div></div>
-
-<div class="content">
-<div class="big-stats" id="bigStats"><div class="ld"><div class="spn"></div>Loading...</div></div>
-
-<div class="sec">
-<div class="sec-t">👷 Worker Performance — Today</div>
-<div class="w-grid" id="workerGrid"><div class="ld"><div class="spn"></div></div></div>
-</div>
-
-<div class="sec">
-<div class="sec-t">📅 Daily Summary (Last 14 Days)</div>
-<div id="dailyTable"><div class="ld"><div class="spn"></div></div></div>
-</div>
-
-<div class="sec" id="storageSection" style="display:none">
-<div class="sec-t">💾 Storage</div>
-<div class="w-grid" id="storageGrid"></div>
-</div>
-</div>
-
-<script>
-fetch('/api/analytics').then(function(r){return r.json()}).then(function(d){
-    // Big stats
-    var avgAll=0;
-    if(d.workers.length){
-        var totalSec=0,totalCount=0;
-        d.workers.forEach(function(w){totalSec+=w.avg_seconds*w.total;totalCount+=w.total});
-        avgAll=totalCount?Math.round(totalSec/totalCount):0;
-    }
-    document.getElementById('bigStats').innerHTML=
-        '<div class="big-stat c-blue"><div class="num">'+d.total_today+'</div><div class="lbl">Packed Today</div></div>'+
-        '<div class="big-stat c-green"><div class="num">'+d.total_all+'</div><div class="lbl">Total All Time</div></div>'+
-        '<div class="big-stat c-orange"><div class="num">'+avgAll+'s</div><div class="lbl">Avg Pack Time</div></div>'+
-        '<div class="big-stat c-pink"><div class="num">'+d.workers.length+'</div><div class="lbl">Total Workers</div></div>';
-
-    // Worker cards
-    if(!d.workers.length){
-        document.getElementById('workerGrid').innerHTML='<div class="ld">No data yet</div>';
-    } else {
-        var maxToday=Math.max.apply(null,d.workers.map(function(w){return w.today}))||1;
-        var cards='';
-        d.workers.forEach(function(w){
-            var active=w.today>0;
-            cards+='<div class="w-card">'+
-                '<div class="w-top"><div class="w-name">'+w.name+'</div><span class="w-badge '+(active?'w-active':'w-idle')+'">'+(active?'Active today':'Idle')+'</span></div>'+
-                '<div class="w-stats">'+
-                '<div class="w-stat hl"><div class="val">'+w.today+'</div><div class="lab">Today</div></div>'+
-                '<div class="w-stat"><div class="val">'+w.avg_today+'s</div><div class="lab">Avg Today</div></div>'+
-                '<div class="w-stat"><div class="val">'+w.total+'</div><div class="lab">All Time</div></div>'+
-                '<div class="w-stat"><div class="val">'+w.avg_seconds+'s</div><div class="lab">Avg All</div></div>'+
-                '</div>'+
-                '<div class="bar"><div class="bar-fill" style="width:'+Math.round(w.today/maxToday*100)+'%"></div></div>'+
-                '</div>';
-        });
-        document.getElementById('workerGrid').innerHTML=cards;
-    }
-
-    // Daily table
-    if(!d.daily.length){
-        document.getElementById('dailyTable').innerHTML='<div class="ld">No data yet</div>';
-    } else {
-        var maxDay=Math.max.apply(null,d.daily.map(function(dy){return dy.count}))||1;
-        var rows='';
-        d.daily.forEach(function(dy){
-            var isToday=dy.date===d.date;
-            rows+='<tr class="'+(isToday?'today':'')+'">'+
-                '<td>'+(isToday?'📌 Today — ':'')+dy.date+'</td>'+
-                '<td><b>'+dy.count+'</b> packages</td>'+
-                '<td>'+dy.avg_seconds+'s avg</td>'+
-                '<td><div class="bar"><div class="bar-fill" style="width:'+Math.round(dy.count/maxDay*100)+'%"></div></div></td>'+
-                '</tr>';
-        });
-        document.getElementById('dailyTable').innerHTML=
-            '<div class="d-table"><table><thead><tr><th>Date</th><th>Packages</th><th>Avg Time</th><th>Volume</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
-    }
-});
-fetch('/api/storage').then(function(r){return r.json()}).then(function(s){
-    document.getElementById('storageSection').style.display='block';
-    document.getElementById('storageGrid').innerHTML=
-        '<div class="w-card"><div class="w-top"><div class="w-name">Videos</div></div><div class="w-stats"><div class="w-stat hl"><div class="val">'+s.videos+'</div><div class="lab">Files</div></div><div class="w-stat"><div class="val">'+s.video_size_mb+' MB</div><div class="lab">Size</div></div></div></div>'+
-        '<div class="w-card"><div class="w-top"><div class="w-name">Photos</div></div><div class="w-stats"><div class="w-stat hl"><div class="val">'+s.photos+'</div><div class="lab">Files</div></div><div class="w-stat"><div class="val">'+s.photo_size_mb+' MB</div><div class="lab">Size</div></div></div></div>'+
-        '<div class="w-card"><div class="w-top"><div class="w-name">Total Storage</div></div><div class="w-stats"><div class="w-stat hl"><div class="val">'+s.total_gb+' GB</div><div class="lab">Used</div></div><div class="w-stat"><div class="val">'+s.retention_days+' days</div><div class="lab">Retention</div></div></div></div>'+
-        '<div class="w-card"><div class="w-top"><div class="w-name">Date Range</div></div><div class="w-stats"><div class="w-stat"><div class="val">'+(s.oldest||'-')+'</div><div class="lab">Oldest</div></div><div class="w-stat"><div class="val">'+(s.newest||'-')+'</div><div class="lab">Newest</div></div></div></div>';
-}).catch(function(){});
 </script></body></html>'''
 
 if __name__=="__main__":
