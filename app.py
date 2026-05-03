@@ -169,6 +169,23 @@ if not os.path.exists(USERS_FILE):
 _init(STATIONS_FILE,{"S1":"Station 1","S2":"Station 2","S3":"Station 3","S4":"Station 4","S5":"Station 5","S6":"Station 6"})
 
 # ══════════════════════════════════════════════════════════
+# ANTHROPIC AI - for parsing addresses from DMs
+# ══════════════════════════════════════════════════════════
+ANTHROPIC_API_KEY=os.environ.get("ANTHROPIC_API_KEY")
+anthropic_client=None
+if ANTHROPIC_API_KEY:
+    try:
+        import anthropic
+        anthropic_client=anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        print("Anthropic AI enabled (address parsing)",flush=True)
+    except ImportError:
+        print("WARN: ANTHROPIC_API_KEY set but 'anthropic' package not installed",flush=True)
+    except Exception as e:
+        print("WARN: Anthropic client init failed:",e,flush=True)
+else:
+    print("Anthropic AI not configured (manual address entry only)",flush=True)
+
+# ══════════════════════════════════════════════════════════
 # GIVEAWAY MODULE - SQLite database
 # ══════════════════════════════════════════════════════════
 GIVEAWAY_DB=os.path.join(DATA_DIR,"giveaways.db")
@@ -709,6 +726,65 @@ def api_giveaway_notes(gid):
     c.execute("UPDATE giveaways SET notes=? WHERE id=?",(notes or None,gid))
     c.commit();c.close()
     return jsonify({"ok":True})
+
+@app.route("/api/giveaway/parse-address",methods=["POST"])
+@req_role("admin")
+def api_giveaway_parse_address():
+    """Use Claude AI to extract a structured US shipping address from messy DM text."""
+    if not anthropic_client:
+        return jsonify({"ok":False,"error":"AI not configured. Add ANTHROPIC_API_KEY to environment."}),503
+    d=request.get_json() or {}
+    dm_text=(d.get("dm_text") or "").strip()
+    if not dm_text:
+        return jsonify({"ok":False,"error":"DM text is empty"})
+    if len(dm_text)>5000:
+        return jsonify({"ok":False,"error":"DM text too long (max 5000 chars)"})
+    # Strict prompt: pure JSON output, no commentary, US-only assumption.
+    prompt=("Extract a US shipping address from this message. The customer is providing their address "
+        "for a giveaway prize. Return ONLY valid JSON (no markdown, no commentary) with these exact keys:\n"
+        '{"name":"","street1":"","street2":"","city":"","state":"","zip":"","confidence":"high|medium|low","missing":[]}\n\n'
+        "Rules:\n"
+        "- name: full recipient name (capitalize properly)\n"
+        "- street1: primary street address (number + street name)\n"
+        "- street2: apt/suite/unit if present, else empty string\n"
+        "- city: city name (capitalize properly)\n"
+        "- state: 2-letter US state code (uppercase, e.g. NY, FL, CA)\n"
+        "- zip: 5-digit ZIP, or 5+4 format\n"
+        "- confidence: 'high' if all required fields clearly present, 'medium' if some are inferred, 'low' if uncertain\n"
+        "- missing: array of field names that could not be extracted (e.g. ['street2'] if no apt provided is OK; only include truly missing required fields)\n\n"
+        "If a field is genuinely absent or unclear, leave it as empty string and include in 'missing' array.\n"
+        "Do NOT invent data. Do NOT add commentary. Output ONLY the JSON object.\n\n"
+        "Message:\n"+dm_text)
+    try:
+        msg=anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            messages=[{"role":"user","content":prompt}]
+        )
+        raw=msg.content[0].text.strip()
+        # Strip code fences if Claude added them despite instructions
+        if raw.startswith("```"):
+            raw=re.sub(r'^```(?:json)?\s*','',raw)
+            raw=re.sub(r'\s*```$','',raw)
+        parsed=json.loads(raw)
+        # Sanitize/normalize
+        out={
+            "name":(parsed.get("name") or "").strip(),
+            "street1":(parsed.get("street1") or "").strip(),
+            "street2":(parsed.get("street2") or "").strip(),
+            "city":(parsed.get("city") or "").strip(),
+            "state":(parsed.get("state") or "").strip().upper()[:2],
+            "zip":(parsed.get("zip") or "").strip(),
+            "confidence":(parsed.get("confidence") or "low").lower(),
+            "missing":parsed.get("missing") or []
+        }
+        if out["confidence"] not in ("high","medium","low"): out["confidence"]="low"
+        return jsonify({"ok":True,"parsed":out})
+    except json.JSONDecodeError:
+        return jsonify({"ok":False,"error":"AI returned invalid format. Try again or enter manually."})
+    except Exception as e:
+        print("AI parse failed:",e,flush=True)
+        return jsonify({"ok":False,"error":"AI service error: "+str(e)[:100]})
 
 # ══════════════════════════════════════════════════════════
 # END GIVEAWAY ROUTES
@@ -1474,6 +1550,13 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 .btn-s:hover{background:rgba(16,185,129,.25)}
 .btn-d{background:rgba(244,63,94,.1);color:#fb7185;border:1.5px solid rgba(244,63,94,.2)}
 .btn-d:hover{background:rgba(244,63,94,.2)}
+.btn-ai{background:linear-gradient(135deg,#a78bfa,#ec4899);color:white;box-shadow:0 4px 16px rgba(167,139,250,.3)}
+.btn-ai:hover{transform:translateY(-1px)}
+.btn-ai:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.conf-badge{display:inline-block;padding:2px 9px;border-radius:50px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-left:8px}
+.conf-high{background:rgba(52,211,153,.15);color:#34d399}
+.conf-medium{background:rgba(251,191,36,.15);color:#fbbf24}
+.conf-low{background:rgba(244,63,94,.15);color:#fb7185}
 .btn-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
 .toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:white;padding:14px 22px;border-radius:10px;font-weight:600;box-shadow:0 10px 40px rgba(16,185,129,.4);z-index:100;display:none}
 .toast.err{background:#f43f5e}
@@ -1505,8 +1588,10 @@ function render(){
     // Address section
     if(g.status==='pending_address'){
         h+='<div class="section"><h3>📥 Capture Address from DM</h3>'+
-            '<div class="tip">💡 Tip: Paste the entire DM message from the winner. The fields below need to be filled in. (AI auto-parse coming in next update — for now, manual.)</div>'+
-            '<div class="f"><label>Original DM Text (for reference)</label><textarea id="dm" placeholder="Paste the DM here so it stays linked to this giveaway..."></textarea></div>'+
+            '<div class="tip">💡 Paste the DM text below and click <b>✨ Parse with AI</b> to extract the address automatically. Then review and save.</div>'+
+            '<div class="f"><label>DM Text from Winner</label><textarea id="dm" placeholder="Paste the DM here, e.g.: hi! my address is jane smith 123 main st apt 5 brooklyn ny 11201"></textarea></div>'+
+            '<div class="btn-row" style="margin-bottom:18px"><button class="btn btn-ai" id="parseBtn">✨ Parse with AI</button>'+
+            '<span id="parseStatus" style="align-self:center;font-size:13px;color:#6b7a90"></span></div>'+
             addressForm({})+
             '<div class="btn-row"><button class="btn btn-p" id="saveAddr">Save Address</button>'+
             '<button class="btn btn-d" id="cancel">Cancel Giveaway</button></div></div>';
@@ -1553,6 +1638,38 @@ function addressForm(g){
         '<div class="f"><label>ZIP *</label><input id="az" value="'+esc(g.address_zip||'')+'" placeholder="11201"></div></div>';
 }
 function bindEvents(){
+    var pb=document.getElementById('parseBtn');
+    if(pb)pb.addEventListener('click',function(){
+        var dm=document.getElementById('dm').value.trim();
+        if(!dm){toast('Paste the DM first',true);return}
+        pb.disabled=true;pb.textContent='✨ Parsing...';
+        var st=document.getElementById('parseStatus');st.textContent='AI is reading the message...';
+        fetch('/api/giveaway/parse-address',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dm_text:dm})})
+            .then(function(r){return r.json()}).then(function(d){
+                pb.disabled=false;pb.textContent='✨ Parse with AI';
+                if(d.ok){
+                    var p=d.parsed;
+                    document.getElementById('an').value=p.name||'';
+                    document.getElementById('as1').value=p.street1||'';
+                    document.getElementById('as2').value=p.street2||'';
+                    document.getElementById('ac').value=p.city||'';
+                    document.getElementById('ast').value=p.state||'';
+                    document.getElementById('az').value=p.zip||'';
+                    var conf={high:'conf-high',medium:'conf-medium',low:'conf-low'}[p.confidence]||'conf-low';
+                    var miss=p.missing&&p.missing.length?' · Missing: '+p.missing.join(', '):'';
+                    st.innerHTML='<span class="conf-badge '+conf+'">'+p.confidence+'</span> Review the fields below'+miss;
+                    if(p.confidence==='high')toast('Parsed! Please verify the fields');
+                    else if(p.confidence==='medium')toast('Parsed with some uncertainty - please verify',true);
+                    else toast('Low confidence - please review carefully',true);
+                } else {
+                    st.textContent='';
+                    toast(d.error||'AI parsing failed',true);
+                }
+            }).catch(function(){
+                pb.disabled=false;pb.textContent='✨ Parse with AI';
+                st.textContent='';toast('Network error',true);
+            });
+    });
     var sa=document.getElementById('saveAddr');
     if(sa)sa.addEventListener('click',function(){
         var p={
