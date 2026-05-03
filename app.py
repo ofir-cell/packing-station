@@ -3,7 +3,7 @@
 5 Second Beauty — Packing Station
 Production web app for packing video recording & lookup.
 """
-import os,csv,json,hashlib,secrets,time,threading,re,sys
+import os,csv,json,hashlib,secrets,time,threading,re,sys,sqlite3
 from datetime import datetime,timedelta
 from functools import wraps
 from flask import Flask,request,jsonify,send_file,redirect,session
@@ -167,6 +167,56 @@ if not os.path.exists(USERS_FILE):
     print("="*70,flush=True)
 
 _init(STATIONS_FILE,{"S1":"Station 1","S2":"Station 2","S3":"Station 3","S4":"Station 4","S5":"Station 5","S6":"Station 6"})
+
+# ══════════════════════════════════════════════════════════
+# GIVEAWAY MODULE - SQLite database
+# ══════════════════════════════════════════════════════════
+GIVEAWAY_DB=os.path.join(DATA_DIR,"giveaways.db")
+GIVEAWAY_BRANDS=["5 Sec Beauty","Hera Beauty","Peach Beauty"]
+GIVEAWAY_STATUSES=["pending_address","address_received","label_created","shipped","cancelled"]
+
+def gdb():
+    """Get a SQLite connection with row factory."""
+    c=sqlite3.connect(GIVEAWAY_DB,timeout=10.0)
+    c.row_factory=sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA foreign_keys=ON")
+    return c
+
+def gdb_init():
+    """Create the giveaway table if it doesn't exist."""
+    c=gdb()
+    c.execute("""CREATE TABLE IF NOT EXISTS giveaways(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        winner_username TEXT NOT NULL,
+        prize_name TEXT NOT NULL,
+        brand TEXT,
+        platform TEXT DEFAULT 'tiktok',
+        status TEXT NOT NULL DEFAULT 'pending_address',
+        address_name TEXT,
+        address_street1 TEXT,
+        address_street2 TEXT,
+        address_city TEXT,
+        address_state TEXT,
+        address_zip TEXT,
+        address_country TEXT DEFAULT 'US',
+        dm_text TEXT,
+        shippo_label_url TEXT,
+        shippo_label_pdf TEXT,
+        tracking_number TEXT,
+        label_cost REAL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        address_received_at TEXT,
+        shipped_at TEXT,
+        created_by TEXT,
+        notes TEXT
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_giveaways_status ON giveaways(status)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_giveaways_created ON giveaways(created_at DESC)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_giveaways_winner ON giveaways(winner_username)")
+    c.commit();c.close()
+
+gdb_init()
 
 app=Flask(__name__)
 app.secret_key=SECRET_KEY
@@ -530,6 +580,140 @@ def serve_p(fn):
     return send_file(real,mimetype="image/jpeg") if os.path.exists(real) else ("",404)
 
 # ══════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════
+# GIVEAWAY ROUTES (Phase A - manual entry, no AI/Shippo yet)
+# ══════════════════════════════════════════════════════════
+
+@app.route("/giveaway")
+@req_role("admin")
+def giveaway_dashboard():
+    return GIVEAWAY_DASH_HTML.replace("__NAME__",session.get("name",""))
+
+@app.route("/giveaway/<int:gid>")
+@req_role("admin")
+def giveaway_detail(gid):
+    return GIVEAWAY_DETAIL_HTML.replace("__GID__",str(gid)).replace("__NAME__",session.get("name",""))
+
+@app.route("/api/giveaway/list")
+@req_role("admin")
+def api_giveaway_list():
+    """Get all giveaways grouped by status for dashboard."""
+    c=gdb()
+    rows=c.execute("SELECT * FROM giveaways WHERE status!='cancelled' ORDER BY created_at DESC").fetchall()
+    c.close()
+    grouped={"pending_address":[],"address_received":[],"label_created":[],"shipped":[]}
+    today=datetime.now().strftime('%Y-%m-%d')
+    for r in rows:
+        d=dict(r)
+        # Only show today's shipped on the dashboard to keep it focused
+        if d["status"]=="shipped":
+            ship_date=(d.get("shipped_at") or "")[:10]
+            if ship_date!=today: continue
+        if d["status"] in grouped: grouped[d["status"]].append(d)
+    return jsonify({"groups":grouped,"brands":GIVEAWAY_BRANDS})
+
+@app.route("/api/giveaway/<int:gid>")
+@req_role("admin")
+def api_giveaway_get(gid):
+    c=gdb()
+    r=c.execute("SELECT * FROM giveaways WHERE id=?",(gid,)).fetchone()
+    c.close()
+    if not r: return jsonify({"ok":False,"error":"Not found"}),404
+    return jsonify({"ok":True,"giveaway":dict(r),"brands":GIVEAWAY_BRANDS})
+
+@app.route("/api/giveaway",methods=["POST"])
+@req_role("admin")
+def api_giveaway_create():
+    d=request.get_json() or {}
+    winner=(d.get("winner_username") or "").strip().lstrip("@")
+    prize=(d.get("prize_name") or "").strip()
+    brand=(d.get("brand") or "").strip()
+    platform=(d.get("platform") or "tiktok").strip()
+    if not winner or not prize:
+        return jsonify({"ok":False,"error":"Winner and prize are required"})
+    if brand and brand not in GIVEAWAY_BRANDS:
+        return jsonify({"ok":False,"error":"Invalid brand"})
+    if platform not in ("tiktok","whatnot"):
+        return jsonify({"ok":False,"error":"Invalid platform"})
+    c=gdb()
+    cur=c.execute("""INSERT INTO giveaways(winner_username,prize_name,brand,platform,created_by)
+        VALUES(?,?,?,?,?)""",(winner,prize,brand or None,platform,session.get("name","")))
+    gid=cur.lastrowid;c.commit();c.close()
+    return jsonify({"ok":True,"id":gid})
+
+@app.route("/api/giveaway/<int:gid>/address",methods=["POST"])
+@req_role("admin")
+def api_giveaway_address(gid):
+    """Save address (manual or after AI parse) and advance status."""
+    d=request.get_json() or {}
+    fields={
+        "address_name":(d.get("address_name") or "").strip(),
+        "address_street1":(d.get("address_street1") or "").strip(),
+        "address_street2":(d.get("address_street2") or "").strip() or None,
+        "address_city":(d.get("address_city") or "").strip(),
+        "address_state":(d.get("address_state") or "").strip().upper(),
+        "address_zip":(d.get("address_zip") or "").strip(),
+        "address_country":(d.get("address_country") or "US").strip().upper(),
+        "dm_text":(d.get("dm_text") or "").strip() or None,
+    }
+    # Required fields for shipping
+    required=["address_name","address_street1","address_city","address_state","address_zip"]
+    missing=[f for f in required if not fields[f]]
+    if missing:
+        return jsonify({"ok":False,"error":"Missing fields: "+", ".join(missing)})
+    # Validate state and zip format (US)
+    if fields["address_country"]=="US":
+        if not re.match(r'^[A-Z]{2}$',fields["address_state"]):
+            return jsonify({"ok":False,"error":"State must be 2-letter code (e.g. FL, NY)"})
+        if not re.match(r'^\d{5}(-\d{4})?$',fields["address_zip"]):
+            return jsonify({"ok":False,"error":"ZIP must be 5 digits or 5+4"})
+    c=gdb()
+    sets=", ".join([k+"=?" for k in fields.keys()])
+    vals=list(fields.values())
+    c.execute("UPDATE giveaways SET "+sets+", status=?, address_received_at=COALESCE(address_received_at,?) WHERE id=?",
+        vals+["address_received",datetime.now().isoformat(timespec='seconds'),gid])
+    c.commit();c.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/giveaway/<int:gid>/ship",methods=["POST"])
+@req_role("admin")
+def api_giveaway_ship(gid):
+    """Mark as shipped (Phase A: manual tracking number entry)."""
+    d=request.get_json() or {}
+    tracking=(d.get("tracking_number") or "").strip()
+    notes=(d.get("notes") or "").strip() or None
+    if not tracking:
+        return jsonify({"ok":False,"error":"Tracking number is required"})
+    if not re.match(r'^[A-Za-z0-9_\- ]{1,64}$',tracking):
+        return jsonify({"ok":False,"error":"Invalid tracking format"})
+    c=gdb()
+    c.execute("UPDATE giveaways SET tracking_number=?, notes=COALESCE(?,notes), status='shipped', shipped_at=? WHERE id=?",
+        (tracking,notes,datetime.now().isoformat(timespec='seconds'),gid))
+    c.commit();c.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/giveaway/<int:gid>/cancel",methods=["POST"])
+@req_role("admin")
+def api_giveaway_cancel(gid):
+    c=gdb()
+    c.execute("UPDATE giveaways SET status='cancelled' WHERE id=?",(gid,))
+    c.commit();c.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/giveaway/<int:gid>/notes",methods=["POST"])
+@req_role("admin")
+def api_giveaway_notes(gid):
+    d=request.get_json() or {}
+    notes=(d.get("notes") or "").strip()
+    c=gdb()
+    c.execute("UPDATE giveaways SET notes=? WHERE id=?",(notes or None,gid))
+    c.commit();c.close()
+    return jsonify({"ok":True})
+
+# ══════════════════════════════════════════════════════════
+# END GIVEAWAY ROUTES
+# ══════════════════════════════════════════════════════════
+
 # HTML TEMPLATES (no f-strings to avoid escaping nightmares)
 # ══════════════════════════════════════════════════════════
 
@@ -827,6 +1011,7 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 <div class="hdr-r">
 <div class="stat-pills"><div class="pill">🎥 <b id="sv">-</b></div><div class="pill">📸 <b id="sph">-</b></div><div class="pill">💾 <b id="ss">-</b></div></div>
 <a href="/analytics" class="nav-btn" style="display:flex">📊 Analytics</a>
+<a href="/giveaway" class="nav-btn" style="display:__ADMIN_VIS__">🎁 Giveaways</a>
 <a href="/users" class="nav-btn">👥 Manage Users</a>
 <a href="/logout" class="out-link">Logout (__NAME__)</a>
 </div></div>
@@ -1132,6 +1317,285 @@ fetch('/api/storage').then(function(r){return r.json()}).then(function(s){
         '<div class="w-card"><div class="w-top"><div class="w-name">Date Range</div></div><div class="w-stats"><div class="w-stat"><div class="val">'+(s.oldest||'-')+'</div><div class="lab">Oldest</div></div><div class="w-stat"><div class="val">'+(s.newest||'-')+'</div><div class="lab">Newest</div></div></div></div>';
 }).catch(function(){});
 </script></body></html>'''
+
+# ══════════════════════════════════════════════════════════
+# GIVEAWAY HTML TEMPLATES
+# ══════════════════════════════════════════════════════════
+
+GIVEAWAY_DASH_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Giveaway Manager</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.nav{background:rgba(21,25,33,.8);border-bottom:1px solid rgba(255,255,255,.06);padding:14px 28px;display:flex;justify-content:space-between;align-items:center;backdrop-filter:blur(20px);position:sticky;top:0;z-index:50}
+.nav h1{font-size:20px;font-weight:800}
+.nav h1 span{color:#a5b4fc;margin-left:8px}
+.nav-r{display:flex;gap:14px;align-items:center;font-size:13px;color:#6b7a90}
+.nav-r a{color:#a5b4fc;text-decoration:none;font-weight:600;padding:6px 14px;border-radius:8px;background:rgba(79,70,229,.1);border:1px solid rgba(79,70,229,.2)}
+.nav-r a:hover{background:rgba(79,70,229,.2)}
+.wrap{max-width:1600px;margin:0 auto;padding:28px}
+.add-card{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:20px 24px;margin-bottom:24px}
+.add-title{font-size:14px;font-weight:700;color:#a5b4fc;margin-bottom:14px;text-transform:uppercase;letter-spacing:.6px}
+.add-row{display:grid;grid-template-columns:1fr 2fr 1fr 1fr auto;gap:12px;align-items:end}
+.f label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+.f input,.f select{width:100%;background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:11px 14px;font-size:14px;color:#e4e8f1;font-family:inherit;outline:none;transition:all .2s}
+.f input:focus,.f select:focus{border-color:#4f46e5}
+.btn{border:none;border-radius:10px;padding:11px 22px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .15s}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:white;box-shadow:0 4px 16px rgba(79,70,229,.3)}
+.btn-p:hover{transform:translateY(-1px)}
+.btn-s{background:rgba(255,255,255,.08);color:#e4e8f1;border:1px solid rgba(255,255,255,.1)}
+.cols{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+@media(max-width:1100px){.cols{grid-template-columns:repeat(2,1fr)}.add-row{grid-template-columns:1fr 1fr;}}
+@media(max-width:640px){.cols{grid-template-columns:1fr}.add-row{grid-template-columns:1fr}}
+.col{background:rgba(21,25,33,.4);border:1px solid rgba(255,255,255,.04);border-radius:14px;padding:16px;min-height:200px}
+.col-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid rgba(255,255,255,.05)}
+.col-t{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;display:flex;align-items:center;gap:8px}
+.col.pa .col-t{color:#fbbf24}.col.ar .col-t{color:#60a5fa}.col.lc .col-t{color:#a78bfa}.col.sh .col-t{color:#34d399}
+.cnt{font-size:11px;font-weight:700;background:rgba(255,255,255,.05);padding:3px 9px;border-radius:50px;color:#6b7a90}
+.card{background:rgba(11,14,20,.6);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:14px;margin-bottom:10px;cursor:pointer;transition:all .15s;display:block;text-decoration:none;color:inherit}
+.card:hover{transform:translateY(-1px);border-color:rgba(79,70,229,.4)}
+.card-w{font-size:14px;font-weight:700;margin-bottom:4px}
+.card-w .at{color:#6b7a90;font-weight:400}
+.card-p{font-size:13px;color:#a5b4fc;margin-bottom:8px;line-height:1.4}
+.card-m{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#6b7a90}
+.card-m .pl{padding:2px 8px;border-radius:50px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;font-size:10px}
+.pl.tt{background:rgba(244,63,94,.15);color:#fb7185}
+.pl.wn{background:rgba(245,158,11,.15);color:#fbbf24}
+.empty{text-align:center;color:#3a4252;font-size:13px;padding:30px 10px;font-style:italic}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:white;padding:14px 22px;border-radius:10px;font-weight:600;box-shadow:0 10px 40px rgba(16,185,129,.4);z-index:100;display:none;animation:slideIn .3s}
+.toast.err{background:#f43f5e;box-shadow:0 10px 40px rgba(244,63,94,.4)}
+@keyframes slideIn{from{transform:translateX(120%)}to{transform:translateX(0)}}
+</style></head><body>
+<div class="nav"><h1>🎁 Giveaway Manager <span>__NAME__</span></h1>
+<div class="nav-r"><a href="/dashboard">← Packing Dashboard</a><a href="/logout" style="background:rgba(244,63,94,.1);border-color:rgba(244,63,94,.2);color:#fb7185">Logout</a></div></div>
+<div class="wrap">
+<div class="add-card">
+<div class="add-title">+ Add New Giveaway Winner</div>
+<div class="add-row">
+<div class="f"><label>Platform</label><select id="pl"><option value="tiktok">TikTok</option><option value="whatnot">Whatnot</option></select></div>
+<div class="f"><label>Prize Name</label><input id="pn" placeholder="e.g. Sol for the soul GIVYYYY"></div>
+<div class="f"><label>Winner Username</label><input id="wu" placeholder="e.g. jackiiealaniz"></div>
+<div class="f"><label>Brand</label><select id="br"><option value="">-- Select --</option></select></div>
+<button class="btn btn-p" id="add">Add Giveaway</button>
+</div>
+</div>
+
+<div class="cols">
+<div class="col pa"><div class="col-h"><div class="col-t">📋 Pending Address</div><div class="cnt" id="c-pa">0</div></div><div id="g-pa"></div></div>
+<div class="col ar"><div class="col-h"><div class="col-t">✏️ Address Received</div><div class="cnt" id="c-ar">0</div></div><div id="g-ar"></div></div>
+<div class="col lc"><div class="col-h"><div class="col-t">📦 Label Created</div><div class="cnt" id="c-lc">0</div></div><div id="g-lc"></div></div>
+<div class="col sh"><div class="col-h"><div class="col-t">✅ Shipped Today</div><div class="cnt" id="c-sh">0</div></div><div id="g-sh"></div></div>
+</div>
+</div>
+<div class="toast" id="t"></div>
+<script>
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
+function timeAgo(ts){if(!ts)return '';var d=new Date(ts);var s=Math.floor((Date.now()-d.getTime())/1000);if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}
+function card(g){
+    var pl=g.platform==='tiktok'?'<span class="pl tt">TikTok</span>':'<span class="pl wn">Whatnot</span>';
+    var br=g.brand?' · '+g.brand:'';
+    return '<a class="card" href="/giveaway/'+g.id+'">'+
+        '<div class="card-w"><span class="at">@</span>'+g.winner_username+'</div>'+
+        '<div class="card-p">'+g.prize_name+'</div>'+
+        '<div class="card-m">'+pl+'<span>'+timeAgo(g.created_at)+br+'</span></div>'+
+        '</a>';
+}
+function load(){
+    fetch('/api/giveaway/list').then(function(r){return r.json()}).then(function(d){
+        var br=document.getElementById('br');
+        if(br.children.length===1){d.brands.forEach(function(b){var o=document.createElement('option');o.value=b;o.textContent=b;br.appendChild(o)})}
+        var groups={pa:'pending_address',ar:'address_received',lc:'label_created',sh:'shipped'};
+        Object.keys(groups).forEach(function(k){
+            var arr=d.groups[groups[k]]||[];
+            document.getElementById('c-'+k).textContent=arr.length;
+            var html=arr.length?arr.map(card).join(''):'<div class="empty">No giveaways here</div>';
+            document.getElementById('g-'+k).innerHTML=html;
+        });
+    });
+}
+document.getElementById('add').addEventListener('click',function(){
+    var pn=document.getElementById('pn').value.trim();
+    var wu=document.getElementById('wu').value.trim().replace(/^@/,'');
+    var br=document.getElementById('br').value;
+    var pl=document.getElementById('pl').value;
+    if(!pn||!wu){toast('Prize and winner are required',true);return}
+    fetch('/api/giveaway',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({prize_name:pn,winner_username:wu,brand:br,platform:pl})})
+    .then(function(r){return r.json()}).then(function(d){
+        if(d.ok){toast('Added! ID #'+d.id);document.getElementById('pn').value='';document.getElementById('wu').value='';load()}
+        else toast(d.error||'Failed',true);
+    });
+});
+['pn','wu'].forEach(function(id){document.getElementById(id).addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('add').click()})});
+load();
+setInterval(load,30000);
+</script></body></html>'''
+
+GIVEAWAY_DETAIL_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Giveaway Detail</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.nav{background:rgba(21,25,33,.8);border-bottom:1px solid rgba(255,255,255,.06);padding:14px 28px;display:flex;justify-content:space-between;align-items:center;backdrop-filter:blur(20px);position:sticky;top:0;z-index:50}
+.nav h1{font-size:18px;font-weight:800}
+.nav-r a{color:#a5b4fc;text-decoration:none;font-weight:600;padding:6px 14px;border-radius:8px;background:rgba(79,70,229,.1);border:1px solid rgba(79,70,229,.2);font-size:13px}
+.nav-r a:hover{background:rgba(79,70,229,.2)}
+.wrap{max-width:900px;margin:0 auto;padding:28px}
+.hdr{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:24px 28px;margin-bottom:20px}
+.hdr-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}
+.h-w{font-size:24px;font-weight:800;margin-bottom:4px}
+.h-w .at{color:#6b7a90;font-weight:400}
+.h-p{font-size:16px;color:#a5b4fc}
+.status{padding:8px 18px;border-radius:50px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;white-space:nowrap}
+.s-pa{background:rgba(251,191,36,.15);color:#fbbf24;border:1.5px solid rgba(251,191,36,.3)}
+.s-ar{background:rgba(96,165,250,.15);color:#60a5fa;border:1.5px solid rgba(96,165,250,.3)}
+.s-lc{background:rgba(167,139,250,.15);color:#a78bfa;border:1.5px solid rgba(167,139,250,.3)}
+.s-sh{background:rgba(52,211,153,.15);color:#34d399;border:1.5px solid rgba(52,211,153,.3)}
+.s-cl{background:rgba(244,63,94,.15);color:#fb7185;border:1.5px solid rgba(244,63,94,.3)}
+.meta{display:flex;gap:18px;font-size:13px;color:#6b7a90}
+.meta b{color:#e4e8f1}
+.section{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:24px 28px;margin-bottom:20px}
+.section h3{font-size:14px;font-weight:700;color:#a5b4fc;margin-bottom:16px;text-transform:uppercase;letter-spacing:.6px}
+.f{margin-bottom:14px}
+.f label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+.f input,.f select,.f textarea{width:100%;background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:11px 14px;font-size:14px;color:#e4e8f1;font-family:inherit;outline:none;transition:all .2s}
+.f input:focus,.f select:focus,.f textarea:focus{border-color:#4f46e5}
+.f textarea{resize:vertical;min-height:90px;line-height:1.5}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.row3{display:grid;grid-template-columns:2fr 1fr 1fr;gap:14px}
+.btn{border:none;border-radius:10px;padding:12px 24px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .15s}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:white;box-shadow:0 4px 16px rgba(79,70,229,.3)}
+.btn-p:hover{transform:translateY(-1px)}
+.btn-s{background:rgba(16,185,129,.15);color:#34d399;border:1.5px solid rgba(16,185,129,.3)}
+.btn-s:hover{background:rgba(16,185,129,.25)}
+.btn-d{background:rgba(244,63,94,.1);color:#fb7185;border:1.5px solid rgba(244,63,94,.2)}
+.btn-d:hover{background:rgba(244,63,94,.2)}
+.btn-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:white;padding:14px 22px;border-radius:10px;font-weight:600;box-shadow:0 10px 40px rgba(16,185,129,.4);z-index:100;display:none}
+.toast.err{background:#f43f5e}
+.tip{background:rgba(79,70,229,.08);border:1px solid rgba(79,70,229,.2);border-radius:10px;padding:14px 18px;font-size:13px;color:#a5b4fc;margin-bottom:14px;line-height:1.5}
+.addr-display{background:rgba(11,14,20,.4);border-radius:10px;padding:14px 18px;font-size:14px;line-height:1.7;color:#e4e8f1;margin-bottom:14px}
+.addr-display b{color:#a5b4fc}
+.tracking{font-family:monospace;font-size:18px;color:#34d399;font-weight:700;letter-spacing:1px}
+</style></head><body>
+<div class="nav"><h1>🎁 Giveaway #__GID__</h1>
+<div class="nav-r"><a href="/giveaway">← Back to Dashboard</a></div></div>
+<div class="wrap" id="wrap"><div style="text-align:center;padding:60px;color:#6b7a90">Loading...</div></div>
+<div class="toast" id="t"></div>
+<script>
+var GID=__GID__;var G=null;
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
+function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+function statusLabel(s){var m={pending_address:['s-pa','📋 Pending Address'],address_received:['s-ar','✏️ Address Received'],label_created:['s-lc','📦 Label Created'],shipped:['s-sh','✅ Shipped'],cancelled:['s-cl','❌ Cancelled']};var v=m[s]||['s-pa',s];return '<span class="status '+v[0]+'">'+v[1]+'</span>'}
+function fmt(ts){if(!ts)return '-';var d=new Date(ts);return d.toLocaleString()}
+
+function render(){
+    var g=G;
+    var h='<div class="hdr"><div class="hdr-top"><div><div class="h-w"><span class="at">@</span>'+esc(g.winner_username)+'</div><div class="h-p">'+esc(g.prize_name)+'</div></div>'+statusLabel(g.status)+'</div>'+
+        '<div class="meta"><div>Platform: <b>'+(g.platform==='tiktok'?'TikTok':'Whatnot')+'</b></div>'+
+        (g.brand?'<div>Brand: <b>'+esc(g.brand)+'</b></div>':'')+
+        '<div>Created: <b>'+fmt(g.created_at)+'</b></div>'+
+        (g.created_by?'<div>By: <b>'+esc(g.created_by)+'</b></div>':'')+
+        '</div></div>';
+
+    // Address section
+    if(g.status==='pending_address'){
+        h+='<div class="section"><h3>📥 Capture Address from DM</h3>'+
+            '<div class="tip">💡 Tip: Paste the entire DM message from the winner. The fields below need to be filled in. (AI auto-parse coming in next update — for now, manual.)</div>'+
+            '<div class="f"><label>Original DM Text (for reference)</label><textarea id="dm" placeholder="Paste the DM here so it stays linked to this giveaway..."></textarea></div>'+
+            addressForm({})+
+            '<div class="btn-row"><button class="btn btn-p" id="saveAddr">Save Address</button>'+
+            '<button class="btn btn-d" id="cancel">Cancel Giveaway</button></div></div>';
+    } else if(g.status==='address_received'||g.status==='label_created'){
+        h+='<div class="section"><h3>📍 Shipping Address</h3>'+
+            addressDisplay(g)+
+            '<details><summary style="cursor:pointer;color:#a5b4fc;font-size:13px;margin-bottom:10px">✏️ Edit address</summary>'+
+            addressForm(g)+
+            '<button class="btn btn-p" id="saveAddr" style="margin-top:10px">Update Address</button></details></div>';
+        h+='<div class="section"><h3>📦 Ship It</h3>'+
+            '<div class="tip">⚙️ Phase A: Manual entry. Create the label in Shippo as usual, then enter the tracking number here. (One-click Shippo integration coming next.)</div>'+
+            '<div class="f"><label>Tracking Number</label><input id="trk" placeholder="e.g. 9400111202533112341234"></div>'+
+            '<div class="f"><label>Notes (optional)</label><textarea id="nt" placeholder="Any notes about this shipment..."></textarea></div>'+
+            '<div class="btn-row"><button class="btn btn-s" id="ship">Mark as Shipped</button>'+
+            '<button class="btn btn-d" id="cancel">Cancel Giveaway</button></div></div>';
+    } else if(g.status==='shipped'){
+        h+='<div class="section"><h3>📍 Shipped to</h3>'+addressDisplay(g)+'</div>';
+        h+='<div class="section"><h3>✅ Shipment</h3>'+
+            '<div class="addr-display"><b>Tracking:</b> <span class="tracking">'+esc(g.tracking_number||'-')+'</span><br>'+
+            '<b>Shipped at:</b> '+fmt(g.shipped_at)+'</div>'+
+            (g.notes?'<div class="f"><label>Notes</label><textarea id="nt" readonly>'+esc(g.notes)+'</textarea></div>':'')+
+            '<div class="tip">⚠️ Don\\'t forget to mark this as sent in TikTok/Whatnot too!</div></div>';
+    } else if(g.status==='cancelled'){
+        h+='<div class="section"><h3>❌ Cancelled</h3><div class="tip">This giveaway was cancelled.</div></div>';
+    }
+    document.getElementById('wrap').innerHTML=h;
+    bindEvents();
+    if(g.dm_text&&document.getElementById('dm'))document.getElementById('dm').value=g.dm_text;
+}
+function addressDisplay(g){
+    var s2=g.address_street2?'<br>'+esc(g.address_street2):'';
+    return '<div class="addr-display"><b>'+esc(g.address_name||'-')+'</b><br>'+
+        esc(g.address_street1||'-')+s2+'<br>'+
+        esc(g.address_city||'-')+', '+esc(g.address_state||'-')+' '+esc(g.address_zip||'-')+
+        (g.address_country&&g.address_country!=='US'?'<br>'+esc(g.address_country):'')+
+        '</div>';
+}
+function addressForm(g){
+    return '<div class="f"><label>Recipient Name *</label><input id="an" value="'+esc(g.address_name||'')+'" placeholder="Jane Smith"></div>'+
+        '<div class="f"><label>Street Address 1 *</label><input id="as1" value="'+esc(g.address_street1||'')+'" placeholder="123 Main Street"></div>'+
+        '<div class="f"><label>Street Address 2 (Apt, Suite — optional)</label><input id="as2" value="'+esc(g.address_street2||'')+'" placeholder="Apt 5"></div>'+
+        '<div class="row3"><div class="f"><label>City *</label><input id="ac" value="'+esc(g.address_city||'')+'" placeholder="Brooklyn"></div>'+
+        '<div class="f"><label>State *</label><input id="ast" value="'+esc(g.address_state||'')+'" placeholder="NY" maxlength="2" style="text-transform:uppercase"></div>'+
+        '<div class="f"><label>ZIP *</label><input id="az" value="'+esc(g.address_zip||'')+'" placeholder="11201"></div></div>';
+}
+function bindEvents(){
+    var sa=document.getElementById('saveAddr');
+    if(sa)sa.addEventListener('click',function(){
+        var p={
+            address_name:document.getElementById('an').value.trim(),
+            address_street1:document.getElementById('as1').value.trim(),
+            address_street2:document.getElementById('as2').value.trim(),
+            address_city:document.getElementById('ac').value.trim(),
+            address_state:document.getElementById('ast').value.trim().toUpperCase(),
+            address_zip:document.getElementById('az').value.trim(),
+            dm_text:(document.getElementById('dm')||{}).value
+        };
+        fetch('/api/giveaway/'+GID+'/address',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)})
+            .then(function(r){return r.json()}).then(function(d){
+                if(d.ok){toast('Address saved');load()}else toast(d.error||'Failed',true);
+            });
+    });
+    var sh=document.getElementById('ship');
+    if(sh)sh.addEventListener('click',function(){
+        var trk=document.getElementById('trk').value.trim();
+        var nt=document.getElementById('nt').value.trim();
+        if(!trk){toast('Tracking number required',true);return}
+        fetch('/api/giveaway/'+GID+'/ship',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tracking_number:trk,notes:nt})})
+            .then(function(r){return r.json()}).then(function(d){
+                if(d.ok){toast('Marked as shipped! 📦');load()}else toast(d.error||'Failed',true);
+            });
+    });
+    var cn=document.getElementById('cancel');
+    if(cn)cn.addEventListener('click',function(){
+        if(!confirm('Cancel this giveaway? This cannot be undone.'))return;
+        fetch('/api/giveaway/'+GID+'/cancel',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+            if(d.ok){toast('Cancelled');setTimeout(function(){location.href='/giveaway'},1000)}else toast(d.error||'Failed',true);
+        });
+    });
+}
+function load(){
+    fetch('/api/giveaway/'+GID).then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){document.getElementById('wrap').innerHTML='<div style="text-align:center;padding:60px;color:#fb7185">Giveaway not found</div>';return}
+        G=d.giveaway;render();
+    });
+}
+load();
+</script></body></html>'''
+
 
 if __name__=="__main__":
     print("="*50)
