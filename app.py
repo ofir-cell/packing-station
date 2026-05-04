@@ -135,6 +135,56 @@ def _gen_badge_token():
     raw="".join(secrets.choice(alphabet) for _ in range(16))
     return raw[:4]+"-"+raw[4:8]+"-"+raw[8:12]+"-"+raw[12:16]
 
+def _navbar(active_page=""):
+    """Generate the unified top navigation bar based on user role.
+    `active_page` is the current page key for highlighting: dash|giveaway|users|badges|analytics."""
+    role=session.get("role","")
+    name=session.get("name","")
+    if not role: return ""
+    items=[]
+    # All authenticated non-worker users see these
+    if role in ("admin","cs"):
+        items.append(("dash","/dashboard","🔍 Search"))
+        items.append(("giveaway","/giveaway","🎁 Giveaways"))
+    if role=="admin":
+        items.append(("analytics","/analytics","📊 Analytics"))
+        items.append(("users","/users","👥 Users"))
+        items.append(("badges","/users/badges","🎫 Badges"))
+    # Build HTML
+    nav_html='<nav class="topnav"><div class="topnav-inner">'
+    nav_html+='<div class="topnav-brand">📦 Packing Station</div>'
+    nav_html+='<div class="topnav-links">'
+    for key,url,label in items:
+        cls="topnav-link active" if key==active_page else "topnav-link"
+        nav_html+='<a href="'+url+'" class="'+cls+'">'+label+'</a>'
+    nav_html+='</div>'
+    nav_html+='<div class="topnav-user"><span class="topnav-name">'+name+'</span>'
+    nav_html+='<a href="/logout" class="topnav-logout">Logout</a></div>'
+    nav_html+='</div></nav>'
+    return nav_html
+
+# CSS for the unified top navbar - injected into every page that uses it
+_NAVBAR_CSS='''<style>
+.topnav{background:rgba(15,18,25,.95);border-bottom:1px solid rgba(255,255,255,.08);backdrop-filter:blur(20px);position:sticky;top:0;z-index:100;font-family:'DM Sans',sans-serif}
+.topnav-inner{max-width:1600px;margin:0 auto;padding:0 24px;display:flex;align-items:center;gap:24px;height:56px}
+.topnav-brand{font-size:15px;font-weight:800;color:#e4e8f1;letter-spacing:.3px;flex-shrink:0}
+.topnav-links{display:flex;gap:4px;flex:1;align-items:center}
+.topnav-link{color:#9ba9c1;text-decoration:none;font-size:13px;font-weight:600;padding:8px 14px;border-radius:8px;transition:all .15s;white-space:nowrap}
+.topnav-link:hover{color:#e4e8f1;background:rgba(255,255,255,.05)}
+.topnav-link.active{color:#a5b4fc;background:rgba(79,70,229,.15);border:1px solid rgba(79,70,229,.25)}
+.topnav-user{display:flex;align-items:center;gap:12px;flex-shrink:0}
+.topnav-name{font-size:13px;color:#6b7a90;font-weight:500}
+.topnav-logout{color:#fb7185;text-decoration:none;font-size:12px;font-weight:600;padding:7px 14px;border-radius:7px;background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.15);transition:all .15s}
+.topnav-logout:hover{background:rgba(244,63,94,.15)}
+@media(max-width:768px){
+.topnav-inner{padding:0 12px;gap:8px;height:auto;flex-wrap:wrap;padding-top:8px;padding-bottom:8px}
+.topnav-brand{font-size:13px;width:100%}
+.topnav-links{order:2;width:100%;overflow-x:auto;flex:initial}
+.topnav-user{order:1}
+.topnav-name{display:none}
+}
+</style>'''
+
 def _init(path,default):
     if not os.path.exists(path):
         with open(path,"w") as f: json.dump(default,f,indent=2)
@@ -294,11 +344,11 @@ def index():
 @req_role("admin","cs")
 def dashboard():
     disp="flex" if session.get("role")=="admin" else "none"
-    return DASH_HTML.replace("__NAME__",session.get("name","")).replace("__ADMIN_VIS__",disp)
+    return DASH_HTML.replace("__NAME__",session.get("name","")).replace("__ADMIN_VIS__",disp).replace("__NAVBAR__",_navbar("dash")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/users")
 @req_role("admin")
-def users_page(): return USERS_HTML
+def users_page(): return USERS_HTML.replace("__NAVBAR__",_navbar("users")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/logout")
 def logout(): session.clear(); return redirect("/")
@@ -476,7 +526,7 @@ def api_analytics():
 @req_role("admin","cs")
 def analytics_page():
     disp="flex" if session.get("role")=="admin" else "none"
-    return ANALYTICS_HTML.replace("__NAME__",session.get("name","")).replace("__ADMIN_VIS__",disp)
+    return ANALYTICS_HTML.replace("__NAME__",session.get("name","")).replace("__ADMIN_VIS__",disp).replace("__NAVBAR__",_navbar("analytics")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/users")
 @req_role("admin")
@@ -575,7 +625,7 @@ def badge_login_page():
 @app.route("/users/badges")
 @req_role("admin")
 def users_badges_page():
-    return USERS_BADGES_HTML.replace("__NAME__",session.get("name",""))
+    return USERS_BADGES_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("badges")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/users/badge/pdf/<u>")
 @req_role("admin")
@@ -814,17 +864,17 @@ def serve_p(fn):
 # ══════════════════════════════════════════════════════════
 
 @app.route("/giveaway")
-@req_role("admin")
+@req_role("admin","cs")
 def giveaway_dashboard():
-    return GIVEAWAY_DASH_HTML.replace("__NAME__",session.get("name",""))
+    return GIVEAWAY_DASH_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("giveaway")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/giveaway/<int:gid>")
-@req_role("admin")
+@req_role("admin","cs")
 def giveaway_detail(gid):
-    return GIVEAWAY_DETAIL_HTML.replace("__GID__",str(gid)).replace("__NAME__",session.get("name",""))
+    return GIVEAWAY_DETAIL_HTML.replace("__GID__",str(gid)).replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("giveaway")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/giveaway/list")
-@req_role("admin")
+@req_role("admin","cs")
 def api_giveaway_list():
     """Get all giveaways grouped by status for dashboard."""
     c=gdb()
@@ -842,7 +892,7 @@ def api_giveaway_list():
     return jsonify({"groups":grouped,"brands":GIVEAWAY_BRANDS})
 
 @app.route("/api/giveaway/<int:gid>")
-@req_role("admin")
+@req_role("admin","cs")
 def api_giveaway_get(gid):
     c=gdb()
     r=c.execute("SELECT * FROM giveaways WHERE id=?",(gid,)).fetchone()
@@ -851,7 +901,7 @@ def api_giveaway_get(gid):
     return jsonify({"ok":True,"giveaway":dict(r),"brands":GIVEAWAY_BRANDS})
 
 @app.route("/api/giveaway",methods=["POST"])
-@req_role("admin")
+@req_role("admin","cs")
 def api_giveaway_create():
     d=request.get_json() or {}
     winner=(d.get("winner_username") or "").strip().lstrip("@")
@@ -871,7 +921,7 @@ def api_giveaway_create():
     return jsonify({"ok":True,"id":gid})
 
 @app.route("/api/giveaway/<int:gid>/address",methods=["POST"])
-@req_role("admin")
+@req_role("admin","cs")
 def api_giveaway_address(gid):
     """Save address (manual or after AI parse) and advance status."""
     d=request.get_json() or {}
@@ -905,7 +955,7 @@ def api_giveaway_address(gid):
     return jsonify({"ok":True})
 
 @app.route("/api/giveaway/<int:gid>/ship",methods=["POST"])
-@req_role("admin")
+@req_role("admin","cs")
 def api_giveaway_ship(gid):
     """Mark as shipped (Phase A: manual tracking number entry)."""
     d=request.get_json() or {}
@@ -922,7 +972,7 @@ def api_giveaway_ship(gid):
     return jsonify({"ok":True})
 
 @app.route("/api/giveaway/<int:gid>/cancel",methods=["POST"])
-@req_role("admin")
+@req_role("admin","cs")
 def api_giveaway_cancel(gid):
     c=gdb()
     c.execute("UPDATE giveaways SET status='cancelled' WHERE id=?",(gid,))
@@ -930,7 +980,7 @@ def api_giveaway_cancel(gid):
     return jsonify({"ok":True})
 
 @app.route("/api/giveaway/<int:gid>/notes",methods=["POST"])
-@req_role("admin")
+@req_role("admin","cs")
 def api_giveaway_notes(gid):
     d=request.get_json() or {}
     notes=(d.get("notes") or "").strip()
@@ -940,7 +990,7 @@ def api_giveaway_notes(gid):
     return jsonify({"ok":True})
 
 @app.route("/api/giveaway/parse-address",methods=["POST"])
-@req_role("admin")
+@req_role("admin","cs")
 def api_giveaway_parse_address():
     """Use Claude AI to extract a structured US shipping address from messy DM text."""
     if not anthropic_client:
@@ -1235,22 +1285,18 @@ DASH_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
 <title>Search Recordings</title>
+__NAVBAR_CSS__
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
-.hdr{background:rgba(21,25,33,.9);backdrop-filter:blur(10px);border-bottom:1px solid rgba(255,255,255,.06);padding:16px 28px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;position:sticky;top:0;z-index:10}
-.logo{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:800}
-.logo-i{width:36px;height:36px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
-.hdr-r{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
-.stat-pills{display:flex;gap:8px}
+.page-hdr{padding:24px 28px 8px;display:flex;align-items:center;justify-content:space-between;max-width:1600px;margin:0 auto;flex-wrap:wrap;gap:12px}
+.page-title{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:800}
+.page-title-icon{width:36px;height:36px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
+.stat-pills{display:flex;gap:8px;flex-wrap:wrap}
 .pill{display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:20px;padding:6px 14px;font-size:12px;color:#6b7a90}
 .pill b{color:#a5b4fc}
-.nav-btn{color:#a5b4fc;text-decoration:none;font-size:13px;font-weight:600;padding:8px 16px;border:1.5px solid rgba(79,70,229,.3);border-radius:10px;background:rgba(79,70,229,.08);transition:all .2s;display:__ADMIN_VIS__}
-.nav-btn:hover{background:rgba(79,70,229,.15);border-color:rgba(79,70,229,.5)}
-.out-link{color:#6b7a90;text-decoration:none;font-size:13px;padding:8px 14px;border:1px solid rgba(255,255,255,.06);border-radius:10px;transition:all .2s}
-.out-link:hover{color:#e4e8f1;border-color:rgba(255,255,255,.12)}
 
-.search-area{padding:32px 28px 20px;max-width:720px;margin:0 auto}
+.search-area{padding:24px 28px 20px;max-width:720px;margin:0 auto}
 .sb{display:flex;gap:10px}
 .sb input{flex:1;background:rgba(21,25,33,.8);border:2px solid rgba(255,255,255,.06);border-radius:14px;padding:16px 20px;font-size:18px;color:#e4e8f1;font-family:inherit;outline:none;transition:all .2s}
 .sb input:focus{border-color:#4f46e5;box-shadow:0 0 0 3px rgba(79,70,229,.1)}
@@ -1294,15 +1340,11 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 .spn{width:28px;height:28px;border:3px solid rgba(255,255,255,.06);border-top-color:#4f46e5;border-radius:50%;animation:sp .8s linear infinite;margin:0 auto 8px}
 @keyframes sp{to{transform:rotate(360deg)}}
 </style></head><body>
-<div class="hdr">
-<div class="logo"><div class="logo-i">🔍</div>Search Recordings</div>
-<div class="hdr-r">
+__NAVBAR__
+<div class="page-hdr">
+<div class="page-title"><div class="page-title-icon">🔍</div>Search Recordings</div>
 <div class="stat-pills"><div class="pill">🎥 <b id="sv">-</b></div><div class="pill">📸 <b id="sph">-</b></div><div class="pill">💾 <b id="ss">-</b></div></div>
-<a href="/analytics" class="nav-btn" style="display:flex">📊 Analytics</a>
-<a href="/giveaway" class="nav-btn" style="display:__ADMIN_VIS__">🎁 Giveaways</a>
-<a href="/users" class="nav-btn">👥 Manage Users</a>
-<a href="/logout" class="out-link">Logout (__NAME__)</a>
-</div></div>
+</div>
 <div class="search-area"><div class="sb"><input type="text" id="si" placeholder="Enter tracking number..." autofocus><button id="searchBtn">Search</button></div></div>
 <div class="content"><div id="res"></div><div class="sec-t">🕐 Recent Recordings</div><div id="rl"><div class="ld"><div class="spn"></div>Loading...</div></div></div>
 <script>
@@ -1359,12 +1401,12 @@ USERS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
 <title>Manage Users</title>
+__NAVBAR_CSS__
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh;padding:28px;max-width:760px;margin:0 auto}
-.back{color:#a5b4fc;text-decoration:none;font-size:14px;font-weight:600;display:inline-flex;align-items:center;gap:6px;margin-bottom:20px;padding:8px 14px;border-radius:10px;background:rgba(79,70,229,.08);border:1px solid rgba(79,70,229,.2);transition:all .2s}
-.back:hover{background:rgba(79,70,229,.15)}
-h1{font-size:26px;font-weight:800;margin-bottom:24px}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.upage{padding:24px 28px;max-width:760px;margin:0 auto}
+h1{font-size:24px;font-weight:800;margin-bottom:24px}
 .card{background:rgba(21,25,33,.8);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:24px;margin-bottom:20px}
 .card h2{font-size:14px;font-weight:700;color:#6b7a90;margin-bottom:16px;text-transform:uppercase;letter-spacing:.5px}
 table{width:100%;border-collapse:collapse}
@@ -1393,11 +1435,9 @@ tr:hover td{background:rgba(79,70,229,.03)}
 .msg{font-size:13px;margin-top:10px;grid-column:1/-1;min-height:16px}
 .msg.ok{color:#10b981}.msg.err{color:#f43f5e}
 </style></head><body>
-<a href="/dashboard" class="back">← Back to Dashboard</a>
+__NAVBAR__
+<div class="upage">
 <h1>👥 User Management</h1>
-<div style="text-align:center;margin-bottom:24px">
-<a href="/users/badges" style="display:inline-block;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:white;text-decoration:none;padding:12px 24px;border-radius:10px;font-weight:700;font-size:14px;box-shadow:0 4px 16px rgba(79,70,229,.3)">🎫 Manage Employee Badges</a>
-</div>
 <div class="card"><h2>Current Users</h2><table><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Actions</th></tr></thead><tbody id="ut"></tbody></table></div>
 <div class="card"><h2>Add New User</h2>
 <div class="add-form">
@@ -1455,25 +1495,22 @@ function changePw(u){
     .then(function(r){return r.json()}).then(function(d){alert(d.ok?'Password changed!':'Failed')});
 }
 loadUsers();
-</script></body></html>'''
+</script></div></body></html>'''
 
 # ── ANALYTICS PAGE ────────────────────────────────────────
 ANALYTICS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
 <title>Analytics</title>
+__NAVBAR_CSS__
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
-.hdr{background:rgba(21,25,33,.9);backdrop-filter:blur(10px);border-bottom:1px solid rgba(255,255,255,.06);padding:16px 28px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;position:sticky;top:0;z-index:10}
-.logo{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:800}
-.logo-i{width:36px;height:36px;background:linear-gradient(135deg,#f59e0b,#ef4444);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
-.hdr-r{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-.nav-btn{color:#a5b4fc;text-decoration:none;font-size:13px;font-weight:600;padding:8px 16px;border:1.5px solid rgba(79,70,229,.3);border-radius:10px;background:rgba(79,70,229,.08);transition:all .2s}
-.nav-btn:hover{background:rgba(79,70,229,.15)}
-.out-link{color:#6b7a90;text-decoration:none;font-size:13px;padding:8px 14px;border:1px solid rgba(255,255,255,.06);border-radius:10px}
+.page-hdr{padding:24px 28px 8px;display:flex;align-items:center;gap:10px;max-width:1000px;margin:0 auto}
+.page-title{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:800}
+.page-title-icon{width:36px;height:36px;background:linear-gradient(135deg,#f59e0b,#ef4444);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
 
-.content{padding:28px;max-width:1000px;margin:0 auto}
+.content{padding:0 28px 28px;max-width:1000px;margin:0 auto}
 
 .big-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:28px}
 .big-stat{background:rgba(21,25,33,.8);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:24px;text-align:center}
@@ -1516,13 +1553,10 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 .spn{width:28px;height:28px;border:3px solid rgba(255,255,255,.06);border-top-color:#4f46e5;border-radius:50%;animation:sp .8s linear infinite;margin:0 auto 8px}
 @keyframes sp{to{transform:rotate(360deg)}}
 </style></head><body>
-<div class="hdr">
-<div class="logo"><div class="logo-i">📊</div>Analytics</div>
-<div class="hdr-r">
-<a href="/dashboard" class="nav-btn">🔍 Search</a>
-<a href="/users" class="nav-btn" style="display:__ADMIN_VIS__">👥 Users</a>
-<a href="/logout" class="out-link">Logout (__NAME__)</a>
-</div></div>
+__NAVBAR__
+<div class="page-hdr">
+<div class="page-title"><div class="page-title-icon">📊</div>Analytics</div>
+</div>
 
 <div class="content">
 <div class="big-stats" id="bigStats"><div class="ld"><div class="spn"></div>Loading...</div></div>
@@ -1617,16 +1651,14 @@ GIVEAWAY_DASH_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
 <title>Giveaway Manager</title>
+__NAVBAR_CSS__
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
-.nav{background:rgba(21,25,33,.8);border-bottom:1px solid rgba(255,255,255,.06);padding:14px 28px;display:flex;justify-content:space-between;align-items:center;backdrop-filter:blur(20px);position:sticky;top:0;z-index:50}
-.nav h1{font-size:20px;font-weight:800}
-.nav h1 span{color:#a5b4fc;margin-left:8px}
-.nav-r{display:flex;gap:14px;align-items:center;font-size:13px;color:#6b7a90}
-.nav-r a{color:#a5b4fc;text-decoration:none;font-weight:600;padding:6px 14px;border-radius:8px;background:rgba(79,70,229,.1);border:1px solid rgba(79,70,229,.2)}
-.nav-r a:hover{background:rgba(79,70,229,.2)}
-.wrap{max-width:1600px;margin:0 auto;padding:28px}
+.page-hdr{padding:24px 28px 8px;display:flex;align-items:center;justify-content:space-between;max-width:1600px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}
+.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1600px;margin:0 auto;padding:0 28px 28px}
 .add-card{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:20px 24px;margin-bottom:24px}
 .add-title{font-size:14px;font-weight:700;color:#a5b4fc;margin-bottom:14px;text-transform:uppercase;letter-spacing:.6px}
 .add-row{display:grid;grid-template-columns:1fr 2fr 1fr 1fr auto;gap:12px;align-items:end}
@@ -1659,8 +1691,8 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 .toast.err{background:#f43f5e;box-shadow:0 10px 40px rgba(244,63,94,.4)}
 @keyframes slideIn{from{transform:translateX(120%)}to{transform:translateX(0)}}
 </style></head><body>
-<div class="nav"><h1>🎁 Giveaway Manager <span>__NAME__</span></h1>
-<div class="nav-r"><a href="/dashboard">← Packing Dashboard</a><a href="/logout" style="background:rgba(244,63,94,.1);border-color:rgba(244,63,94,.2);color:#fb7185">Logout</a></div></div>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🎁 Giveaway Manager <span>__NAME__</span></div></div>
 <div class="wrap">
 <div class="add-card">
 <div class="add-title">+ Add New Giveaway Winner</div>
@@ -1728,14 +1760,15 @@ GIVEAWAY_DETAIL_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UT
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
 <title>Giveaway Detail</title>
+__NAVBAR_CSS__
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
-.nav{background:rgba(21,25,33,.8);border-bottom:1px solid rgba(255,255,255,.06);padding:14px 28px;display:flex;justify-content:space-between;align-items:center;backdrop-filter:blur(20px);position:sticky;top:0;z-index:50}
-.nav h1{font-size:18px;font-weight:800}
-.nav-r a{color:#a5b4fc;text-decoration:none;font-weight:600;padding:6px 14px;border-radius:8px;background:rgba(79,70,229,.1);border:1px solid rgba(79,70,229,.2);font-size:13px}
-.nav-r a:hover{background:rgba(79,70,229,.2)}
-.wrap{max-width:900px;margin:0 auto;padding:28px}
+.page-hdr{padding:24px 28px 8px;display:flex;align-items:center;justify-content:space-between;max-width:900px;margin:0 auto}
+.page-title{font-size:20px;font-weight:800}
+.page-title-link{font-size:13px;color:#6b7a90;text-decoration:none;padding:6px 14px;border-radius:8px;background:rgba(255,255,255,.04)}
+.page-title-link:hover{color:#a5b4fc;background:rgba(255,255,255,.08)}
+.wrap{max-width:900px;margin:0 auto;padding:0 28px 28px}
 .hdr{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:24px 28px;margin-bottom:20px}
 .hdr-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}
 .h-w{font-size:24px;font-weight:800;margin-bottom:4px}
@@ -1780,8 +1813,8 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 .addr-display b{color:#a5b4fc}
 .tracking{font-family:monospace;font-size:18px;color:#34d399;font-weight:700;letter-spacing:1px}
 </style></head><body>
-<div class="nav"><h1>🎁 Giveaway #__GID__</h1>
-<div class="nav-r"><a href="/giveaway">← Back to Dashboard</a></div></div>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🎁 Giveaway #__GID__</div><a href="/giveaway" class="page-title-link">← Back to Giveaways</a></div>
 <div class="wrap" id="wrap"><div style="text-align:center;padding:60px;color:#6b7a90">Loading...</div></div>
 <div class="toast" id="t"></div>
 <script>
@@ -2035,16 +2068,14 @@ USERS_BADGES_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
 <title>Employee Badges</title>
+__NAVBAR_CSS__
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
-.nav{background:rgba(21,25,33,.8);border-bottom:1px solid rgba(255,255,255,.06);padding:14px 28px;display:flex;justify-content:space-between;align-items:center;backdrop-filter:blur(20px);position:sticky;top:0;z-index:50}
-.nav h1{font-size:20px;font-weight:800}
-.nav h1 span{color:#a5b4fc;margin-left:8px}
-.nav-r{display:flex;gap:12px;align-items:center}
-.nav-r a{color:#a5b4fc;text-decoration:none;font-weight:600;padding:8px 16px;border-radius:8px;background:rgba(79,70,229,.1);border:1px solid rgba(79,70,229,.2);font-size:13px}
-.nav-r a:hover{background:rgba(79,70,229,.2)}
-.wrap{max-width:1100px;margin:0 auto;padding:28px}
+.page-hdr{padding:24px 28px 8px;max-width:1100px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}
+.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1100px;margin:0 auto;padding:0 28px 28px}
 .intro{background:rgba(79,70,229,.08);border:1px solid rgba(79,70,229,.2);border-radius:14px;padding:18px 22px;margin-bottom:24px;color:#a5b4fc;font-size:14px;line-height:1.6}
 .intro b{color:#e4e8f1}
 .actions-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;flex-wrap:wrap;gap:12px}
@@ -2075,8 +2106,8 @@ tr:last-child td{border-bottom:none}
 .station-select select{background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:9px 14px;font-size:14px;color:#e4e8f1;font-family:inherit;outline:none}
 .station-select .current{font-size:14px;color:#34d399;font-weight:600}
 </style></head><body>
-<div class="nav"><h1>🎫 Employee Badges <span>__NAME__</span></h1>
-<div class="nav-r"><a href="/users">← Manage Users</a><a href="/dashboard">Dashboard</a></div></div>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🎫 Employee Badges <span>__NAME__</span></div></div>
 <div class="wrap">
 
 <div class="intro">
