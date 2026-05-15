@@ -197,12 +197,12 @@ STATION_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;display:flex;align-items:center;justify-content:center;min-height:100vh}
 .wrap{text-align:center;padding:24px;width:100%;max-width:700px}
 .hi{font-size:16px;color:#6b7a90;margin-bottom:4px}
-.hi b{color:#a5b4fc}
+.hi b{color:#f3c9c4}
 .title{font-size:34px;font-weight:800;margin-bottom:8px}
 .sub{font-size:16px;color:#6b7a90;margin-bottom:44px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:16px}
 .s-btn{background:rgba(21,25,33,.8);border:2px solid rgba(255,255,255,.06);border-radius:18px;padding:32px 16px;cursor:pointer;transition:all .25s;text-align:center}
-.s-btn:hover{border-color:#4f46e5;background:rgba(79,70,229,.08);transform:translateY(-4px);box-shadow:0 8px 30px rgba(79,70,229,.15)}
+.s-btn:hover{border-color:#f3c9c4;background:rgba(243,201,196,.08);transform:translateY(-4px);box-shadow:0 8px 30px rgba(243,201,196,.18)}
 .s-btn:active{transform:scale(.96)}
 .s-icon{font-size:36px;margin-bottom:12px}
 .s-name{font-size:17px;font-weight:700}
@@ -237,7 +237,7 @@ fetch('/api/stations').then(function(r){return r.json()}).then(function(d){
 WORKER_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 ''' + _FONT + '''
-<title>Packing Station</title>
+<title>5 SEC — Packing</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;overflow:hidden}
@@ -245,8 +245,12 @@ body{font-family:'DM Sans',sans-serif;display:flex;flex-direction:column;align-i
 body.sr{background:#0c0f16}body.sc{background:#1c0a0f}body.sd{background:#061a0f}body.su{background:#0c0f16}
 .x{display:none;text-align:center;padding:24px;width:100%}
 .x.on{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh}
-.top{position:fixed;top:0;left:0;right:0;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;z-index:10}
-.badge{background:rgba(79,70,229,.15);border:1.5px solid rgba(79,70,229,.3);border-radius:50px;padding:8px 20px;font-size:13px;font-weight:700;color:#a5b4fc}
+.top{position:fixed;top:0;left:0;right:0;padding:12px 18px;display:flex;justify-content:space-between;align-items:center;z-index:10;gap:12px}
+.brand-tag{display:flex;align-items:center;gap:10px;min-width:0}
+.brand-mark-mini{font-size:14px;font-weight:900;color:#f3c9c4;letter-spacing:1.2px;flex-shrink:0}
+.portal-b{background:rgba(243,201,196,.08);border:1px solid rgba(243,201,196,.22);border-radius:8px;padding:7px 13px;font-size:12px;font-weight:700;color:#f3c9c4;text-decoration:none;font-family:inherit;transition:all .15s}
+.portal-b:hover{background:rgba(243,201,196,.16)}
+.badge{background:rgba(243,201,196,.12);border:1.5px solid rgba(243,201,196,.28);border-radius:50px;padding:8px 20px;font-size:13px;font-weight:700;color:#f3c9c4}
 .top-r{display:flex;gap:10px;align-items:center}
 .cam{display:flex;align-items:center;gap:5px;font-size:12px;padding:6px 12px;border-radius:20px;background:rgba(0,0,0,.3)}
 .cam-d{width:7px;height:7px;border-radius:50%}
@@ -261,13 +265,13 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 .r-title{font-size:40px;font-weight:800;margin-bottom:10px}
 .r-sub{font-size:18px;color:#6b7a90;margin-bottom:36px}
 .inp-w{width:100%;max-width:500px}
-.inp{width:100%;background:rgba(21,25,33,.8);border:3px solid #4f46e5;border-radius:16px;padding:20px 24px;font-size:24px;color:#e4e8f1;font-family:inherit;text-align:center;outline:none;transition:all .2s}
-.inp:focus{border-color:#818cf8;box-shadow:0 0 30px rgba(79,70,229,.25)}
+.inp{width:100%;background:rgba(21,25,33,.8);border:3px solid #f3c9c4;border-radius:16px;padding:20px 24px;font-size:24px;color:#e4e8f1;font-family:inherit;text-align:center;outline:none;transition:all .2s}
+.inp:focus{border-color:#eab1a8;box-shadow:0 0 30px rgba(243,201,196,.3)}
 .inp::placeholder{color:#3a4252}
 .hint{margin-top:14px;font-size:14px;color:#6b7a90}
-.pd{display:inline-block;width:8px;height:8px;background:#4f46e5;border-radius:50%;margin-right:8px;animation:pls 1.5s ease infinite}
+.pd{display:inline-block;width:8px;height:8px;background:#f3c9c4;border-radius:50%;margin-right:8px;animation:pls 1.5s ease infinite}
 @keyframes pls{0%,100%{opacity:.3;transform:scale(1)}50%{opacity:1;transform:scale(1.3)}}
-.ctr{margin-top:36px;font-size:14px;color:#6b7a90}.ctr b{color:#a5b4fc}
+.ctr{margin-top:36px;font-size:14px;color:#6b7a90}.ctr b{color:#f3c9c4}
 
 .rp{display:flex;align-items:center;gap:12px;background:rgba(244,63,94,.1);border:2px solid rgba(244,63,94,.3);border-radius:50px;padding:12px 28px;margin-bottom:28px;animation:rpls 1.5s ease infinite}
 @keyframes rpls{0%,100%{border-color:rgba(244,63,94,.3)}50%{border-color:rgba(244,63,94,.7)}}
@@ -292,15 +296,15 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 .dd{font-size:16px;color:#6b7a90;margin-bottom:28px}
 .dn{font-size:16px;color:#6b7a90}
 
-.us{width:48px;height:48px;border:4px solid rgba(255,255,255,.08);border-top-color:#4f46e5;border-radius:50%;animation:sp .8s linear infinite;margin-bottom:20px}
+.us{width:48px;height:48px;border:4px solid rgba(255,255,255,.08);border-top-color:#f3c9c4;border-radius:50%;animation:sp .8s linear infinite;margin-bottom:20px}
 @keyframes sp{to{transform:rotate(360deg)}}
 .ut{font-size:22px;font-weight:700;margin-bottom:6px}
 .uu{font-size:15px;color:#6b7a90}
 
 .w-icon{font-size:80px;margin-bottom:24px;animation:pop .5s cubic-bezier(.175,.885,.32,1.275)}
 .w-title{font-size:38px;font-weight:900;color:#e4e8f1;margin-bottom:8px}
-.w-sub{font-size:20px;color:#a5b4fc;margin-bottom:20px}
-.w-sub b{color:#818cf8}
+.w-sub{font-size:20px;color:#f3c9c4;margin-bottom:20px}
+.w-sub b{color:#eab1a8}
 .w-msg{font-size:16px;color:#6b7a90;max-width:400px}
 
 .f-icon{font-size:80px;margin-bottom:24px;animation:pop .5s cubic-bezier(.175,.885,.32,1.275)}
@@ -310,7 +314,7 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 body.sw{background:linear-gradient(135deg,#0c0f16,#111827)}
 body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
 </style></head><body class="sr">
-<div class="top"><div class="badge">__STATION__ — __NAME__</div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span>Camera</span></div><button class="out-b" id="endBtn">End Shift</button></div></div>
+<div class="top"><div class="brand-tag"><span class="brand-mark-mini">5&nbsp;SEC</span><span class="badge">__STATION__ — __NAME__</span></div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span>Camera</span></div><a href="/home" class="portal-b">🏠 Portal</a><button class="out-b" id="endBtn">End Shift</button></div></div>
 <div class="pv"><video id="pv" autoplay muted playsinline></video></div>
 
 <div class="x on" id="xw"><div class="w-icon">👋</div><div class="w-title">Welcome, __NAME__!</div><div class="w-sub">You are at <b>__STATION__</b></div><div class="w-msg">Have a great shift! Your camera is being set up...</div></div>
@@ -1068,14 +1072,17 @@ BADGE_LOGIN_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"
 <title>Scan Your Badge</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'DM Sans',sans-serif;background:linear-gradient(135deg,#1e1b4b 0%,#0c0f16 50%,#1e1b4b 100%);color:#e4e8f1;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+body{font-family:'DM Sans',sans-serif;background:radial-gradient(900px 600px at 20% 0%, rgba(243,201,196,.06), transparent 60%),radial-gradient(800px 600px at 80% 100%, rgba(99,102,241,.04), transparent 60%),#0a0d14;color:#e4e8f1;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
 .box{max-width:500px;width:100%;text-align:center}
+.brand-line{margin-bottom:32px;line-height:1}
+.brand-mark-page{display:block;font-size:30px;font-weight:900;color:#f3c9c4;letter-spacing:2.4px;text-shadow:0 4px 18px rgba(243,201,196,.2)}
+.brand-sub-page{display:block;font-size:9px;font-weight:700;color:#6b7a90;letter-spacing:3px;text-transform:uppercase;margin-top:6px}
 .logo{font-size:120px;margin-bottom:20px;animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
 h1{font-size:36px;font-weight:800;margin-bottom:12px}
-.sub{color:#a5b4fc;font-size:18px;margin-bottom:40px;font-weight:500}
-.scan-area{background:rgba(255,255,255,.04);border:2px dashed rgba(165,180,252,.3);border-radius:24px;padding:50px 30px;margin-bottom:24px;transition:all .3s}
-.scan-area.focus{border-color:#a5b4fc;background:rgba(165,180,252,.08)}
+.sub{color:#f3c9c4;font-size:18px;margin-bottom:40px;font-weight:500}
+.scan-area{background:rgba(255,255,255,.04);border:2px dashed rgba(243,201,196,.3);border-radius:24px;padding:50px 30px;margin-bottom:24px;transition:all .3s}
+.scan-area.focus{border-color:#f3c9c4;background:rgba(243,201,196,.08)}
 .scan-area.success{border-color:#10b981;background:rgba(16,185,129,.08)}
 .scan-area.error{border-color:#f43f5e;background:rgba(244,63,94,.08);animation:shake .4s}
 @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-10px)}75%{transform:translateX(10px)}}
@@ -1084,11 +1091,12 @@ h1{font-size:36px;font-weight:800;margin-bottom:12px}
 .scan-hint{color:#6b7a90;font-size:14px}
 input{position:absolute;opacity:0;pointer-events:none}
 .alt-link{color:#6b7a90;text-decoration:none;font-size:13px;display:inline-block;margin-top:20px;padding:8px 16px;border-radius:8px}
-.alt-link:hover{color:#a5b4fc;background:rgba(255,255,255,.04)}
+.alt-link:hover{color:#f3c9c4;background:rgba(255,255,255,.04)}
 .toast{position:fixed;top:24px;left:50%;transform:translateX(-50%);background:#10b981;color:white;padding:14px 28px;border-radius:50px;font-weight:700;font-size:15px;box-shadow:0 10px 40px rgba(16,185,129,.4);z-index:100;display:none}
 .toast.err{background:#f43f5e;box-shadow:0 10px 40px rgba(244,63,94,.4)}
 </style></head><body>
 <div class="box">
+<div class="brand-line"><span class="brand-mark-page">5&nbsp;SEC</span><span class="brand-sub-page">Employee Hub</span></div>
 <div class="logo">🎫</div>
 <h1>Welcome!</h1>
 <div class="sub">Scan your employee badge to begin</div>
