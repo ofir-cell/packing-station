@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.python-version
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Local data (never check in)
+PackingStationData/
+*.csv
+users.json
+stations.json
+test_data/
+
+# Scratch
+_test_*
+*.log
