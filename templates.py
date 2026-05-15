@@ -14,47 +14,114 @@ def _navbar(active_page=""):
     role=session.get("role","")
     name=session.get("name","")
     if not role: return ""
-    items=[]
-    # All authenticated non-worker users see these
-    if role in ("admin","cs"):
-        items.append(("dash","/dashboard","🔍 Search"))
-        items.append(("giveaway","/giveaway","🎁 Giveaways"))
-    if role=="admin":
-        items.append(("analytics","/analytics","📊 Analytics"))
-        items.append(("users","/users","👥 Users"))
-        items.append(("badges","/users/badges","🎫 Badges"))
-    # Build HTML
-    nav_html='<nav class="topnav"><div class="topnav-inner">'
-    nav_html+='<div class="topnav-brand">📦 Packing Station</div>'
-    nav_html+='<div class="topnav-links">'
-    for key,url,label in items:
-        cls="topnav-link active" if key==active_page else "topnav-link"
-        nav_html+='<a href="'+url+'" class="'+cls+'">'+label+'</a>'
-    nav_html+='</div>'
-    nav_html+='<div class="topnav-user"><span class="topnav-name">'+name+'</span>'
-    nav_html+='<a href="/logout" class="topnav-logout">Logout</a></div>'
-    nav_html+='</div></nav>'
+    # Build the menu as a list of entries — either a single link tuple
+    # (key, url, label) or a group dict {key, label, items:[...]}.
+    # Goal: compress 9 flat items into 3-4 top-level entries with dropdowns.
+    entries = [("home", "/home", "🏠 Home")]
+    if role == "worker":
+        # Workers get a fast link straight to packing alongside Personal
+        entries.append(("pack", "/", "📦 Pack"))
+    entries.append({
+        "key": "personal",
+        "label": "👤 Personal",
+        "items": [
+            ("me", "/me", "My Profile"),
+            ("leaderboard", "/leaderboard", "Leaderboard"),
+            ("documents", "/documents", "Documents"),
+            ("onboarding", "/onboarding", "Onboarding"),
+        ],
+    })
+    if role in ("admin", "cs"):
+        ops_items = [
+            ("dash", "/dashboard", "Search Recordings"),
+            ("giveaway", "/giveaway", "Giveaways"),
+        ]
+        if role == "admin":
+            ops_items.append(("analytics", "/analytics", "Analytics"))
+        entries.append({"key": "operations", "label": "📦 Operations", "items": ops_items})
+    if role == "admin":
+        entries.append({
+            "key": "team",
+            "label": "👥 Team",
+            "items": [
+                ("users", "/users", "Users"),
+                ("badges", "/users/badges", "Badges"),
+            ],
+        })
+    # Render
+    nav_html = '<nav class="topnav"><div class="topnav-inner">'
+    nav_html += '<a href="/home" class="topnav-brand"><span class="brand-mark">5&nbsp;SEC</span><span class="brand-sub">Employee Hub</span></a>'
+    nav_html += '<div class="topnav-links">'
+    for e in entries:
+        if isinstance(e, tuple):
+            key, url, label = e
+            cls = "topnav-link active" if key == active_page else "topnav-link"
+            nav_html += '<a href="' + url + '" class="' + cls + '">' + label + '</a>'
+        else:
+            group_active = any(it[0] == active_page for it in e["items"])
+            gcls = "nav-group" + (" active" if group_active else "")
+            nav_html += '<details class="' + gcls + '"><summary class="topnav-link">' + e["label"] + '<span class="caret">▾</span></summary>'
+            nav_html += '<div class="nav-menu">'
+            for it_key, it_url, it_label in e["items"]:
+                it_cls = "nav-menu-item active" if it_key == active_page else "nav-menu-item"
+                nav_html += '<a href="' + it_url + '" class="' + it_cls + '">' + it_label + '</a>'
+            nav_html += '</div></details>'
+    nav_html += '</div>'
+    nav_html += '<div class="topnav-user"><span class="topnav-name">' + name + '</span>'
+    nav_html += '<a href="/logout" class="topnav-logout">Logout</a></div>'
+    nav_html += '</div></nav>'
+    # Single-open + click-outside-to-close behaviour
+    nav_html += '<script>(function(){var ds=document.querySelectorAll(".nav-group");ds.forEach(function(d){d.addEventListener("toggle",function(){if(d.open)ds.forEach(function(o){if(o!==d)o.open=false})})});document.addEventListener("click",function(e){if(!e.target.closest(".nav-group"))ds.forEach(function(d){d.open=false})});document.addEventListener("keydown",function(e){if(e.key==="Escape")ds.forEach(function(d){d.open=false})})})();</script>'
     return nav_html
 
-# CSS for the unified top navbar - injected into every page that uses it
+# CSS for the unified top navbar - injected into every page that uses it.
+# Brand uses the 5 Second Beauty pink wordmark.
 _NAVBAR_CSS='''<style>
-.topnav{background:rgba(15,18,25,.95);border-bottom:1px solid rgba(255,255,255,.08);backdrop-filter:blur(20px);position:sticky;top:0;z-index:100;font-family:'DM Sans',sans-serif}
-.topnav-inner{max-width:1600px;margin:0 auto;padding:0 24px;display:flex;align-items:center;gap:24px;height:56px}
-.topnav-brand{font-size:15px;font-weight:800;color:#e4e8f1;letter-spacing:.3px;flex-shrink:0}
-.topnav-links{display:flex;gap:4px;flex:1;align-items:center}
-.topnav-link{color:#9ba9c1;text-decoration:none;font-size:13px;font-weight:600;padding:8px 14px;border-radius:8px;transition:all .15s;white-space:nowrap}
-.topnav-link:hover{color:#e4e8f1;background:rgba(255,255,255,.05)}
-.topnav-link.active{color:#a5b4fc;background:rgba(79,70,229,.15);border:1px solid rgba(79,70,229,.25)}
+:root{
+  --brand:#f3c9c4;
+  --brand-strong:#eab1a8;
+  --brand-glow:rgba(243,201,196,.12);
+  --bg:#0a0d14;
+  --surface:rgba(255,255,255,.03);
+  --border:rgba(255,255,255,.07);
+  --text:#e4e8f1;
+  --text-muted:#9ba9c1;
+  --text-dim:#6b7a90;
+}
+.topnav{background:rgba(10,13,20,.92);border-bottom:1px solid var(--border);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);position:sticky;top:0;z-index:100;font-family:'DM Sans',sans-serif}
+.topnav-inner{max-width:1600px;margin:0 auto;padding:0 28px;display:flex;align-items:center;gap:28px;height:64px}
+.topnav-brand{display:flex;flex-direction:column;justify-content:center;line-height:1;text-decoration:none;flex-shrink:0;padding:6px 0}
+.brand-mark{font-size:20px;font-weight:900;color:var(--brand);letter-spacing:1.5px;font-family:'DM Sans',sans-serif}
+.brand-sub{font-size:9px;font-weight:700;color:var(--text-dim);letter-spacing:2.4px;text-transform:uppercase;margin-top:3px}
+.topnav-brand:hover .brand-mark{color:var(--brand-strong)}
+.topnav-links{display:flex;gap:2px;flex:1;align-items:center}
+.topnav-link{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:600;padding:9px 14px;border-radius:10px;transition:all .15s;white-space:nowrap}
+.topnav-link:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.topnav-link.active{color:var(--brand);background:var(--brand-glow);box-shadow:inset 0 0 0 1px rgba(243,201,196,.18)}
+/* Dropdown groups using HTML <details> */
+.nav-group{position:relative;list-style:none}
+.nav-group>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;gap:4px;user-select:none}
+.nav-group>summary::-webkit-details-marker,.nav-group>summary::marker{display:none;content:""}
+.nav-group.active>summary{color:var(--brand);background:var(--brand-glow);box-shadow:inset 0 0 0 1px rgba(243,201,196,.18)}
+.nav-group .caret{font-size:9px;opacity:.6;transition:transform .15s;line-height:1}
+.nav-group[open] .caret{transform:rotate(180deg);opacity:1}
+.nav-menu{position:absolute;top:calc(100% + 6px);left:0;background:rgba(15,18,25,.98);border:1px solid var(--border);border-radius:12px;padding:5px;min-width:200px;z-index:110;box-shadow:0 12px 36px rgba(0,0,0,.4);animation:menuIn .15s ease-out;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+@keyframes menuIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+.nav-menu-item{display:block;padding:9px 14px;font-size:13px;font-weight:600;color:var(--text-muted);text-decoration:none;border-radius:8px;transition:all .12s;white-space:nowrap}
+.nav-menu-item:hover{color:var(--text);background:rgba(255,255,255,.05)}
+.nav-menu-item.active{color:var(--brand);background:var(--brand-glow)}
 .topnav-user{display:flex;align-items:center;gap:12px;flex-shrink:0}
-.topnav-name{font-size:13px;color:#6b7a90;font-weight:500}
-.topnav-logout{color:#fb7185;text-decoration:none;font-size:12px;font-weight:600;padding:7px 14px;border-radius:7px;background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.15);transition:all .15s}
-.topnav-logout:hover{background:rgba(244,63,94,.15)}
+.topnav-name{font-size:13px;color:var(--text-dim);font-weight:600}
+.topnav-logout{color:#fb7185;text-decoration:none;font-size:12px;font-weight:600;padding:7px 14px;border-radius:9px;background:rgba(244,63,94,.06);border:1px solid rgba(244,63,94,.14);transition:all .15s}
+.topnav-logout:hover{background:rgba(244,63,94,.14)}
 @media(max-width:768px){
-.topnav-inner{padding:0 12px;gap:8px;height:auto;flex-wrap:wrap;padding-top:8px;padding-bottom:8px}
-.topnav-brand{font-size:13px;width:100%}
-.topnav-links{order:2;width:100%;overflow-x:auto;flex:initial}
-.topnav-user{order:1}
+.topnav-inner{padding:0 14px;gap:10px;height:auto;flex-wrap:wrap;padding-top:10px;padding-bottom:10px}
+.brand-mark{font-size:17px}
+.topnav-links{order:3;width:100%;overflow-x:visible;flex:initial;padding-bottom:4px;flex-wrap:wrap}
+.topnav-links::-webkit-scrollbar{display:none}
+.topnav-user{order:2;margin-left:auto}
 .topnav-name{display:none}
+.nav-menu{position:static;margin-top:4px;width:100%;animation:none;background:rgba(255,255,255,.03);box-shadow:none}
 }
 </style>'''
 
@@ -64,36 +131,35 @@ _FONT = '<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;5
 LOGIN_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>Packing Station</title>
+<title>5 SEC — Employee Hub</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;display:flex;align-items:center;justify-content:center;min-height:100vh;overflow:hidden}
-.glow{position:fixed;border-radius:50%;filter:blur(100px);opacity:.12;pointer-events:none}
-.g1{width:600px;height:600px;top:-200px;right:-150px;background:#4f46e5}
-.g2{width:400px;height:400px;bottom:-100px;left:-100px;background:#7c3aed}
+body{font-family:'DM Sans',sans-serif;background:#0a0d14;color:#e4e8f1;display:flex;align-items:center;justify-content:center;min-height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased}
+.glow{position:fixed;border-radius:50%;filter:blur(120px);opacity:.18;pointer-events:none}
+.g1{width:640px;height:640px;top:-220px;right:-160px;background:#f3c9c4}
+.g2{width:480px;height:480px;bottom:-140px;left:-120px;background:#a855f7}
 .wrap{position:relative;z-index:1;width:100%;max-width:440px;padding:24px}
 .logo{text-align:center;margin-bottom:36px}
-.logo-box{width:80px;height:80px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:22px;display:inline-flex;align-items:center;justify-content:center;font-size:40px;box-shadow:0 12px 40px rgba(79,70,229,.3);margin-bottom:18px}
-.logo h1{font-size:30px;font-weight:800;letter-spacing:-.5px}
-.logo p{font-size:14px;color:#6b7a90;margin-top:4px}
-.card{background:rgba(21,25,33,.8);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.06);border-radius:20px;padding:40px 36px}
-.card h2{font-size:22px;font-weight:700;margin-bottom:4px}
-.card .sub{font-size:13px;color:#6b7a90;margin-bottom:28px}
-.field{margin-bottom:20px}
-.field label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin-bottom:7px;text-transform:uppercase;letter-spacing:.6px}
-.field input{width:100%;background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:12px;padding:15px 18px;font-size:16px;color:#e4e8f1;font-family:inherit;outline:none;transition:all .2s}
-.field input:focus{border-color:#4f46e5;box-shadow:0 0 0 3px rgba(79,70,229,.15)}
+.brand-mark-big{font-size:54px;font-weight:900;color:#f3c9c4;letter-spacing:4px;line-height:1;margin-bottom:12px;text-shadow:0 8px 32px rgba(243,201,196,.25)}
+.brand-sub-big{font-size:11px;font-weight:700;color:#6b7a90;letter-spacing:4px;text-transform:uppercase}
+.card{background:rgba(21,25,33,.6);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid rgba(255,255,255,.06);border-radius:22px;padding:40px 36px}
+.card h2{font-size:24px;font-weight:800;margin-bottom:4px;color:#fff}
+.card .sub{font-size:13px;color:#9ba9c1;margin-bottom:28px}
+.field{margin-bottom:18px}
+.field label{display:block;font-size:11px;font-weight:700;color:#9ba9c1;margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px}
+.field input{width:100%;background:rgba(11,14,20,.7);border:2px solid rgba(255,255,255,.06);border-radius:12px;padding:15px 18px;font-size:16px;color:#e4e8f1;font-family:inherit;outline:none;transition:all .2s}
+.field input:focus{border-color:#f3c9c4;box-shadow:0 0 0 3px rgba(243,201,196,.12)}
 .field input::placeholder{color:#3a4252}
-.btn{width:100%;border:none;border-radius:12px;padding:16px;font-size:16px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .15s}
-.btn-primary{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:white;margin-top:8px;box-shadow:0 4px 20px rgba(79,70,229,.3)}
-.btn-primary:hover{transform:translateY(-1px);box-shadow:0 6px 28px rgba(79,70,229,.4)}
+.btn{width:100%;border:none;border-radius:12px;padding:16px;font-size:15px;font-weight:800;cursor:pointer;font-family:inherit;transition:all .15s;letter-spacing:.5px}
+.btn-primary{background:#f3c9c4;color:#1a0e0b;margin-top:8px;box-shadow:0 8px 28px rgba(243,201,196,.22)}
+.btn-primary:hover{background:#eab1a8;transform:translateY(-1px);box-shadow:0 10px 36px rgba(243,201,196,.32)}
 .btn-primary:active{transform:scale(.98)}
 .err{color:#f43f5e;font-size:13px;margin-top:14px;text-align:center;min-height:18px}
-.foot{text-align:center;margin-top:28px;font-size:11px;color:#2a3040}
+.foot{text-align:center;margin-top:28px;font-size:11px;color:#2a3040;letter-spacing:1.5px}
 </style></head><body>
 <div class="glow g1"></div><div class="glow g2"></div>
 <div class="wrap">
-<div class="logo"><div class="logo-box">📦</div><h1>Packing Station</h1><p>5 Second Beauty — Warehouse System</p></div>
+<div class="logo"><div class="brand-mark-big">5&nbsp;SEC</div><div class="brand-sub-big">Employee Hub</div></div>
 <div class="card">
 <h2>Welcome back</h2><p class="sub">Sign in to start your shift</p>
 <div class="field"><label>Username</label><input type="text" id="u" placeholder="Enter your username" autofocus></div>
@@ -101,7 +167,7 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;display:f
 <button class="btn btn-primary" id="loginBtn">Sign In</button>
 <div class="err" id="e"></div>
 </div>
-<div class="foot">5 Second Beauty &copy; 2025</div>
+<div class="foot">5 SECOND BEAUTY &copy; 2026</div>
 </div>
 <script>
 document.getElementById('p').addEventListener('keydown',function(e){if(e.key==='Enter')login()});
@@ -112,8 +178,11 @@ async function login(){
     if(!u||!p){document.getElementById('e').textContent='Please enter username and password';return}
     var r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
     var d=await r.json();
-    if(d.ok)window.location.href='/';
-    else document.getElementById('e').textContent=d.error;
+    if(d.ok){
+        // Workers see a choice screen between Portal and Packing.
+        // Admin/CS skip it (they don't pack).
+        window.location.href = d.role==='worker' ? '/welcome' : '/';
+    } else document.getElementById('e').textContent=d.error;
 }
 </script></body></html>'''
 
@@ -343,8 +412,20 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 .ld{text-align:center;padding:32px;color:#6b7a90}
 .spn{width:28px;height:28px;border:3px solid rgba(255,255,255,.06);border-top-color:#4f46e5;border-radius:50%;animation:sp .8s linear infinite;margin:0 auto 8px}
 @keyframes sp{to{transform:rotate(360deg)}}
+.potm-wrap{max-width:1600px;margin:16px auto 0;padding:0 28px}
+.potm-card{display:flex;align-items:center;gap:18px;padding:18px 24px;background:linear-gradient(135deg,rgba(251,191,36,.12),rgba(245,158,11,.04));border:1px solid rgba(251,191,36,.25);border-radius:16px;text-decoration:none;color:inherit;transition:transform .15s,border-color .15s}
+.potm-card:hover{transform:translateY(-2px);border-color:rgba(251,191,36,.4)}
+.potm-crown{font-size:42px;line-height:1;filter:drop-shadow(0 4px 8px rgba(251,191,36,.3))}
+.potm-meta{flex:1}
+.potm-label{font-size:11px;color:#fbbf24;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:2px}
+.potm-name{font-size:20px;font-weight:800;color:#fff;margin-bottom:2px}
+.potm-stats{font-size:13px;color:#9ba9c1}
+.potm-stats b{color:#e4e8f1;font-weight:700}
+.potm-cta{color:#fbbf24;font-size:13px;font-weight:700;padding:8px 14px;border:1px solid rgba(251,191,36,.3);border-radius:10px}
+@media(max-width:600px){.potm-cta{display:none}}
 </style></head><body>
 __NAVBAR__
+<div class="potm-wrap" id="potmWrap" style="display:none"><a href="/leaderboard" class="potm-card"><div class="potm-crown">👑</div><div class="potm-meta"><div class="potm-label">Packer of the Month</div><div class="potm-name" id="potmName">—</div><div class="potm-stats"><b id="potmCount">0</b> packages · avg <b id="potmAvg">0s</b> · <b id="potmDays">0</b> active days</div></div><div class="potm-cta">View leaderboard →</div></a></div>
 <div class="page-hdr">
 <div class="page-title"><div class="page-title-icon">🔍</div>Search Recordings</div>
 <div class="stat-pills"><div class="pill">🎥 <b id="sv">-</b></div><div class="pill">📸 <b id="sph">-</b></div><div class="pill">💾 <b id="ss">-</b></div></div>
@@ -397,7 +478,17 @@ function loadStats(){
         document.getElementById('ss').textContent=d.total_size_mb+' MB';
     });
 }
-loadRecent();loadStats();
+function loadPOTM(){
+    fetch('/api/packer-of-month').then(function(r){return r.json()}).then(function(d){
+        if(!d||!d.name)return;
+        document.getElementById('potmName').textContent=d.name;
+        document.getElementById('potmCount').textContent=d.count;
+        document.getElementById('potmAvg').textContent=(d.avg_dur||0)+'s';
+        document.getElementById('potmDays').textContent=d.days;
+        document.getElementById('potmWrap').style.display='block';
+    });
+}
+loadRecent();loadStats();loadPOTM();
 </script></body></html>'''
 
 # ── USERS MANAGEMENT ──────────────────────────────────────
@@ -1219,3 +1310,1056 @@ function loadUsers(){
 loadStation();
 loadUsers();
 </script></body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# EMPLOYEE PORTAL — profile page, leaderboard
+# ══════════════════════════════════════════════════════════
+
+ME_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>My Profile — Packing Station</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:#e4e8f1;min-height:100vh;padding-bottom:80px}
+.wrap{max-width:1100px;margin:0 auto;padding:32px 24px}
+.hero{display:flex;align-items:center;gap:24px;margin-bottom:32px;padding:28px;background:linear-gradient(135deg,rgba(79,70,229,.12),rgba(168,85,247,.06));border:1px solid rgba(79,70,229,.18);border-radius:18px}
+.avatar{width:80px;height:80px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#a855f7);display:flex;align-items:center;justify-content:center;font-size:36px;font-weight:800;color:#fff;flex-shrink:0}
+.hero-info h1{font-size:28px;font-weight:800;margin-bottom:4px;color:#fff}
+.hero-info .role{font-size:13px;color:#a5b4fc;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.hero-info .since{font-size:13px;color:#6b7a90;margin-top:6px}
+.rank-pill{margin-left:auto;text-align:center;padding:14px 20px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.18);border-radius:12px;min-width:120px}
+.rank-pill .num{font-size:32px;font-weight:900;color:#fbbf24;line-height:1}
+.rank-pill .lbl{font-size:11px;color:#9ba9c1;text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
+.section-title{font-size:13px;font-weight:700;color:#6b7a90;text-transform:uppercase;letter-spacing:1px;margin:32px 0 12px}
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.stat-card{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:18px}
+.stat-card .lbl{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+.stat-card .val{font-size:32px;font-weight:800;color:#e4e8f1;margin:8px 0 2px;line-height:1}
+.stat-card .sub{font-size:12px;color:#9ba9c1}
+.stat-card.highlight{background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(99,102,241,.04));border-color:rgba(99,102,241,.25)}
+.stat-card.highlight .val{color:#a5b4fc}
+.achievements{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
+.medal{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:18px;text-align:center;position:relative;transition:transform .15s}
+.medal.earned{background:linear-gradient(135deg,rgba(251,191,36,.1),rgba(245,158,11,.04));border-color:rgba(251,191,36,.25)}
+.medal.earned:hover{transform:translateY(-2px)}
+.medal .emoji{font-size:44px;line-height:1;filter:grayscale(1);opacity:.35}
+.medal.earned .emoji{filter:none;opacity:1}
+.medal .label{font-size:12px;color:#9ba9c1;margin-top:8px;font-weight:600}
+.medal.earned .label{color:#fbbf24}
+.medal.earned::after{content:'✓';position:absolute;top:8px;right:8px;background:#10b981;color:#fff;width:18px;height:18px;border-radius:50%;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.recent-table{width:100%;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.06);border-radius:14px;overflow:hidden;border-collapse:collapse}
+.recent-table th{text-align:left;padding:12px 16px;font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px;background:rgba(255,255,255,.02);border-bottom:1px solid rgba(255,255,255,.06)}
+.recent-table td{padding:12px 16px;font-size:13px;color:#e4e8f1;border-bottom:1px solid rgba(255,255,255,.04)}
+.recent-table tr:last-child td{border-bottom:none}
+.recent-table td.muted{color:#9ba9c1}
+.recent-table td.mono{font-family:'SF Mono',Menlo,monospace;font-size:12px}
+.empty{text-align:center;padding:40px;color:#6b7a90;font-size:14px;background:rgba(255,255,255,.02);border:1px dashed rgba(255,255,255,.08);border-radius:14px}
+@media(max-width:700px){
+.grid-4{grid-template-columns:repeat(2,1fr)}
+.hero{flex-wrap:wrap}
+.rank-pill{margin-left:0;width:100%}
+}
+</style>
+</head><body>
+__NAVBAR__
+<div class="wrap">
+  <div class="hero">
+    <div class="avatar" id="avatar">?</div>
+    <div class="hero-info">
+      <h1 id="name">Loading…</h1>
+      <div class="role" id="role"></div>
+      <div class="since" id="since"></div>
+    </div>
+    <div class="rank-pill" id="rankPill" style="display:none">
+      <div class="num" id="rankNum">—</div>
+      <div class="lbl">Rank this month</div>
+    </div>
+  </div>
+
+  <div class="section-title">Your numbers</div>
+  <div class="grid-4">
+    <div class="stat-card"><div class="lbl">Today</div><div class="val" id="todayCount">0</div><div class="sub" id="todayAvg">—</div></div>
+    <div class="stat-card highlight"><div class="lbl">This month</div><div class="val" id="monthCount">0</div><div class="sub" id="monthAvg">—</div></div>
+    <div class="stat-card"><div class="lbl">All time</div><div class="val" id="allCount">0</div><div class="sub" id="allAvg">—</div></div>
+    <div class="stat-card"><div class="lbl">Days worked</div><div class="val" id="allDays">0</div><div class="sub">total active days</div></div>
+  </div>
+
+  <div class="section-title">Achievements</div>
+  <div class="achievements" id="achievements"></div>
+
+  <div class="section-title">Recent packages</div>
+  <div id="recentWrap"></div>
+</div>
+
+<script>
+function fmtDur(s){if(!s||s==='0')return '—';var n=parseFloat(s);return isNaN(n)?'—':n.toFixed(1)+'s avg'}
+fetch('/api/me/stats').then(function(r){return r.json()}).then(function(d){
+  document.getElementById('name').textContent=d.name||'Unknown';
+  document.getElementById('avatar').textContent=(d.name||'?').charAt(0).toUpperCase();
+  document.getElementById('role').textContent=d.role||'';
+  if(d.all_time && d.all_time.last_date){
+    document.getElementById('since').textContent='Most recent activity: '+d.all_time.last_date;
+  }
+  if(d.rank_this_month){
+    document.getElementById('rankPill').style.display='block';
+    document.getElementById('rankNum').textContent='#'+d.rank_this_month;
+  }
+  document.getElementById('todayCount').textContent=d.today.count;
+  document.getElementById('todayAvg').textContent=fmtDur(d.today.avg_dur);
+  document.getElementById('monthCount').textContent=d.this_month.count;
+  document.getElementById('monthAvg').textContent=fmtDur(d.this_month.avg_dur);
+  document.getElementById('allCount').textContent=d.all_time.count;
+  document.getElementById('allAvg').textContent=fmtDur(d.all_time.avg_dur);
+  document.getElementById('allDays').textContent=d.all_time.days;
+  // Achievements
+  var ach=document.getElementById('achievements');
+  ach.innerHTML=d.achievements.map(function(b){
+    return '<div class="medal'+(b.earned?' earned':'')+'"><div class="emoji">'+b.emoji+'</div><div class="label">'+b.label+'</div></div>';
+  }).join('');
+  // Recent
+  var w=document.getElementById('recentWrap');
+  if(!d.recent || d.recent.length===0){
+    w.innerHTML='<div class="empty">No packages logged yet. Once you start packing, your recent activity will show here.</div>';
+  } else {
+    var rows=d.recent.map(function(r){
+      return '<tr><td class="mono">'+(r.tracking_number||'—')+'</td><td>'+(r.station||'—')+'</td><td class="muted">'+(r.date||'')+' '+(r.time||'')+'</td><td>'+(r.duration_seconds||'0')+'s</td></tr>';
+    }).join('');
+    w.innerHTML='<table class="recent-table"><thead><tr><th>Tracking</th><th>Station</th><th>When</th><th>Duration</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }
+});
+</script>
+</body></html>'''
+
+
+LEADERBOARD_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Leaderboard — Packing Station</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:#e4e8f1;min-height:100vh;padding-bottom:80px}
+.wrap{max-width:1000px;margin:0 auto;padding:32px 24px}
+.page-title{font-size:32px;font-weight:900;margin-bottom:6px}
+.subtitle{color:#9ba9c1;margin-bottom:24px;font-size:14px}
+.window-tabs{display:flex;gap:6px;background:rgba(255,255,255,.03);padding:5px;border-radius:11px;border:1px solid rgba(255,255,255,.06);margin-bottom:32px;max-width:fit-content}
+.window-tab{padding:9px 18px;border-radius:8px;font-size:13px;font-weight:600;color:#9ba9c1;cursor:pointer;transition:all .15s;background:transparent;border:none;font-family:inherit}
+.window-tab:hover{color:#e4e8f1}
+.window-tab.active{background:rgba(99,102,241,.18);color:#a5b4fc}
+.podium{display:grid;grid-template-columns:1fr 1.2fr 1fr;gap:14px;margin-bottom:24px;align-items:end}
+.podium-slot{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:20px;text-align:center;position:relative;transition:transform .2s}
+.podium-slot.gold{background:linear-gradient(180deg,rgba(251,191,36,.16),rgba(251,191,36,.04));border-color:rgba(251,191,36,.3);min-height:240px}
+.podium-slot.silver{background:linear-gradient(180deg,rgba(148,163,184,.14),rgba(148,163,184,.04));border-color:rgba(148,163,184,.25);min-height:210px}
+.podium-slot.bronze{background:linear-gradient(180deg,rgba(217,119,6,.14),rgba(217,119,6,.04));border-color:rgba(217,119,6,.25);min-height:190px}
+.podium-medal{font-size:44px;margin-bottom:8px}
+.podium-name{font-size:18px;font-weight:800;color:#fff;margin-bottom:4px}
+.podium-count{font-size:28px;font-weight:900;color:#fbbf24;margin-bottom:2px}
+.silver .podium-count{color:#cbd5e1}
+.bronze .podium-count{color:#f59e0b}
+.podium-meta{font-size:12px;color:#9ba9c1}
+.rest-list{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.06);border-radius:14px;overflow:hidden}
+.rest-row{display:grid;grid-template-columns:60px 1fr 100px 100px 100px;gap:12px;align-items:center;padding:14px 20px;border-bottom:1px solid rgba(255,255,255,.04);font-size:14px}
+.rest-row:last-child{border-bottom:none}
+.rest-row.me{background:rgba(99,102,241,.08);border-left:3px solid #a5b4fc}
+.rest-rank{font-weight:800;color:#6b7a90;font-size:16px}
+.rest-name{font-weight:600;color:#e4e8f1}
+.rest-stat{color:#9ba9c1;font-size:13px;text-align:right}
+.rest-stat .big{color:#e4e8f1;font-weight:700;font-size:15px}
+.empty{text-align:center;padding:60px 20px;color:#6b7a90}
+@media(max-width:700px){
+.podium{grid-template-columns:1fr;gap:10px}
+.podium-slot{min-height:auto!important}
+.rest-row{grid-template-columns:50px 1fr 70px;gap:8px;padding:12px 14px;font-size:12px}
+.rest-row .desktop-only{display:none}
+}
+</style>
+</head><body>
+__NAVBAR__
+<div class="wrap">
+  <div class="page-title">🏆 Leaderboard</div>
+  <div class="subtitle" id="subtitle">Top packers — ranked by packages completed</div>
+
+  <div class="window-tabs">
+    <button class="window-tab" data-w="today">Today</button>
+    <button class="window-tab" data-w="week">This week</button>
+    <button class="window-tab active" data-w="month">This month</button>
+    <button class="window-tab" data-w="all">All time</button>
+  </div>
+
+  <div id="podium"></div>
+  <div id="restList"></div>
+</div>
+
+<script>
+var ME='__ME__';
+var currentWindow='month';
+
+function load(w){
+  currentWindow=w;
+  document.querySelectorAll('.window-tab').forEach(function(b){
+    b.classList.toggle('active', b.dataset.w===w);
+  });
+  fetch('/api/leaderboard?window='+w).then(function(r){return r.json()}).then(function(d){
+    var lb=d.leaderboard||[];
+    var podiumDiv=document.getElementById('podium');
+    var restDiv=document.getElementById('restList');
+    if(lb.length===0){
+      podiumDiv.innerHTML='';
+      restDiv.innerHTML='<div class="empty">No packing activity yet for this period.</div>';
+      return;
+    }
+    // Podium for top 3
+    var top3=lb.slice(0,3);
+    if(top3.length>=1){
+      var slots='';
+      // Render in podium order: 2nd, 1st, 3rd (silver, gold, bronze)
+      var ordered=[top3[1],top3[0],top3[2]];
+      var classes=['silver','gold','bronze'];
+      var medals=['🥈','🥇','🥉'];
+      for(var i=0;i<3;i++){
+        var p=ordered[i];
+        if(!p){slots+='<div></div>';continue}
+        slots+='<div class="podium-slot '+classes[i]+'">';
+        slots+='<div class="podium-medal">'+medals[i]+'</div>';
+        slots+='<div class="podium-name">'+p.name+'</div>';
+        slots+='<div class="podium-count">'+p.count+'</div>';
+        slots+='<div class="podium-meta">packages · avg '+(p.avg_dur||0)+'s</div>';
+        slots+='</div>';
+      }
+      podiumDiv.innerHTML='<div class="podium">'+slots+'</div>';
+    }
+    // Rest of list (ranks 4+)
+    var rest=lb.slice(3);
+    if(rest.length===0){
+      restDiv.innerHTML='';
+      return;
+    }
+    var rows=rest.map(function(p){
+      var me=(p.name===ME)?' me':'';
+      return '<div class="rest-row'+me+'"><div class="rest-rank">#'+p.rank+'</div><div class="rest-name">'+p.name+'</div><div class="rest-stat"><span class="big">'+p.count+'</span> packs</div><div class="rest-stat desktop-only">'+(p.avg_dur||0)+'s avg</div><div class="rest-stat desktop-only">'+p.days+' days</div></div>';
+    }).join('');
+    restDiv.innerHTML='<div class="rest-list">'+rows+'</div>';
+  });
+}
+
+document.querySelectorAll('.window-tab').forEach(function(b){
+  b.addEventListener('click',function(){load(b.dataset.w)});
+});
+load('month');
+</script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# PORTAL HOME — categorized hub for all employees
+# Sections: Personal · Operations (admin/cs) · Documents
+# ══════════════════════════════════════════════════════════
+
+HOME_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Home — 5 SEC Employee Hub</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+/* Soft ambient gradient behind everything */
+body::before{content:'';position:fixed;inset:0;background:radial-gradient(900px 500px at 12% -10%, rgba(243,201,196,.06), transparent 60%),radial-gradient(700px 500px at 92% -10%, rgba(168,85,247,.05), transparent 60%);pointer-events:none;z-index:-1}
+.wrap{max-width:1240px;margin:0 auto;padding:48px 28px 0}
+
+/* Hero greeting */
+.hero{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:36px;flex-wrap:wrap}
+.greet-eyebrow{font-size:12px;font-weight:700;color:var(--brand);text-transform:uppercase;letter-spacing:2px;margin-bottom:6px}
+.greet-title{font-size:44px;font-weight:900;color:#fff;line-height:1.05;letter-spacing:-1px}
+.greet-title .name{background:linear-gradient(135deg,var(--brand),var(--brand-strong));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.greet-sub{font-size:15px;color:var(--text-muted);margin-top:8px;font-weight:500}
+.quick-stats{display:flex;gap:12px;flex-wrap:wrap}
+.qs{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 18px;min-width:120px}
+.qs .lbl{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
+.qs .val{font-size:26px;font-weight:800;color:#fff;line-height:1;margin-top:6px}
+.qs.brand{background:linear-gradient(135deg,rgba(243,201,196,.12),rgba(243,201,196,.03));border-color:rgba(243,201,196,.22)}
+.qs.brand .val{color:var(--brand)}
+
+/* Packer of the Month banner */
+.potm{display:none;align-items:center;gap:20px;padding:22px 26px;margin-bottom:40px;background:linear-gradient(135deg,rgba(251,191,36,.12),rgba(245,158,11,.04));border:1px solid rgba(251,191,36,.22);border-radius:18px;text-decoration:none;color:inherit;transition:transform .2s,border-color .2s}
+.potm.show{display:flex}
+.potm:hover{transform:translateY(-2px);border-color:rgba(251,191,36,.4)}
+.potm-icon{font-size:52px;line-height:1;filter:drop-shadow(0 6px 12px rgba(251,191,36,.3))}
+.potm-text{flex:1}
+.potm-lbl{font-size:11px;color:#fbbf24;text-transform:uppercase;letter-spacing:1.5px;font-weight:700;margin-bottom:3px}
+.potm-name{font-size:22px;font-weight:800;color:#fff;margin-bottom:3px}
+.potm-stats{font-size:13px;color:var(--text-muted)}
+.potm-stats b{color:var(--text);font-weight:700}
+.potm-arrow{font-size:18px;color:#fbbf24;font-weight:700}
+
+/* Section heading */
+.hub-section{margin-bottom:44px}
+.section-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:18px;gap:16px}
+.section-title{font-size:14px;font-weight:800;color:var(--text-dim);text-transform:uppercase;letter-spacing:2px;display:flex;align-items:center;gap:10px}
+.section-title .dot{width:8px;height:8px;border-radius:50%;background:var(--brand)}
+.section-sub{font-size:13px;color:var(--text-dim)}
+
+/* Card grid */
+.card-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+@media(max-width:900px){.card-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.card-grid{grid-template-columns:1fr}}
+
+.card{position:relative;display:flex;flex-direction:column;padding:24px;background:var(--surface);border:1px solid var(--border);border-radius:18px;text-decoration:none;color:inherit;transition:all .2s;overflow:hidden;min-height:160px}
+.card::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,transparent,rgba(243,201,196,.04));opacity:0;transition:opacity .2s;pointer-events:none}
+.card:hover{transform:translateY(-3px);border-color:rgba(243,201,196,.22);background:rgba(255,255,255,.045)}
+.card:hover::before{opacity:1}
+.card-icon{font-size:32px;margin-bottom:14px;line-height:1}
+.card-title{font-size:17px;font-weight:800;color:#fff;margin-bottom:6px}
+.card-desc{font-size:13px;color:var(--text-muted);line-height:1.5;flex:1}
+.card-meta{display:flex;justify-content:space-between;align-items:center;margin-top:14px;font-size:12px;color:var(--brand);font-weight:700}
+.card-meta .arrow{transition:transform .2s}
+.card:hover .card-meta .arrow{transform:translateX(4px)}
+.card.disabled{opacity:.55;cursor:not-allowed;pointer-events:none}
+.card.disabled .badge-soon{background:rgba(148,163,184,.12);color:var(--text-muted);padding:3px 9px;border-radius:6px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.card .pill-new{position:absolute;top:14px;right:14px;background:rgba(16,185,129,.16);color:#34d399;padding:3px 9px;border-radius:6px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+
+/* Role-based hide */
+body[data-role="worker"] .hub-section-ops{display:none}
+
+/* Worker hero CTA - giant "Start Packing" for workers */
+body[data-role="worker"] .worker-cta{display:flex}
+.worker-cta{display:none;align-items:center;gap:18px;padding:24px 28px;margin-bottom:36px;background:linear-gradient(135deg,rgba(99,102,241,.16),rgba(168,85,247,.08));border:1px solid rgba(99,102,241,.3);border-radius:20px;text-decoration:none;color:inherit;transition:transform .2s}
+.worker-cta:hover{transform:translateY(-2px)}
+.worker-cta-icon{font-size:48px}
+.worker-cta-text{flex:1}
+.worker-cta-text .ttl{font-size:22px;font-weight:800;color:#fff;margin-bottom:4px}
+.worker-cta-text .desc{font-size:14px;color:var(--text-muted)}
+.worker-cta-arrow{font-size:32px;color:var(--brand);font-weight:300}
+</style>
+</head><body data-role="__ROLE__">
+__NAVBAR__
+<div class="wrap">
+  <div class="hero">
+    <div>
+      <div class="greet-eyebrow" id="eyebrow">Welcome back</div>
+      <div class="greet-title">Hello, <span class="name" id="name">there</span></div>
+      <div class="greet-sub" id="sub">Loading your day…</div>
+    </div>
+    <div class="quick-stats" id="quickStats"></div>
+  </div>
+
+  <!-- Worker-only: huge Start Packing CTA -->
+  <a href="/" class="worker-cta">
+    <div class="worker-cta-icon">📦</div>
+    <div class="worker-cta-text">
+      <div class="ttl">Start Packing</div>
+      <div class="desc">Open the recording station and log a package</div>
+    </div>
+    <div class="worker-cta-arrow">→</div>
+  </a>
+
+  <!-- Packer of the Month -->
+  <a href="/leaderboard" class="potm" id="potm">
+    <div class="potm-icon">👑</div>
+    <div class="potm-text">
+      <div class="potm-lbl">Packer of the Month</div>
+      <div class="potm-name" id="potmName">—</div>
+      <div class="potm-stats"><b id="potmCount">0</b> packages · avg <b id="potmAvg">0s</b> · <b id="potmDays">0</b> active days</div>
+    </div>
+    <div class="potm-arrow">→</div>
+  </a>
+
+  <!-- Personal section (everyone) -->
+  <section class="hub-section">
+    <div class="section-head">
+      <div class="section-title"><span class="dot"></span>Personal</div>
+      <div class="section-sub">Your stats, ranking, and progress</div>
+    </div>
+    <div class="card-grid">
+      <a href="/me" class="card">
+        <div class="card-icon">👤</div>
+        <div class="card-title">My Profile</div>
+        <div class="card-desc">Your packing stats, achievements, and recent activity</div>
+        <div class="card-meta"><span>Open profile</span><span class="arrow">→</span></div>
+      </a>
+      <a href="/leaderboard" class="card">
+        <div class="card-icon">🏆</div>
+        <div class="card-title">Leaderboard</div>
+        <div class="card-desc">See who is leading the team this week and month</div>
+        <div class="card-meta"><span>View ranking</span><span class="arrow">→</span></div>
+      </a>
+      <div class="card disabled">
+        <div class="card-icon">🎯</div>
+        <div class="card-title">My Goals</div>
+        <div class="card-desc">Personal targets and progress tracking</div>
+        <div class="card-meta"><span class="badge-soon">Coming soon</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Operations section (admin/cs only) -->
+  <section class="hub-section hub-section-ops">
+    <div class="section-head">
+      <div class="section-title"><span class="dot"></span>Operations</div>
+      <div class="section-sub">Tools for daily warehouse work</div>
+    </div>
+    <div class="card-grid">
+      <a href="/dashboard" class="card">
+        <div class="card-icon">🔍</div>
+        <div class="card-title">Search Recordings</div>
+        <div class="card-desc">Look up packing videos by tracking number</div>
+        <div class="card-meta"><span>Open search</span><span class="arrow">→</span></div>
+      </a>
+      <a href="/giveaway" class="card">
+        <div class="card-icon">🎁</div>
+        <div class="card-title">Giveaways</div>
+        <div class="card-desc">Manage winners and shipping addresses</div>
+        <div class="card-meta"><span>Open queue</span><span class="arrow">→</span></div>
+      </a>
+      <a href="/analytics" class="card" id="cardAnalytics">
+        <div class="card-icon">📊</div>
+        <div class="card-title">Analytics</div>
+        <div class="card-desc">Daily totals, per-station and per-worker breakdowns</div>
+        <div class="card-meta"><span>View metrics</span><span class="arrow">→</span></div>
+      </a>
+    </div>
+  </section>
+
+  <!-- Documents section (placeholder for now) -->
+  <section class="hub-section">
+    <div class="section-head">
+      <div class="section-title"><span class="dot"></span>Documents</div>
+      <div class="section-sub">Forms, policies, and personal paperwork</div>
+    </div>
+    <div class="card-grid">
+      <a href="/documents?cat=policies" class="card">
+        <div class="card-icon">📋</div>
+        <div class="card-title">Company Policies</div>
+        <div class="card-desc">Handbook, code of conduct, safety procedures</div>
+        <div class="card-meta"><span>Browse policies</span><span class="arrow">→</span></div>
+      </a>
+      <a href="/documents?cat=personal" class="card">
+        <div class="card-icon">📄</div>
+        <div class="card-title">My Documents</div>
+        <div class="card-desc">Pay stubs, contracts, and personal records</div>
+        <div class="card-meta"><span>Open files</span><span class="arrow">→</span></div>
+      </a>
+      <a href="/onboarding" class="card">
+        <div class="card-icon">🎓</div>
+        <div class="card-title">Onboarding</div>
+        <div class="card-desc">Checklist to get fully set up — required tasks and training</div>
+        <div class="card-meta"><span>Open checklist</span><span class="arrow">→</span></div>
+      </a>
+    </div>
+  </section>
+</div>
+
+<script>
+// Time-of-day greeting
+(function(){
+  var h=new Date().getHours();
+  var eb=document.getElementById('eyebrow');
+  if(h<5)eb.textContent='Late night shift';
+  else if(h<12)eb.textContent='Good morning';
+  else if(h<17)eb.textContent='Good afternoon';
+  else if(h<22)eb.textContent='Good evening';
+  else eb.textContent='Working late';
+})();
+
+// Hide admin-only card for CS
+var role=document.body.dataset.role;
+if(role==='cs'){
+  var ca=document.getElementById('cardAnalytics');
+  if(ca)ca.style.display='none';
+}
+
+// Load my stats for the hero
+fetch('/api/me/stats').then(function(r){return r.json()}).then(function(d){
+  document.getElementById('name').textContent=d.name||'there';
+  var sub=document.getElementById('sub');
+  if(d.this_month && d.this_month.count>0){
+    var msg='You have logged <b style="color:var(--text)">'+d.this_month.count+'</b> packages this month';
+    if(d.rank_this_month) msg+=' · currently ranked <b style="color:var(--brand)">#'+d.rank_this_month+'</b>';
+    sub.innerHTML=msg;
+  } else {
+    sub.textContent='No packages yet this month — let\\'s get started';
+  }
+  // Quick stats pills
+  var qs=document.getElementById('quickStats');
+  qs.innerHTML=
+    '<div class="qs"><div class="lbl">Today</div><div class="val">'+(d.today?d.today.count:0)+'</div></div>'+
+    '<div class="qs brand"><div class="lbl">This month</div><div class="val">'+(d.this_month?d.this_month.count:0)+'</div></div>'+
+    '<div class="qs"><div class="lbl">All time</div><div class="val">'+(d.all_time?d.all_time.count:0)+'</div></div>';
+});
+
+// Load Packer of the Month
+fetch('/api/packer-of-month').then(function(r){return r.json()}).then(function(d){
+  if(!d||!d.name)return;
+  document.getElementById('potmName').textContent=d.name;
+  document.getElementById('potmCount').textContent=d.count;
+  document.getElementById('potmAvg').textContent=(d.avg_dur||0)+'s';
+  document.getElementById('potmDays').textContent=d.days;
+  document.getElementById('potm').classList.add('show');
+});
+</script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# DOCUMENT LIBRARY — categorized file repository
+# ══════════════════════════════════════════════════════════
+
+DOCUMENTS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Documents — 5 SEC Employee Hub</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1100px;margin:0 auto;padding:40px 28px 0}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:28px;flex-wrap:wrap}
+.page-title{font-size:36px;font-weight:900;color:#fff;letter-spacing:-.5px;line-height:1.05}
+.page-sub{color:var(--text-muted);margin-top:6px;font-size:14px}
+.upload-btn{background:var(--brand);color:#1a0e0b;border:none;border-radius:12px;padding:12px 22px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;transition:all .15s;display:inline-flex;align-items:center;gap:8px;box-shadow:0 6px 22px rgba(243,201,196,.15)}
+.upload-btn:hover{background:var(--brand-strong);transform:translateY(-1px)}
+body[data-role="admin"] .admin-only{display:inline-flex}
+.admin-only{display:none}
+
+/* Category tabs */
+.tabs{display:flex;gap:4px;background:rgba(255,255,255,.03);padding:5px;border-radius:12px;border:1px solid var(--border);margin-bottom:28px;max-width:fit-content;flex-wrap:wrap}
+.tab{padding:9px 18px;border-radius:8px;font-size:13px;font-weight:600;color:var(--text-muted);cursor:pointer;transition:all .15s;background:transparent;border:none;font-family:inherit;display:flex;align-items:center;gap:6px}
+.tab:hover{color:var(--text)}
+.tab.active{background:var(--brand-glow);color:var(--brand)}
+.tab .count{font-size:11px;background:rgba(255,255,255,.06);padding:2px 7px;border-radius:6px;font-weight:700}
+.tab.active .count{background:rgba(243,201,196,.2)}
+
+/* Doc list */
+.doc-list{display:flex;flex-direction:column;gap:10px}
+.doc{display:grid;grid-template-columns:48px 1fr auto;gap:16px;align-items:center;padding:18px 22px;background:var(--surface);border:1px solid var(--border);border-radius:14px;transition:all .15s}
+.doc:hover{border-color:rgba(243,201,196,.18);background:rgba(255,255,255,.045)}
+.doc-icon{width:48px;height:48px;border-radius:12px;background:rgba(243,201,196,.1);display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0}
+.doc-info{min-width:0}
+.doc-title{font-size:15px;font-weight:700;color:#fff;margin-bottom:3px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.doc-desc{font-size:13px;color:var(--text-muted);line-height:1.4;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.doc-meta{font-size:11px;color:var(--text-dim);display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.doc-meta b{color:var(--text-muted);font-weight:600}
+.vis-pill{font-size:10px;padding:2px 8px;border-radius:6px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+.vis-all{background:rgba(16,185,129,.12);color:#34d399}
+.vis-admin_cs{background:rgba(99,102,241,.14);color:#a5b4fc}
+.vis-admin{background:rgba(244,63,94,.12);color:#fb7185}
+.vis-personal{background:rgba(245,158,11,.14);color:#fbbf24}
+.doc-actions{display:flex;gap:8px;align-items:center}
+.dl{background:var(--brand-glow);color:var(--brand);text-decoration:none;font-size:13px;font-weight:700;padding:9px 16px;border-radius:9px;transition:all .15s;border:1px solid rgba(243,201,196,.18);display:inline-flex;align-items:center;gap:6px}
+.dl:hover{background:rgba(243,201,196,.2)}
+.del{background:rgba(244,63,94,.08);color:#fb7185;border:1px solid rgba(244,63,94,.18);border-radius:9px;padding:9px 12px;font-size:13px;font-weight:700;cursor:pointer;transition:all .15s;font-family:inherit;display:none}
+body[data-role="admin"] .del{display:inline-flex}
+.del:hover{background:rgba(244,63,94,.16)}
+.empty{text-align:center;padding:80px 20px;color:var(--text-dim)}
+.empty-icon{font-size:56px;margin-bottom:14px;opacity:.5}
+.empty-title{font-size:18px;font-weight:700;color:var(--text-muted);margin-bottom:6px}
+.empty-sub{font-size:14px}
+
+/* Modal */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:200;display:none;align-items:center;justify-content:center;padding:20px}
+.modal-bg.show{display:flex}
+.modal{background:#12161f;border:1px solid var(--border);border-radius:20px;padding:32px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto}
+.modal h3{font-size:22px;font-weight:800;margin-bottom:6px;color:#fff}
+.modal .modal-sub{color:var(--text-muted);font-size:13px;margin-bottom:24px}
+.fld{margin-bottom:16px}
+.fld label{display:block;font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:7px;text-transform:uppercase;letter-spacing:.6px}
+.fld input[type="text"],.fld textarea,.fld select{width:100%;background:rgba(11,14,20,.7);border:1px solid var(--border);border-radius:10px;padding:11px 14px;font-size:14px;color:var(--text);font-family:inherit;outline:none;transition:all .2s}
+.fld input[type="text"]:focus,.fld textarea:focus,.fld select:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(243,201,196,.1)}
+.fld textarea{resize:vertical;min-height:80px}
+.fld input[type="file"]{width:100%;color:var(--text-muted);font-size:13px;padding:9px;background:rgba(11,14,20,.7);border:1px dashed var(--border);border-radius:10px;cursor:pointer;font-family:inherit}
+.fld input[type="file"]::file-selector-button{background:var(--brand);color:#1a0e0b;border:none;border-radius:8px;padding:6px 14px;margin-right:10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
+.fld-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}
+.btn-cancel{background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:10px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+.btn-cancel:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.btn-submit{background:var(--brand);color:#1a0e0b;border:none;border-radius:10px;padding:10px 22px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;transition:all .15s}
+.btn-submit:hover{background:var(--brand-strong)}
+.btn-submit:disabled{opacity:.5;cursor:not-allowed}
+.modal-err{color:#f43f5e;font-size:13px;margin-top:12px;min-height:18px}
+.personal-row{display:none}
+.personal-row.show{display:block}
+</style>
+</head><body data-role="__ROLE__">
+__NAVBAR__
+<div class="wrap">
+  <div class="page-head">
+    <div>
+      <div class="page-title">📂 Documents</div>
+      <div class="page-sub">Company policies, personal records, and onboarding materials</div>
+    </div>
+    <button class="upload-btn admin-only" id="openUpload">＋ Upload document</button>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <button class="tab active" data-cat="all">All <span class="count" id="cnt-all">0</span></button>
+    <button class="tab" data-cat="policies">📋 Policies <span class="count" id="cnt-policies">0</span></button>
+    <button class="tab" data-cat="personal">📄 Personal <span class="count" id="cnt-personal">0</span></button>
+    <button class="tab" data-cat="onboarding">🎓 Onboarding <span class="count" id="cnt-onboarding">0</span></button>
+    <button class="tab" data-cat="other">📎 Other <span class="count" id="cnt-other">0</span></button>
+  </div>
+
+  <div class="doc-list" id="docList"></div>
+</div>
+
+<!-- Upload modal (admin only) -->
+<div class="modal-bg" id="modal">
+  <div class="modal">
+    <h3>Upload document</h3>
+    <div class="modal-sub">PDFs, Word docs, spreadsheets, or images — max 50MB.</div>
+    <div class="fld">
+      <label>File</label>
+      <input type="file" id="upFile">
+    </div>
+    <div class="fld">
+      <label>Title</label>
+      <input type="text" id="upTitle" placeholder="Employee Handbook 2026">
+    </div>
+    <div class="fld">
+      <label>Description (optional)</label>
+      <textarea id="upDesc" placeholder="Updated policies on time off, conduct, and safety."></textarea>
+    </div>
+    <div class="fld-row">
+      <div class="fld">
+        <label>Category</label>
+        <select id="upCategory">
+          <option value="policies">📋 Policies</option>
+          <option value="onboarding">🎓 Onboarding</option>
+          <option value="personal">📄 Personal</option>
+          <option value="other">📎 Other</option>
+        </select>
+      </div>
+      <div class="fld">
+        <label>Visibility</label>
+        <select id="upVis">
+          <option value="all">Everyone</option>
+          <option value="admin_cs">Admin & CS only</option>
+          <option value="admin">Admin only</option>
+          <option value="personal">One specific user</option>
+        </select>
+      </div>
+    </div>
+    <div class="fld personal-row" id="personalRow">
+      <label>Send to user</label>
+      <select id="upUser"><option value="">Loading users…</option></select>
+    </div>
+    <div class="modal-err" id="modalErr"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="cancelUpload">Cancel</button>
+      <button class="btn-submit" id="doUpload">Upload</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var allDocs=[],currentCat='all';
+
+function fmtSize(b){if(!b)return '—';var u=['B','KB','MB','GB'];var i=0;while(b>=1024&&i<3){b/=1024;i++}return b.toFixed(b<10?1:0)+' '+u[i]}
+function fmtDate(s){if(!s)return '';try{var d=new Date(s);return d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}catch(e){return s}}
+function iconFor(fn){var x=(fn||'').toLowerCase().split('.').pop();if(x==='pdf')return '📕';if(x==='doc'||x==='docx')return '📘';if(x==='xls'||x==='xlsx'||x==='csv')return '📗';if(x==='png'||x==='jpg'||x==='jpeg'||x==='gif')return '🖼️';if(x==='txt')return '📝';return '📄'}
+function visLabel(v){if(v==='all')return 'Everyone';if(v==='admin_cs')return 'Admin & CS';if(v==='admin')return 'Admin only';if(v&&v.indexOf('personal:')===0)return 'Personal · '+v.slice(9);return v}
+function visClass(v){if(v==='all')return 'vis-all';if(v==='admin_cs')return 'vis-admin_cs';if(v==='admin')return 'vis-admin';if(v&&v.indexOf('personal:')===0)return 'vis-personal';return 'vis-all'}
+
+function load(){
+  fetch('/api/documents').then(function(r){return r.json()}).then(function(d){
+    allDocs=d||[];
+    var counts={all:allDocs.length,policies:0,personal:0,onboarding:0,other:0};
+    allDocs.forEach(function(x){if(counts[x.category]!==undefined)counts[x.category]++});
+    Object.keys(counts).forEach(function(c){var el=document.getElementById('cnt-'+c);if(el)el.textContent=counts[c]});
+    render();
+  });
+}
+
+function render(){
+  var list=document.getElementById('docList');
+  var docs=allDocs.filter(function(x){return currentCat==='all'||x.category===currentCat});
+  if(docs.length===0){
+    list.innerHTML='<div class="empty"><div class="empty-icon">📂</div><div class="empty-title">No documents here yet</div><div class="empty-sub">'+(document.body.dataset.role==='admin'?'Click "Upload document" to add the first one.':'Check back soon.')+'</div></div>';
+    return;
+  }
+  list.innerHTML=docs.map(function(d){
+    return '<div class="doc"><div class="doc-icon">'+iconFor(d.filename)+'</div>'+
+      '<div class="doc-info"><div class="doc-title">'+escapeHtml(d.title)+
+        '<span class="vis-pill '+visClass(d.visibility)+'">'+visLabel(d.visibility)+'</span></div>'+
+      (d.description?'<div class="doc-desc">'+escapeHtml(d.description)+'</div>':'')+
+      '<div class="doc-meta"><span>'+escapeHtml(d.filename)+'</span>·<span>'+fmtSize(d.size_bytes)+'</span>·<span>by <b>'+escapeHtml(d.uploaded_by)+'</b></span>·<span>'+fmtDate(d.uploaded_at)+'</span></div></div>'+
+      '<div class="doc-actions">'+
+        '<a href="/documents/dl/'+d.id+'" class="dl">⬇ Download</a>'+
+        '<button class="del" data-id="'+d.id+'" title="Delete">🗑</button>'+
+      '</div></div>';
+  }).join('');
+  list.querySelectorAll('.del').forEach(function(b){
+    b.addEventListener('click',function(){
+      if(!confirm('Delete this document permanently?'))return;
+      fetch('/api/documents/'+b.dataset.id+'/delete',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+        if(d.ok)load();else alert(d.error||'Delete failed');
+      });
+    });
+  });
+}
+
+function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+// Tabs
+document.querySelectorAll('.tab').forEach(function(t){
+  t.addEventListener('click',function(){
+    currentCat=t.dataset.cat;
+    document.querySelectorAll('.tab').forEach(function(x){x.classList.toggle('active',x===t)});
+    render();
+  });
+});
+
+// Initial category from URL ?cat=
+var urlCat=new URLSearchParams(location.search).get('cat');
+if(urlCat){
+  var tab=document.querySelector('.tab[data-cat="'+urlCat+'"]');
+  if(tab)tab.click();
+}
+
+// Upload modal
+var modal=document.getElementById('modal');
+var openBtn=document.getElementById('openUpload');
+if(openBtn){
+  openBtn.addEventListener('click',function(){
+    document.getElementById('modalErr').textContent='';
+    modal.classList.add('show');
+    if(document.getElementById('upUser').options.length<=1){
+      fetch('/api/users').then(function(r){return r.json()}).then(function(u){
+        var sel=document.getElementById('upUser');
+        sel.innerHTML='<option value="">— pick a user —</option>'+
+          Object.keys(u).map(function(uid){return '<option value="'+uid+'">'+u[uid].name+' ('+uid+')</option>'}).join('');
+      });
+    }
+  });
+  document.getElementById('cancelUpload').addEventListener('click',function(){modal.classList.remove('show')});
+  modal.addEventListener('click',function(e){if(e.target===modal)modal.classList.remove('show')});
+  document.getElementById('upVis').addEventListener('change',function(e){
+    document.getElementById('personalRow').classList.toggle('show',e.target.value==='personal');
+  });
+  document.getElementById('doUpload').addEventListener('click',function(){
+    var f=document.getElementById('upFile').files[0];
+    var title=document.getElementById('upTitle').value.trim();
+    if(!f){document.getElementById('modalErr').textContent='Pick a file';return}
+    if(!title){document.getElementById('modalErr').textContent='Title is required';return}
+    var fd=new FormData();
+    fd.append('file',f);
+    fd.append('title',title);
+    fd.append('description',document.getElementById('upDesc').value.trim());
+    fd.append('category',document.getElementById('upCategory').value);
+    fd.append('visibility',document.getElementById('upVis').value);
+    fd.append('personal_user',document.getElementById('upUser').value);
+    var btn=document.getElementById('doUpload');btn.disabled=true;btn.textContent='Uploading…';
+    fetch('/api/documents/upload',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+      btn.disabled=false;btn.textContent='Upload';
+      if(d.ok){
+        modal.classList.remove('show');
+        document.getElementById('upFile').value='';
+        document.getElementById('upTitle').value='';
+        document.getElementById('upDesc').value='';
+        load();
+      } else {
+        document.getElementById('modalErr').textContent=d.error||'Upload failed';
+      }
+    });
+  });
+}
+
+load();
+</script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# WELCOME — post-login choice between Portal and Packing
+# Shown after password login for workers only (admin/cs skip)
+# Badge login stays on the fast path (badge → packing direct)
+# ══════════════════════════════════════════════════════════
+
+WELCOME_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Welcome — 5 SEC</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:#e4e8f1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px 24px;-webkit-font-smoothing:antialiased;position:relative;overflow:hidden}
+body::before{content:'';position:fixed;inset:0;background:radial-gradient(900px 600px at 20% 0%, rgba(243,201,196,.08), transparent 60%),radial-gradient(800px 600px at 80% 100%, rgba(99,102,241,.06), transparent 60%);pointer-events:none;z-index:-1}
+.brand{text-align:center;margin-bottom:40px}
+.brand-mark{font-size:28px;font-weight:900;color:#f3c9c4;letter-spacing:2.2px;line-height:1;text-shadow:0 4px 18px rgba(243,201,196,.2)}
+.brand-sub{font-size:9px;font-weight:700;color:#6b7a90;letter-spacing:2.8px;text-transform:uppercase;margin-top:5px}
+.greet{text-align:center;margin-bottom:8px}
+.greet-eyebrow{font-size:12px;font-weight:700;color:#f3c9c4;text-transform:uppercase;letter-spacing:2.2px;margin-bottom:8px}
+.greet-name{font-size:38px;font-weight:900;color:#fff;line-height:1.1;letter-spacing:-.8px}
+.greet-name b{background:linear-gradient(135deg,#f3c9c4,#eab1a8);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.greet-prompt{font-size:15px;color:#9ba9c1;margin-top:14px;margin-bottom:44px}
+.choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;max-width:720px;width:100%}
+.choice{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:22px;padding:36px 28px;text-decoration:none;color:inherit;display:flex;flex-direction:column;align-items:flex-start;gap:14px;transition:all .25s cubic-bezier(.4,0,.2,1);position:relative;overflow:hidden;min-height:260px;cursor:pointer}
+.choice::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,transparent 60%, rgba(243,201,196,.08));opacity:0;transition:opacity .25s;pointer-events:none}
+.choice:hover{transform:translateY(-4px);border-color:rgba(243,201,196,.3);background:rgba(255,255,255,.05)}
+.choice:hover::after{opacity:1}
+.choice.pack{background:linear-gradient(135deg,rgba(99,102,241,.14),rgba(168,85,247,.06));border-color:rgba(99,102,241,.3)}
+.choice.pack:hover{border-color:rgba(99,102,241,.5)}
+.choice-icon{font-size:64px;line-height:1;margin-bottom:6px}
+.choice-label{font-size:11px;font-weight:700;color:#9ba9c1;text-transform:uppercase;letter-spacing:1.5px}
+.choice-title{font-size:26px;font-weight:900;color:#fff;letter-spacing:-.4px;line-height:1.1}
+.choice-desc{font-size:14px;color:#9ba9c1;line-height:1.5;flex:1}
+.choice-cta{display:flex;align-items:center;gap:8px;color:#f3c9c4;font-size:13px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;margin-top:6px}
+.choice.pack .choice-cta{color:#a5b4fc}
+.choice-cta .arrow{transition:transform .2s}
+.choice:hover .choice-cta .arrow{transform:translateX(6px)}
+.footer-link{margin-top:32px;font-size:12px;color:#6b7a90;text-align:center}
+.footer-link a{color:#9ba9c1;text-decoration:none;border-bottom:1px dotted rgba(155,169,193,.3);transition:color .15s}
+.footer-link a:hover{color:#e4e8f1}
+@media(max-width:560px){
+  .greet-name{font-size:30px}
+  .choice{min-height:200px;padding:28px 22px}
+  .choice-icon{font-size:48px}
+  .choice-title{font-size:22px}
+}
+</style>
+</head><body>
+<div class="brand">
+  <div class="brand-mark">5&nbsp;SEC</div>
+  <div class="brand-sub">Employee Hub</div>
+</div>
+<div class="greet">
+  <div class="greet-eyebrow" id="eyebrow">Welcome back</div>
+  <div class="greet-name">Hello, <b>__NAME__</b></div>
+  <div class="greet-prompt">What would you like to do?</div>
+</div>
+<div class="choices">
+  <a href="/pack-start" class="choice pack">
+    <div class="choice-icon">📦</div>
+    <div class="choice-label">For your shift</div>
+    <div class="choice-title">Start Packing</div>
+    <div class="choice-desc">Open the recording station and log packages by tracking number.</div>
+    <div class="choice-cta">Open station <span class="arrow">→</span></div>
+  </a>
+  <a href="/home" class="choice portal">
+    <div class="choice-icon">🏠</div>
+    <div class="choice-label">Personal area</div>
+    <div class="choice-title">Open Portal</div>
+    <div class="choice-desc">Your stats, leaderboard ranking, documents, and team updates.</div>
+    <div class="choice-cta">Browse portal <span class="arrow">→</span></div>
+  </a>
+</div>
+<div class="footer-link"><a href="/logout">Not you? Log out</a></div>
+<script>
+(function(){
+  var h=new Date().getHours();
+  var eb=document.getElementById('eyebrow');
+  if(h<5)eb.textContent='Late night shift';
+  else if(h<12)eb.textContent='Good morning';
+  else if(h<17)eb.textContent='Good afternoon';
+  else if(h<22)eb.textContent='Good evening';
+  else eb.textContent='Working late';
+})();
+</script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# ONBOARDING CHECKLIST — new-hire task tracker
+# Employee view (their list) + admin view (team progress + manage tasks)
+# ══════════════════════════════════════════════════════════
+
+ONBOARDING_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Onboarding — 5 SEC</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1000px;margin:0 auto;padding:40px 28px 0}
+
+/* Hero / progress */
+.hero{background:linear-gradient(135deg,rgba(243,201,196,.1),rgba(243,201,196,.02));border:1px solid rgba(243,201,196,.18);border-radius:20px;padding:28px;margin-bottom:32px}
+.hero-eyebrow{font-size:11px;font-weight:700;color:var(--brand);text-transform:uppercase;letter-spacing:2px;margin-bottom:6px}
+.hero-title{font-size:32px;font-weight:900;color:#fff;letter-spacing:-.5px;margin-bottom:6px}
+.hero-sub{font-size:14px;color:var(--text-muted);margin-bottom:18px}
+.progress-row{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.progress-bar{flex:1;height:12px;background:rgba(255,255,255,.06);border-radius:8px;overflow:hidden;min-width:200px}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--brand),var(--brand-strong));border-radius:8px;transition:width .4s cubic-bezier(.4,0,.2,1)}
+.progress-text{font-size:14px;color:var(--text);font-weight:700;white-space:nowrap}
+.progress-text b{color:var(--brand);font-size:18px;font-weight:900}
+.complete-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(16,185,129,.14);color:#34d399;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-top:10px}
+.complete-badge.show{display:inline-flex}
+
+/* Sections */
+.section-title{font-size:13px;font-weight:800;color:var(--text-dim);text-transform:uppercase;letter-spacing:2px;display:flex;align-items:center;gap:10px;margin:36px 0 14px}
+.section-title .dot{width:8px;height:8px;border-radius:50%;background:var(--brand)}
+
+/* Task list */
+.task-list{display:flex;flex-direction:column;gap:10px}
+.task{display:flex;align-items:flex-start;gap:14px;padding:18px 22px;background:var(--surface);border:1px solid var(--border);border-radius:14px;transition:all .15s;cursor:pointer}
+.task:hover{border-color:rgba(243,201,196,.18);background:rgba(255,255,255,.045)}
+.task.done{opacity:.6}
+.task.done .task-title{text-decoration:line-through;color:var(--text-muted)}
+.task-check{width:24px;height:24px;border-radius:50%;border:2px solid rgba(255,255,255,.18);flex-shrink:0;margin-top:1px;display:flex;align-items:center;justify-content:center;transition:all .2s}
+.task.done .task-check{background:var(--brand);border-color:var(--brand);color:#1a0e0b;font-weight:900;font-size:14px}
+.task-check::before{content:'';display:none}
+.task.done .task-check::before{content:'✓';display:block}
+.task-body{flex:1;min-width:0}
+.task-title{font-size:15px;font-weight:700;color:#fff;margin-bottom:3px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.task-desc{font-size:13px;color:var(--text-muted);line-height:1.5}
+.task-meta{display:flex;gap:10px;align-items:center;margin-top:8px;font-size:11px;color:var(--text-dim);flex-wrap:wrap}
+.cat-pill{font-size:10px;padding:2px 8px;border-radius:6px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+.cat-safety{background:rgba(244,63,94,.12);color:#fb7185}
+.cat-paperwork{background:rgba(99,102,241,.14);color:#a5b4fc}
+.cat-training{background:rgba(245,158,11,.14);color:#fbbf24}
+.cat-intro{background:rgba(16,185,129,.12);color:#34d399}
+.cat-other{background:rgba(148,163,184,.12);color:#94a3b8}
+.req-pill{font-size:10px;padding:2px 7px;border-radius:5px;background:rgba(244,63,94,.12);color:#fb7185;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+.del-task-btn{background:rgba(244,63,94,.08);color:#fb7185;border:1px solid rgba(244,63,94,.18);border-radius:8px;width:30px;height:30px;font-size:13px;cursor:pointer;display:none;align-items:center;justify-content:center;font-family:inherit;flex-shrink:0}
+body[data-role="admin"] .del-task-btn{display:inline-flex}
+.del-task-btn:hover{background:rgba(244,63,94,.18)}
+
+/* Admin sections */
+.admin-only{display:none}
+body[data-role="admin"] .admin-only{display:block}
+.add-row{background:var(--surface);border:1px dashed var(--border);border-radius:14px;padding:18px 22px;display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;margin-bottom:14px}
+.add-row input[type="text"],.add-row select{background:rgba(11,14,20,.7);border:1px solid var(--border);border-radius:9px;padding:9px 13px;font-size:13px;color:var(--text);font-family:inherit;outline:none;transition:border .15s}
+.add-row input[type="text"]:focus,.add-row select:focus{border-color:var(--brand)}
+.add-row input[name="title"]{flex:1;min-width:200px}
+.add-row label.req-check{display:flex;align-items:center;gap:6px;color:var(--text-muted);font-size:13px;cursor:pointer;user-select:none}
+.add-btn{background:var(--brand);color:#1a0e0b;border:none;border-radius:9px;padding:9px 18px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit}
+.add-btn:hover{background:var(--brand-strong)}
+
+.team-list{background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+.team-row{display:grid;grid-template-columns:1fr auto 200px auto;gap:14px;align-items:center;padding:14px 20px;border-bottom:1px solid rgba(255,255,255,.04);font-size:14px}
+.team-row:last-child{border-bottom:none}
+.team-row.complete{background:rgba(16,185,129,.04)}
+.team-name{display:flex;flex-direction:column;gap:2px}
+.team-name b{color:#fff;font-weight:700;font-size:14px}
+.team-name .role{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px;font-weight:700}
+.team-count{font-size:13px;color:var(--text-muted);font-weight:600;white-space:nowrap}
+.team-bar{height:8px;background:rgba(255,255,255,.06);border-radius:6px;overflow:hidden}
+.team-bar-fill{height:100%;background:linear-gradient(90deg,var(--brand),var(--brand-strong));border-radius:6px;transition:width .3s}
+.team-row.complete .team-bar-fill{background:#34d399}
+.reset-btn{background:transparent;color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px;cursor:pointer;font-family:inherit;transition:all .15s}
+.reset-btn:hover{color:#fb7185;border-color:rgba(244,63,94,.3)}
+
+.empty{text-align:center;padding:60px 20px;color:var(--text-dim);background:var(--surface);border:1px dashed var(--border);border-radius:14px}
+.empty-icon{font-size:48px;margin-bottom:12px;opacity:.5}
+
+@media(max-width:700px){
+.team-row{grid-template-columns:1fr;gap:8px}
+.team-row .team-bar{order:3}
+}
+</style>
+</head><body data-role="__ROLE__">
+__NAVBAR__
+<div class="wrap">
+  <div class="hero">
+    <div class="hero-eyebrow">Onboarding</div>
+    <div class="hero-title">Your checklist</div>
+    <div class="hero-sub">Complete these steps to get fully set up at 5 Second Beauty.</div>
+    <div class="progress-row">
+      <div class="progress-bar"><div class="progress-fill" id="progFill" style="width:0%"></div></div>
+      <div class="progress-text"><b id="progDone">0</b> / <span id="progTotal">0</span> complete</div>
+    </div>
+    <div class="complete-badge" id="completeBadge" style="display:none">✓ All required steps complete</div>
+  </div>
+
+  <div class="section-title"><span class="dot"></span>My checklist</div>
+  <div class="task-list" id="taskList"></div>
+
+  <!-- Admin-only sections -->
+  <div class="admin-only">
+    <div class="section-title"><span class="dot"></span>Manage tasks</div>
+    <div class="add-row">
+      <input type="text" name="title" id="newTitle" placeholder="New task title (e.g. Complete W-4 form)">
+      <select id="newCategory">
+        <option value="safety">Safety</option>
+        <option value="paperwork" selected>Paperwork</option>
+        <option value="training">Training</option>
+        <option value="intro">Intro</option>
+        <option value="other">Other</option>
+      </select>
+      <label class="req-check"><input type="checkbox" id="newRequired" checked> Required</label>
+      <button class="add-btn" id="addBtn">＋ Add task</button>
+    </div>
+
+    <div class="section-title"><span class="dot"></span>Team progress</div>
+    <div id="teamList"></div>
+  </div>
+</div>
+
+<script>
+function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+function loadMe(){
+  fetch('/api/onboarding/me').then(function(r){return r.json()}).then(function(d){
+    document.getElementById('progDone').textContent=d.done_count;
+    document.getElementById('progTotal').textContent=d.total_count;
+    document.getElementById('progFill').style.width=(d.percent||0)+'%';
+    document.getElementById('completeBadge').style.display=d.all_required_done&&d.total_required>0?'inline-flex':'none';
+    var list=document.getElementById('taskList');
+    if(!d.tasks||d.tasks.length===0){
+      list.innerHTML='<div class="empty"><div class="empty-icon">🎯</div>No onboarding tasks yet.'+(document.body.dataset.role==='admin'?' Add the first one below.':'')+'</div>';
+      return;
+    }
+    list.innerHTML=d.tasks.map(function(t){
+      return '<div class="task'+(t.done?' done':'')+'" data-id="'+t.id+'">'+
+        '<div class="task-check"></div>'+
+        '<div class="task-body">'+
+          '<div class="task-title">'+escapeHtml(t.title)+(t.required?' <span class="req-pill">required</span>':'')+'</div>'+
+          (t.description?'<div class="task-desc">'+escapeHtml(t.description)+'</div>':'')+
+          '<div class="task-meta"><span class="cat-pill cat-'+t.category+'">'+t.category+'</span>'+(t.done&&t.done_at?'<span>Completed '+t.done_at.replace("T"," ").slice(0,16)+'</span>':'')+'</div>'+
+        '</div>'+
+        '<button class="del-task-btn" data-del="'+t.id+'" title="Delete task" onclick="event.stopPropagation()">🗑</button>'+
+      '</div>';
+    }).join('');
+    list.querySelectorAll('.task').forEach(function(el){
+      el.addEventListener('click',function(){
+        var tid=el.dataset.id;
+        fetch('/api/onboarding/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task_id:tid})})
+          .then(function(r){return r.json()}).then(function(d){if(d.ok)loadMe();if(d.ok&&document.body.dataset.role==='admin')loadTeam();});
+      });
+    });
+    list.querySelectorAll('.del-task-btn').forEach(function(b){
+      b.addEventListener('click',function(){
+        if(!confirm('Delete this task for everyone?'))return;
+        fetch('/api/onboarding/tasks/'+b.dataset.del+'/delete',{method:'POST'})
+          .then(function(r){return r.json()}).then(function(d){if(d.ok){loadMe();loadTeam()}else alert(d.error||'Failed')});
+      });
+    });
+  });
+}
+
+function loadTeam(){
+  if(document.body.dataset.role!=='admin')return;
+  fetch('/api/onboarding/team').then(function(r){return r.json()}).then(function(team){
+    var box=document.getElementById('teamList');
+    if(!team||team.length===0){box.innerHTML='<div class="empty">No employees yet.</div>';return}
+    box.innerHTML='<div class="team-list">'+team.map(function(u){
+      return '<div class="team-row'+(u.complete?' complete':'')+'">'+
+        '<div class="team-name"><b>'+escapeHtml(u.name)+'</b><span class="role">'+u.role+'</span></div>'+
+        '<div class="team-count">'+u.done+' / '+u.total+(u.required_total>0?' · '+u.required_done+'/'+u.required_total+' req':'')+'</div>'+
+        '<div class="team-bar"><div class="team-bar-fill" style="width:'+u.percent+'%"></div></div>'+
+        '<button class="reset-btn" data-u="'+escapeHtml(u.username)+'">Reset</button>'+
+      '</div>';
+    }).join('')+'</div>';
+    box.querySelectorAll('.reset-btn').forEach(function(b){
+      b.addEventListener('click',function(){
+        if(!confirm('Reset onboarding progress for '+b.dataset.u+'? Their completions will be erased.'))return;
+        fetch('/api/onboarding/reset/'+b.dataset.u,{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d.ok){loadTeam();loadMe()}});
+      });
+    });
+  });
+}
+
+document.getElementById('addBtn').addEventListener('click',function(){
+  var title=document.getElementById('newTitle').value.trim();
+  if(!title){document.getElementById('newTitle').focus();return}
+  var payload={title:title,category:document.getElementById('newCategory').value,required:document.getElementById('newRequired').checked};
+  fetch('/api/onboarding/tasks/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){document.getElementById('newTitle').value='';loadMe();loadTeam()}else alert(d.error||'Failed')});
+});
+
+loadMe();
+loadTeam();
+</script>
+</body></html>'''

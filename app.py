@@ -13,7 +13,9 @@ import bcrypt
 from templates import (_navbar, _NAVBAR_CSS, _FONT,
     LOGIN_HTML, STATION_HTML, WORKER_HTML, DASH_HTML, USERS_HTML,
     ANALYTICS_HTML, GIVEAWAY_DASH_HTML, GIVEAWAY_DETAIL_HTML,
-    BADGE_LOGIN_HTML, USERS_BADGES_HTML)
+    BADGE_LOGIN_HTML, USERS_BADGES_HTML,
+    ME_HTML, LEADERBOARD_HTML, HOME_HTML, DOCUMENTS_HTML, WELCOME_HTML,
+    ONBOARDING_HTML)
 
 
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
@@ -22,6 +24,9 @@ PHOTO_DIR=os.path.join(DATA_DIR,"photos")
 LOG_FILE=os.path.join(DATA_DIR,"packing_log.csv")
 USERS_FILE=os.path.join(DATA_DIR,"users.json")
 STATIONS_FILE=os.path.join(DATA_DIR,"stations.json")
+DOCS_FILE=os.path.join(DATA_DIR,"documents.json")
+DOCS_DIR=os.path.join(DATA_DIR,"documents")
+ONB_FILE=os.path.join(DATA_DIR,"onboarding.json")
 
 # FIX #1: SECRET_KEY must be set in environment - fail loud if missing.
 # Auto-generating it would invalidate all sessions on every restart.
@@ -68,7 +73,33 @@ if any(_r2_vars):
 else:
     print("R2 not configured - using local file storage at "+DATA_DIR,flush=True)
 
-for d in [DATA_DIR,VIDEO_DIR,PHOTO_DIR]: os.makedirs(d,exist_ok=True)
+for d in [DATA_DIR,VIDEO_DIR,PHOTO_DIR,DOCS_DIR]: os.makedirs(d,exist_ok=True)
+if not os.path.exists(DOCS_FILE):
+    with open(DOCS_FILE,"w") as f: json.dump({},f)
+if not os.path.exists(ONB_FILE):
+    # Seed with a few common onboarding tasks so new installs aren't empty
+    _onb_seed = {
+        "tasks": [
+            {"id":"ob_safety",     "title":"Watch warehouse safety training",
+             "description":"Required 10-minute video covering forklift area, lifting, and emergency exits.",
+             "category":"safety",   "required":True,  "created_at":""},
+            {"id":"ob_handbook",   "title":"Read & sign the employee handbook",
+             "description":"Find it under Documents → Policies.",
+             "category":"paperwork","required":True,  "created_at":""},
+            {"id":"ob_tour",       "title":"Take the warehouse floor tour",
+             "description":"Shift lead will walk you through stations, stockroom, and break area.",
+             "category":"intro",    "required":True,  "created_at":""},
+            {"id":"ob_packing",    "title":"Shadow an experienced packer for 1 hour",
+             "description":"Learn how recordings, tracking scans, and station selection work in practice.",
+             "category":"training", "required":True,  "created_at":""},
+            {"id":"ob_meet_team",  "title":"Meet your team",
+             "description":"Introductions with the rest of the packing crew and management.",
+             "category":"intro",    "required":False, "created_at":""},
+        ],
+        "completions": {}
+    }
+    with open(ONB_FILE,"w") as f: json.dump(_onb_seed,f,indent=2)
+MAX_DOC_SIZE = 50*1024*1024  # 50MB per document
 
 def cleanup_old_files():
     """Delete video/photo files older than RETENTION_DAYS.
@@ -275,6 +306,216 @@ def req_role(*roles):
         return d
     return w
 
+
+# ══════════════════════════════════════════════════════════
+# STATS HELPERS — aggregate packing_log.csv for portal pages
+# (Profile, Leaderboard, Packer-of-the-Month, Achievements)
+# ══════════════════════════════════════════════════════════
+
+def _read_log():
+    """Return all rows from packing_log.csv, or [] if missing."""
+    if not os.path.exists(LOG_FILE): return []
+    with open(LOG_FILE) as f: return list(csv.DictReader(f))
+
+def _filter_by_window(rows, window='month'):
+    """Filter log rows by time window: 'today' | 'week' | 'month' | 'all'.
+    'month' uses calendar month; 'week' uses rolling 7 days."""
+    if window == 'all': return rows
+    now = datetime.now()
+    if window == 'today':
+        cutoff = now.strftime('%Y-%m-%d')
+        return [r for r in rows if r.get('date','') == cutoff]
+    if window == 'week':
+        cutoff = (now - timedelta(days=7)).strftime('%Y-%m-%d')
+        return [r for r in rows if r.get('date','') >= cutoff]
+    if window == 'month':
+        prefix = now.strftime('%Y-%m')
+        return [r for r in rows if r.get('date','').startswith(prefix)]
+    return rows
+
+def _aggregate_by_worker(rows):
+    """Group rows by worker name. Returns {name: {count, total_dur, avg_dur, days, last_date}}."""
+    agg = {}
+    for r in rows:
+        w = r.get('worker','Unknown') or 'Unknown'
+        if w == 'None': w = 'Unknown'
+        if w not in agg:
+            agg[w] = {'count':0, 'total_dur':0.0, '_dates':set(), 'last_date':''}
+        agg[w]['count'] += 1
+        try: agg[w]['total_dur'] += float(r.get('duration_seconds',0))
+        except: pass
+        d = r.get('date','')
+        if d:
+            agg[w]['_dates'].add(d)
+            if d > agg[w]['last_date']: agg[w]['last_date'] = d
+    out = {}
+    for w,s in agg.items():
+        out[w] = {
+            'count': s['count'],
+            'total_dur': round(s['total_dur'],1),
+            'avg_dur': round(s['total_dur']/s['count'],1) if s['count']>0 else 0,
+            'days': len(s['_dates']),
+            'last_date': s['last_date'],
+        }
+    return out
+
+def _packer_of_the_month():
+    """Top worker by count for the current calendar month, or None if no data."""
+    rows = _filter_by_window(_read_log(), 'month')
+    if not rows: return None
+    agg = _aggregate_by_worker(rows)
+    if not agg: return None
+    top_name = max(agg.keys(), key=lambda w: agg[w]['count'])
+    top = dict(agg[top_name])
+    top['name'] = top_name
+    return top
+
+def _leaderboard(window='month', limit=10):
+    """Top N workers by count in the given window. Adds 'rank' field."""
+    rows = _filter_by_window(_read_log(), window)
+    agg = _aggregate_by_worker(rows)
+    sorted_list = sorted(agg.items(), key=lambda kv: kv[1]['count'], reverse=True)
+    return [{'rank': i+1, 'name': name, **stats} for i,(name,stats) in enumerate(sorted_list[:limit])]
+
+def _achievements(worker_name):
+    """Compute earned achievements for a worker. Threshold-based + 'Packer of the Month'."""
+    rows = _read_log()
+    total = sum(1 for r in rows if r.get('worker','') == worker_name)
+    badges = [
+        {'key':'first',  'label':'First pack',      'emoji':'🎁',  'threshold':1},
+        {'key':'100',    'label':'100 packages',    'emoji':'📦',  'threshold':100},
+        {'key':'500',    'label':'500 packages',    'emoji':'🚚',  'threshold':500},
+        {'key':'1000',   'label':'1,000 packages',  'emoji':'🏆',  'threshold':1000},
+        {'key':'5000',   'label':'5,000 packages',  'emoji':'💎',  'threshold':5000},
+    ]
+    for b in badges:
+        b['earned'] = total >= b['threshold']
+    potm = _packer_of_the_month()
+    if potm and potm.get('name') == worker_name:
+        badges.append({'key':'potm','label':'Packer of the Month','emoji':'👑','earned':True})
+    return badges
+
+def _doc_id():
+    """Short unique document id like 'doc_a3f9k2x1' — easy to debug, ~36 bits."""
+    return 'doc_' + secrets.token_hex(4)
+
+
+# ── Onboarding helpers ──────────────────────────────────────────
+def _onb_id():
+    return 'ob_' + secrets.token_hex(4)
+
+def _onb_load():
+    if not os.path.exists(ONB_FILE): return {"tasks": [], "completions": {}}
+    try:
+        with open(ONB_FILE) as f: return json.load(f)
+    except: return {"tasks": [], "completions": {}}
+
+def _onb_save(d):
+    with open(ONB_FILE,"w") as f: json.dump(d,f,indent=2)
+
+def _onb_user_progress(username):
+    """Return current user's checklist with done-status per task + totals."""
+    data = _onb_load()
+    tasks = data.get("tasks", [])
+    completions = data.get("completions", {}).get(username, {})
+    out_tasks = []
+    done_required = 0; total_required = 0
+    done_total = 0
+    for t in tasks:
+        st = completions.get(t["id"], {})
+        is_done = bool(st.get("done"))
+        out_tasks.append({**t, "done": is_done, "done_at": st.get("done_at","")})
+        if t.get("required"):
+            total_required += 1
+            if is_done: done_required += 1
+        if is_done: done_total += 1
+    total = len(tasks)
+    return {
+        "tasks": out_tasks,
+        "done_count": done_total,
+        "total_count": total,
+        "done_required": done_required,
+        "total_required": total_required,
+        "percent": round(100*done_total/total) if total else 0,
+        "required_percent": round(100*done_required/total_required) if total_required else 100,
+        "all_required_done": done_required == total_required,
+    }
+
+def _onb_team_progress():
+    """Admin view: every employee's progress as a list, sorted by completion %."""
+    data = _onb_load()
+    tasks = data.get("tasks", [])
+    total = len(tasks)
+    required_ids = {t["id"] for t in tasks if t.get("required")}
+    completions = data.get("completions", {})
+    users = ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    out = []
+    for uname, info in users.items():
+        c = completions.get(uname, {})
+        done_total = sum(1 for tid,st in c.items() if st.get("done") and any(t["id"]==tid for t in tasks))
+        done_required = sum(1 for tid in required_ids if c.get(tid,{}).get("done"))
+        out.append({
+            "username": uname,
+            "name": info.get("name",uname),
+            "role": info.get("role",""),
+            "done": done_total,
+            "total": total,
+            "percent": round(100*done_total/total) if total else 0,
+            "required_done": done_required,
+            "required_total": len(required_ids),
+            "complete": done_required == len(required_ids) and len(required_ids) > 0,
+        })
+    out.sort(key=lambda u: (-u["percent"], u["name"]))
+    return out
+
+def _docs_load():
+    if not os.path.exists(DOCS_FILE): return {}
+    try:
+        with open(DOCS_FILE) as f: return json.load(f)
+    except: return {}
+
+def _docs_save(d):
+    with open(DOCS_FILE, "w") as f: json.dump(d, f, indent=2)
+
+def _doc_visible(doc, user, role):
+    """Whether the current user can see this document based on its visibility tag."""
+    v = doc.get('visibility', 'all')
+    if v == 'all': return True
+    if v == 'admin_cs': return role in ('admin', 'cs')
+    if v == 'admin': return role == 'admin'
+    if v.startswith('personal:'):
+        target = v.split(':', 1)[1]
+        return target == user or role == 'admin'
+    return False
+
+
+def _worker_summary(worker_name):
+    """Full stats bundle for one worker — used by /me and /api/me/stats."""
+    rows = _read_log()
+    user_rows = [r for r in rows if r.get('worker','') == worker_name]
+    def _stats_for(window_rows):
+        agg = _aggregate_by_worker(window_rows)
+        return agg.get(worker_name, {'count':0,'total_dur':0,'avg_dur':0,'days':0,'last_date':''})
+    all_time   = _stats_for(user_rows)
+    this_month = _stats_for(_filter_by_window(user_rows, 'month'))
+    today_st   = _stats_for(_filter_by_window(user_rows, 'today'))
+    # Current rank this month (out of all workers active this month)
+    lb_month = _leaderboard('month', 999)
+    rank = next((e['rank'] for e in lb_month if e['name'] == worker_name), None)
+    # Recent 10 packages (newest first)
+    recent = sorted(user_rows, key=lambda r: (r.get('date',''), r.get('time','')), reverse=True)[:10]
+    return {
+        'name': worker_name,
+        'all_time': all_time,
+        'this_month': this_month,
+        'today': today_st,
+        'rank_this_month': rank,
+        'total_workers_this_month': len(lb_month),
+        'achievements': _achievements(worker_name),
+        'recent': recent,
+    }
+
+
 @app.route("/")
 def index():
     if "user" not in session:
@@ -295,7 +536,32 @@ def index():
                 return WORKER_HTML.replace("__NAME__",session["name"]).replace("__STATION__",stations[machine_sta]).replace("__SID__",machine_sta)
         # Fallback: manual station picker
         return STATION_HTML.replace("__NAME__",session["name"])
-    return redirect("/dashboard")
+    return redirect("/home")
+
+@app.route("/home")
+@req_login
+def home_page():
+    role = session.get("role", "")
+    return (HOME_HTML
+        .replace("__ROLE__", role)
+        .replace("__NAVBAR__", _navbar("home"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/welcome")
+@req_login
+def welcome_page():
+    """Post-login choice screen — workers pick between Portal and Packing.
+    Non-workers don't pack, so we just send them straight to /home."""
+    if session.get("role") != "worker":
+        return redirect("/home")
+    return WELCOME_HTML.replace("__NAME__", session.get("name", "there"))
+
+@app.route("/pack-start")
+@req_role("worker")
+def pack_start():
+    """Worker chose 'Start Packing' on /welcome — drop them on the regular
+    worker flow (station picker or packing screen)."""
+    return redirect("/")
 
 @app.route("/dashboard")
 @req_role("admin","cs")
@@ -484,6 +750,299 @@ def api_analytics():
 def analytics_page():
     disp="flex" if session.get("role")=="admin" else "none"
     return ANALYTICS_HTML.replace("__NAME__",session.get("name","")).replace("__ADMIN_VIS__",disp).replace("__NAVBAR__",_navbar("analytics")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+
+# ══════════════════════════════════════════════════════════
+# EMPLOYEE PORTAL ROUTES — /me profile, leaderboard
+# ══════════════════════════════════════════════════════════
+
+@app.route("/me")
+@req_login
+def me_page():
+    return (ME_HTML
+        .replace("__NAVBAR__", _navbar("me"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/me/stats")
+@req_login
+def api_me_stats():
+    name = session.get("name", "")
+    role = session.get("role", "")
+    summary = _worker_summary(name)
+    summary["role"] = role
+    return jsonify(summary)
+
+@app.route("/leaderboard")
+@req_login
+def leaderboard_page():
+    name = session.get("name", "").replace("'", "&#39;")
+    return (LEADERBOARD_HTML
+        .replace("__ME__", name)
+        .replace("__NAVBAR__", _navbar("leaderboard"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/leaderboard")
+@req_login
+def api_leaderboard():
+    window = request.args.get("window", "month")
+    if window not in ("today", "week", "month", "all"):
+        window = "month"
+    return jsonify({"window": window, "leaderboard": _leaderboard(window, 25)})
+
+@app.route("/api/packer-of-month")
+@req_login
+def api_potm():
+    """Compact info for the dashboard widget."""
+    p = _packer_of_the_month()
+    return jsonify(p or {})
+
+
+# ══════════════════════════════════════════════════════════
+# DOCUMENT LIBRARY — list, upload (admin), download, delete
+# ══════════════════════════════════════════════════════════
+
+@app.route("/documents")
+@req_login
+def documents_page():
+    return (DOCUMENTS_HTML
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("documents"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/documents")
+@req_login
+def api_documents_list():
+    user = session.get("user", "")
+    role = session.get("role", "")
+    docs = _docs_load()
+    out = []
+    for did, d in docs.items():
+        if not _doc_visible(d, user, role): continue
+        out.append({
+            "id": did,
+            "title": d.get("title", ""),
+            "description": d.get("description", ""),
+            "filename": d.get("filename", ""),
+            "category": d.get("category", "other"),
+            "visibility": d.get("visibility", "all"),
+            "uploaded_by": d.get("uploaded_by", ""),
+            "uploaded_at": d.get("uploaded_at", ""),
+            "size_bytes": d.get("size_bytes", 0),
+        })
+    out.sort(key=lambda d: d.get("uploaded_at", ""), reverse=True)
+    return jsonify(out)
+
+@app.route("/api/documents/upload", methods=["POST"])
+@req_role("admin")
+def api_documents_upload():
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "Pick a file to upload"})
+    title = request.form.get("title", "").strip()
+    description = request.form.get("description", "").strip()
+    category = request.form.get("category", "other")
+    visibility = request.form.get("visibility", "all")
+    personal_user = request.form.get("personal_user", "").strip().lower()
+    if not title:
+        return jsonify({"ok": False, "error": "Title is required"})
+    if category not in ("policies", "personal", "onboarding", "other"):
+        category = "other"
+    if visibility not in ("all", "admin_cs", "admin", "personal"):
+        visibility = "all"
+    if visibility == "personal":
+        if not personal_user:
+            return jsonify({"ok": False, "error": "Pick a user for a personal document"})
+        users = ldj(USERS_FILE)
+        if personal_user not in users:
+            return jsonify({"ok": False, "error": "User not found"})
+        visibility = "personal:" + personal_user
+    fn = secure_filename(f.filename)
+    if not fn:
+        return jsonify({"ok": False, "error": "Invalid filename"})
+    did = _doc_id()
+    stored = did + "_" + fn
+    if r2:
+        try:
+            r2.upload_fileobj(f.stream, R2_BUCKET, "documents/" + stored)
+            # Get size by HEAD request after upload
+            try:
+                head = r2.head_object(Bucket=R2_BUCKET, Key="documents/" + stored)
+                size = head.get('ContentLength', 0)
+            except: size = 0
+        except Exception as e:
+            print("R2 document upload failed:", e, flush=True)
+            return jsonify({"ok": False, "error": "Storage upload failed"})
+    else:
+        path = os.path.join(DOCS_DIR, stored)
+        f.save(path)
+        size = os.path.getsize(path)
+        if size > MAX_DOC_SIZE:
+            os.remove(path)
+            return jsonify({"ok": False, "error": "File too large (max 50MB)"})
+    docs = _docs_load()
+    docs[did] = {
+        "filename": fn,
+        "stored_filename": stored,
+        "title": title,
+        "description": description,
+        "category": category,
+        "visibility": visibility,
+        "uploaded_by": session.get("name", "Admin"),
+        "uploaded_at": datetime.now().isoformat(timespec='seconds'),
+        "size_bytes": size,
+    }
+    _docs_save(docs)
+    return jsonify({"ok": True, "id": did})
+
+@app.route("/documents/dl/<doc_id>")
+@req_login
+def documents_download(doc_id):
+    if not re.match(r'^doc_[a-f0-9]{8}$', doc_id):
+        return "Invalid id", 400
+    user = session.get("user", "")
+    role = session.get("role", "")
+    docs = _docs_load()
+    d = docs.get(doc_id)
+    if not d: return "Not found", 404
+    if not _doc_visible(d, user, role): return "Access denied", 403
+    stored = d.get("stored_filename", "")
+    if not stored: return "File missing", 404
+    if r2:
+        try:
+            url = r2.generate_presigned_url('get_object',
+                Params={'Bucket': R2_BUCKET, 'Key': 'documents/' + stored,
+                        'ResponseContentDisposition': 'attachment; filename="' + d.get('filename','file') + '"'},
+                ExpiresIn=R2_PRESIGN_TTL)
+            return redirect(url)
+        except Exception as e:
+            print("R2 doc presign failed:", e, flush=True)
+            return "Download error", 500
+    else:
+        path = os.path.join(DOCS_DIR, stored)
+        # Path traversal guard
+        rp = os.path.realpath(path)
+        if not rp.startswith(os.path.realpath(DOCS_DIR) + os.sep):
+            return "Bad path", 400
+        if not os.path.exists(rp): return "File missing", 404
+        return send_file(rp, as_attachment=True, download_name=d.get('filename', 'file'))
+
+# ══════════════════════════════════════════════════════════
+# ONBOARDING CHECKLIST — for new hires
+# ══════════════════════════════════════════════════════════
+
+@app.route("/onboarding")
+@req_login
+def onboarding_page():
+    return (ONBOARDING_HTML
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("onboarding"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/onboarding/me")
+@req_login
+def api_onb_me():
+    return jsonify(_onb_user_progress(session.get("user", "")))
+
+@app.route("/api/onboarding/toggle", methods=["POST"])
+@req_login
+def api_onb_toggle():
+    d = request.get_json() or {}
+    task_id = d.get("task_id", "")
+    if not re.match(r'^ob_[a-zA-Z0-9_]{1,32}$', task_id):
+        return jsonify({"ok": False, "error": "Invalid task id"})
+    data = _onb_load()
+    if not any(t["id"] == task_id for t in data.get("tasks", [])):
+        return jsonify({"ok": False, "error": "Task not found"})
+    user = session.get("user", "")
+    completions = data.setdefault("completions", {})
+    user_c = completions.setdefault(user, {})
+    cur = user_c.get(task_id, {}).get("done", False)
+    if cur:
+        user_c[task_id] = {"done": False}
+    else:
+        user_c[task_id] = {"done": True, "done_at": datetime.now().isoformat(timespec='seconds')}
+    _onb_save(data)
+    return jsonify({"ok": True, "done": user_c[task_id]["done"]})
+
+@app.route("/api/onboarding/tasks/add", methods=["POST"])
+@req_role("admin")
+def api_onb_add():
+    d = request.get_json() or {}
+    title = (d.get("title") or "").strip()
+    description = (d.get("description") or "").strip()
+    category = d.get("category", "other")
+    required = bool(d.get("required", True))
+    if not title: return jsonify({"ok": False, "error": "Title required"})
+    if category not in ("safety", "paperwork", "training", "intro", "other"):
+        category = "other"
+    data = _onb_load()
+    new_task = {
+        "id": _onb_id(),
+        "title": title,
+        "description": description,
+        "category": category,
+        "required": required,
+        "created_at": datetime.now().isoformat(timespec='seconds'),
+    }
+    data.setdefault("tasks", []).append(new_task)
+    _onb_save(data)
+    return jsonify({"ok": True, "task": new_task})
+
+@app.route("/api/onboarding/tasks/<task_id>/delete", methods=["POST"])
+@req_role("admin")
+def api_onb_delete(task_id):
+    if not re.match(r'^ob_[a-zA-Z0-9_]{1,32}$', task_id):
+        return jsonify({"ok": False, "error": "Invalid id"})
+    data = _onb_load()
+    before = len(data.get("tasks", []))
+    data["tasks"] = [t for t in data.get("tasks", []) if t["id"] != task_id]
+    if len(data["tasks"]) == before:
+        return jsonify({"ok": False, "error": "Task not found"})
+    # Also clean up completions for the deleted task
+    for u, c in data.get("completions", {}).items():
+        c.pop(task_id, None)
+    _onb_save(data)
+    return jsonify({"ok": True})
+
+@app.route("/api/onboarding/team")
+@req_role("admin")
+def api_onb_team():
+    return jsonify(_onb_team_progress())
+
+@app.route("/api/onboarding/reset/<username>", methods=["POST"])
+@req_role("admin")
+def api_onb_reset(username):
+    if not re.match(r'^[a-z0-9_\-]+$', username):
+        return jsonify({"ok": False, "error": "Invalid username"})
+    data = _onb_load()
+    data.get("completions", {}).pop(username, None)
+    _onb_save(data)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/documents/<doc_id>/delete", methods=["POST"])
+@req_role("admin")
+def api_documents_delete(doc_id):
+    if not re.match(r'^doc_[a-f0-9]{8}$', doc_id):
+        return jsonify({"ok": False, "error": "Invalid id"})
+    docs = _docs_load()
+    d = docs.get(doc_id)
+    if not d: return jsonify({"ok": False, "error": "Not found"})
+    stored = d.get("stored_filename", "")
+    if stored:
+        if r2:
+            try: r2.delete_object(Bucket=R2_BUCKET, Key="documents/" + stored)
+            except Exception as e: print("R2 doc delete failed:", e, flush=True)
+        else:
+            path = os.path.join(DOCS_DIR, stored)
+            rp = os.path.realpath(path)
+            if rp.startswith(os.path.realpath(DOCS_DIR) + os.sep) and os.path.exists(rp):
+                try: os.remove(rp)
+                except: pass
+    del docs[doc_id]
+    _docs_save(docs)
+    return jsonify({"ok": True})
+
 
 @app.route("/api/users")
 @req_role("admin")
