@@ -18,6 +18,7 @@ def _navbar(active_page=""):
     # (key, url, label) or a group dict {key, label, items:[...]}.
     # Goal: compress 9 flat items into 3-4 top-level entries with dropdowns.
     entries = [("home", "/home", "🏠 Home")]
+    entries.append(("announcements", "/announcements", "📣 News"))
     if role == "worker":
         # Workers get a fast link straight to packing alongside Personal
         entries.append(("pack", "/", "📦 Pack"))
@@ -1595,6 +1596,30 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(900px 
 .potm-stats b{color:var(--text);font-weight:700}
 .potm-arrow{font-size:18px;color:#fbbf24;font-weight:700}
 
+/* News strip on home — newest 2 announcements */
+.news-strip{display:none;flex-direction:column;gap:10px;margin-bottom:32px}
+.news-strip.show{display:flex}
+.news-strip-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.news-strip-title{font-size:13px;font-weight:800;color:var(--text-dim);text-transform:uppercase;letter-spacing:2px;display:flex;align-items:center;gap:10px}
+.news-strip-title .dot{width:8px;height:8px;border-radius:50%;background:var(--brand)}
+.news-strip-all{color:var(--brand);text-decoration:none;font-size:12px;font-weight:700;transition:color .15s}
+.news-strip-all:hover{color:var(--brand-strong)}
+.news-card{display:flex;gap:14px;padding:16px 20px;background:var(--surface);border:1px solid var(--border);border-radius:14px;text-decoration:none;color:inherit;transition:all .15s;align-items:flex-start}
+.news-card:hover{border-color:rgba(243,201,196,.18);background:rgba(255,255,255,.045);transform:translateY(-1px)}
+.news-card.pri-important{border-left:3px solid #fbbf24}
+.news-card.pri-urgent{border-left:3px solid #fb7185}
+.news-card.pinned{background:linear-gradient(135deg,rgba(243,201,196,.06),rgba(243,201,196,.01))}
+.news-icon{font-size:24px;line-height:1.2;flex-shrink:0}
+.news-body{flex:1;min-width:0}
+.news-title{font-size:15px;font-weight:700;color:#fff;margin-bottom:3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.news-meta{font-size:12px;color:var(--text-dim)}
+.news-meta b{color:var(--text-muted);font-weight:600}
+.tiny-pill{font-size:9px;padding:2px 7px;border-radius:5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.tiny-pill.pri-info{background:rgba(99,102,241,.14);color:#a5b4fc}
+.tiny-pill.pri-important{background:rgba(251,191,36,.16);color:#fbbf24}
+.tiny-pill.pri-urgent{background:rgba(244,63,94,.16);color:#fb7185}
+.tiny-pill.pinned{background:rgba(243,201,196,.16);color:var(--brand)}
+
 /* Section heading */
 .hub-section{margin-bottom:44px}
 .section-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:18px;gap:16px}
@@ -1655,6 +1680,15 @@ __NAVBAR__
     </div>
     <div class="worker-cta-arrow">→</div>
   </a>
+
+  <!-- Latest news -->
+  <div class="news-strip" id="newsStrip">
+    <div class="news-strip-head">
+      <div class="news-strip-title"><span class="dot"></span>Latest news</div>
+      <a href="/announcements" class="news-strip-all">View all →</a>
+    </div>
+    <div id="newsList"></div>
+  </div>
 
   <!-- Packer of the Month -->
   <a href="/leaderboard" class="potm" id="potm">
@@ -1798,6 +1832,32 @@ fetch('/api/packer-of-month').then(function(r){return r.json()}).then(function(d
   document.getElementById('potmAvg').textContent=(d.avg_dur||0)+'s';
   document.getElementById('potmDays').textContent=d.days;
   document.getElementById('potm').classList.add('show');
+});
+
+// Load latest news (top 2)
+function homeEscapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function homeFmtTime(s){
+  if(!s)return '';
+  try{var d=new Date(s);var diff=(new Date()-d)/1000;
+    if(diff<60)return 'just now';if(diff<3600)return Math.floor(diff/60)+'m ago';
+    if(diff<86400)return Math.floor(diff/3600)+'h ago';if(diff<604800)return Math.floor(diff/86400)+'d ago';
+    return d.toLocaleDateString(undefined,{month:'short',day:'numeric'})
+  }catch(e){return ''}
+}
+fetch('/api/announcements?limit=2').then(function(r){return r.json()}).then(function(arr){
+  if(!arr||arr.length===0)return;
+  var icons={info:'📣',important:'⚠️',urgent:'🔴'};
+  document.getElementById('newsList').innerHTML=arr.map(function(a){
+    var pills='<span class="tiny-pill pri-'+a.priority+'">'+a.priority+'</span>';
+    if(a.pinned)pills+='<span class="tiny-pill pinned">📌 Pinned</span>';
+    return '<a href="/announcements" class="news-card pri-'+a.priority+(a.pinned?' pinned':'')+'">'+
+      '<div class="news-icon">'+(icons[a.priority]||'📣')+'</div>'+
+      '<div class="news-body">'+
+        '<div class="news-title">'+homeEscapeHtml(a.title)+pills+'</div>'+
+        '<div class="news-meta">Posted by <b>'+homeEscapeHtml(a.author)+'</b> · '+homeFmtTime(a.created_at)+'</div>'+
+      '</div></a>';
+  }).join('');
+  document.getElementById('newsStrip').classList.add('show');
 });
 </script>
 </body></html>'''
@@ -2361,5 +2421,225 @@ document.getElementById('addBtn').addEventListener('click',function(){
 
 loadMe();
 loadTeam();
+</script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# ANNOUNCEMENTS — admin broadcasts to the team
+# ══════════════════════════════════════════════════════════
+
+ANNOUNCEMENTS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>News — 5 SEC</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:920px;margin:0 auto;padding:40px 28px 0}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:28px;flex-wrap:wrap}
+.page-title{font-size:34px;font-weight:900;color:#fff;letter-spacing:-.5px;line-height:1.05}
+.page-sub{color:var(--text-muted);margin-top:6px;font-size:14px}
+.compose-btn{background:var(--brand);color:#1a0e0b;border:none;border-radius:12px;padding:12px 22px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;transition:all .15s;display:inline-flex;align-items:center;gap:8px;box-shadow:0 6px 22px rgba(243,201,196,.15)}
+.compose-btn:hover{background:var(--brand-strong);transform:translateY(-1px)}
+.admin-only{display:none}
+body[data-role="admin"] .admin-only{display:inline-flex}
+
+/* Composer (inline, expands when "New" clicked) */
+.composer{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:24px;margin-bottom:24px;display:none}
+.composer.show{display:block}
+.composer h3{font-size:18px;font-weight:800;color:#fff;margin-bottom:14px}
+.fld{margin-bottom:14px}
+.fld label{display:block;font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:7px;text-transform:uppercase;letter-spacing:.6px}
+.fld input[type="text"],.fld textarea,.fld select{width:100%;background:rgba(11,14,20,.7);border:1px solid var(--border);border-radius:10px;padding:11px 14px;font-size:14px;color:var(--text);font-family:inherit;outline:none;transition:all .2s}
+.fld input[type="text"]:focus,.fld textarea:focus,.fld select:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(243,201,196,.1)}
+.fld textarea{resize:vertical;min-height:110px;line-height:1.5}
+.fld-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+@media(max-width:600px){.fld-row{grid-template-columns:1fr 1fr}}
+.fld .pin-check{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-muted);cursor:pointer;user-select:none}
+.composer-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:6px}
+.btn-cancel{background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:10px;padding:9px 18px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+.btn-cancel:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.btn-publish{background:var(--brand);color:#1a0e0b;border:none;border-radius:10px;padding:9px 22px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;transition:all .15s}
+.btn-publish:hover{background:var(--brand-strong)}
+.composer-err{color:#f43f5e;font-size:13px;margin-top:10px;min-height:18px}
+
+/* Announcement cards */
+.ann-list{display:flex;flex-direction:column;gap:14px}
+.ann{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:22px 26px;transition:all .15s}
+.ann:hover{border-color:rgba(255,255,255,.12)}
+.ann.pri-important{background:linear-gradient(135deg,rgba(251,191,36,.08),rgba(245,158,11,.02));border-color:rgba(251,191,36,.22)}
+.ann.pri-urgent{background:linear-gradient(135deg,rgba(244,63,94,.1),rgba(244,63,94,.02));border-color:rgba(244,63,94,.28)}
+.ann.pinned{box-shadow:inset 4px 0 0 var(--brand)}
+.ann-head{display:flex;align-items:flex-start;gap:14px;margin-bottom:10px;flex-wrap:wrap}
+.ann-title{flex:1;font-size:18px;font-weight:800;color:#fff;line-height:1.3;min-width:0}
+.ann-pills{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.pri-pill{font-size:10px;padding:3px 10px;border-radius:6px;font-weight:800;letter-spacing:.5px;text-transform:uppercase}
+.pri-info{background:rgba(99,102,241,.14);color:#a5b4fc}
+.pri-important{background:rgba(251,191,36,.16);color:#fbbf24}
+.pri-urgent{background:rgba(244,63,94,.16);color:#fb7185}
+.aud-pill{font-size:10px;padding:3px 9px;border-radius:6px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;background:rgba(148,163,184,.12);color:#94a3b8}
+.pinned-pill{font-size:10px;padding:3px 9px;border-radius:6px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;background:rgba(243,201,196,.16);color:var(--brand);display:inline-flex;align-items:center;gap:4px}
+.ann-body{font-size:14px;color:var(--text);line-height:1.65;white-space:pre-wrap;margin-bottom:14px}
+.ann-foot{display:flex;justify-content:space-between;align-items:center;gap:14px;font-size:12px;color:var(--text-dim);flex-wrap:wrap}
+.ann-meta b{color:var(--text-muted);font-weight:600}
+.ann-actions{display:none;gap:6px}
+body[data-role="admin"] .ann-actions{display:flex}
+.icon-btn{background:rgba(255,255,255,.04);color:var(--text-muted);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .15s}
+.icon-btn:hover{color:var(--text);background:rgba(255,255,255,.08)}
+.icon-btn.danger:hover{color:#fb7185;border-color:rgba(244,63,94,.3);background:rgba(244,63,94,.08)}
+.icon-btn.pin.active{color:var(--brand);background:var(--brand-glow);border-color:rgba(243,201,196,.25)}
+
+.empty{text-align:center;padding:80px 20px;background:var(--surface);border:1px dashed var(--border);border-radius:18px;color:var(--text-dim)}
+.empty-icon{font-size:56px;margin-bottom:14px;opacity:.5}
+.empty-title{font-size:18px;font-weight:700;color:var(--text-muted);margin-bottom:6px}
+.empty-sub{font-size:14px}
+</style>
+</head><body data-role="__ROLE__">
+__NAVBAR__
+<div class="wrap">
+  <div class="page-head">
+    <div>
+      <div class="page-title">📣 Team News</div>
+      <div class="page-sub">Updates, reminders, and announcements from management</div>
+    </div>
+    <button class="compose-btn admin-only" id="openCompose">＋ New announcement</button>
+  </div>
+
+  <!-- Composer (admin only) -->
+  <div class="composer" id="composer">
+    <h3>New announcement</h3>
+    <div class="fld">
+      <label>Title</label>
+      <input type="text" id="aTitle" placeholder="e.g. Q3 inventory count this Friday" maxlength="120">
+    </div>
+    <div class="fld">
+      <label>Message</label>
+      <textarea id="aBody" placeholder="Add details — start times, who is affected, what to bring, etc." maxlength="5000"></textarea>
+    </div>
+    <div class="fld-row">
+      <div class="fld">
+        <label>Priority</label>
+        <select id="aPriority">
+          <option value="info" selected>ℹ️ Info</option>
+          <option value="important">⚠️ Important</option>
+          <option value="urgent">🔴 Urgent</option>
+        </select>
+      </div>
+      <div class="fld">
+        <label>Audience</label>
+        <select id="aAudience">
+          <option value="all" selected>Everyone</option>
+          <option value="workers">Workers only</option>
+          <option value="admin_cs">Admin & CS only</option>
+        </select>
+      </div>
+      <div class="fld" style="display:flex;align-items:flex-end;padding-bottom:11px">
+        <label class="pin-check"><input type="checkbox" id="aPinned"> 📌 Pin to top</label>
+      </div>
+    </div>
+    <div class="composer-err" id="composerErr"></div>
+    <div class="composer-actions">
+      <button class="btn-cancel" id="cancelCompose">Cancel</button>
+      <button class="btn-publish" id="publish">Publish</button>
+    </div>
+  </div>
+
+  <div class="ann-list" id="annList"></div>
+</div>
+
+<script>
+function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function fmtTime(s){
+  if(!s)return '';
+  try{
+    var d=new Date(s);var now=new Date();
+    var diff=(now-d)/1000;
+    if(diff<60)return 'just now';
+    if(diff<3600)return Math.floor(diff/60)+'m ago';
+    if(diff<86400)return Math.floor(diff/3600)+'h ago';
+    if(diff<604800)return Math.floor(diff/86400)+'d ago';
+    return d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+  }catch(e){return s}
+}
+function audLabel(a){if(a==='all')return 'Everyone';if(a==='workers')return 'Workers';if(a==='admin_cs')return 'Admin & CS';return a}
+
+function load(){
+  fetch('/api/announcements').then(function(r){return r.json()}).then(function(arr){
+    var box=document.getElementById('annList');
+    if(!arr||arr.length===0){
+      box.innerHTML='<div class="empty"><div class="empty-icon">📣</div><div class="empty-title">No announcements yet</div><div class="empty-sub">'+(document.body.dataset.role==='admin'?'Tap "New announcement" to post the first one.':'Check back later for updates.')+'</div></div>';
+      return;
+    }
+    box.innerHTML=arr.map(function(a){
+      var pills='';
+      pills+='<span class="pri-pill pri-'+a.priority+'">'+a.priority+'</span>';
+      pills+='<span class="aud-pill">'+audLabel(a.audience)+'</span>';
+      if(a.pinned)pills+='<span class="pinned-pill">📌 Pinned</span>';
+      return '<div class="ann pri-'+a.priority+(a.pinned?' pinned':'')+'" data-id="'+a.id+'">'+
+        '<div class="ann-head"><div class="ann-title">'+escapeHtml(a.title)+'</div><div class="ann-pills">'+pills+'</div></div>'+
+        (a.body?'<div class="ann-body">'+escapeHtml(a.body)+'</div>':'')+
+        '<div class="ann-foot">'+
+          '<div class="ann-meta">Posted by <b>'+escapeHtml(a.author)+'</b> · '+fmtTime(a.created_at)+'</div>'+
+          '<div class="ann-actions">'+
+            '<button class="icon-btn pin'+(a.pinned?' active':'')+'" data-pin="'+a.id+'">'+(a.pinned?'Unpin':'Pin')+'</button>'+
+            '<button class="icon-btn danger" data-del="'+a.id+'">Delete</button>'+
+          '</div>'+
+        '</div>'+
+      '</div>';
+    }).join('');
+    box.querySelectorAll('[data-pin]').forEach(function(b){
+      b.addEventListener('click',function(){
+        fetch('/api/announcements/'+b.dataset.pin+'/pin',{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d.ok)load()});
+      });
+    });
+    box.querySelectorAll('[data-del]').forEach(function(b){
+      b.addEventListener('click',function(){
+        if(!confirm('Delete this announcement?'))return;
+        fetch('/api/announcements/'+b.dataset.del+'/delete',{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d.ok)load();else alert(d.error||'Failed')});
+      });
+    });
+  });
+}
+
+// Composer
+var composer=document.getElementById('composer');
+var openBtn=document.getElementById('openCompose');
+if(openBtn){
+  openBtn.addEventListener('click',function(){
+    document.getElementById('composerErr').textContent='';
+    composer.classList.add('show');
+    document.getElementById('aTitle').focus();
+  });
+  document.getElementById('cancelCompose').addEventListener('click',function(){composer.classList.remove('show')});
+  document.getElementById('publish').addEventListener('click',function(){
+    var title=document.getElementById('aTitle').value.trim();
+    if(!title){document.getElementById('composerErr').textContent='Title is required';return}
+    var payload={
+      title:title,
+      body:document.getElementById('aBody').value.trim(),
+      priority:document.getElementById('aPriority').value,
+      audience:document.getElementById('aAudience').value,
+      pinned:document.getElementById('aPinned').checked,
+    };
+    var btn=document.getElementById('publish');btn.disabled=true;btn.textContent='Publishing…';
+    fetch('/api/announcements/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+      .then(function(r){return r.json()}).then(function(d){
+        btn.disabled=false;btn.textContent='Publish';
+        if(d.ok){
+          composer.classList.remove('show');
+          document.getElementById('aTitle').value='';
+          document.getElementById('aBody').value='';
+          document.getElementById('aPinned').checked=false;
+          load();
+        } else {
+          document.getElementById('composerErr').textContent=d.error||'Failed';
+        }
+      });
+  });
+}
+
+load();
 </script>
 </body></html>'''

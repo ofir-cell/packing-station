@@ -15,7 +15,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ANALYTICS_HTML, GIVEAWAY_DASH_HTML, GIVEAWAY_DETAIL_HTML,
     BADGE_LOGIN_HTML, USERS_BADGES_HTML,
     ME_HTML, LEADERBOARD_HTML, HOME_HTML, DOCUMENTS_HTML, WELCOME_HTML,
-    ONBOARDING_HTML)
+    ONBOARDING_HTML, ANNOUNCEMENTS_HTML)
 
 
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
@@ -27,6 +27,7 @@ STATIONS_FILE=os.path.join(DATA_DIR,"stations.json")
 DOCS_FILE=os.path.join(DATA_DIR,"documents.json")
 DOCS_DIR=os.path.join(DATA_DIR,"documents")
 ONB_FILE=os.path.join(DATA_DIR,"onboarding.json")
+ANN_FILE=os.path.join(DATA_DIR,"announcements.json")
 
 # FIX #1: SECRET_KEY must be set in environment - fail loud if missing.
 # Auto-generating it would invalidate all sessions on every restart.
@@ -440,6 +441,47 @@ def _onb_user_progress(username):
         "required_percent": round(100*done_required/total_required) if total_required else 100,
         "all_required_done": done_required == total_required,
     }
+
+# ── Announcement helpers ────────────────────────────────────────
+def _ann_id():
+    return 'ann_' + secrets.token_hex(4)
+
+def _ann_load():
+    if not os.path.exists(ANN_FILE): return {}
+    try:
+        with open(ANN_FILE) as f: return json.load(f)
+    except: return {}
+
+def _ann_save(d):
+    with open(ANN_FILE, "w") as f: json.dump(d, f, indent=2)
+
+def _ann_visible(a, role):
+    """Whether this announcement is visible to the current user's role.
+    Admin sees everything (for moderation) regardless of audience."""
+    if role == 'admin': return True
+    aud = a.get('audience', 'all')
+    if aud == 'all': return True
+    if aud == 'workers': return role == 'worker'
+    if aud == 'admin_cs': return role in ('admin', 'cs')
+    return False
+
+def _ann_list(role, limit=None):
+    """Return announcements visible to role, pinned first then newest first."""
+    data = _ann_load()
+    items = []
+    for aid, a in data.items():
+        if _ann_visible(a, role):
+            items.append({'id': aid, **a})
+    items.sort(key=lambda a: (not a.get('pinned'), -1 * len(a.get('created_at', '')), a.get('created_at', '')), reverse=False)
+    # Simpler sort: pinned first (False sorts before True with our trick), then created_at desc
+    items.sort(key=lambda a: (0 if a.get('pinned') else 1, a.get('created_at', '')), reverse=False)
+    # Actually we want pinned first, and within each group newest first
+    pinned = sorted([a for a in items if a.get('pinned')], key=lambda a: a.get('created_at', ''), reverse=True)
+    rest = sorted([a for a in items if not a.get('pinned')], key=lambda a: a.get('created_at', ''), reverse=True)
+    final = pinned + rest
+    if limit: return final[:limit]
+    return final
+
 
 def _onb_team_progress():
     """Admin view: every employee's progress as a list, sorted by completion %."""
@@ -1018,6 +1060,81 @@ def api_onb_reset(username):
     data.get("completions", {}).pop(username, None)
     _onb_save(data)
     return jsonify({"ok": True})
+
+
+# ══════════════════════════════════════════════════════════
+# ANNOUNCEMENTS — admin broadcasts to the team
+# ══════════════════════════════════════════════════════════
+
+@app.route("/announcements")
+@req_login
+def announcements_page():
+    return (ANNOUNCEMENTS_HTML
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("announcements"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/announcements")
+@req_login
+def api_ann_list():
+    role = session.get("role", "")
+    limit = request.args.get("limit", type=int)
+    return jsonify(_ann_list(role, limit=limit))
+
+@app.route("/api/announcements/create", methods=["POST"])
+@req_role("admin")
+def api_ann_create():
+    d = request.get_json() or {}
+    title = (d.get("title") or "").strip()
+    body = (d.get("body") or "").strip()
+    priority = d.get("priority", "info")
+    audience = d.get("audience", "all")
+    pinned = bool(d.get("pinned", False))
+    if not title:
+        return jsonify({"ok": False, "error": "Title is required"})
+    if len(title) > 120:
+        return jsonify({"ok": False, "error": "Title too long (max 120 chars)"})
+    if len(body) > 5000:
+        return jsonify({"ok": False, "error": "Body too long (max 5000 chars)"})
+    if priority not in ("info", "important", "urgent"): priority = "info"
+    if audience not in ("all", "workers", "admin_cs"): audience = "all"
+    data = _ann_load()
+    aid = _ann_id()
+    data[aid] = {
+        "title": title,
+        "body": body,
+        "priority": priority,
+        "audience": audience,
+        "pinned": pinned,
+        "author": session.get("name", "Admin"),
+        "created_at": datetime.now().isoformat(timespec='seconds'),
+    }
+    _ann_save(data)
+    return jsonify({"ok": True, "id": aid})
+
+@app.route("/api/announcements/<aid>/delete", methods=["POST"])
+@req_role("admin")
+def api_ann_delete(aid):
+    if not re.match(r'^ann_[a-f0-9]{8}$', aid):
+        return jsonify({"ok": False, "error": "Invalid id"})
+    data = _ann_load()
+    if aid not in data:
+        return jsonify({"ok": False, "error": "Not found"})
+    del data[aid]
+    _ann_save(data)
+    return jsonify({"ok": True})
+
+@app.route("/api/announcements/<aid>/pin", methods=["POST"])
+@req_role("admin")
+def api_ann_pin(aid):
+    if not re.match(r'^ann_[a-f0-9]{8}$', aid):
+        return jsonify({"ok": False, "error": "Invalid id"})
+    data = _ann_load()
+    if aid not in data:
+        return jsonify({"ok": False, "error": "Not found"})
+    data[aid]['pinned'] = not data[aid].get('pinned', False)
+    _ann_save(data)
+    return jsonify({"ok": True, "pinned": data[aid]['pinned']})
 
 
 @app.route("/api/documents/<doc_id>/delete", methods=["POST"])
