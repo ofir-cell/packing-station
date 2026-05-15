@@ -34,6 +34,7 @@ def _navbar(active_page=""):
     })
     if role in ("admin", "cs"):
         ops_items = [
+            ("shows", "/admin/shows", "Shows · Last 5 days"),
             ("shipments", "/admin/shipments", "Shipments · Import CSV"),
             ("dash", "/dashboard", "Search Recordings"),
             ("customers", "/customers", "Customer Lookup"),
@@ -295,6 +296,9 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 /* Item checklist on recording screen */
 .check-area{margin-top:20px;width:100%;max-width:560px;display:none}
 body.sc .check-area{display:block}
+.check-show{display:none;align-items:center;gap:8px;background:rgba(243,201,196,.08);border:1px solid rgba(243,201,196,.22);border-radius:10px;padding:8px 14px;margin-bottom:12px;font-size:12px;color:var(--brand);font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.check-show.on{display:inline-flex}
+.check-show .platform-dot{width:8px;height:8px;border-radius:50%;background:var(--brand)}
 .check-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px;padding:0 6px}
 .check-buyer{font-size:18px;font-weight:800;color:#e4e8f1;letter-spacing:.2px}
 .check-counter{font-size:14px;color:#9ba9c1;font-weight:600;font-feature-settings:'tnum'}
@@ -365,6 +369,7 @@ body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
 
 <div class="x" id="xc"><div class="rp"><div class="rd"></div><div class="rl">RECORDING</div></div><div class="rk" id="rk"></div><div class="rm" id="rmm">00:00</div>
 <div class="check-area" id="checkArea">
+  <div class="check-show" id="checkShow"></div>
   <div class="check-head">
     <div class="check-buyer" id="checkBuyer">Looking up order…</div>
     <div class="check-counter"><b id="checkDone">0</b> / <b id="checkTotal">?</b></div>
@@ -416,6 +421,8 @@ function loadChecklist(tracking){
     document.getElementById('checkItems').innerHTML='';
     document.getElementById('checkDone').textContent='0';
     document.getElementById('checkTotal').textContent='?';
+    var showEl=document.getElementById('checkShow');
+    showEl.classList.remove('on');showEl.innerHTML='';
     var st=document.getElementById('checkStatus');
     st.textContent='Loading order info…';st.className='check-status';
     fetch('/api/shipment/'+encodeURIComponent(tracking)).then(function(r){return r.json()}).then(function(d){
@@ -432,6 +439,10 @@ function loadChecklist(tracking){
         }
         document.getElementById('checkBuyer').textContent=s.buyer_name||s.buyer_username||'Customer';
         document.getElementById('checkTotal').textContent=items.length;
+        if(s.import_label){
+            showEl.innerHTML='<span class="platform-dot"></span>Show: '+(s.import_label.replace(/</g,'&lt;'))+(s.platform?' · '+s.platform:'');
+            showEl.classList.add('on');
+        }
         var packedFlags={};
         var list=document.getElementById('checkItems');
         list.innerHTML=items.map(function(it,i){
@@ -2891,6 +2902,11 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var
 .fld label{display:block;font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:7px;text-transform:uppercase;letter-spacing:.6px}
 .fld input[type="file"]{width:100%;color:var(--text-muted);font-size:13px;padding:12px;background:rgba(11,14,20,.7);border:2px dashed var(--border);border-radius:12px;cursor:pointer;font-family:inherit}
 .fld input[type="file"]::file-selector-button{background:var(--brand);color:#1a0e0b;border:none;border-radius:8px;padding:7px 14px;margin-right:10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
+.fld input[type="text"]{width:100%;background:rgba(11,14,20,.7);border:1px solid var(--border);border-radius:10px;padding:11px 14px;font-size:14px;color:var(--text);font-family:inherit;outline:none;transition:border .15s}
+.fld input[type="text"]:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(243,201,196,.1)}
+.fld input[type="text"]::placeholder{color:var(--text-dim)}
+.fld-hint{font-size:11px;color:var(--text-dim);margin-top:6px;line-height:1.4}
+.req-star{color:#fb7185;font-weight:900;font-size:14px;margin-left:2px}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}
 .btn-cancel{background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:10px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
 .btn-cancel:hover{color:var(--text);background:rgba(255,255,255,.04)}
@@ -2929,7 +2945,13 @@ __NAVBAR__
     <h3 id="modalTitle">Import CSV</h3>
     <div class="modal-sub" id="modalSub">Pick a CSV file from your platform.</div>
     <div class="fld">
-      <label id="modalLabel">CSV file</label>
+      <label>Show name <span class="req-star">*</span></label>
+      <input type="text" id="showName" list="recentShowsList" placeholder="e.g. Beauty 5/15 — TikTok" maxlength="80" autocomplete="off">
+      <datalist id="recentShowsList"></datalist>
+      <div class="fld-hint">Required. Same name for all uploads of the same show (orders + cancellations). Recent shows appear as you type.</div>
+    </div>
+    <div class="fld">
+      <label id="modalLabel">CSV file <span class="req-star">*</span></label>
       <input type="file" id="csvFile" accept=".csv">
     </div>
     <div class="modal-result" id="modalResult"></div>
@@ -2946,8 +2968,16 @@ function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')
 function fmtWeight(g){if(g==null||g===0)return '—';return g.toFixed(1)+'g'}
 function fmtDate(s){if(!s)return '—';try{return new Date(s).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'2-digit'})}catch(e){return s.slice(0,10)}}
 
+// Optional filter via ?show=NAME — when present we show a breadcrumb + only that show's shipments
+var showFilter=new URLSearchParams(location.search).get('show')||'';
+if(showFilter){
+  var sub=document.querySelector('.page-sub');
+  if(sub)sub.innerHTML='Filtering by show: <b style="color:var(--brand)">'+showFilter.replace(/</g,'&lt;')+'</b> · <a href="/admin/shipments" style="color:var(--text-muted)">Clear filter</a>';
+}
 function loadShipments(){
-  fetch('/api/shipments/recent?limit=200').then(function(r){return r.json()}).then(function(rows){
+  var url='/api/shipments/recent?limit=500';
+  if(showFilter)url+='&show='+encodeURIComponent(showFilter);
+  fetch(url).then(function(r){return r.json()}).then(function(rows){
     // Stats
     var total=rows.length;
     var withWeight=rows.filter(function(s){return s.expected_weight_g>0}).length;
@@ -3035,11 +3065,17 @@ document.querySelectorAll('.import-btn[data-kind]').forEach(function(btn){
     var ctx=importContexts[btn.dataset.kind]||importContexts.tiktok_orders;
     document.getElementById('modalTitle').textContent=ctx.title;
     document.getElementById('modalSub').textContent=ctx.sub;
-    document.getElementById('modalLabel').textContent=ctx.label;
+    document.getElementById('modalLabel').firstChild.nodeValue=ctx.label+' ';
     document.getElementById('csvFile').value='';
     document.getElementById('modalResult').className='modal-result';
     document.getElementById('modalResult').innerHTML='';
+    // Pull recent show names (last 5 days) for the autocomplete dropdown.
+    fetch('/api/shows/recent').then(function(r){return r.json()}).then(function(names){
+      var dl=document.getElementById('recentShowsList');
+      dl.innerHTML=(names||[]).map(function(n){return '<option value="'+n.replace(/"/g,'&quot;')+'"></option>'}).join('');
+    });
     modal.classList.add('show');
+    setTimeout(function(){document.getElementById('showName').focus()},80);
   });
 });
 document.getElementById('cancelImport').addEventListener('click',function(){modal.classList.remove('show')});
@@ -3047,9 +3083,11 @@ modal.addEventListener('click',function(e){if(e.target===modal)modal.classList.r
 
 document.getElementById('doImport').addEventListener('click',function(){
   var f=document.getElementById('csvFile').files[0];
+  var label=document.getElementById('showName').value.trim();
   var res=document.getElementById('modalResult');
-  if(!f){res.className='modal-result err show';res.textContent='Pick a CSV file first';return}
-  var fd=new FormData();fd.append('file',f);
+  if(!label){res.className='modal-result err show';res.textContent='Show name is required';document.getElementById('showName').focus();return}
+  if(!f){res.className='modal-result err show';res.textContent='Pick a CSV file';return}
+  var fd=new FormData();fd.append('file',f);fd.append('label',label);
   var btn=document.getElementById('doImport');btn.disabled=true;btn.textContent='Importing…';
   fetch('/api/shipments/import',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
     btn.disabled=false;btn.textContent='Import';
@@ -3469,5 +3507,154 @@ document.getElementById('sku').addEventListener('input',function(){
 });
 document.getElementById('batch').addEventListener('change',doSearch);
 doSearch();  // initial empty state
+</script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# SHOWS — index of active shows from last 5 days
+# Each show groups one or more CSV imports under a user-supplied name.
+# Multiple shows can be active simultaneously (workers pack across).
+# ══════════════════════════════════════════════════════════
+
+SHOWS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Shows — 5 SEC</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1280px;margin:0 auto;padding:40px 28px 0}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:6px;flex-wrap:wrap}
+.page-title{font-size:32px;font-weight:900;color:#fff;letter-spacing:-.5px;line-height:1.05}
+.window-pill{display:inline-flex;align-items:center;gap:6px;background:rgba(243,201,196,.1);border:1px solid rgba(243,201,196,.2);color:var(--brand);padding:6px 14px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+.page-sub{color:var(--text-muted);margin-top:8px;font-size:14px;margin-bottom:26px}
+.go-import-btn{background:var(--brand);color:#1a0e0b;border:none;border-radius:12px;padding:12px 22px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:8px;transition:all .15s}
+.go-import-btn:hover{background:var(--brand-strong);transform:translateY(-1px)}
+
+/* Top KPI strip */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:32px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 22px}
+.kpi .lbl{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px;font-weight:700}
+.kpi .val{font-size:32px;font-weight:900;color:#fff;line-height:1;margin-top:8px}
+.kpi.brand .val{color:var(--brand)}
+.kpi.good .val{color:#34d399}
+.kpi.warn .val{color:#fbbf24}
+.kpi.bad .val{color:#fb7185}
+
+/* Show cards grid */
+.shows-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px}
+.show-card{display:block;background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:24px;text-decoration:none;color:inherit;transition:all .2s;position:relative;overflow:hidden}
+.show-card:hover{transform:translateY(-3px);border-color:rgba(243,201,196,.25);background:rgba(255,255,255,.045)}
+.show-card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px}
+.show-card-name{font-size:20px;font-weight:800;color:#fff;line-height:1.2;flex:1;min-width:0}
+.platform-pill{font-size:10px;padding:3px 9px;border-radius:6px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;white-space:nowrap;flex-shrink:0}
+.platform-tiktok{background:rgba(244,63,94,.14);color:#fb7185}
+.platform-whatnot{background:rgba(168,85,247,.14);color:#c4b5fd}
+.platform-mixed{background:rgba(99,102,241,.14);color:#a5b4fc}
+
+.show-totals{display:flex;align-items:baseline;gap:8px;margin-bottom:14px}
+.show-totals .big{font-size:38px;font-weight:900;color:var(--brand);line-height:1;font-feature-settings:'tnum'}
+.show-totals .small{font-size:13px;color:var(--text-muted);font-weight:600}
+
+.show-progress{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:14px}
+.sp{background:rgba(255,255,255,.03);border-radius:8px;padding:8px 10px;text-align:center}
+.sp .v{font-size:16px;font-weight:800;line-height:1}
+.sp .l{font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.4px;font-weight:700;margin-top:4px}
+.sp.pending .v{color:#fbbf24}
+.sp.packed .v{color:#34d399}
+.sp.shipped .v{color:#a5b4fc}
+.sp.cancelled .v{color:#fb7185}
+
+.show-bar{height:6px;background:rgba(255,255,255,.05);border-radius:4px;overflow:hidden;display:flex;margin-bottom:14px}
+.bar-packed{background:#34d399;height:100%}
+.bar-shipped{background:#a5b4fc;height:100%}
+.bar-cancelled{background:#fb7185;height:100%}
+.bar-pending{background:#fbbf24;height:100%;opacity:.5}
+
+.show-footer{font-size:12px;color:var(--text-dim);display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--border);padding-top:12px;margin-top:auto}
+.show-footer .when b{color:var(--text-muted);font-weight:600}
+.show-cta{color:var(--brand);font-weight:700;font-size:12px}
+
+.empty{text-align:center;padding:80px 20px;background:var(--surface);border:1px dashed var(--border);border-radius:18px;color:var(--text-dim)}
+.empty-icon{font-size:56px;margin-bottom:14px;opacity:.5}
+.empty-title{font-size:18px;font-weight:700;color:var(--text-muted);margin-bottom:6px}
+.empty-sub{font-size:14px;margin-bottom:20px}
+</style>
+</head><body data-role="__ROLE__">
+__NAVBAR__
+<div class="wrap">
+  <div class="page-head">
+    <div>
+      <div class="page-title">📺 Shows</div>
+    </div>
+    <a href="/admin/shipments" class="go-import-btn">＋ Import a CSV</a>
+  </div>
+  <div class="page-sub">
+    <span class="window-pill">Last 5 days</span>
+    <span style="margin-left:12px">Active shows currently being packed. Click any show to see its packages.</span>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div id="grid"></div>
+</div>
+
+<script>
+function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function fmtDateShort(s){if(!s)return '';try{return new Date(s).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}catch(e){return s}}
+
+fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){
+  // KPI rollup across all visible shows
+  var t=0,p=0,d=0,s=0,x=0;
+  shows.forEach(function(sh){t+=sh.shipments;p+=sh.pending||0;d+=sh.packed||0;s+=sh.shipped||0;x+=sh.cancelled||0});
+  document.getElementById('kpis').innerHTML=
+    '<div class="kpi brand"><div class="lbl">Active shows</div><div class="val">'+shows.length+'</div></div>'+
+    '<div class="kpi"><div class="lbl">Total shipments</div><div class="val">'+t+'</div></div>'+
+    '<div class="kpi warn"><div class="lbl">Pending</div><div class="val">'+p+'</div></div>'+
+    '<div class="kpi good"><div class="lbl">Packed</div><div class="val">'+(d+s)+'</div></div>'+
+    '<div class="kpi bad"><div class="lbl">Cancelled</div><div class="val">'+x+'</div></div>';
+
+  var grid=document.getElementById('grid');
+  if(!shows||shows.length===0){
+    grid.innerHTML='<div class="empty"><div class="empty-icon">📺</div><div class="empty-title">No active shows</div><div class="empty-sub">No CSVs have been imported in the last 5 days.</div><a href="/admin/shipments" class="go-import-btn">＋ Import your first show</a></div>';
+    return;
+  }
+  grid.innerHTML='<div class="shows-grid">'+shows.map(function(sh){
+    var packed=(sh.packed||0)+(sh.shipped||0);
+    var total=sh.shipments;
+    var pctP=total?(100*(sh.packed||0)/total):0;
+    var pctS=total?(100*(sh.shipped||0)/total):0;
+    var pctC=total?(100*(sh.cancelled||0)/total):0;
+    var pctPnd=total?(100*(sh.pending||0)/total):0;
+    var platCls='platform-'+(sh.platform||'mixed');
+    if(sh.platform_count>1)platCls='platform-mixed';
+    var platName=sh.platform_count>1?'Mixed':(sh.platform||'?');
+    return '<a href="/admin/shipments?show='+encodeURIComponent(sh.name)+'" class="show-card">'+
+      '<div class="show-card-head">'+
+        '<div class="show-card-name">'+escapeHtml(sh.name)+'</div>'+
+        '<span class="platform-pill '+platCls+'">'+platName+'</span>'+
+      '</div>'+
+      '<div class="show-totals"><span class="big">'+total+'</span><span class="small">shipments</span></div>'+
+      '<div class="show-bar">'+
+        (sh.shipped?'<div class="bar-shipped" style="width:'+pctS+'%"></div>':'')+
+        (sh.packed?'<div class="bar-packed" style="width:'+pctP+'%"></div>':'')+
+        (sh.pending?'<div class="bar-pending" style="width:'+pctPnd+'%"></div>':'')+
+        (sh.cancelled?'<div class="bar-cancelled" style="width:'+pctC+'%"></div>':'')+
+      '</div>'+
+      '<div class="show-progress">'+
+        '<div class="sp pending"><div class="v">'+(sh.pending||0)+'</div><div class="l">Pending</div></div>'+
+        '<div class="sp packed"><div class="v">'+(sh.packed||0)+'</div><div class="l">Packed</div></div>'+
+        '<div class="sp shipped"><div class="v">'+(sh.shipped||0)+'</div><div class="l">Shipped</div></div>'+
+        '<div class="sp cancelled"><div class="v">'+(sh.cancelled||0)+'</div><div class="l">Cancelled</div></div>'+
+      '</div>'+
+      '<div class="show-footer">'+
+        '<div class="when">Last import <b>'+fmtDateShort(sh.last_import)+'</b></div>'+
+        '<div class="show-cta">View packages →</div>'+
+      '</div>'+
+    '</a>';
+  }).join('')+'</div>';
+});
 </script>
 </body></html>'''

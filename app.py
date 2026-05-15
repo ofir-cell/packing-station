@@ -16,7 +16,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     BADGE_LOGIN_HTML, USERS_BADGES_HTML,
     ME_HTML, LEADERBOARD_HTML, HOME_HTML, DOCUMENTS_HTML, WELCOME_HTML,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
-    CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML)
+    CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML)
 
 
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
@@ -1360,7 +1360,11 @@ def api_shipments_import():
         return jsonify({"ok": False, "error": "Pick a CSV file"})
     if not f.filename.lower().endswith(".csv"):
         return jsonify({"ok": False, "error": "Must be a .csv file"})
-    label = (request.form.get("label") or "").strip() or f.filename.rsplit(".",1)[0]
+    label = (request.form.get("label") or "").strip()
+    if not label:
+        return jsonify({"ok": False, "error": "Show name is required — name it after the live show (e.g. 'Beauty 5/15 — TikTok')"})
+    if len(label) > 80:
+        return jsonify({"ok": False, "error": "Show name too long (max 80 characters)"})
     try:
         raw = f.stream.read().decode("utf-8-sig", errors="replace")
     except Exception as e:
@@ -1543,13 +1547,21 @@ def _process_cancel_file(norm_rows, source, label):
 @app.route("/api/shipments/recent")
 @req_role("admin","cs")
 def api_shipments_recent():
-    """List most-recently-imported shipments. Admin dashboard view."""
-    limit = min(request.args.get("limit", type=int) or 100, 500)
+    """List most-recently-imported shipments. Optionally filter by show name."""
+    limit = min(request.args.get("limit", type=int) or 200, 500)
+    show = (request.args.get("show") or "").strip()
     c = sdb()
-    rows = c.execute("""SELECT shipment_id, tracking_code, buyer_username, buyer_name,
-                               total_items, expected_weight_g, actual_weight_g, weight_status,
-                               status, missing_weights, show_date, imported_at
-                        FROM shipments ORDER BY imported_at DESC LIMIT ?""", (limit,)).fetchall()
+    if show:
+        rows = c.execute("""SELECT shipment_id, tracking_code, buyer_username, buyer_name,
+                                   total_items, expected_weight_g, actual_weight_g, weight_status,
+                                   status, missing_weights, show_date, imported_at, import_label, platform
+                            FROM shipments WHERE import_label=?
+                            ORDER BY imported_at DESC LIMIT ?""", (show, limit)).fetchall()
+    else:
+        rows = c.execute("""SELECT shipment_id, tracking_code, buyer_username, buyer_name,
+                                   total_items, expected_weight_g, actual_weight_g, weight_status,
+                                   status, missing_weights, show_date, imported_at, import_label, platform
+                            FROM shipments ORDER BY imported_at DESC LIMIT ?""", (limit,)).fetchall()
     c.close()
     return jsonify([dict(r) for r in rows])
 
@@ -1731,6 +1743,66 @@ def api_customer_detail(username):
         "shipments": ships_out,
         "recordings": recordings,
     })
+
+
+# ══════════════════════════════════════════════════════════
+# SHOWS — group imports by user-supplied "show name" for last 5 days.
+# A single show can span multiple CSV imports (TikTok orders + cancellations,
+# Whatnot, re-uploads after corrections). Packers may be working multiple
+# active shows simultaneously, so this is the index they need.
+# ══════════════════════════════════════════════════════════
+SHOW_WINDOW_DAYS = 5
+
+@app.route("/admin/shows")
+@req_role("admin","cs")
+def shows_admin_page():
+    return (SHOWS_HTML
+        .replace("__ROLE__", session.get("role",""))
+        .replace("__NAVBAR__", _navbar("shows"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/shows")
+@req_role("admin","cs")
+def api_shows():
+    """Return distinct shows (import_label) from the last 5 days, with rollup
+    stats per show. Used by the Shows page and the import autocomplete."""
+    cutoff_dt = (datetime.now() - timedelta(days=SHOW_WINDOW_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    c = sdb()
+    rows = c.execute("""
+        SELECT import_label AS name,
+               COUNT(*) AS shipments,
+               SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
+               SUM(CASE WHEN status='packed' THEN 1 ELSE 0 END) AS packed,
+               SUM(CASE WHEN status='shipped' THEN 1 ELSE 0 END) AS shipped,
+               SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
+               COUNT(DISTINCT platform) AS platform_count,
+               MAX(platform) AS platform,
+               MIN(imported_at) AS first_import,
+               MAX(imported_at) AS last_import
+        FROM shipments
+        WHERE import_label IS NOT NULL AND import_label != ''
+          AND imported_at >= ?
+        GROUP BY import_label
+        ORDER BY last_import DESC
+    """, (cutoff_dt,)).fetchall()
+    c.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/shows/recent")
+@req_role("admin","cs")
+def api_shows_recent():
+    """Lightweight — just distinct show names from the last 5 days, for
+    autocomplete dropdowns. Same data, slimmer payload."""
+    cutoff_dt = (datetime.now() - timedelta(days=SHOW_WINDOW_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    c = sdb()
+    rows = c.execute("""SELECT import_label AS name, MAX(imported_at) AS last
+                        FROM shipments
+                        WHERE import_label IS NOT NULL AND import_label != ''
+                          AND imported_at >= ?
+                        GROUP BY import_label
+                        ORDER BY last DESC""", (cutoff_dt,)).fetchall()
+    c.close()
+    return jsonify([r["name"] for r in rows])
 
 
 @app.route("/admin/shipments")
