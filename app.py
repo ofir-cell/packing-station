@@ -15,7 +15,8 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ANALYTICS_HTML, GIVEAWAY_DASH_HTML, GIVEAWAY_DETAIL_HTML,
     BADGE_LOGIN_HTML, USERS_BADGES_HTML,
     ME_HTML, LEADERBOARD_HTML, HOME_HTML, DOCUMENTS_HTML, WELCOME_HTML,
-    ONBOARDING_HTML, ANNOUNCEMENTS_HTML)
+    ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
+    CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML)
 
 
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
@@ -28,6 +29,7 @@ DOCS_FILE=os.path.join(DATA_DIR,"documents.json")
 DOCS_DIR=os.path.join(DATA_DIR,"documents")
 ONB_FILE=os.path.join(DATA_DIR,"onboarding.json")
 ANN_FILE=os.path.join(DATA_DIR,"announcements.json")
+SHIPMENTS_DB=os.path.join(DATA_DIR,"shipments.db")
 
 # FIX #1: SECRET_KEY must be set in environment - fail loud if missing.
 # Auto-generating it would invalidate all sessions on every restart.
@@ -281,6 +283,146 @@ def gdb_init():
     c.commit();c.close()
 
 gdb_init()
+
+
+# ══════════════════════════════════════════════════════════
+# SHIPMENT WEIGHT VERIFICATION — separate SQLite DB
+# Imported from Whatnot CSV exports. One row per shipment_id.
+# Items in separate table. SKU weights cached for fast lookup.
+# ══════════════════════════════════════════════════════════
+def sdb():
+    """SQLite connection for the shipments DB."""
+    c = sqlite3.connect(SHIPMENTS_DB, timeout=10.0)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA foreign_keys=ON")
+    return c
+
+def sdb_init():
+    """Create the shipments / items / sku_weights / weight_config tables."""
+    c = sdb()
+    c.execute("""CREATE TABLE IF NOT EXISTS shipments(
+        shipment_id TEXT PRIMARY KEY,
+        tracking_code TEXT,
+        buyer_username TEXT,
+        buyer_name TEXT,
+        address_full TEXT,
+        postal_code TEXT,
+        total_items INTEGER DEFAULT 0,
+        expected_weight_g REAL DEFAULT 0,
+        actual_weight_g REAL,
+        weight_status TEXT,
+        weighed_at TEXT,
+        weighed_by TEXT,
+        packed_at TEXT,
+        show_date TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        flag_reason TEXT,
+        flag_resolved_at TEXT,
+        flag_resolved_by TEXT,
+        missing_weights INTEGER DEFAULT 0,
+        imported_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        platform TEXT DEFAULT 'whatnot',
+        import_batch TEXT,
+        import_label TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS shipment_items(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        shipment_id TEXT NOT NULL,
+        order_id TEXT,
+        sku TEXT,
+        product_name TEXT,
+        quantity INTEGER DEFAULT 1,
+        item_weight_g REAL,
+        cancelled INTEGER DEFAULT 0,
+        cancel_reason TEXT,
+        FOREIGN KEY (shipment_id) REFERENCES shipments(shipment_id) ON DELETE CASCADE
+    )""")
+    # Backward-compatible migrations — add columns if older DBs are missing them.
+    for stmt in (
+        "ALTER TABLE shipments ADD COLUMN platform TEXT DEFAULT 'whatnot'",
+        "ALTER TABLE shipments ADD COLUMN import_batch TEXT",
+        "ALTER TABLE shipments ADD COLUMN import_label TEXT",
+        "ALTER TABLE shipment_items ADD COLUMN order_id TEXT",
+        "ALTER TABLE shipment_items ADD COLUMN cancelled INTEGER DEFAULT 0",
+        "ALTER TABLE shipment_items ADD COLUMN cancel_reason TEXT",
+    ):
+        try: c.execute(stmt)
+        except sqlite3.OperationalError: pass  # column already exists
+    c.execute("""CREATE TABLE IF NOT EXISTS sku_weights(
+        sku TEXT PRIMARY KEY,
+        weight_g REAL NOT NULL,
+        last_product_name TEXT,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_by TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS weight_config(
+        id INTEGER PRIMARY KEY CHECK (id=1),
+        tolerance_percent REAL DEFAULT 10,
+        tolerance_absolute_g REAL DEFAULT 5,
+        packaging_overhead_g REAL DEFAULT 30,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    # Singleton config row
+    c.execute("INSERT OR IGNORE INTO weight_config (id, tolerance_percent, tolerance_absolute_g, packaging_overhead_g) VALUES (1, 10, 5, 30)")
+    # Indexes
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ship_tracking ON shipments(tracking_code) WHERE tracking_code IS NOT NULL")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_ship_status ON shipments(status)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_ship_imported ON shipments(imported_at DESC)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_items_ship ON shipment_items(shipment_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_items_sku ON shipment_items(sku)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_items_order ON shipment_items(order_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_ship_batch ON shipments(import_batch)")
+    c.commit(); c.close()
+
+sdb_init()
+
+
+def _weight_config():
+    """Get singleton weight config row."""
+    c = sdb()
+    row = c.execute("SELECT * FROM weight_config WHERE id=1").fetchone()
+    c.close()
+    return dict(row) if row else {"tolerance_percent": 10, "tolerance_absolute_g": 5, "packaging_overhead_g": 30}
+
+def _sku_weight(sku):
+    """Look up a single SKU's weight in grams. Returns None if unknown."""
+    if not sku: return None
+    c = sdb()
+    row = c.execute("SELECT weight_g FROM sku_weights WHERE sku=?", (sku,)).fetchone()
+    c.close()
+    return row["weight_g"] if row else None
+
+def _recompute_shipment_weight(conn, shipment_id):
+    """Sum item weights × qty + packaging overhead. Updates the shipment row in place.
+    Skips cancelled items. Caller passes an open connection."""
+    cfg = conn.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
+    overhead = cfg["packaging_overhead_g"] if cfg else 30
+    items = conn.execute("""SELECT quantity, item_weight_g, COALESCE(cancelled,0) AS cancelled
+                            FROM shipment_items WHERE shipment_id=?""", (shipment_id,)).fetchall()
+    total_g = 0.0
+    missing = 0
+    total_items = 0
+    active_items = 0
+    for it in items:
+        if it["cancelled"]: continue
+        qty = it["quantity"] or 1
+        total_items += qty
+        active_items += 1
+        w = it["item_weight_g"]
+        if w is None:
+            missing += qty
+        else:
+            total_g += float(w) * qty
+    expected = round(total_g + overhead, 1) if total_g > 0 else 0
+    # If every item is cancelled, mark shipment cancelled too
+    if active_items == 0 and items:
+        conn.execute("""UPDATE shipments SET total_items=0, expected_weight_g=0,
+                        missing_weights=0, status='cancelled' WHERE shipment_id=?""", (shipment_id,))
+    else:
+        conn.execute("""UPDATE shipments SET total_items=?, expected_weight_g=?,
+                        missing_weights=? WHERE shipment_id=?""",
+                     (total_items, expected, missing, shipment_id))
 
 app=Flask(__name__)
 app.secret_key=SECRET_KEY
@@ -1135,6 +1277,555 @@ def api_ann_pin(aid):
     data[aid]['pinned'] = not data[aid].get('pinned', False)
     _ann_save(data)
     return jsonify({"ok": True, "pinned": data[aid]['pinned']})
+
+
+# ══════════════════════════════════════════════════════════
+# WEIGHT VERIFICATION — Whatnot CSV import + SKU weights + lookup
+# ══════════════════════════════════════════════════════════
+
+def _parse_buyer_name(addr):
+    """The Whatnot shipping_address column is comma-separated; first chunk is the name."""
+    if not addr: return ""
+    return addr.split(",", 1)[0].strip()
+
+def _detect_csv_format(fieldnames):
+    """Return 'tiktok_ship' | 'tiktok_cancel' | 'whatnot' | None.
+    Cancellation files have the same TikTok columns; distinguish later by Order Status data."""
+    fn = set(fieldnames or [])
+    if {"Order ID", "Tracking ID", "Package ID", "Seller SKU"}.issubset(fn):
+        return "tiktok"  # tiktok_ship or tiktok_cancel — caller checks row data
+    if {"order_id", "shipment_id", "product_name", "product_quantity"}.issubset(fn):
+        return "whatnot"
+    return None
+
+def _norm_tiktok(row):
+    """Normalize a TikTok row to common dict. TikTok appends a TAB to many ID fields
+    (`Package ID`, `Tracking ID`) — strip whitespace and tabs."""
+    def s(k): return (row.get(k) or "").strip().strip("\t")
+    addr_parts = [s("Address Line 1"), s("Address Line 2"), s("City"), s("State"),
+                  s("Zipcode"), s("Country")]
+    address = ", ".join(p for p in addr_parts if p)
+    try: qty = int(float(s("Quantity") or "1"))
+    except: qty = 1
+    try: weight_g = round(float(s("Weight(kg)") or "0") * 1000, 1)  # kg → grams
+    except: weight_g = 0
+    return {
+        "order_id":   s("Order ID"),
+        "package_id": s("Package ID"),
+        "tracking":   s("Tracking ID"),
+        "sku":        s("Seller SKU"),
+        "product_name": s("Product Name"),
+        "quantity":   qty,
+        "weight_g":   weight_g,
+        "buyer_username": s("Buyer Username"),
+        "buyer_name":     s("Recipient") or s("Buyer Nickname"),
+        "address":    address,
+        "postal":     s("Zipcode"),
+        "status":     s("Order Status"),
+        "cancel_reason": s("Cancel Reason"),
+        "created_at": s("Created Time")[:10],
+    }
+
+def _norm_whatnot(row):
+    """Normalize a Whatnot row to the same dict shape."""
+    def s(k): return (row.get(k) or "").strip()
+    pname = s("product_name")
+    try: qty = int(float(s("product_quantity") or "1"))
+    except: qty = 1
+    return {
+        "order_id":   s("order_id"),
+        "package_id": s("shipment_id"),
+        "tracking":   s("tracking_code"),
+        "sku":        s("sku") or pname,   # Whatnot live items have empty SKU
+        "product_name": pname,
+        "quantity":   qty,
+        "weight_g":   0,                    # Whatnot doesn't provide per-row weight
+        "buyer_username": s("buyer_username"),
+        "buyer_name": _parse_buyer_name(s("shipping_address")),
+        "address":    s("shipping_address"),
+        "postal":     s("postal_code"),
+        "status":     "cancelled" if s("cancelled_or_failed") in ("cancelled","failed") else "to_ship",
+        "cancel_reason": s("cancelled_or_failed") if s("cancelled_or_failed") else "",
+        "created_at": s("placed_at")[:10],
+    }
+
+@app.route("/api/shipments/import", methods=["POST"])
+@req_role("admin")
+def api_shipments_import():
+    """Accept a TikTok or Whatnot CSV upload and ingest into the shipments DB.
+    Auto-detects format. Cancelled rows from a TO SHIP file are marked cancelled.
+    A pure cancellation file is detected and routed through the cancel path."""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "Pick a CSV file"})
+    if not f.filename.lower().endswith(".csv"):
+        return jsonify({"ok": False, "error": "Must be a .csv file"})
+    label = (request.form.get("label") or "").strip() or f.filename.rsplit(".",1)[0]
+    try:
+        raw = f.stream.read().decode("utf-8-sig", errors="replace")
+    except Exception as e:
+        return jsonify({"ok": False, "error": "Could not read file: " + str(e)})
+    import io
+    reader = csv.DictReader(io.StringIO(raw))
+    fmt = _detect_csv_format(reader.fieldnames)
+    if not fmt:
+        return jsonify({"ok": False, "error": "Unrecognized CSV format — expected TikTok or Whatnot export"})
+
+    rows = list(reader)
+    if not rows:
+        return jsonify({"ok": False, "error": "CSV is empty"})
+
+    # Normalize all rows to common shape
+    if fmt == "tiktok":
+        norm = [_norm_tiktok(r) for r in rows]
+        # Detect if this is purely a cancel file — TikTok cancel export has empty package_id
+        # on every row and Order Status starts with "Cancel"
+        cancel_count = sum(1 for n in norm if n["status"].lower().startswith("cancel"))
+        no_pkg = sum(1 for n in norm if not n["package_id"])
+        is_cancel_file = (cancel_count / len(norm) > 0.8) and (no_pkg / len(norm) > 0.8)
+        if is_cancel_file:
+            return _process_cancel_file(norm, "tiktok", label)
+        platform = "tiktok"
+    else:
+        norm = [_norm_whatnot(r) for r in rows]
+        platform = "whatnot"
+
+    # Group rows by package_id (Whatnot uses shipment_id, TikTok uses Package ID)
+    import_batch = "imp_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    by_pkg = {}
+    skipped = 0
+    cancelled_inline = []  # cancelled rows in a TO SHIP file (rare)
+    for n in norm:
+        pkg = n["package_id"]
+        if not pkg:
+            skipped += 1
+            continue
+        if n["status"].lower().startswith("cancel"):
+            cancelled_inline.append(n)
+            continue
+        by_pkg.setdefault(pkg, []).append(n)
+
+    if not by_pkg:
+        return jsonify({"ok": False, "error": "No usable shipments found in CSV (all rows skipped or cancelled)"})
+
+    c = sdb()
+    sku_map = {r["sku"]: r["weight_g"] for r in c.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
+
+    inserted = 0; updated = 0; items_inserted = 0
+    unique_skus = set()
+    try:
+        for pkg_id, group in by_pkg.items():
+            first = group[0]
+            tracking = first["tracking"] or None
+            existing = c.execute("SELECT shipment_id FROM shipments WHERE shipment_id=?", (pkg_id,)).fetchone()
+            if existing:
+                c.execute("""UPDATE shipments
+                             SET tracking_code=COALESCE(?,tracking_code),
+                                 buyer_username=?, buyer_name=?, address_full=?, postal_code=?,
+                                 show_date=?, platform=?, import_batch=COALESCE(import_batch,?),
+                                 import_label=COALESCE(import_label,?)
+                             WHERE shipment_id=?""",
+                          (tracking, first["buyer_username"], first["buyer_name"],
+                           first["address"], first["postal"], first["created_at"],
+                           platform, import_batch, label, pkg_id))
+                updated += 1
+            else:
+                c.execute("""INSERT INTO shipments
+                    (shipment_id, tracking_code, buyer_username, buyer_name, address_full,
+                     postal_code, show_date, status, platform, import_batch, import_label)
+                    VALUES (?,?,?,?,?,?,?, 'pending', ?, ?, ?)""",
+                    (pkg_id, tracking, first["buyer_username"], first["buyer_name"],
+                     first["address"], first["postal"], first["created_at"],
+                     platform, import_batch, label))
+                inserted += 1
+            # Replace items for this shipment
+            c.execute("DELETE FROM shipment_items WHERE shipment_id=?", (pkg_id,))
+            for n in group:
+                sku = n["sku"]
+                # Prefer per-row weight from CSV (TikTok); fall back to sku_weights map
+                w = (n["weight_g"] / max(len(group), 1)) if n["weight_g"] > 0 else sku_map.get(sku)
+                c.execute("""INSERT INTO shipment_items
+                             (shipment_id, order_id, sku, product_name, quantity, item_weight_g)
+                             VALUES (?,?,?,?,?,?)""",
+                          (pkg_id, n["order_id"], sku, n["product_name"], n["quantity"], w))
+                items_inserted += 1
+                if sku: unique_skus.add(sku)
+            _recompute_shipment_weight(c, pkg_id)
+        c.commit()
+    finally:
+        c.close()
+
+    # SKUs missing weights
+    c = sdb()
+    have_weight = {r["sku"] for r in c.execute("SELECT sku FROM sku_weights WHERE sku IN ({})".format(
+        ",".join("?"*len(unique_skus)) or "''"), tuple(unique_skus) if unique_skus else ()).fetchall()}
+    c.close()
+    sku_missing = sorted(unique_skus - have_weight)
+
+    return jsonify({
+        "ok": True,
+        "format": fmt,
+        "platform": platform,
+        "import_batch": import_batch,
+        "label": label,
+        "shipments_new": inserted,
+        "shipments_updated": updated,
+        "items": items_inserted,
+        "skipped_rows": skipped,
+        "cancelled_inline": len(cancelled_inline),
+        "unique_skus": len(unique_skus),
+        "skus_missing_weight": len(sku_missing),
+        "missing_sku_list": sku_missing[:50],
+    })
+
+
+def _process_cancel_file(norm_rows, source, label):
+    """A pure cancellation file from TikTok lists orders that were canceled BEFORE the
+    To-Ship export. They never enter the normal shipment flow, so we (a) try to update
+    existing matching shipments, AND (b) insert standalone cancelled rows so the SKU
+    reconciliation screen can find them. Both code paths are idempotent."""
+    c = sdb()
+    import_batch = "cancel_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    matched_existing = 0
+    inserted_new = 0
+    affected_ships = set()
+    # Group by order_id to combine multiple SKUs per cancelled order
+    by_order = {}
+    for n in norm_rows:
+        if not n["order_id"]: continue
+        by_order.setdefault(n["order_id"], []).append(n)
+
+    for oid, group in by_order.items():
+        first = group[0]
+        reason = first["cancel_reason"] or "cancelled"
+        # Path A: this order is already in our shipments (was in a previous To-Ship)
+        existing = c.execute("SELECT DISTINCT shipment_id FROM shipment_items WHERE order_id=?", (oid,)).fetchall()
+        if existing:
+            c.execute("""UPDATE shipment_items SET cancelled=1, cancel_reason=?
+                         WHERE order_id=? AND COALESCE(cancelled,0)=0""", (reason, oid))
+            matched_existing += 1
+            for r in existing: affected_ships.add(r["shipment_id"])
+            continue
+        # Path B: never seen — insert a synthetic shipment so reconciliation can find it
+        synthetic_id = "cancel_" + oid
+        c.execute("""INSERT OR REPLACE INTO shipments
+            (shipment_id, tracking_code, buyer_username, buyer_name, address_full,
+             postal_code, show_date, status, platform, import_batch, import_label,
+             total_items, expected_weight_g, missing_weights, flag_reason)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, 'cancelled', ?, ?, ?, 0, 0, 0, ?)""",
+            (synthetic_id, first["buyer_username"], first["buyer_name"], first["address"],
+             first["postal"], first["created_at"], source, import_batch, label, reason))
+        c.execute("DELETE FROM shipment_items WHERE shipment_id=?", (synthetic_id,))
+        for n in group:
+            c.execute("""INSERT INTO shipment_items
+                         (shipment_id, order_id, sku, product_name, quantity, item_weight_g,
+                          cancelled, cancel_reason)
+                         VALUES (?,?,?,?,?,?, 1, ?)""",
+                      (synthetic_id, oid, n["sku"], n["product_name"], n["quantity"],
+                       n["weight_g"] or None, reason))
+        inserted_new += 1
+
+    for sid in affected_ships:
+        _recompute_shipment_weight(c, sid)
+    c.commit(); c.close()
+    return jsonify({
+        "ok": True,
+        "format": "cancellation",
+        "source": source,
+        "label": label,
+        "import_batch": import_batch,
+        "orders_matched_existing": matched_existing,
+        "orders_inserted_as_cancelled": inserted_new,
+        "shipments_recomputed": len(affected_ships),
+    })
+
+
+@app.route("/api/shipments/recent")
+@req_role("admin","cs")
+def api_shipments_recent():
+    """List most-recently-imported shipments. Admin dashboard view."""
+    limit = min(request.args.get("limit", type=int) or 100, 500)
+    c = sdb()
+    rows = c.execute("""SELECT shipment_id, tracking_code, buyer_username, buyer_name,
+                               total_items, expected_weight_g, actual_weight_g, weight_status,
+                               status, missing_weights, show_date, imported_at
+                        FROM shipments ORDER BY imported_at DESC LIMIT ?""", (limit,)).fetchall()
+    c.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/shipment/<code>")
+@req_login
+def api_shipment_lookup(code):
+    """Look up a single shipment by tracking_code OR shipment_id.
+    Used by worker page when a barcode is scanned."""
+    code = (code or "").strip()
+    if not re.match(r'^[A-Za-z0-9_\-]{1,64}$', code):
+        return jsonify({"ok": False, "error": "Invalid code"})
+    c = sdb()
+    row = c.execute("""SELECT * FROM shipments
+                       WHERE tracking_code=? OR shipment_id=? LIMIT 1""", (code, code)).fetchone()
+    if not row:
+        c.close()
+        return jsonify({"ok": False, "error": "Shipment not found"})
+    items = c.execute("""SELECT sku, product_name, quantity, item_weight_g
+                         FROM shipment_items WHERE shipment_id=?""", (row["shipment_id"],)).fetchall()
+    cfg = c.execute("SELECT * FROM weight_config WHERE id=1").fetchone()
+    c.close()
+    return jsonify({
+        "ok": True,
+        "shipment": dict(row),
+        "items": [dict(i) for i in items],
+        "config": dict(cfg) if cfg else {},
+    })
+
+
+@app.route("/api/sku-weights")
+@req_role("admin")
+def api_sku_weights_list():
+    """All SKUs we've ever imported, with current weight (if set) and times seen."""
+    c = sdb()
+    # SKUs from items + their assigned weight + frequency
+    rows = c.execute("""
+        SELECT i.sku,
+               MAX(i.product_name) AS last_product_name,
+               COUNT(DISTINCT i.shipment_id) AS shipments,
+               SUM(i.quantity) AS total_qty,
+               sw.weight_g,
+               sw.updated_at,
+               sw.updated_by
+        FROM shipment_items i
+        LEFT JOIN sku_weights sw ON sw.sku = i.sku
+        WHERE i.sku IS NOT NULL AND i.sku != ''
+        GROUP BY i.sku
+        ORDER BY (sw.weight_g IS NULL) DESC, shipments DESC
+    """).fetchall()
+    c.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/sku-weights/set", methods=["POST"])
+@req_role("admin")
+def api_sku_weight_set():
+    """Insert or update a SKU's weight in grams."""
+    d = request.get_json() or {}
+    sku = (d.get("sku") or "").strip()
+    try:
+        weight = float(d.get("weight_g", 0))
+    except:
+        return jsonify({"ok": False, "error": "Weight must be a number"})
+    if not sku:
+        return jsonify({"ok": False, "error": "SKU required"})
+    if weight <= 0 or weight > 100000:
+        return jsonify({"ok": False, "error": "Weight must be 0 < w <= 100000 grams"})
+    c = sdb()
+    pname = c.execute("SELECT product_name FROM shipment_items WHERE sku=? ORDER BY id DESC LIMIT 1",
+                      (sku,)).fetchone()
+    pname = pname["product_name"] if pname else None
+    c.execute("""INSERT INTO sku_weights (sku, weight_g, last_product_name, updated_at, updated_by)
+                 VALUES (?,?,?,CURRENT_TIMESTAMP,?)
+                 ON CONFLICT(sku) DO UPDATE SET
+                   weight_g=excluded.weight_g,
+                   last_product_name=excluded.last_product_name,
+                   updated_at=CURRENT_TIMESTAMP,
+                   updated_by=excluded.updated_by""",
+              (sku, weight, pname, session.get("name", "Admin")))
+    # Push the new weight into existing shipment_items snapshots and recompute their shipments
+    affected = c.execute("SELECT DISTINCT shipment_id FROM shipment_items WHERE sku=?", (sku,)).fetchall()
+    c.execute("UPDATE shipment_items SET item_weight_g=? WHERE sku=?", (weight, sku))
+    for r in affected:
+        _recompute_shipment_weight(c, r["shipment_id"])
+    c.commit(); c.close()
+    return jsonify({"ok": True, "shipments_updated": len(affected)})
+
+
+# ══════════════════════════════════════════════════════════
+# CUSTOMER SEARCH — for CS lookups across all imported shipments
+# ══════════════════════════════════════════════════════════
+
+@app.route("/customers")
+@req_role("admin", "cs")
+def customers_page():
+    return (CUSTOMERS_HTML
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("customers"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/customers/search")
+@req_role("admin", "cs")
+def api_customers_search():
+    """Fuzzy search across buyer_username and buyer_name. Min 2 chars."""
+    q = (request.args.get("q") or "").strip().lower()
+    if len(q) < 2:
+        return jsonify([])
+    c = sdb()
+    rows = c.execute("""
+        SELECT buyer_username,
+               MAX(buyer_name) AS buyer_name,
+               COUNT(*) AS shipments,
+               COALESCE(SUM(total_items), 0) AS total_items,
+               MAX(show_date) AS last_show,
+               MAX(address_full) AS last_address,
+               MAX(postal_code) AS last_postal
+        FROM shipments
+        WHERE buyer_username != '' AND
+              (LOWER(buyer_username) LIKE ? OR LOWER(buyer_name) LIKE ?)
+        GROUP BY buyer_username
+        ORDER BY shipments DESC, last_show DESC
+        LIMIT 50
+    """, ('%' + q + '%', '%' + q + '%')).fetchall()
+    c.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/customers/<username>")
+@req_role("admin", "cs")
+def api_customer_detail(username):
+    """Full profile: every shipment, items, recordings (cross-reference with packing_log.csv)."""
+    if not re.match(r'^[a-zA-Z0-9._\-]+$', username) or len(username) > 64:
+        return jsonify({"ok": False, "error": "Invalid username"})
+    c = sdb()
+    ships = c.execute("""
+        SELECT * FROM shipments WHERE buyer_username=? ORDER BY show_date DESC, shipment_id DESC
+    """, (username,)).fetchall()
+    if not ships:
+        c.close()
+        return jsonify({"ok": False, "error": "Customer not found"})
+    ship_ids = {s["shipment_id"] for s in ships}
+    tracking_codes = {s["tracking_code"] for s in ships if s["tracking_code"]}
+    ships_out = []
+    for s in ships:
+        items = c.execute("""SELECT product_name, quantity, item_weight_g, sku
+                             FROM shipment_items WHERE shipment_id=?""", (s["shipment_id"],)).fetchall()
+        ships_out.append({**dict(s), "items": [dict(i) for i in items]})
+    c.close()
+    # Cross-reference with packing_log.csv to find recordings
+    recordings = []
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE) as f:
+            for row in csv.DictReader(f):
+                t = row.get("tracking_number", "")
+                if t and (t in ship_ids or t in tracking_codes):
+                    recordings.append({
+                        "tracking": t,
+                        "station": row.get("station", ""),
+                        "date": row.get("date", ""),
+                        "time": row.get("time", ""),
+                        "duration": row.get("duration_seconds", ""),
+                        "video_file": row.get("video_file", ""),
+                        "photo_file": row.get("photo_file", ""),
+                        "worker": row.get("worker", ""),
+                    })
+    # Summary
+    addresses = list(set(s["address_full"] for s in ships if s["address_full"]))
+    shows = sorted(set(s["show_date"] for s in ships if s["show_date"]), reverse=True)
+    return jsonify({
+        "ok": True,
+        "username": username,
+        "buyer_name": ships[0]["buyer_name"],
+        "shipments_total": len(ships),
+        "items_total": sum((s["total_items"] or 0) for s in ships),
+        "shows_count": len(shows),
+        "first_show": shows[-1] if shows else None,
+        "last_show": shows[0] if shows else None,
+        "addresses": addresses,
+        "shipments": ships_out,
+        "recordings": recordings,
+    })
+
+
+@app.route("/admin/shipments")
+@req_role("admin","cs")
+def shipments_admin_page():
+    return (SHIPMENTS_ADMIN_HTML
+        .replace("__ROLE__", session.get("role",""))
+        .replace("__NAVBAR__", _navbar("shipments"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+
+# ══════════════════════════════════════════════════════════
+# SKU RECONCILIATION — end-of-show "where did SKU 12 go?" lookup
+# ══════════════════════════════════════════════════════════
+
+@app.route("/admin/sku-lookup")
+@req_role("admin", "cs")
+def sku_lookup_page():
+    return (SKU_LOOKUP_HTML
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("sku_lookup"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/sku-lookup/batches")
+@req_role("admin", "cs")
+def api_sku_batches():
+    """List import batches so the manager can filter to current show."""
+    c = sdb()
+    rows = c.execute("""SELECT import_batch, MAX(import_label) AS label,
+                               COUNT(*) AS shipments,
+                               MAX(imported_at) AS imported_at,
+                               MAX(platform) AS platform
+                        FROM shipments WHERE import_batch IS NOT NULL
+                        GROUP BY import_batch
+                        ORDER BY imported_at DESC""").fetchall()
+    c.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/sku-lookup/<sku>")
+@req_role("admin", "cs")
+def api_sku_lookup(sku):
+    """Find every item with this SKU. Optional filter by import_batch.
+    Returns enough info to identify which physical item this is and where it went."""
+    sku = (sku or "").strip()
+    if not sku or len(sku) > 64:
+        return jsonify({"ok": False, "error": "Invalid SKU"})
+    batch = (request.args.get("batch") or "").strip()
+    c = sdb()
+    q = """SELECT i.id AS item_id, i.sku, i.product_name, i.quantity, i.cancelled, i.cancel_reason,
+                  i.order_id, i.item_weight_g,
+                  s.shipment_id, s.tracking_code, s.buyer_username, s.buyer_name,
+                  s.status, s.platform, s.import_batch, s.import_label,
+                  s.packed_at, s.actual_weight_g
+           FROM shipment_items i
+           JOIN shipments s ON s.shipment_id = i.shipment_id
+           WHERE i.sku = ?"""
+    params = [sku]
+    if batch:
+        q += " AND s.import_batch = ?"
+        params.append(batch)
+    q += " ORDER BY s.import_batch DESC, i.cancelled, s.status"
+    rows = c.execute(q, params).fetchall()
+    c.close()
+    return jsonify({
+        "ok": True,
+        "sku": sku,
+        "batch_filter": batch or None,
+        "matches": [dict(r) for r in rows],
+    })
+
+
+@app.route("/api/weight-config", methods=["GET", "POST"])
+@req_role("admin")
+def api_weight_config():
+    """Get or update the singleton tolerance / packaging-overhead config row."""
+    if request.method == "GET":
+        return jsonify(_weight_config())
+    d = request.get_json() or {}
+    try:
+        tp = float(d.get("tolerance_percent", 10))
+        tg = float(d.get("tolerance_absolute_g", 5))
+        po = float(d.get("packaging_overhead_g", 30))
+    except:
+        return jsonify({"ok": False, "error": "All values must be numbers"})
+    if not (0 <= tp <= 100 and 0 <= tg <= 1000 and 0 <= po <= 5000):
+        return jsonify({"ok": False, "error": "Values out of sensible range"})
+    c = sdb()
+    c.execute("""UPDATE weight_config SET tolerance_percent=?, tolerance_absolute_g=?,
+                 packaging_overhead_g=?, updated_at=CURRENT_TIMESTAMP WHERE id=1""", (tp, tg, po))
+    # Re-snapshot packaging overhead into all shipments' expected_weight
+    sids = [r["shipment_id"] for r in c.execute("SELECT shipment_id FROM shipments").fetchall()]
+    for sid in sids:
+        _recompute_shipment_weight(c, sid)
+    c.commit(); c.close()
+    return jsonify({"ok": True, "shipments_recomputed": len(sids)})
 
 
 @app.route("/api/documents/<doc_id>/delete", methods=["POST"])

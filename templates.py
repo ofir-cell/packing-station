@@ -34,7 +34,10 @@ def _navbar(active_page=""):
     })
     if role in ("admin", "cs"):
         ops_items = [
+            ("shipments", "/admin/shipments", "Shipments · Import CSV"),
             ("dash", "/dashboard", "Search Recordings"),
+            ("customers", "/customers", "Customer Lookup"),
+            ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation"),
             ("giveaway", "/giveaway", "Giveaways"),
         ]
         if role == "admin":
@@ -87,7 +90,7 @@ _NAVBAR_CSS='''<style>
   --border:rgba(255,255,255,.07);
   --text:#e4e8f1;
   --text-muted:#9ba9c1;
-  --text-dim:#6b7a90;
+  --text-dim:#94a3b8;
 }
 .topnav{background:rgba(10,13,20,.92);border-bottom:1px solid var(--border);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);position:sticky;top:0;z-index:100;font-family:'DM Sans',sans-serif}
 .topnav-inner{max-width:1600px;margin:0 auto;padding:0 28px;display:flex;align-items:center;gap:28px;height:64px}
@@ -150,13 +153,13 @@ body{font-family:'DM Sans',sans-serif;background:#0a0d14;color:#e4e8f1;display:f
 .field label{display:block;font-size:11px;font-weight:700;color:#9ba9c1;margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px}
 .field input{width:100%;background:rgba(11,14,20,.7);border:2px solid rgba(255,255,255,.06);border-radius:12px;padding:15px 18px;font-size:16px;color:#e4e8f1;font-family:inherit;outline:none;transition:all .2s}
 .field input:focus{border-color:#f3c9c4;box-shadow:0 0 0 3px rgba(243,201,196,.12)}
-.field input::placeholder{color:#3a4252}
+.field input::placeholder{color:#6b7a90}
 .btn{width:100%;border:none;border-radius:12px;padding:16px;font-size:15px;font-weight:800;cursor:pointer;font-family:inherit;transition:all .15s;letter-spacing:.5px}
 .btn-primary{background:#f3c9c4;color:#1a0e0b;margin-top:8px;box-shadow:0 8px 28px rgba(243,201,196,.22)}
 .btn-primary:hover{background:#eab1a8;transform:translateY(-1px);box-shadow:0 10px 36px rgba(243,201,196,.32)}
 .btn-primary:active{transform:scale(.98)}
 .err{color:#f43f5e;font-size:13px;margin-top:14px;text-align:center;min-height:18px}
-.foot{text-align:center;margin-top:28px;font-size:11px;color:#2a3040;letter-spacing:1.5px}
+.foot{text-align:center;margin-top:28px;font-size:11px;color:#6b7a90;letter-spacing:1.5px}
 </style></head><body>
 <div class="glow g1"></div><div class="glow g2"></div>
 <div class="wrap">
@@ -241,7 +244,7 @@ WORKER_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;overflow:hidden}
-body{font-family:'DM Sans',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:background .4s}
+body{font-family:'DM Sans',sans-serif;color:#e4e8f1;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:background .4s}
 body.sr{background:#0c0f16}body.sc{background:#1c0a0f}body.sd{background:#061a0f}body.su{background:#0c0f16}
 .x{display:none;text-align:center;padding:24px;width:100%}
 .x.on{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh}
@@ -267,7 +270,7 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 .inp-w{width:100%;max-width:500px}
 .inp{width:100%;background:rgba(21,25,33,.8);border:3px solid #f3c9c4;border-radius:16px;padding:20px 24px;font-size:24px;color:#e4e8f1;font-family:inherit;text-align:center;outline:none;transition:all .2s}
 .inp:focus{border-color:#eab1a8;box-shadow:0 0 30px rgba(243,201,196,.3)}
-.inp::placeholder{color:#3a4252}
+.inp::placeholder{color:#6b7a90}
 .hint{margin-top:14px;font-size:14px;color:#6b7a90}
 .pd{display:inline-block;width:8px;height:8px;background:#f3c9c4;border-radius:50%;margin-right:8px;animation:pls 1.5s ease infinite}
 @keyframes pls{0%,100%{opacity:.3;transform:scale(1)}50%{opacity:1;transform:scale(1.3)}}
@@ -288,6 +291,45 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 .step.now .si{background:#7c2d12;border-color:#f59e0b;animation:spls 1.5s ease infinite}
 @keyframes spls{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.2)}50%{box-shadow:0 0 0 8px rgba(245,158,11,0)}}
 .hinp{position:absolute;top:-9999px;left:-9999px}
+
+/* Item checklist on recording screen */
+.check-area{margin-top:20px;width:100%;max-width:560px;display:none}
+body.sc .check-area{display:block}
+.check-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px;padding:0 6px}
+.check-buyer{font-size:18px;font-weight:800;color:#e4e8f1;letter-spacing:.2px}
+.check-counter{font-size:14px;color:#9ba9c1;font-weight:600;font-feature-settings:'tnum'}
+.check-counter b{color:#f3c9c4;font-size:20px;font-weight:900}
+.check-items{display:flex;flex-direction:column;gap:6px;max-height:36vh;overflow-y:auto;padding:4px;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.1) transparent}
+.check-items::-webkit-scrollbar{width:6px}.check-items::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:3px}
+.check-item{display:flex;align-items:center;gap:14px;padding:11px 16px;background:rgba(21,25,33,.85);border:2px solid rgba(255,255,255,.06);border-radius:12px;cursor:pointer;user-select:none;transition:all .12s;text-align:left}
+.check-item:hover{border-color:rgba(243,201,196,.3);background:rgba(243,201,196,.04)}
+.check-item.done{opacity:.55;background:rgba(16,185,129,.06);border-color:rgba(16,185,129,.22)}
+.check-item.done .ci-name{text-decoration:line-through;text-decoration-color:rgba(255,255,255,.4)}
+.ci-box{width:28px;height:28px;border-radius:50%;border:3px solid rgba(255,255,255,.18);flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .15s;font-weight:900;font-size:14px;color:transparent}
+.check-item.done .ci-box{background:#10b981;border-color:#10b981;color:#0a0d14}
+.ci-sku{flex-shrink:0;font-family:'SF Mono',Menlo,monospace;font-size:18px;font-weight:900;color:#f3c9c4;min-width:46px;text-align:center;background:rgba(243,201,196,.1);padding:4px 8px;border-radius:8px;letter-spacing:.5px}
+.ci-name{flex:1;font-size:13px;color:#e4e8f1;line-height:1.4;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ci-qty{font-size:14px;color:#9ba9c1;font-weight:800;flex-shrink:0}
+.check-status{margin-top:12px;font-size:13px;color:#9ba9c1;text-align:center;padding:10px 14px;background:rgba(255,255,255,.04);border-radius:10px;font-weight:600;transition:all .2s}
+.check-status.ready{background:rgba(16,185,129,.14);color:#10b981;border:1px solid rgba(16,185,129,.3);font-weight:800;letter-spacing:.5px}
+.check-status.warn{background:rgba(245,158,11,.1);color:#f59e0b;font-weight:700}
+body.sc #stepsLight{display:none}
+
+/* Cancellation alert — fullscreen red overlay */
+#cancelOverlay{position:fixed;inset:0;background:rgba(35,5,10,.96);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);z-index:1000;align-items:center;justify-content:center;padding:24px;animation:cancelIn .3s ease}
+#cancelOverlay[style*="flex"]{display:flex!important}
+@keyframes cancelIn{from{opacity:0}to{opacity:1}}
+.cancel-box{max-width:520px;width:100%;text-align:center;animation:cancelPop .4s cubic-bezier(.175,.885,.32,1.275)}
+@keyframes cancelPop{from{transform:scale(.85)}to{transform:scale(1)}}
+.cancel-icon{font-size:120px;margin-bottom:14px;animation:cancelShake .5s ease}
+@keyframes cancelShake{0%,100%{transform:translateX(0)}25%{transform:translateX(-12px)}75%{transform:translateX(12px)}}
+.cancel-title{font-size:60px;font-weight:900;color:#f43f5e;letter-spacing:2px;margin-bottom:8px;text-shadow:0 4px 24px rgba(244,63,94,.5)}
+.cancel-sub{font-size:22px;color:#fda4af;margin-bottom:32px;font-weight:600}
+.cancel-buyer-row,.cancel-reason-row{font-size:18px;color:#e4e8f1;margin-bottom:10px}
+.cancel-buyer-row b,.cancel-reason-row b{color:#fff;font-weight:700}
+.cancel-ok{margin-top:36px;background:#fff;color:#1a0e0b;border:none;border-radius:14px;padding:18px 36px;font-size:16px;font-weight:800;cursor:pointer;font-family:inherit;letter-spacing:.5px;box-shadow:0 8px 28px rgba(255,255,255,.18)}
+.cancel-ok:hover{background:#fda4af;color:#1a0e0b}
+.cancel-ok:active{transform:scale(.97)}
 
 .d-icon{width:120px;height:120px;background:#065f46;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:60px;margin-bottom:24px;animation:pop .4s cubic-bezier(.175,.885,.32,1.275)}
 @keyframes pop{0%{transform:scale(0)}100%{transform:scale(1)}}
@@ -321,7 +363,28 @@ body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
 
 <div class="x" id="xr"><div class="r-icon">📦</div><div class="r-title">Scan Tracking Number</div><div class="r-sub">Scan the barcode to start recording</div><div class="inp-w"><input class="inp" id="mi" placeholder="Waiting for scan..." autocomplete="off"></div><div class="hint"><span class="pd"></span>Scanner ready</div><div class="ctr">Recorded: <b id="cn">0</b></div></div>
 
-<div class="x" id="xc"><div class="rp"><div class="rd"></div><div class="rl">RECORDING</div></div><div class="rk" id="rk"></div><div class="rm" id="rmm">00:00</div><div class="steps"><div class="step ok"><div class="si">✓</div><span>Scan tracking number</span></div><div class="step now"><div class="si">2</div><span>Pack the order in front of the camera</span></div><div class="step"><div class="si">3</div><span>Scan again to finish</span></div></div><input class="hinp" id="ri" autocomplete="off"></div>
+<div class="x" id="xc"><div class="rp"><div class="rd"></div><div class="rl">RECORDING</div></div><div class="rk" id="rk"></div><div class="rm" id="rmm">00:00</div>
+<div class="check-area" id="checkArea">
+  <div class="check-head">
+    <div class="check-buyer" id="checkBuyer">Looking up order…</div>
+    <div class="check-counter"><b id="checkDone">0</b> / <b id="checkTotal">?</b></div>
+  </div>
+  <div class="check-items" id="checkItems"></div>
+  <div class="check-status" id="checkStatus">Loading…</div>
+</div>
+<div class="steps" id="stepsLight"><div class="step ok"><div class="si">✓</div><span>Scan tracking number</span></div><div class="step now"><div class="si">2</div><span>Pack the order in front of the camera</span></div><div class="step"><div class="si">3</div><span>Scan again to finish</span></div></div><input class="hinp" id="ri" autocomplete="off"></div>
+
+<!-- Cancellation alert overlay - shows red full-screen when scanned shipment is cancelled -->
+<div id="cancelOverlay" style="display:none">
+  <div class="cancel-box">
+    <div class="cancel-icon">🚨</div>
+    <div class="cancel-title">DO NOT PACK</div>
+    <div class="cancel-sub">This order has been cancelled</div>
+    <div class="cancel-buyer-row">Buyer: <b id="cancelBuyer">—</b></div>
+    <div class="cancel-reason-row" id="cancelReasonRow">Reason: <b id="cancelReason">—</b></div>
+    <button class="cancel-ok" id="cancelOk">Got it — return to scan</button>
+  </div>
+</div>
 
 <div class="x" id="xu"><div class="us"></div><div class="ut">Saving recording...</div><div class="uu">Please wait</div></div>
 
@@ -343,7 +406,84 @@ document.addEventListener('click',function(){if(st==='r')mi.focus();if(st==='c')
 setInterval(function(){if(st==='r'&&document.activeElement!==mi)mi.focus();if(st==='c'&&document.activeElement!==ri)ri.focus()},400);
 function initCam(){navigator.mediaDevices.getUserMedia({video:{width:{ideal:854},height:{ideal:480},frameRate:{ideal:15,max:24}},audio:false}).then(function(s){sm=s;document.getElementById('pv').srcObject=s;document.getElementById('cm').className='cam ok'}).catch(function(){document.getElementById('cm').className='cam err'})}
 initCam();
-function startRec(t){if(!sm){alert('No camera');return}ct=t;ch=[];mr=new MediaRecorder(sm,{mimeType:'video/webm;codecs=vp8',videoBitsPerSecond:500000});mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};mr.start(1000);t0=Date.now();startTmr();document.getElementById('rk').textContent=t;go('c')}
+function startRec(t){if(!sm){alert('No camera');return}ct=t;ch=[];mr=new MediaRecorder(sm,{mimeType:'video/webm;codecs=vp8',videoBitsPerSecond:500000});mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};mr.start(1000);t0=Date.now();startTmr();document.getElementById('rk').textContent=t;go('c');loadChecklist(t)}
+
+// Fetch the items expected in this shipment and render an item checklist on the
+// recording screen. Worker taps each one as it goes in the box. If the shipment
+// is marked cancelled, show a big red overlay and abort the recording.
+function loadChecklist(tracking){
+    document.getElementById('checkBuyer').textContent='Looking up order…';
+    document.getElementById('checkItems').innerHTML='';
+    document.getElementById('checkDone').textContent='0';
+    document.getElementById('checkTotal').textContent='?';
+    var st=document.getElementById('checkStatus');
+    st.textContent='Loading order info…';st.className='check-status';
+    fetch('/api/shipment/'+encodeURIComponent(tracking)).then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){
+            document.getElementById('checkBuyer').textContent='Order not found in system';
+            st.textContent='⚠️ Not in current imports — record anyway, but verify manually';
+            st.className='check-status warn';
+            return;
+        }
+        var s=d.shipment, items=d.items||[];
+        if(s.status==='cancelled'){
+            showCancelAlert(s.buyer_name||s.buyer_username||'(unknown)', s.flag_reason||'Order was cancelled');
+            return;
+        }
+        document.getElementById('checkBuyer').textContent=s.buyer_name||s.buyer_username||'Customer';
+        document.getElementById('checkTotal').textContent=items.length;
+        var packedFlags={};
+        var list=document.getElementById('checkItems');
+        list.innerHTML=items.map(function(it,i){
+            var name=(it.product_name||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            return '<div class="check-item" data-i="'+i+'">'+
+                '<div class="ci-box"></div>'+
+                '<div class="ci-sku">'+(it.sku||'?')+'</div>'+
+                '<div class="ci-name">'+name+'</div>'+
+                '<div class="ci-qty">×'+(it.quantity||1)+'</div>'+
+            '</div>';
+        }).join('');
+        list.querySelectorAll('.check-item').forEach(function(el){
+            el.addEventListener('click',function(){
+                el.classList.toggle('done');
+                packedFlags[el.dataset.i]=el.classList.contains('done');
+                var doneN=0;for(var k in packedFlags)if(packedFlags[k])doneN++;
+                document.getElementById('checkDone').textContent=doneN;
+                if(doneN===items.length&&items.length>0){
+                    st.textContent='✓ All items packed — scan again to finish';
+                    st.className='check-status ready';
+                } else {
+                    st.textContent='Pack each item, tap when it goes in the box';
+                    st.className='check-status';
+                }
+            });
+        });
+        if(items.length>0){
+            st.textContent='Pack each item, tap when it goes in the box';
+            st.className='check-status';
+        } else {
+            st.textContent='No items registered — record anyway';
+            st.className='check-status warn';
+        }
+    }).catch(function(){
+        document.getElementById('checkBuyer').textContent='—';
+        st.textContent='⚠️ Lookup failed — record anyway';
+        st.className='check-status warn';
+    });
+}
+
+function showCancelAlert(buyer,reason){
+    document.getElementById('cancelBuyer').textContent=buyer;
+    document.getElementById('cancelReason').textContent=reason;
+    document.getElementById('cancelOverlay').style.display='flex';
+    // Stop the recording immediately — we will NOT save this
+    if(mr&&mr.state==='recording'){try{mr.stop()}catch(e){}}
+    stopTmr();
+}
+document.getElementById('cancelOk').addEventListener('click',function(){
+    document.getElementById('cancelOverlay').style.display='none';
+    go('r');
+});
 function stopRec(){return new Promise(function(res){mr.onstop=res;mr.stop()})}
 function capPhoto(){var v=document.getElementById('pv'),c=document.createElement('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);return new Promise(function(res){c.toBlob(res,'image/jpeg',.7)})}
 function upload(){go('u');var dur=Math.round((Date.now()-t0)/1000);var vb=new Blob(ch,{type:'video/webm'});
@@ -378,7 +518,7 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 .sb{display:flex;gap:10px}
 .sb input{flex:1;background:rgba(21,25,33,.8);border:2px solid rgba(255,255,255,.06);border-radius:14px;padding:16px 20px;font-size:18px;color:#e4e8f1;font-family:inherit;outline:none;transition:all .2s}
 .sb input:focus{border-color:#4f46e5;box-shadow:0 0 0 3px rgba(79,70,229,.1)}
-.sb input::placeholder{color:#3a4252}
+.sb input::placeholder{color:#6b7a90}
 .sb button{background:linear-gradient(135deg,#4f46e5,#7c3aed);border:none;border-radius:14px;padding:16px 28px;font-size:16px;font-weight:700;color:white;cursor:pointer;font-family:inherit;box-shadow:0 4px 16px rgba(79,70,229,.25);transition:all .15s}
 .sb button:hover{transform:translateY(-1px)}
 
@@ -528,7 +668,7 @@ tr:hover td{background:rgba(79,70,229,.03)}
 @media(max-width:500px){.add-form{grid-template-columns:1fr}}
 .add-form input,.add-form select{background:rgba(11,14,20,.8);border:1.5px solid rgba(255,255,255,.06);border-radius:10px;padding:12px 14px;color:#e4e8f1;font-size:14px;font-family:inherit;outline:none;transition:all .2s}
 .add-form input:focus,.add-form select:focus{border-color:#4f46e5}
-.add-form input::placeholder{color:#3a4252}
+.add-form input::placeholder{color:#6b7a90}
 .add-form select{cursor:pointer}
 .add-btn{grid-column:1/-1;background:linear-gradient(135deg,#10b981,#059669);border:none;border-radius:10px;padding:13px;color:white;font-weight:700;cursor:pointer;font-family:inherit;font-size:14px;margin-top:4px;transition:all .15s}
 .add-btn:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(16,185,129,.25)}
@@ -786,7 +926,7 @@ body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-heigh
 .card-m .pl{padding:2px 8px;border-radius:50px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;font-size:10px}
 .pl.tt{background:rgba(244,63,94,.15);color:#fb7185}
 .pl.wn{background:rgba(245,158,11,.15);color:#fbbf24}
-.empty{text-align:center;color:#3a4252;font-size:13px;padding:30px 10px;font-style:italic}
+.empty{text-align:center;color:#6b7a90;font-size:13px;padding:30px 10px;font-style:italic}
 .toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:white;padding:14px 22px;border-radius:10px;font-weight:600;box-shadow:0 10px 40px rgba(16,185,129,.4);z-index:100;display:none;animation:slideIn .3s}
 .toast.err{background:#f43f5e;box-shadow:0 10px 40px rgba(244,63,94,.4)}
 @keyframes slideIn{from{transform:translateX(120%)}to{transform:translateX(0)}}
@@ -1744,10 +1884,28 @@ __NAVBAR__
       <div class="section-sub">Tools for daily warehouse work</div>
     </div>
     <div class="card-grid">
+      <a href="/admin/shipments" class="card">
+        <div class="card-icon">📦</div>
+        <div class="card-title">Shipments · Import CSV</div>
+        <div class="card-desc">Import TikTok or Whatnot CSV exports. See all packages with weights, items, and status.</div>
+        <div class="card-meta"><span>Open shipments</span><span class="arrow">→</span></div>
+      </a>
       <a href="/dashboard" class="card">
         <div class="card-icon">🔍</div>
         <div class="card-title">Search Recordings</div>
         <div class="card-desc">Look up packing videos by tracking number</div>
+        <div class="card-meta"><span>Open search</span><span class="arrow">→</span></div>
+      </a>
+      <a href="/admin/sku-lookup" class="card">
+        <div class="card-icon">🔢</div>
+        <div class="card-title">SKU Reconciliation</div>
+        <div class="card-desc">End-of-show tool: type a leftover sticker number and find where it was supposed to go.</div>
+        <div class="card-meta"><span>Find SKU</span><span class="arrow">→</span></div>
+      </a>
+      <a href="/customers" class="card">
+        <div class="card-icon">🔎</div>
+        <div class="card-title">Customer Lookup</div>
+        <div class="card-desc">Search any buyer by name or username. See their order history and recordings.</div>
         <div class="card-meta"><span>Open search</span><span class="arrow">→</span></div>
       </a>
       <a href="/giveaway" class="card">
@@ -2649,5 +2807,667 @@ if(openBtn){
 }
 
 load();
+</script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# WEIGHT VERIFICATION — Admin shipments management
+# ══════════════════════════════════════════════════════════
+
+SHIPMENTS_ADMIN_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Shipments — 5 SEC Admin</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1300px;margin:0 auto;padding:40px 28px 0}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:28px;flex-wrap:wrap}
+.page-title{font-size:32px;font-weight:900;color:#fff;letter-spacing:-.5px;line-height:1.05}
+.page-sub{color:var(--text-muted);margin-top:6px;font-size:14px}
+.import-btn-group{display:flex;gap:10px;flex-wrap:wrap}
+.import-btn{background:var(--brand);color:#1a0e0b;border:none;border-radius:12px;padding:12px 18px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;transition:all .15s;display:inline-flex;align-items:center;gap:8px;box-shadow:0 6px 22px rgba(243,201,196,.12);white-space:nowrap}
+.import-btn:hover{background:var(--brand-strong);transform:translateY(-1px)}
+.import-btn-alt{background:rgba(99,102,241,.15);color:#a5b4fc;box-shadow:none;border:1px solid rgba(99,102,241,.3)}
+.import-btn-alt:hover{background:rgba(99,102,241,.25);color:#c7d2fe}
+.import-btn-warn{background:rgba(244,63,94,.12);color:#fb7185;box-shadow:none;border:1px solid rgba(244,63,94,.28)}
+.import-btn-warn:hover{background:rgba(244,63,94,.2);color:#fda4af}
+
+/* Stat tiles */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:28px}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 22px}
+.stat .lbl{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px;font-weight:700}
+.stat .val{font-size:30px;font-weight:900;color:#fff;line-height:1;margin-top:8px}
+.stat .sub{font-size:12px;color:var(--text-muted);margin-top:6px}
+.stat.warn .val{color:#fbbf24}
+.stat.good .val{color:#34d399}
+.stat.bad .val{color:#fb7185}
+
+/* Table */
+.section-title{font-size:13px;font-weight:800;color:var(--text-dim);text-transform:uppercase;letter-spacing:2px;display:flex;align-items:center;gap:10px;margin:32px 0 14px}
+.section-title .dot{width:8px;height:8px;border-radius:50%;background:var(--brand)}
+.tbl-wrap{background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{text-align:left;padding:12px 16px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px;font-weight:700;background:rgba(255,255,255,.02);border-bottom:1px solid var(--border);position:sticky;top:0}
+.tbl td{padding:12px 16px;color:var(--text);border-bottom:1px solid rgba(255,255,255,.04)}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr.row{cursor:pointer;transition:background .12s}
+.tbl tr.row:hover{background:rgba(255,255,255,.03)}
+.tbl tr.detail td{padding:0;background:rgba(255,255,255,.015)}
+.detail-inner{padding:16px 22px}
+.detail-inner h4{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;font-weight:700}
+.detail-table{width:100%;font-size:12px}
+.detail-table td{padding:6px 0;border:none;color:var(--text-muted)}
+.detail-table td.lbl{color:var(--text-dim);text-transform:uppercase;font-size:10px;letter-spacing:.5px;font-weight:700;width:140px;vertical-align:top}
+.items-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:6px;margin-top:8px}
+.item-pill{background:rgba(255,255,255,.04);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--text);display:flex;justify-content:space-between;gap:8px}
+.item-pill .qty{color:var(--brand);font-weight:700}
+.item-pill.no-weight{border-left:3px solid #fbbf24}
+.mono{font-family:'SF Mono',Menlo,monospace;font-size:12px}
+.col-tracking{color:var(--brand);font-weight:700}
+.col-id{font-family:'SF Mono',Menlo,monospace;color:var(--text-muted)}
+.weight-cell{font-weight:700}
+.weight-cell.unknown{color:var(--text-dim);font-weight:500}
+.weight-cell.ok{color:#34d399}
+.weight-cell.flag{color:#fb7185}
+.status-pill{font-size:10px;padding:3px 9px;border-radius:6px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;white-space:nowrap}
+.st-pending{background:rgba(148,163,184,.12);color:#94a3b8}
+.st-packed{background:rgba(16,185,129,.14);color:#34d399}
+.st-weight_flagged{background:rgba(244,63,94,.14);color:#fb7185}
+.st-shipped{background:rgba(99,102,241,.14);color:#a5b4fc}
+
+.empty{text-align:center;padding:80px 20px;color:var(--text-dim)}
+.empty-icon{font-size:56px;margin-bottom:14px;opacity:.5}
+
+/* Modal */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(8px);z-index:200;display:none;align-items:center;justify-content:center;padding:20px}
+.modal-bg.show{display:flex}
+.modal{background:#12161f;border:1px solid var(--border);border-radius:20px;padding:32px;max-width:600px;width:100%}
+.modal h3{font-size:22px;font-weight:800;color:#fff;margin-bottom:6px}
+.modal-sub{color:var(--text-muted);font-size:13px;margin-bottom:24px;line-height:1.5}
+.fld{margin-bottom:14px}
+.fld label{display:block;font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:7px;text-transform:uppercase;letter-spacing:.6px}
+.fld input[type="file"]{width:100%;color:var(--text-muted);font-size:13px;padding:12px;background:rgba(11,14,20,.7);border:2px dashed var(--border);border-radius:12px;cursor:pointer;font-family:inherit}
+.fld input[type="file"]::file-selector-button{background:var(--brand);color:#1a0e0b;border:none;border-radius:8px;padding:7px 14px;margin-right:10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}
+.btn-cancel{background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:10px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+.btn-cancel:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.btn-submit{background:var(--brand);color:#1a0e0b;border:none;border-radius:10px;padding:10px 22px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit}
+.btn-submit:hover{background:var(--brand-strong)}
+.btn-submit:disabled{opacity:.5;cursor:not-allowed}
+.modal-result{margin-top:18px;padding:14px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.22);border-radius:10px;color:#34d399;font-size:13px;line-height:1.6;display:none}
+.modal-result.show{display:block}
+.modal-result.err{background:rgba(244,63,94,.08);border-color:rgba(244,63,94,.22);color:#fb7185}
+.modal-result b{color:#fff}
+</style>
+</head><body data-role="__ROLE__">
+__NAVBAR__
+<div class="wrap">
+  <div class="page-head">
+    <div>
+      <div class="page-title">📦 Shipments</div>
+      <div class="page-sub">Imported from TikTok and Whatnot · weight verification per package</div>
+    </div>
+    <div class="import-btn-group">
+      <button class="import-btn" data-kind="tiktok_orders">＋ TikTok Orders</button>
+      <button class="import-btn import-btn-warn" data-kind="tiktok_cancel">＋ TikTok Cancellations</button>
+      <button class="import-btn import-btn-alt" data-kind="whatnot">＋ Whatnot</button>
+    </div>
+  </div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="section-title"><span class="dot"></span>Recent shipments</div>
+  <div id="listWrap"></div>
+</div>
+
+<!-- Import modal -->
+<div class="modal-bg" id="modal">
+  <div class="modal">
+    <h3 id="modalTitle">Import CSV</h3>
+    <div class="modal-sub" id="modalSub">Pick a CSV file from your platform.</div>
+    <div class="fld">
+      <label id="modalLabel">CSV file</label>
+      <input type="file" id="csvFile" accept=".csv">
+    </div>
+    <div class="modal-result" id="modalResult"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="cancelImport">Cancel</button>
+      <button class="btn-submit" id="doImport">Import</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function fmt(n){return n==null?'—':(typeof n==='number'?n.toLocaleString():n)}
+function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function fmtWeight(g){if(g==null||g===0)return '—';return g.toFixed(1)+'g'}
+function fmtDate(s){if(!s)return '—';try{return new Date(s).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'2-digit'})}catch(e){return s.slice(0,10)}}
+
+function loadShipments(){
+  fetch('/api/shipments/recent?limit=200').then(function(r){return r.json()}).then(function(rows){
+    // Stats
+    var total=rows.length;
+    var withWeight=rows.filter(function(s){return s.expected_weight_g>0}).length;
+    var missing=rows.filter(function(s){return s.missing_weights>0}).length;
+    var withTracking=rows.filter(function(s){return s.tracking_code}).length;
+    var packed=rows.filter(function(s){return s.status==='packed'||s.status==='shipped'}).length;
+    document.getElementById('stats').innerHTML=
+      '<div class="stat"><div class="lbl">Total</div><div class="val">'+total+'</div><div class="sub">shipments imported</div></div>'+
+      '<div class="stat '+(withWeight===total?'good':'warn')+'"><div class="lbl">With expected weight</div><div class="val">'+withWeight+'</div><div class="sub">'+(total?Math.round(100*withWeight/total):0)+'% of total</div></div>'+
+      '<div class="stat '+(missing===0?'good':'warn')+'"><div class="lbl">Missing weight data</div><div class="val">'+missing+'</div><div class="sub">need SKU weight set</div></div>'+
+      '<div class="stat"><div class="lbl">With tracking</div><div class="val">'+withTracking+'</div><div class="sub">label generated</div></div>'+
+      '<div class="stat good"><div class="lbl">Packed</div><div class="val">'+packed+'</div><div class="sub">already weighed</div></div>';
+
+    // Table
+    if(rows.length===0){
+      document.getElementById('listWrap').innerHTML='<div class="empty"><div class="empty-icon">📦</div>No shipments imported yet. Click "＋ Import Whatnot CSV" to start.</div>';
+      return;
+    }
+    var html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Shipment</th><th>Buyer</th><th>Items</th><th>Tracking</th><th>Expected</th><th>Actual</th><th>Status</th><th>Show date</th></tr></thead><tbody>';
+    rows.forEach(function(s,i){
+      var weightCls='unknown';
+      if(s.expected_weight_g>0)weightCls=s.missing_weights>0?'unknown':'ok';
+      var trk=s.tracking_code?'<span class="col-tracking">'+escapeHtml(s.tracking_code)+'</span>':'<span class="col-id" style="opacity:.5">—</span>';
+      html+='<tr class="row" data-i="'+i+'">'+
+        '<td class="col-id">'+escapeHtml(s.shipment_id)+'</td>'+
+        '<td>'+escapeHtml(s.buyer_name||s.buyer_username||'?')+'</td>'+
+        '<td>'+s.total_items+'</td>'+
+        '<td>'+trk+'</td>'+
+        '<td class="weight-cell '+weightCls+'">'+fmtWeight(s.expected_weight_g)+(s.missing_weights>0?' <span style="font-size:10px;opacity:.7">('+s.missing_weights+' missing)</span>':'')+'</td>'+
+        '<td class="weight-cell">'+fmtWeight(s.actual_weight_g)+'</td>'+
+        '<td><span class="status-pill st-'+s.status+'">'+s.status.replace('_',' ')+'</span></td>'+
+        '<td style="color:var(--text-dim)">'+fmtDate(s.show_date||s.imported_at)+'</td>'+
+      '</tr>'+
+      '<tr class="detail" data-detail="'+i+'" style="display:none"><td colspan="8"><div class="detail-inner" id="detail-'+i+'">Loading…</div></td></tr>';
+    });
+    html+='</tbody></table></div>';
+    document.getElementById('listWrap').innerHTML=html;
+    document.querySelectorAll('tr.row').forEach(function(tr){
+      tr.addEventListener('click',function(){
+        var i=tr.dataset.i;
+        var detail=document.querySelector('tr.detail[data-detail="'+i+'"]');
+        if(detail.style.display==='table-row'){detail.style.display='none';return}
+        detail.style.display='table-row';
+        var s=rows[i];
+        if(detail.dataset.loaded){return}
+        fetch('/api/shipment/'+encodeURIComponent(s.shipment_id)).then(function(r){return r.json()}).then(function(d){
+          if(!d.ok){document.getElementById('detail-'+i).innerHTML='<div style="color:#fb7185">Failed: '+(d.error||'?')+'</div>';return}
+          var box=document.getElementById('detail-'+i);
+          var addr=d.shipment.address_full||'';
+          var itemsHtml=d.items.map(function(it){
+            return '<div class="item-pill'+(it.item_weight_g==null?' no-weight':'')+'"><span>'+escapeHtml(it.product_name||it.sku||'?')+'</span><span class="qty">×'+it.quantity+(it.item_weight_g!=null?' · '+it.item_weight_g+'g':' · ?')+'</span></div>';
+          }).join('');
+          box.innerHTML=
+            '<h4>Address</h4><div style="color:var(--text);margin-bottom:14px">'+escapeHtml(addr)+'</div>'+
+            '<h4>Items ('+d.items.length+')</h4><div class="items-grid">'+itemsHtml+'</div>';
+          detail.dataset.loaded='1';
+        });
+      });
+    });
+  });
+}
+
+// Import modal — three entry points (TikTok orders / TikTok cancellations / Whatnot)
+// share a single modal but with context-appropriate copy.
+var modal=document.getElementById('modal');
+var importContexts={
+  tiktok_orders: {
+    title:'Import TikTok Orders CSV',
+    sub:'Export "To Ship" orders from TikTok Seller Center → Orders → Export. The file has tracking codes, package IDs, and weight per label.',
+    label:'TikTok TO SHIP CSV'
+  },
+  tiktok_cancel: {
+    title:'Import TikTok Cancellations CSV',
+    sub:'Export cancelled / failed orders from TikTok Seller Center → Orders → Canceled tab → Export. These orders will be flagged so workers won\\'t pack them.',
+    label:'TikTok CANCELED CSV'
+  },
+  whatnot: {
+    title:'Import Whatnot Show CSV',
+    sub:'Export the show CSV from Whatnot Seller dashboard. One file per show contains both orders and any cancellations.',
+    label:'Whatnot CSV'
+  }
+};
+document.querySelectorAll('.import-btn[data-kind]').forEach(function(btn){
+  btn.addEventListener('click',function(){
+    var ctx=importContexts[btn.dataset.kind]||importContexts.tiktok_orders;
+    document.getElementById('modalTitle').textContent=ctx.title;
+    document.getElementById('modalSub').textContent=ctx.sub;
+    document.getElementById('modalLabel').textContent=ctx.label;
+    document.getElementById('csvFile').value='';
+    document.getElementById('modalResult').className='modal-result';
+    document.getElementById('modalResult').innerHTML='';
+    modal.classList.add('show');
+  });
+});
+document.getElementById('cancelImport').addEventListener('click',function(){modal.classList.remove('show')});
+modal.addEventListener('click',function(e){if(e.target===modal)modal.classList.remove('show')});
+
+document.getElementById('doImport').addEventListener('click',function(){
+  var f=document.getElementById('csvFile').files[0];
+  var res=document.getElementById('modalResult');
+  if(!f){res.className='modal-result err show';res.textContent='Pick a CSV file first';return}
+  var fd=new FormData();fd.append('file',f);
+  var btn=document.getElementById('doImport');btn.disabled=true;btn.textContent='Importing…';
+  fetch('/api/shipments/import',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+    btn.disabled=false;btn.textContent='Import';
+    if(d.ok){
+      res.className='modal-result show';
+      res.innerHTML='<b>✓ Import complete</b><br>'+
+        '<b>'+d.shipments_new+'</b> new shipments · <b>'+d.shipments_updated+'</b> updated<br>'+
+        '<b>'+d.items+'</b> items · <b>'+d.skipped_rows+'</b> rows skipped (cancelled/failed)<br>'+
+        '<b>'+d.unique_skus+'</b> unique products · <b>'+d.skus_missing_weight+'</b> still need weights set';
+      loadShipments();
+    } else {
+      res.className='modal-result err show';
+      res.innerHTML='<b>Import failed:</b> '+(d.error||'unknown error');
+    }
+  });
+});
+
+loadShipments();
+</script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# CUSTOMER SEARCH — CS lookup tool across all shipments
+# ══════════════════════════════════════════════════════════
+
+CUSTOMERS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Customers — 5 SEC</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1100px;margin:0 auto;padding:40px 28px 0}
+.page-head{margin-bottom:28px}
+.page-title{font-size:32px;font-weight:900;color:#fff;letter-spacing:-.5px;line-height:1.05}
+.page-sub{color:var(--text-muted);margin-top:6px;font-size:14px}
+
+/* Search */
+.search-box{position:relative;margin-bottom:22px}
+.search-box input{width:100%;background:var(--surface);border:2px solid var(--border);border-radius:14px;padding:18px 22px 18px 50px;font-size:17px;color:var(--text);font-family:inherit;outline:none;transition:all .2s}
+.search-box input:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(243,201,196,.1)}
+.search-box input::placeholder{color:#6b7a90}
+.search-box .icon{position:absolute;left:18px;top:50%;transform:translateY(-50%);font-size:20px;color:var(--text-muted)}
+.search-box .clear{position:absolute;right:18px;top:50%;transform:translateY(-50%);background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:18px;padding:4px 8px;display:none;font-family:inherit}
+.search-box .clear.show{display:block}
+
+/* Results list */
+.results-info{font-size:13px;color:var(--text-dim);margin-bottom:14px}
+.results{display:flex;flex-direction:column;gap:8px}
+.result{display:grid;grid-template-columns:48px 1fr auto;gap:14px;align-items:center;padding:14px 18px;background:var(--surface);border:1px solid var(--border);border-radius:12px;cursor:pointer;transition:all .12s}
+.result:hover{border-color:rgba(243,201,196,.22);background:rgba(255,255,255,.045)}
+.result.selected{border-color:var(--brand);background:rgba(243,201,196,.06)}
+.result-avatar{width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,var(--brand),var(--brand-strong));display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#1a0e0b;flex-shrink:0}
+.result-info{min-width:0}
+.result-name{font-size:15px;font-weight:700;color:#fff;display:flex;align-items:center;gap:8px}
+.result-username{font-size:12px;color:var(--text-dim);font-weight:500;font-family:'SF Mono',Menlo,monospace}
+.result-meta{font-size:12px;color:var(--text-muted);margin-top:4px;display:flex;gap:14px;flex-wrap:wrap}
+.result-stats{text-align:right;font-size:12px;color:var(--text-muted);font-weight:600;white-space:nowrap}
+.result-stats b{color:var(--brand);font-size:14px}
+
+/* Empty / loading */
+.empty{text-align:center;padding:80px 20px;color:var(--text-dim);background:var(--surface);border:1px dashed var(--border);border-radius:14px}
+.empty-icon{font-size:56px;margin-bottom:14px;opacity:.5}
+.empty-title{font-size:18px;font-weight:700;color:var(--text-muted);margin-bottom:6px}
+.empty-sub{font-size:14px}
+.loading{text-align:center;padding:40px;color:var(--text-dim);font-size:13px}
+
+/* Customer detail panel (slides in below search) */
+.detail{margin-top:24px;background:var(--surface);border:1px solid var(--border);border-radius:18px;overflow:hidden;display:none}
+.detail.show{display:block}
+.detail-head{padding:26px 28px;background:linear-gradient(135deg,rgba(243,201,196,.08),rgba(243,201,196,.01));border-bottom:1px solid var(--border);display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}
+.detail-avatar{width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,var(--brand),var(--brand-strong));display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:900;color:#1a0e0b;flex-shrink:0}
+.detail-meta{flex:1;min-width:240px}
+.detail-name{font-size:24px;font-weight:900;color:#fff;line-height:1.1;margin-bottom:4px}
+.detail-username{font-size:13px;color:var(--brand);font-family:'SF Mono',Menlo,monospace;margin-bottom:14px}
+.detail-stats{display:flex;gap:24px;flex-wrap:wrap}
+.dstat{font-size:12px;color:var(--text-muted)}
+.dstat b{display:block;color:#fff;font-size:20px;font-weight:800;line-height:1;margin-bottom:3px}
+
+.section-title{font-size:13px;font-weight:800;color:var(--text-dim);text-transform:uppercase;letter-spacing:2px;display:flex;align-items:center;gap:10px;padding:22px 28px 10px}
+.section-title .dot{width:8px;height:8px;border-radius:50%;background:var(--brand)}
+.section-title .count{font-size:11px;background:rgba(255,255,255,.06);padding:2px 8px;border-radius:6px;font-weight:700;color:var(--text-muted)}
+
+.addresses{padding:0 28px 18px}
+.addr-pill{display:inline-block;font-size:12px;color:var(--text-muted);background:rgba(255,255,255,.04);padding:6px 12px;border-radius:8px;margin-right:6px;margin-bottom:6px;line-height:1.4}
+
+.ships{padding:0 28px 20px;display:flex;flex-direction:column;gap:10px}
+.ship{padding:16px 18px;background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:12px}
+.ship-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:8px;flex-wrap:wrap}
+.ship-id{font-family:'SF Mono',Menlo,monospace;font-size:13px;color:var(--text-muted)}
+.ship-tracking{color:var(--brand);font-weight:700;font-size:13px;font-family:'SF Mono',Menlo,monospace}
+.ship-show-date{font-size:12px;color:var(--text-dim)}
+.ship-status{font-size:10px;padding:3px 9px;border-radius:6px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;display:inline-block}
+.st-pending{background:rgba(148,163,184,.12);color:#94a3b8}
+.st-packed{background:rgba(16,185,129,.14);color:#34d399}
+.st-shipped{background:rgba(99,102,241,.14);color:#a5b4fc}
+.ship-items{font-size:12px;color:var(--text-muted);margin-top:6px;line-height:1.5}
+.ship-items .item{display:inline-block;background:rgba(255,255,255,.04);padding:3px 9px;border-radius:6px;margin:3px 4px 0 0;font-size:11px}
+.ship-rec{margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.04);font-size:12px;color:var(--text-muted);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.ship-rec a{color:var(--brand);text-decoration:none;font-weight:700}
+.ship-rec a:hover{text-decoration:underline}
+</style>
+</head><body data-role="__ROLE__">
+__NAVBAR__
+<div class="wrap">
+  <div class="page-head">
+    <div class="page-title">🔎 Customer search</div>
+    <div class="page-sub">Look up any buyer — see their shipments, addresses, items, and packing recordings</div>
+  </div>
+
+  <div class="search-box">
+    <span class="icon">🔍</span>
+    <input type="text" id="q" placeholder="Search by username or name (type at least 2 letters)" autocomplete="off" autofocus>
+    <button class="clear" id="clearBtn">✕</button>
+  </div>
+
+  <div id="info" class="results-info" style="display:none"></div>
+  <div id="results" class="results"></div>
+  <div id="detail" class="detail"></div>
+</div>
+
+<script>
+var resultsEl=document.getElementById('results'),infoEl=document.getElementById('info'),detailEl=document.getElementById('detail');
+var qEl=document.getElementById('q'),clearBtn=document.getElementById('clearBtn');
+var debounceTimer=null;
+
+function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function initial(s){return (s||'?').charAt(0).toUpperCase()}
+function fmtDate(s){if(!s)return '';try{return new Date(s).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}catch(e){return s.slice(0,10)}}
+
+function showEmpty(title,sub){
+  resultsEl.innerHTML='<div class="empty"><div class="empty-icon">🔍</div><div class="empty-title">'+title+'</div><div class="empty-sub">'+sub+'</div></div>';
+}
+
+function search(q){
+  if(q.length<2){
+    resultsEl.innerHTML='';infoEl.style.display='none';detailEl.classList.remove('show');
+    if(q.length===0)showEmpty('Start typing to search','Type a username or partial name above');
+    return;
+  }
+  resultsEl.innerHTML='<div class="loading">Searching…</div>';
+  fetch('/api/customers/search?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(rows){
+    if(!rows||rows.length===0){
+      showEmpty('No matches','Try a different spelling or shorter search');
+      infoEl.style.display='none';return;
+    }
+    infoEl.textContent='Found '+rows.length+' '+(rows.length===1?'customer':'customers');
+    infoEl.style.display='block';
+    resultsEl.innerHTML=rows.map(function(r){
+      return '<div class="result" data-u="'+escapeHtml(r.buyer_username)+'">'+
+        '<div class="result-avatar">'+initial(r.buyer_name||r.buyer_username)+'</div>'+
+        '<div class="result-info">'+
+          '<div class="result-name">'+escapeHtml(r.buyer_name||'(no name)')+
+            ' <span class="result-username">@'+escapeHtml(r.buyer_username)+'</span></div>'+
+          '<div class="result-meta">'+
+            '<span>📍 '+escapeHtml((r.last_address||'').split(',').slice(1,3).join(',').trim()||'no address')+'</span>'+
+            (r.last_show?'<span>🕒 last '+fmtDate(r.last_show)+'</span>':'')+
+          '</div>'+
+        '</div>'+
+        '<div class="result-stats"><b>'+r.shipments+'</b> '+(r.shipments===1?'shipment':'shipments')+'<br>'+r.total_items+' items</div>'+
+      '</div>';
+    }).join('');
+    resultsEl.querySelectorAll('.result').forEach(function(el){
+      el.addEventListener('click',function(){
+        resultsEl.querySelectorAll('.result').forEach(function(x){x.classList.remove('selected')});
+        el.classList.add('selected');
+        loadDetail(el.dataset.u);
+      });
+    });
+    // Auto-load detail if exactly one result
+    if(rows.length===1){
+      resultsEl.querySelector('.result').classList.add('selected');
+      loadDetail(rows[0].buyer_username);
+    }
+  });
+}
+
+function loadDetail(username){
+  detailEl.classList.add('show');
+  detailEl.innerHTML='<div class="loading">Loading customer profile…</div>';
+  fetch('/api/customers/'+encodeURIComponent(username)).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){detailEl.innerHTML='<div class="empty">Could not load customer: '+(d.error||'?')+'</div>';return}
+    var html=
+      '<div class="detail-head">'+
+        '<div class="detail-avatar">'+initial(d.buyer_name||d.username)+'</div>'+
+        '<div class="detail-meta">'+
+          '<div class="detail-name">'+escapeHtml(d.buyer_name||'(no name)')+'</div>'+
+          '<div class="detail-username">@'+escapeHtml(d.username)+'</div>'+
+          '<div class="detail-stats">'+
+            '<div class="dstat"><b>'+d.shipments_total+'</b>Shipments</div>'+
+            '<div class="dstat"><b>'+d.items_total+'</b>Items total</div>'+
+            '<div class="dstat"><b>'+d.shows_count+'</b>Shows attended</div>'+
+            '<div class="dstat"><b>'+d.recordings.length+'</b>Recordings</div>'+
+          '</div>'+
+        '</div>'+
+      '</div>';
+    if(d.addresses && d.addresses.length){
+      html+='<div class="section-title"><span class="dot"></span>Shipping addresses <span class="count">'+d.addresses.length+'</span></div>';
+      html+='<div class="addresses">'+d.addresses.map(function(a){return '<span class="addr-pill">📍 '+escapeHtml(a)+'</span>'}).join('')+'</div>';
+    }
+    html+='<div class="section-title"><span class="dot"></span>Shipments <span class="count">'+d.shipments.length+'</span></div><div class="ships">';
+    if(d.shipments.length===0){
+      html+='<div class="empty">No shipments yet</div>';
+    } else {
+      html+=d.shipments.map(function(s){
+        var rec=d.recordings.filter(function(r){return r.tracking===s.shipment_id||r.tracking===s.tracking_code});
+        var itemsHtml=(s.items||[]).map(function(it){return '<span class="item">'+escapeHtml(it.product_name||it.sku||'?')+' ×'+it.quantity+'</span>'}).join('');
+        var recHtml='';
+        if(rec.length>0){
+          recHtml='<div class="ship-rec">🎥 Packed by <b style="color:var(--text-muted)">'+escapeHtml(rec[0].worker)+'</b> on '+rec[0].date+' '+rec[0].time+' · '+rec[0].duration+'s'+
+            (rec[0].video_file?' · <a href="/media/video/'+encodeURIComponent(rec[0].video_file)+'" target="_blank">Watch video</a>':'')+
+            (rec[0].photo_file?' · <a href="/media/photo/'+encodeURIComponent(rec[0].photo_file)+'" target="_blank">Photo</a>':'')+
+            '</div>';
+        }
+        return '<div class="ship">'+
+          '<div class="ship-head">'+
+            '<div><span class="ship-id">'+escapeHtml(s.shipment_id)+'</span>'+
+              (s.tracking_code?' · <span class="ship-tracking">'+escapeHtml(s.tracking_code)+'</span>':'')+
+            '</div>'+
+            '<div><span class="ship-status st-'+s.status+'">'+s.status.replace('_',' ')+'</span> '+
+              '<span class="ship-show-date">'+fmtDate(s.show_date)+'</span></div>'+
+          '</div>'+
+          '<div class="ship-items"><b style="color:var(--text-muted)">'+s.total_items+' items</b> · '+itemsHtml+'</div>'+
+          recHtml+
+        '</div>';
+      }).join('');
+    }
+    html+='</div>';
+    detailEl.innerHTML=html;
+  });
+}
+
+qEl.addEventListener('input',function(){
+  clearBtn.classList.toggle('show', qEl.value.length>0);
+  clearTimeout(debounceTimer);
+  debounceTimer=setTimeout(function(){search(qEl.value.trim())},250);
+});
+clearBtn.addEventListener('click',function(){qEl.value='';clearBtn.classList.remove('show');qEl.focus();search('')});
+showEmpty('Start typing to search','Type a username or partial name above');
+</script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# SKU RECONCILIATION — end-of-show leftover item finder
+# ══════════════════════════════════════════════════════════
+
+SKU_LOOKUP_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>SKU Lookup — 5 SEC</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1100px;margin:0 auto;padding:40px 28px 0}
+.page-head{margin-bottom:28px}
+.page-title{font-size:32px;font-weight:900;color:#fff;letter-spacing:-.5px;line-height:1.05}
+.page-sub{color:var(--text-muted);margin-top:6px;font-size:14px}
+
+/* Big sticky search */
+.search-row{display:grid;grid-template-columns:1fr 240px;gap:14px;margin-bottom:26px}
+@media(max-width:640px){.search-row{grid-template-columns:1fr}}
+.sku-input-wrap{position:relative}
+.sku-input{width:100%;background:var(--surface);border:2px solid var(--border);border-radius:14px;padding:24px 28px 24px 60px;font-size:36px;font-weight:900;color:var(--brand);font-family:'SF Mono',Menlo,monospace;outline:none;transition:all .2s;letter-spacing:2px;text-align:center;font-variant-numeric:tabular-nums}
+.sku-input:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(243,201,196,.12)}
+.sku-input::placeholder{color:var(--text-dim);font-weight:600;letter-spacing:.5px;font-size:18px;font-family:'DM Sans',sans-serif}
+.sku-icon{position:absolute;left:20px;top:50%;transform:translateY(-50%);font-size:22px;color:var(--text-muted)}
+.batch-select{background:var(--surface);border:2px solid var(--border);border-radius:14px;padding:0 18px;color:var(--text);font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;outline:none;transition:border .15s}
+.batch-select:focus{border-color:var(--brand)}
+
+/* Results */
+.results-info{font-size:13px;color:var(--text-dim);margin-bottom:14px;display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.results-info b{color:var(--brand);font-weight:700}
+
+.match{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 22px;margin-bottom:10px;display:grid;grid-template-columns:auto 1fr auto;gap:18px;align-items:center}
+.match.packed{border-left:3px solid #34d399}
+.match.pending{border-left:3px solid #fbbf24}
+.match.cancelled{border-left:3px solid #fb7185;background:rgba(244,63,94,.04)}
+
+.match-status{font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;padding:5px 12px;border-radius:8px;white-space:nowrap;min-width:90px;text-align:center}
+.match-status.pending{background:rgba(251,191,36,.16);color:#fbbf24}
+.match-status.packed{background:rgba(16,185,129,.14);color:#34d399}
+.match-status.shipped{background:rgba(99,102,241,.14);color:#a5b4fc}
+.match-status.cancelled{background:rgba(244,63,94,.16);color:#fb7185}
+
+.match-info{min-width:0}
+.match-name{font-size:15px;font-weight:700;color:#fff;margin-bottom:4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.match-product{font-size:13px;color:var(--text-muted);margin-bottom:4px}
+.match-meta{font-size:12px;color:var(--text-dim);display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.match-meta .label{color:var(--text-muted);font-weight:600}
+.match-meta .id{font-family:'SF Mono',Menlo,monospace;font-size:11px}
+.match-cancel{margin-top:6px;font-size:12px;color:#fb7185;font-weight:600}
+
+.match-action{text-align:right;min-width:130px}
+.action-pill{font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;padding:6px 12px;border-radius:8px;display:inline-block}
+.action-pill.go{background:rgba(243,201,196,.12);color:var(--brand)}
+.action-pill.keep{background:rgba(148,163,184,.12);color:#94a3b8}
+.action-pill.done{background:rgba(16,185,129,.1);color:#34d399}
+.match-tracking{font-size:11px;font-family:'SF Mono',Menlo,monospace;color:var(--brand);margin-top:4px;font-weight:700}
+
+.empty{text-align:center;padding:80px 20px;color:var(--text-dim);background:var(--surface);border:1px dashed var(--border);border-radius:14px}
+.empty-icon{font-size:64px;margin-bottom:14px;opacity:.5}
+.empty-title{font-size:18px;font-weight:700;color:var(--text-muted);margin-bottom:6px}
+.empty-sub{font-size:14px}
+
+/* Summary tiles when there's data */
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:18px}
+.sum{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 16px;text-align:center}
+.sum .val{font-size:24px;font-weight:900;color:#fff;line-height:1}
+.sum .lbl{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin-top:6px}
+.sum.warn .val{color:#fbbf24}
+.sum.good .val{color:#34d399}
+.sum.bad .val{color:#fb7185}
+</style>
+</head><body data-role="__ROLE__">
+__NAVBAR__
+<div class="wrap">
+  <div class="page-head">
+    <div class="page-title">🔢 SKU Reconciliation</div>
+    <div class="page-sub">Type a sticker number to find where it went. Use at the end of packing to track down leftover items on the tables.</div>
+  </div>
+
+  <div class="search-row">
+    <div class="sku-input-wrap">
+      <span class="sku-icon">🏷️</span>
+      <input type="text" id="sku" class="sku-input" placeholder="Type sticker number…" inputmode="numeric" autofocus autocomplete="off">
+    </div>
+    <select class="batch-select" id="batch"><option value="">All shows / batches</option></select>
+  </div>
+
+  <div id="resultsArea"></div>
+</div>
+
+<script>
+function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function fmtDate(s){if(!s)return '';try{return new Date(s).toLocaleDateString(undefined,{month:'short',day:'numeric'})}catch(e){return s.slice(0,10)}}
+
+// Load batches
+fetch('/api/sku-lookup/batches').then(function(r){return r.json()}).then(function(batches){
+  var sel=document.getElementById('batch');
+  batches.forEach(function(b){
+    var opt=document.createElement('option');
+    opt.value=b.import_batch;
+    opt.textContent=(b.label||b.import_batch)+' · '+b.shipments+' shipments';
+    sel.appendChild(opt);
+  });
+});
+
+var debounce=null;
+function doSearch(){
+  var sku=document.getElementById('sku').value.trim();
+  var batch=document.getElementById('batch').value;
+  var area=document.getElementById('resultsArea');
+  if(!sku){
+    area.innerHTML='<div class="empty"><div class="empty-icon">🏷️</div><div class="empty-title">Type a SKU number above</div><div class="empty-sub">Look at the sticker on the item — type the number on it (e.g. "12", "85", "247")</div></div>';
+    return;
+  }
+  area.innerHTML='<div class="empty">Looking up SKU '+escapeHtml(sku)+'…</div>';
+  var url='/api/sku-lookup/'+encodeURIComponent(sku);
+  if(batch)url+='?batch='+encodeURIComponent(batch);
+  fetch(url).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){area.innerHTML='<div class="empty">'+escapeHtml(d.error||'Error')+'</div>';return}
+    var m=d.matches||[];
+    if(m.length===0){
+      area.innerHTML='<div class="empty"><div class="empty-icon">🤷</div><div class="empty-title">No order found for SKU '+escapeHtml(sku)+'</div><div class="empty-sub">This sticker number was not sold this show. Return the item to inventory.</div></div>';
+      return;
+    }
+    // Summary
+    var pending=m.filter(function(x){return x.status==='pending'&&!x.cancelled}).length;
+    var packed=m.filter(function(x){return (x.status==='packed'||x.status==='shipped')&&!x.cancelled}).length;
+    var cancelled=m.filter(function(x){return x.cancelled||x.status==='cancelled'}).length;
+    var summary='<div class="summary">'+
+      '<div class="sum"><div class="val">'+m.length+'</div><div class="lbl">Total matches</div></div>'+
+      (pending>0?'<div class="sum warn"><div class="val">'+pending+'</div><div class="lbl">Pending (still to pack)</div></div>':'')+
+      (packed>0?'<div class="sum good"><div class="val">'+packed+'</div><div class="lbl">Packed / shipped</div></div>':'')+
+      (cancelled>0?'<div class="sum bad"><div class="val">'+cancelled+'</div><div class="lbl">Cancelled</div></div>':'')+
+      '</div>';
+    var html=summary+m.map(function(x){
+      var cls=x.cancelled?'cancelled':(x.status==='packed'||x.status==='shipped'?'packed':'pending');
+      var statusText=x.cancelled?'Cancelled':x.status;
+      var action,actionCls;
+      if(x.cancelled){
+        action='Keep aside';actionCls='keep';
+      } else if(x.status==='pending'){
+        action='⚠️ Add to package';actionCls='go';
+      } else {
+        action='Already packed';actionCls='done';
+      }
+      var meta='<div class="match-meta">'+
+        '<span><span class="label">Buyer:</span> '+escapeHtml(x.buyer_name||x.buyer_username||'?')+'</span>'+
+        (x.shipment_id&&!x.shipment_id.startsWith('cancel_')?'<span><span class="label">Package:</span> <span class="id">'+escapeHtml(x.shipment_id)+'</span></span>':'')+
+        '<span><span class="label">Batch:</span> '+escapeHtml(x.import_label||x.import_batch||'?')+'</span>'+
+        '<span><span class="label">Platform:</span> '+(x.platform||'?')+'</span>'+
+        '</div>';
+      return '<div class="match '+cls+'">'+
+        '<div class="match-status '+cls+'">'+statusText+'</div>'+
+        '<div class="match-info">'+
+          '<div class="match-name">SKU '+escapeHtml(x.sku)+' × '+x.quantity+(x.product_name?'<span style="font-weight:400;color:var(--text-muted);font-size:13px">— '+escapeHtml(x.product_name)+'</span>':'')+'</div>'+
+          meta+
+          (x.cancel_reason?'<div class="match-cancel">⚠️ '+escapeHtml(x.cancel_reason)+'</div>':'')+
+        '</div>'+
+        '<div class="match-action">'+
+          '<span class="action-pill '+actionCls+'">'+action+'</span>'+
+          (x.tracking_code?'<div class="match-tracking">'+escapeHtml(x.tracking_code)+'</div>':'')+
+        '</div>'+
+      '</div>';
+    }).join('');
+    area.innerHTML=html;
+  });
+}
+
+document.getElementById('sku').addEventListener('input',function(){
+  clearTimeout(debounce);debounce=setTimeout(doSearch,200);
+});
+document.getElementById('batch').addEventListener('change',doSearch);
+doSearch();  // initial empty state
 </script>
 </body></html>'''
