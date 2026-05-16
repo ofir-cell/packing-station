@@ -16,7 +16,8 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     BADGE_LOGIN_HTML, USERS_BADGES_HTML,
     ME_HTML, LEADERBOARD_HTML, HOME_HTML, DOCUMENTS_HTML, WELCOME_HTML,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
-    CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML)
+    CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
+    ISSUES_HTML)
 
 
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
@@ -343,9 +344,13 @@ def sdb_init():
         "ALTER TABLE shipments ADD COLUMN platform TEXT DEFAULT 'whatnot'",
         "ALTER TABLE shipments ADD COLUMN import_batch TEXT",
         "ALTER TABLE shipments ADD COLUMN import_label TEXT",
+        "ALTER TABLE shipments ADD COLUMN picked_at TEXT",
+        "ALTER TABLE shipments ADD COLUMN picked_by TEXT",
         "ALTER TABLE shipment_items ADD COLUMN order_id TEXT",
         "ALTER TABLE shipment_items ADD COLUMN cancelled INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN cancel_reason TEXT",
+        "ALTER TABLE shipment_items ADD COLUMN picked INTEGER DEFAULT 0",
+        "ALTER TABLE shipment_items ADD COLUMN picked_at TEXT",
     ):
         try: c.execute(stmt)
         except sqlite3.OperationalError: pass  # column already exists
@@ -702,17 +707,21 @@ def _worker_summary(worker_name):
 
 @app.route("/")
 def index():
+    machine_mode = request.cookies.get("machine_mode", "")
+    machine_sta = request.cookies.get("machine_station", "")
     if "user" not in session:
-        # If this machine has a station configured, send to badge login by default
-        if request.cookies.get("machine_station"):
+        # If the machine is provisioned (mode or station), send to badge login for quick scan-in
+        if machine_mode or machine_sta:
             return redirect("/badge-login")
         return LOGIN_HTML
+    # If this machine is dedicated to picking, every logged-in worker/picker goes straight there
+    if machine_mode == "pick":
+        return redirect("/pick")
     if session.get("role")=="worker":
         # If station already chosen for this session, go to worker page
         if "station" in session:
             return WORKER_HTML.replace("__NAME__",session["name"]).replace("__STATION__",session.get("station_name","")).replace("__SID__",session.get("station","S0"))
         # Auto-assign station from machine cookie if set
-        machine_sta=request.cookies.get("machine_station","")
         if machine_sta:
             stations=ldj(STATIONS_FILE)
             if machine_sta in stations:
@@ -1746,6 +1755,204 @@ def api_customer_detail(username):
 
 
 # ══════════════════════════════════════════════════════════
+# PICKING — pickers (iPad workflow) collect items from tables BEFORE the
+# packer scans + records. Separates the "find items" step from the "verify
+# + film + ship" step so the two roles don't bottleneck each other.
+# ══════════════════════════════════════════════════════════
+
+@app.route("/pick")
+@req_role("picker", "worker", "admin", "cs")
+def pick_page():
+    return (PICK_HTML
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAME__", session.get("name", ""))
+        .replace("__STATION__", session.get("station_name", "")))
+
+@app.route("/api/pick/queue")
+@req_role("picker", "worker", "admin", "cs")
+def api_pick_queue():
+    """List shipments still waiting to be picked. Optional filters by show name
+    or platform. Excludes cancelled and already-picked shipments."""
+    show = (request.args.get("show") or "").strip()
+    c = sdb()
+    q = """SELECT s.shipment_id, s.tracking_code, s.buyer_name, s.buyer_username,
+                  s.import_label, s.platform, s.show_date,
+                  (SELECT COUNT(*) FROM shipment_items i WHERE i.shipment_id=s.shipment_id
+                   AND COALESCE(i.cancelled,0)=0) AS item_count
+           FROM shipments s
+           WHERE s.status='pending'"""
+    params = []
+    if show:
+        q += " AND s.import_label=?"
+        params.append(show)
+    q += " ORDER BY s.imported_at DESC LIMIT 200"
+    rows = c.execute(q, params).fetchall()
+    c.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/pick/<sid>")
+@req_role("picker", "worker", "admin", "cs")
+def api_pick_get(sid):
+    """Detail for picking — items with picked flag for tap-to-check workflow."""
+    if not re.match(r'^[A-Za-z0-9_\-]{1,64}$', sid):
+        return jsonify({"ok": False, "error": "Invalid id"})
+    c = sdb()
+    s = c.execute("SELECT * FROM shipments WHERE shipment_id=?", (sid,)).fetchone()
+    if not s:
+        c.close()
+        return jsonify({"ok": False, "error": "Shipment not found"})
+    items = c.execute("""SELECT id, sku, product_name, quantity, COALESCE(picked,0) AS picked,
+                                picked_at, COALESCE(cancelled,0) AS cancelled
+                         FROM shipment_items WHERE shipment_id=?
+                         ORDER BY COALESCE(cancelled,0), COALESCE(picked,0), id""", (sid,)).fetchall()
+    c.close()
+    return jsonify({"ok": True, "shipment": dict(s), "items": [dict(i) for i in items]})
+
+@app.route("/api/pick/item/<int:item_id>/toggle", methods=["POST"])
+@req_role("picker", "worker", "admin", "cs")
+def api_pick_item_toggle(item_id):
+    c = sdb()
+    row = c.execute("SELECT id, COALESCE(picked,0) AS picked FROM shipment_items WHERE id=?", (item_id,)).fetchone()
+    if not row:
+        c.close()
+        return jsonify({"ok": False, "error": "Item not found"})
+    new_state = 0 if row["picked"] else 1
+    if new_state:
+        c.execute("UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
+    else:
+        c.execute("UPDATE shipment_items SET picked=0, picked_at=NULL WHERE id=?", (item_id,))
+    c.commit(); c.close()
+    return jsonify({"ok": True, "picked": new_state})
+
+@app.route("/api/pick/my-stats")
+@req_role("picker", "worker", "admin", "cs")
+def api_pick_my_stats():
+    """Personal picking counters for today + this week. Drives the encouragement
+    card on the iPad scan view ('You've picked X orders today')."""
+    user = session.get("name", "")
+    today = datetime.now().strftime("%Y-%m-%d")
+    c = sdb()
+    today_n = c.execute("""SELECT COUNT(*) FROM shipments
+                           WHERE picked_by=? AND substr(picked_at,1,10)=?""", (user, today)).fetchone()[0]
+    week_n = c.execute("""SELECT COUNT(*) FROM shipments
+                          WHERE picked_by=? AND picked_at >= date('now','-7 days')""", (user,)).fetchone()[0]
+    # Last pick time
+    last = c.execute("""SELECT picked_at FROM shipments
+                        WHERE picked_by=? ORDER BY picked_at DESC LIMIT 1""", (user,)).fetchone()
+    c.close()
+    return jsonify({
+        "today": today_n,
+        "week": week_n,
+        "last_picked_at": last["picked_at"] if last else None,
+    })
+
+
+@app.route("/api/pick/issue/<sid>", methods=["POST"])
+@req_role("picker", "worker", "admin", "cs")
+def api_pick_issue(sid):
+    """Picker flags an order as having a problem (missing item, damaged, etc).
+    Status moves to 'issue' so the order disappears from the pick queue. Admin
+    can review on /admin/shipments and either resolve back to 'pending' or cancel."""
+    if not re.match(r'^[A-Za-z0-9_\-]{1,64}$', sid):
+        return jsonify({"ok": False, "error": "Invalid id"})
+    d = request.get_json() or {}
+    reason = (d.get("reason") or "").strip()
+    if not reason:
+        return jsonify({"ok": False, "error": "Reason is required"})
+    if len(reason) > 500:
+        return jsonify({"ok": False, "error": "Reason too long (max 500 chars)"})
+    reporter = session.get("name", "Unknown")
+    stamped = datetime.now().strftime("%Y-%m-%d %H:%M") + " · " + reporter + ": " + reason
+    c = sdb()
+    s = c.execute("SELECT status FROM shipments WHERE shipment_id=?", (sid,)).fetchone()
+    if not s:
+        c.close()
+        return jsonify({"ok": False, "error": "Shipment not found"})
+    if s["status"] == "cancelled":
+        c.close()
+        return jsonify({"ok": False, "error": "Order is cancelled — nothing to flag"})
+    c.execute("""UPDATE shipments SET status='issue', flag_reason=?, flag_resolved_at=NULL,
+                 flag_resolved_by=NULL WHERE shipment_id=?""", (stamped, sid))
+    c.commit(); c.close()
+    return jsonify({"ok": True})
+
+@app.route("/admin/issues")
+@req_role("admin", "cs")
+def issues_admin_page():
+    return (ISSUES_HTML
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("issues"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/issues")
+@req_role("admin", "cs")
+def api_issues():
+    """Every shipment currently flagged with status='issue', most-recent first.
+    Includes items so admin can see what was supposed to be picked."""
+    c = sdb()
+    rows = c.execute("""SELECT shipment_id, tracking_code, buyer_name, buyer_username,
+                               total_items, import_label, platform, flag_reason,
+                               flag_resolved_at, flag_resolved_by, imported_at, show_date
+                        FROM shipments WHERE status='issue'
+                        ORDER BY imported_at DESC""").fetchall()
+    out = []
+    for s in rows:
+        items = c.execute("""SELECT sku, product_name, quantity, COALESCE(picked,0) AS picked,
+                                    COALESCE(cancelled,0) AS cancelled
+                             FROM shipment_items WHERE shipment_id=?""", (s["shipment_id"],)).fetchall()
+        out.append({**dict(s), "items": [dict(i) for i in items]})
+    c.close()
+    return jsonify(out)
+
+
+@app.route("/api/pick/resolve/<sid>", methods=["POST"])
+@req_role("admin", "cs")
+def api_pick_resolve(sid):
+    """Admin/CS resolves a picking issue. Either puts back to 'pending' (picker can try again)
+    or cancels the order. Records resolver name + timestamp for audit trail."""
+    if not re.match(r'^[A-Za-z0-9_\-]{1,64}$', sid):
+        return jsonify({"ok": False, "error": "Invalid id"})
+    d = request.get_json() or {}
+    action = (d.get("action") or "").strip()
+    if action not in ("retry", "cancel"):
+        return jsonify({"ok": False, "error": "Action must be 'retry' or 'cancel'"})
+    resolver = session.get("name", "Unknown")
+    c = sdb()
+    if action == "retry":
+        c.execute("""UPDATE shipments SET status='pending', flag_resolved_at=CURRENT_TIMESTAMP,
+                     flag_resolved_by=? WHERE shipment_id=? AND status='issue'""", (resolver, sid))
+    else:
+        c.execute("""UPDATE shipments SET status='cancelled', flag_resolved_at=CURRENT_TIMESTAMP,
+                     flag_resolved_by=? WHERE shipment_id=? AND status='issue'""", (resolver, sid))
+    c.commit(); c.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/pick/complete/<sid>", methods=["POST"])
+@req_role("picker", "worker", "admin", "cs")
+def api_pick_complete(sid):
+    """Mark every active item picked + shipment status='picked' + record picker name.
+    Pickers walking through a list of items confirm done here, even if they didn't tap each one."""
+    if not re.match(r'^[A-Za-z0-9_\-]{1,64}$', sid):
+        return jsonify({"ok": False, "error": "Invalid id"})
+    user = session.get("name", "Unknown")
+    c = sdb()
+    s = c.execute("SELECT status FROM shipments WHERE shipment_id=?", (sid,)).fetchone()
+    if not s:
+        c.close()
+        return jsonify({"ok": False, "error": "Shipment not found"})
+    if s["status"] == "cancelled":
+        c.close()
+        return jsonify({"ok": False, "error": "This order is cancelled — do not pick"})
+    c.execute("""UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP
+                 WHERE shipment_id=? AND COALESCE(cancelled,0)=0 AND COALESCE(picked,0)=0""", (sid,))
+    c.execute("""UPDATE shipments SET status='picked', picked_at=CURRENT_TIMESTAMP, picked_by=?
+                 WHERE shipment_id=? AND status='pending'""", (user, sid))
+    c.commit(); c.close()
+    return jsonify({"ok": True})
+
+
+# ══════════════════════════════════════════════════════════
 # SHOWS — group imports by user-supplied "show name" for last 5 days.
 # A single show can span multiple CSV imports (TikTok orders + cancellations,
 # Whatnot, re-uploads after corrections). Packers may be working multiple
@@ -1762,10 +1969,10 @@ def shows_admin_page():
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
 @app.route("/api/shows")
-@req_role("admin","cs")
+@req_role("admin","cs","picker","worker")
 def api_shows():
     """Return distinct shows (import_label) from the last 5 days, with rollup
-    stats per show. Used by the Shows page and the import autocomplete."""
+    stats per show. Used by the Shows page, the import autocomplete, and the picker."""
     cutoff_dt = (datetime.now() - timedelta(days=SHOW_WINDOW_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     c = sdb()
     rows = c.execute("""
@@ -1789,7 +1996,7 @@ def api_shows():
     return jsonify([dict(r) for r in rows])
 
 @app.route("/api/shows/recent")
-@req_role("admin","cs")
+@req_role("admin","cs","picker","worker")
 def api_shows_recent():
     """Lightweight — just distinct show names from the last 5 days, for
     autocomplete dropdowns. Same data, slimmer payload."""
@@ -2148,6 +2355,26 @@ def api_machine_station():
         resp.set_cookie("machine_station",sta,max_age=10*365*24*3600,httponly=False,samesite="Lax",secure=True)
     else:
         resp.delete_cookie("machine_station")
+    return resp
+
+
+@app.route("/api/machine-mode",methods=["GET","POST"])
+def api_machine_mode():
+    """Per-device role assignment: 'pick' (iPad picker), 'pack' (packing PC), or '' (default).
+    After badge login, the / route uses this cookie to decide where to send the worker."""
+    if request.method=="GET":
+        return jsonify({"mode": request.cookies.get("machine_mode","")})
+    if session.get("role")!="admin":
+        return jsonify({"ok":False,"error":"Admin required"}),403
+    d=request.get_json() or {}
+    mode=(d.get("mode") or "").strip()
+    if mode not in ("pick","pack",""):
+        return jsonify({"ok":False,"error":"Invalid mode"})
+    resp=jsonify({"ok":True,"mode":mode})
+    if mode:
+        resp.set_cookie("machine_mode",mode,max_age=10*365*24*3600,httponly=False,samesite="Lax",secure=True)
+    else:
+        resp.delete_cookie("machine_mode")
     return resp
 
 

@@ -36,6 +36,7 @@ def _navbar(active_page=""):
         ops_items = [
             ("shows", "/admin/shows", "Shows · Last 5 days"),
             ("shipments", "/admin/shipments", "Shipments · Import CSV"),
+            ("issues", "/admin/issues", "🚧 Picking Issues"),
             ("dash", "/dashboard", "Search Recordings"),
             ("customers", "/customers", "Customer Lookup"),
             ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation"),
@@ -296,9 +297,12 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 /* Item checklist on recording screen */
 .check-area{margin-top:20px;width:100%;max-width:560px;display:none}
 body.sc .check-area{display:block}
-.check-show{display:none;align-items:center;gap:8px;background:rgba(243,201,196,.08);border:1px solid rgba(243,201,196,.22);border-radius:10px;padding:8px 14px;margin-bottom:12px;font-size:12px;color:var(--brand);font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.check-show{display:none;align-items:center;gap:8px;background:rgba(243,201,196,.08);border:1px solid rgba(243,201,196,.22);border-radius:10px;padding:8px 14px;margin-bottom:8px;font-size:12px;color:#f3c9c4;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
 .check-show.on{display:inline-flex}
-.check-show .platform-dot{width:8px;height:8px;border-radius:50%;background:var(--brand)}
+.check-show .platform-dot{width:8px;height:8px;border-radius:50%;background:#f3c9c4}
+.check-prepick{display:none;align-items:center;gap:8px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.28);border-radius:10px;padding:8px 14px;margin-bottom:12px;font-size:12px;color:#34d399;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.check-prepick.on{display:inline-flex}
+.check-prepick::before{content:'✓';font-weight:900}
 .check-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px;padding:0 6px}
 .check-buyer{font-size:18px;font-weight:800;color:#e4e8f1;letter-spacing:.2px}
 .check-counter{font-size:14px;color:#9ba9c1;font-weight:600;font-feature-settings:'tnum'}
@@ -370,6 +374,7 @@ body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
 <div class="x" id="xc"><div class="rp"><div class="rd"></div><div class="rl">RECORDING</div></div><div class="rk" id="rk"></div><div class="rm" id="rmm">00:00</div>
 <div class="check-area" id="checkArea">
   <div class="check-show" id="checkShow"></div>
+  <div class="check-prepick" id="checkPrepick"></div>
   <div class="check-head">
     <div class="check-buyer" id="checkBuyer">Looking up order…</div>
     <div class="check-counter"><b id="checkDone">0</b> / <b id="checkTotal">?</b></div>
@@ -423,6 +428,8 @@ function loadChecklist(tracking){
     document.getElementById('checkTotal').textContent='?';
     var showEl=document.getElementById('checkShow');
     showEl.classList.remove('on');showEl.innerHTML='';
+    var prepickEl=document.getElementById('checkPrepick');
+    prepickEl.classList.remove('on');prepickEl.innerHTML='';
     var st=document.getElementById('checkStatus');
     st.textContent='Loading order info…';st.className='check-status';
     fetch('/api/shipment/'+encodeURIComponent(tracking)).then(function(r){return r.json()}).then(function(d){
@@ -443,11 +450,21 @@ function loadChecklist(tracking){
             showEl.innerHTML='<span class="platform-dot"></span>Show: '+(s.import_label.replace(/</g,'&lt;'))+(s.platform?' · '+s.platform:'');
             showEl.classList.add('on');
         }
+        // If a picker has already pulled the items, surface that so the packer just verifies.
+        if(s.status==='picked' && s.picked_by){
+            var when=s.picked_at?' at '+(s.picked_at.replace('T',' ').slice(0,16)):'';
+            prepickEl.innerHTML='Pre-picked by '+s.picked_by.replace(/</g,'&lt;')+when;
+            prepickEl.classList.add('on');
+        }
         var packedFlags={};
+        // If the shipment was already picked, start with every item ticked off so the
+        // packer's job is just to verify visually and record. Tap to uncheck if anything's off.
+        items.forEach(function(it,i){if(it.picked)packedFlags[i]=true});
         var list=document.getElementById('checkItems');
         list.innerHTML=items.map(function(it,i){
             var name=(it.product_name||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-            return '<div class="check-item" data-i="'+i+'">'+
+            var done=it.picked?' done':'';
+            return '<div class="check-item'+done+'" data-i="'+i+'">'+
                 '<div class="ci-box"></div>'+
                 '<div class="ci-sku">'+(it.sku||'?')+'</div>'+
                 '<div class="ci-name">'+name+'</div>'+
@@ -469,12 +486,17 @@ function loadChecklist(tracking){
                 }
             });
         });
-        if(items.length>0){
-            st.textContent='Pack each item, tap when it goes in the box';
-            st.className='check-status';
-        } else {
+        var initialDone=Object.keys(packedFlags).length;
+        document.getElementById('checkDone').textContent=initialDone;
+        if(items.length===0){
             st.textContent='No items registered — record anyway';
             st.className='check-status warn';
+        } else if(initialDone===items.length){
+            st.textContent='✓ All items pre-picked — verify and scan again to finish';
+            st.className='check-status ready';
+        } else {
+            st.textContent='Pack each item, tap when it goes in the box';
+            st.className='check-status';
         }
     }).catch(function(){
         document.getElementById('checkBuyer').textContent='—';
@@ -1245,6 +1267,18 @@ input{position:absolute;opacity:0;pointer-events:none}
 .alt-link:hover{color:#f3c9c4;background:rgba(255,255,255,.04)}
 .toast{position:fixed;top:24px;left:50%;transform:translateX(-50%);background:#10b981;color:white;padding:14px 28px;border-radius:50px;font-weight:700;font-size:15px;box-shadow:0 10px 40px rgba(16,185,129,.4);z-index:100;display:none}
 .toast.err{background:#f43f5e;box-shadow:0 10px 40px rgba(244,63,94,.4)}
+
+/* Welcome overlay shown after a successful badge scan, before redirect */
+.welcome-ov{position:fixed;inset:0;background:radial-gradient(800px 600px at 50% 30%, rgba(243,201,196,.18), transparent 60%),#0a0d14;z-index:200;display:none;align-items:center;justify-content:center;flex-direction:column;padding:30px;animation:fadeIn .25s ease}
+.welcome-ov.on{display:flex}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.welcome-avatar{width:160px;height:160px;border-radius:50%;background:linear-gradient(135deg,#f3c9c4,#eab1a8);display:flex;align-items:center;justify-content:center;font-size:78px;font-weight:900;color:#1a0e0b;margin-bottom:32px;box-shadow:0 24px 80px rgba(243,201,196,.35),0 0 0 8px rgba(243,201,196,.08);animation:pop .5s cubic-bezier(.175,.885,.32,1.275)}
+@keyframes pop{from{transform:scale(.4);opacity:0}to{transform:scale(1);opacity:1}}
+.welcome-eyebrow{font-size:13px;font-weight:800;color:#f3c9c4;letter-spacing:2.5px;text-transform:uppercase;margin-bottom:8px}
+.welcome-name{font-size:46px;font-weight:900;color:#fff;letter-spacing:-1px;line-height:1.05;text-align:center;margin-bottom:28px}
+.welcome-loading{display:flex;align-items:center;gap:10px;color:#9ba9c1;font-size:14px;font-weight:600}
+.welcome-loading .sp{width:14px;height:14px;border:2px solid rgba(255,255,255,.15);border-top-color:#f3c9c4;border-radius:50%;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
 </style></head><body>
 <div class="box">
 <div class="brand-line"><span class="brand-mark-page">5&nbsp;SEC</span><span class="brand-sub-page">Employee Hub</span></div>
@@ -1258,6 +1292,12 @@ input{position:absolute;opacity:0;pointer-events:none}
 </div>
 <input type="text" id="tk" autofocus autocomplete="off" inputmode="none">
 <a href="/" class="alt-link">Use password instead</a>
+</div>
+<div class="welcome-ov" id="welcomeOv">
+  <div class="welcome-avatar" id="welcomeAvatar">?</div>
+  <div class="welcome-eyebrow" id="welcomeEyebrow">Welcome back</div>
+  <div class="welcome-name" id="welcomeName">—</div>
+  <div class="welcome-loading"><div class="sp"></div><span>Loading your workspace…</span></div>
 </div>
 <div class="toast" id="toast"></div>
 <script>
@@ -1274,9 +1314,18 @@ function tryLogin(token){
     fetch('/api/badge-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token})})
     .then(function(r){return r.json()}).then(function(d){
         if(d.ok){
+            // Show big welcome overlay with avatar initial, then redirect
+            var nm=d.name||'';
+            var initial=(nm.trim().charAt(0)||'?').toUpperCase();
+            // Time-of-day eyebrow
+            var hr=new Date().getHours();
+            var eb=hr<5?'Late night shift':hr<12?'Good morning':hr<17?'Good afternoon':hr<22?'Good evening':'Working late';
+            document.getElementById('welcomeAvatar').textContent=initial;
+            document.getElementById('welcomeEyebrow').textContent=eb;
+            document.getElementById('welcomeName').textContent='Hi, '+nm+'!';
+            document.getElementById('welcomeOv').classList.add('on');
             sa.className='scan-area success';st.textContent='Welcome, '+d.name+'!';
-            showToast('Welcome '+d.name+' 👋');
-            setTimeout(function(){location.href='/'},800);
+            setTimeout(function(){location.href='/'},1500);
         } else {
             sa.className='scan-area error';st.textContent='Badge not recognized';
             showToast(d.error||'Try again',true);
@@ -2337,6 +2386,9 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(900px 
 .choice:hover::after{opacity:1}
 .choice.pack{background:linear-gradient(135deg,rgba(99,102,241,.14),rgba(168,85,247,.06));border-color:rgba(99,102,241,.3)}
 .choice.pack:hover{border-color:rgba(99,102,241,.5)}
+.choice.pick{background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(20,184,166,.04));border-color:rgba(16,185,129,.3)}
+.choice.pick:hover{border-color:rgba(16,185,129,.5)}
+.choice.pick .choice-cta{color:#34d399}
 .choice-icon{font-size:64px;line-height:1;margin-bottom:6px}
 .choice-label{font-size:11px;font-weight:700;color:#9ba9c1;text-transform:uppercase;letter-spacing:1.5px}
 .choice-title{font-size:26px;font-weight:900;color:#fff;letter-spacing:-.4px;line-height:1.1}
@@ -2366,6 +2418,13 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(900px 
   <div class="greet-prompt">What would you like to do?</div>
 </div>
 <div class="choices">
+  <a href="/pick" class="choice pick">
+    <div class="choice-icon">📋</div>
+    <div class="choice-label">Collecting items</div>
+    <div class="choice-title">Start Picking</div>
+    <div class="choice-desc">Walk the floor, pull items off the tables — touch-friendly checklist for iPad.</div>
+    <div class="choice-cta">Open picker <span class="arrow">→</span></div>
+  </a>
   <a href="/pack-start" class="choice pack">
     <div class="choice-icon">📦</div>
     <div class="choice-label">For your shift</div>
@@ -3656,5 +3715,820 @@ fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){
     '</a>';
   }).join('')+'</div>';
 });
+</script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# PICKING — iPad-optimised picker workflow.
+# Pickers walk the warehouse with an iPad, see the queue of orders that
+# need items pulled, tap a shipment, walk to the tables and tap each item
+# as they grab it. Done → ships moves to 'picked' status for the packer.
+# ══════════════════════════════════════════════════════════
+
+PICK_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+''' + _FONT + '''
+<title>Pick · 5 SEC</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'DM Sans',-apple-system,sans-serif;-webkit-font-smoothing:antialiased;transition:background .25s,color .25s}
+:root{
+    --brand:#f3c9c4;
+    --brand-strong:#eab1a8;
+    --bg:#0a0d14;
+    --top-bg:rgba(10,13,20,.95);
+    --surface:rgba(255,255,255,.04);
+    --surface-strong:rgba(21,25,33,.8);
+    --border:rgba(255,255,255,.08);
+    --border-strong:rgba(255,255,255,.18);
+    --text:#e4e8f1;
+    --text-muted:#9ba9c1;
+    --text-dim:#94a3b8;
+    --input-bg:rgba(11,14,20,.7);
+}
+:root.theme-light{
+    --brand:#d4807a;
+    --brand-strong:#c46961;
+    --bg:#f5f4f0;
+    --top-bg:rgba(255,255,255,.92);
+    --surface:rgba(0,0,0,.04);
+    --surface-strong:#fff;
+    --border:rgba(0,0,0,.1);
+    --border-strong:rgba(0,0,0,.2);
+    --text:#1a1a1f;
+    --text-muted:#5a5a6a;
+    --text-dim:#888896;
+    --input-bg:#fff;
+}
+
+/* Top bar */
+.top{position:fixed;top:0;left:0;right:0;height:60px;background:var(--top-bg);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 18px;gap:10px;z-index:50}
+.theme-toggle{background:var(--surface);border:1px solid var(--border);color:var(--text-muted);border-radius:10px;width:38px;height:38px;font-size:16px;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center}
+.theme-toggle:active{transform:scale(.95)}
+.brand-mark{font-size:18px;font-weight:900;color:var(--brand);letter-spacing:1.5px;line-height:1}
+.brand-sub{font-size:9px;color:var(--text-dim);letter-spacing:2px;text-transform:uppercase;font-weight:700;line-height:1;margin-top:3px}
+.top-brand{flex-shrink:0}
+.top-show{flex:1;text-align:center;font-size:14px;color:var(--text-muted);min-width:0;overflow:hidden;text-overflow:ellipsis}
+.top-show b{color:var(--brand);font-weight:800}
+.top-show .change-link{color:var(--text-dim);font-size:11px;text-decoration:underline;margin-left:8px;text-decoration-color:rgba(255,255,255,.2)}
+.top-logout{background:rgba(244,63,94,.1);border:1px solid rgba(244,63,94,.22);color:#fb7185;text-decoration:none;font-size:13px;font-weight:700;padding:8px 14px;border-radius:10px}
+
+.page{position:absolute;top:60px;left:0;right:0;bottom:0;overflow-y:auto;-webkit-overflow-scrolling:touch}
+
+/* ───── State A: Show picker ───── */
+#showView{display:none;padding:48px 24px;text-align:center;min-height:100%}
+#showView.on{display:block}
+.show-prompt{font-size:14px;color:var(--text-dim);letter-spacing:2px;text-transform:uppercase;font-weight:800;margin-bottom:10px}
+.show-h1{font-size:36px;font-weight:900;color:var(--text);margin-bottom:8px;letter-spacing:-.6px}
+.show-help{font-size:15px;color:var(--text-muted);margin-bottom:36px}
+.show-list{display:flex;flex-direction:column;gap:14px;max-width:600px;margin:0 auto}
+.show-card{display:block;width:100%;padding:24px 26px;background:var(--surface);border:2px solid var(--border);border-radius:18px;cursor:pointer;text-align:left;font-family:inherit;color:inherit;transition:all .15s}
+.show-card:active{transform:scale(.99);background:rgba(243,201,196,.06);border-color:var(--brand)}
+.show-card .name{font-size:22px;font-weight:800;color:var(--text);margin-bottom:6px}
+.show-card .meta{display:flex;gap:12px;align-items:center;font-size:13px;color:var(--text-muted)}
+.show-card .pill{font-size:10px;padding:3px 8px;border-radius:6px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+.show-card .pill-tiktok{background:rgba(244,63,94,.14);color:#fb7185}
+.show-card .pill-whatnot{background:rgba(168,85,247,.14);color:#c4b5fd}
+.show-card .pill-mixed{background:rgba(99,102,241,.14);color:#a5b4fc}
+.show-card .pending-count{margin-left:auto;font-size:22px;font-weight:900;color:var(--brand);font-feature-settings:'tnum'}
+.show-card .pending-count .lbl{font-size:9px;color:var(--text-dim);font-weight:700;letter-spacing:.6px;text-transform:uppercase;display:block;text-align:right;margin-top:-3px}
+.show-empty{text-align:center;padding:60px 20px;color:var(--text-dim);font-size:15px}
+
+/* Admin: configure this iPad as a picking station */
+.ipad-setup{max-width:600px;margin:36px auto 0;padding:22px 24px;background:rgba(99,102,241,.05);border:1px dashed rgba(99,102,241,.25);border-radius:14px;display:none}
+.ipad-setup.on{display:block}
+.ipad-setup-title{font-size:12px;color:#a5b4fc;text-transform:uppercase;letter-spacing:1.5px;font-weight:800;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.ipad-setup-help{font-size:13px;color:var(--text-muted);line-height:1.5;margin-bottom:14px}
+.ipad-setup-actions{display:flex;gap:8px;flex-wrap:wrap}
+.ipad-setup-btn{background:rgba(99,102,241,.18);border:1px solid rgba(99,102,241,.32);color:#c7d2fe;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
+.ipad-setup-btn:active{transform:scale(.97)}
+.ipad-setup-btn.primary{background:var(--brand);color:#1a0e0b;border-color:var(--brand)}
+.ipad-setup-status{font-size:11px;color:var(--text-dim);margin-top:8px}
+
+/* Tiny mode badge in topbar */
+.mode-badge{display:none;align-items:center;gap:6px;background:rgba(99,102,241,.14);border:1px solid rgba(99,102,241,.28);color:#a5b4fc;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;margin-left:6px;cursor:pointer}
+.mode-badge.on{display:inline-flex}
+
+/* ───── State B: Scan-ready ───── */
+#scanView{display:none;padding:30px 24px 100px;min-height:calc(100% - 60px);align-items:center;justify-content:center;flex-direction:column}
+#scanView.on{display:flex}
+.scan-icon{font-size:80px;margin-bottom:16px;animation:pulse 2.5s ease-in-out infinite}
+@keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.05);opacity:.85}}
+.scan-title{font-size:28px;font-weight:900;color:var(--text);letter-spacing:-.4px;margin-bottom:8px;text-align:center}
+.scan-sub{font-size:15px;color:var(--text-muted);margin-bottom:36px;text-align:center;max-width:480px}
+.scan-input-wrap{position:relative;width:100%;max-width:600px;margin-bottom:24px}
+.scan-input{width:100%;background:var(--surface-strong);border:3px solid var(--brand);border-radius:18px;padding:24px 28px;font-size:28px;color:#e4e8f1;font-family:'SF Mono',Menlo,monospace;text-align:center;outline:none;transition:all .2s;letter-spacing:1px;box-shadow:0 0 30px rgba(243,201,196,.12)}
+.scan-input:focus{border-color:var(--brand-strong);box-shadow:0 0 40px rgba(243,201,196,.25)}
+.scan-input::placeholder{color:var(--text-dim);font-family:'DM Sans',sans-serif;font-size:18px;letter-spacing:.5px}
+.scan-status{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--text-muted);margin-bottom:32px}
+.scan-status .dot{width:8px;height:8px;border-radius:50%;background:var(--brand);animation:dotpulse 1.4s ease infinite}
+@keyframes dotpulse{0%,100%{opacity:.3;transform:scale(.9)}50%{opacity:1;transform:scale(1.2)}}
+.stats-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;width:100%;max-width:600px}
+.session-stat{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 16px;text-align:center}
+.session-stat .num{font-size:30px;font-weight:900;color:var(--text);line-height:1;font-feature-settings:'tnum';margin-bottom:4px}
+.session-stat .txt{font-size:11px;color:var(--text-dim);letter-spacing:.6px;text-transform:uppercase;font-weight:700}
+.session-stat .txt b{color:var(--text-muted);font-weight:700}
+.session-stat.brand{background:linear-gradient(135deg,rgba(243,201,196,.12),rgba(243,201,196,.02));border-color:rgba(243,201,196,.28)}
+.session-stat.brand .num{color:var(--brand)}
+
+/* ───── State C: Checklist ───── */
+#listView{display:none;padding-bottom:130px}
+#listView.on{display:block}
+.list-head{padding:18px 20px;background:var(--surface);border-bottom:1px solid var(--border)}
+.back-btn{display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:10px;padding:8px 14px;color:var(--text-muted);font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;margin-bottom:14px}
+.back-btn:active{background:rgba(255,255,255,.08)}
+.list-buyer{font-size:26px;font-weight:900;color:var(--text);letter-spacing:-.4px;margin-bottom:6px;line-height:1.15}
+.list-meta{display:flex;flex-wrap:wrap;gap:6px;font-size:12px}
+.list-meta .pill{padding:4px 10px;border-radius:7px;font-weight:700;font-size:11px;letter-spacing:.3px}
+.pill-id{background:rgba(255,255,255,.05);color:var(--text-muted);font-family:'SF Mono',Menlo,monospace}
+.pill-track{background:rgba(99,102,241,.14);color:#a5b4fc;font-family:'SF Mono',Menlo,monospace}
+
+.progress-row{display:flex;align-items:center;gap:14px;padding:14px 20px;background:rgba(243,201,196,.04);border-bottom:1px solid var(--border)}
+.progress-text{font-size:15px;color:var(--text);font-weight:700;white-space:nowrap}
+.progress-text b{font-size:22px;font-weight:900;color:var(--brand)}
+.progress-bar{flex:1;height:8px;background:rgba(255,255,255,.06);border-radius:4px;overflow:hidden}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--brand),var(--brand-strong));transition:width .3s}
+
+.items-list{padding:14px 20px}
+.pi{display:grid;grid-template-columns:48px 1fr auto;gap:14px;align-items:center;padding:18px 18px;background:var(--surface);border:2px solid var(--border);border-radius:16px;margin-bottom:10px;cursor:pointer;transition:all .12s;user-select:none;min-height:88px}
+.pi:active{transform:scale(.98)}
+.pi.done{background:rgba(16,185,129,.06);border-color:rgba(16,185,129,.22)}
+.pi.done .pi-name{color:var(--text-muted);text-decoration:line-through;text-decoration-color:rgba(255,255,255,.3)}
+.pi.cancelled{background:rgba(244,63,94,.04);border-color:rgba(244,63,94,.22);opacity:.55;cursor:not-allowed}
+.pi.cancelled .pi-sku,.pi.cancelled .pi-name{text-decoration:line-through}
+.pi-box{width:40px;height:40px;border-radius:50%;border:4px solid rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:transparent;flex-shrink:0;transition:all .15s}
+.pi.done .pi-box{background:#10b981;border-color:#10b981;color:#0a0d14}
+.pi.done .pi-box::before{content:'✓'}
+.pi-info{min-width:0}
+.pi-sku{font-family:'SF Mono',Menlo,monospace;font-size:30px;font-weight:900;color:var(--brand);background:rgba(243,201,196,.12);padding:6px 14px;border-radius:12px;display:inline-block;letter-spacing:1px;line-height:1;margin-bottom:6px}
+.pi-name{font-size:14px;color:var(--text);line-height:1.4}
+.pi-qty{font-size:20px;font-weight:800;color:var(--text);background:rgba(255,255,255,.06);padding:8px 14px;border-radius:10px}
+
+.done-bar{position:fixed;bottom:0;left:0;right:0;padding:14px 18px 18px;background:linear-gradient(180deg,transparent,var(--bg) 30%);z-index:60;display:none;flex-direction:column;gap:8px;max-width:none}
+.done-bar.on{display:flex}
+.issue-btn{width:100%;background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.25);color:#fb7185;border-radius:14px;padding:14px;font-size:14px;font-weight:700;font-family:inherit;cursor:pointer;transition:all .12s}
+.issue-btn:active{transform:scale(.98);background:rgba(244,63,94,.14)}
+.done-btn{width:100%;background:var(--brand);color:#1a0e0b;border:none;border-radius:18px;padding:22px;font-size:18px;font-weight:900;letter-spacing:.6px;font-family:inherit;box-shadow:0 12px 36px rgba(243,201,196,.22);cursor:pointer;text-transform:uppercase;transition:all .12s}
+.done-btn:active{transform:translateY(2px);box-shadow:0 6px 20px rgba(243,201,196,.18)}
+.done-btn.idle{background:rgba(255,255,255,.06);color:var(--text-muted);box-shadow:none}
+.done-btn.idle:active{transform:none}
+
+/* Cancelled overlay */
+.cancel-overlay{position:fixed;inset:0;background:rgba(35,5,10,.95);backdrop-filter:blur(14px);z-index:200;display:none;align-items:center;justify-content:center;padding:30px;text-align:center;flex-direction:column}
+.cancel-overlay.on{display:flex}
+.cancel-overlay .icn{font-size:120px;margin-bottom:12px}
+.cancel-overlay .ttl{font-size:48px;font-weight:900;color:#f43f5e;letter-spacing:2px;margin-bottom:14px}
+.cancel-overlay .sub{font-size:18px;color:#fda4af;margin-bottom:30px;font-weight:600;max-width:500px;line-height:1.4}
+.cancel-overlay .ok{background:#fff;color:#1a0e0b;border:none;border-radius:14px;padding:18px 36px;font-size:16px;font-weight:800;cursor:pointer;font-family:inherit}
+
+/* Not-found toast */
+.toast{position:fixed;top:80px;left:50%;transform:translateX(-50%);background:rgba(244,63,94,.95);color:#fff;padding:14px 26px;border-radius:12px;font-size:15px;font-weight:700;box-shadow:0 10px 30px rgba(244,63,94,.3);z-index:300;display:none}
+.toast.on{display:block}
+.toast.ok{background:rgba(16,185,129,.95)}
+
+/* Issue report modal */
+.issue-modal{position:fixed;inset:0;background:rgba(10,13,20,.85);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);z-index:300;display:none;align-items:center;justify-content:center;padding:24px}
+.issue-modal[style*="flex"]{display:flex!important}
+.issue-card{background:var(--surface-strong);border:1px solid var(--border);border-radius:22px;padding:28px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto}
+.issue-card h3{font-size:22px;font-weight:900;color:var(--text);margin-bottom:6px;line-height:1.2}
+.issue-help{font-size:13px;color:var(--text-muted);line-height:1.5;margin-bottom:18px}
+.issue-presets{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.issue-presets .preset{background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
+.issue-presets .preset:active{background:rgba(243,201,196,.12);border-color:var(--brand);color:var(--brand)}
+.issue-presets .preset.active{background:rgba(243,201,196,.16);border-color:var(--brand);color:var(--brand)}
+.issue-card textarea{width:100%;background:var(--input-bg);border:1px solid var(--border);border-radius:12px;padding:12px 14px;font-size:14px;color:var(--text);font-family:inherit;resize:vertical;min-height:80px;outline:none;line-height:1.5}
+.issue-card textarea:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(243,201,196,.1)}
+.issue-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}
+.btn-cancel{background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:12px;padding:11px 22px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-cancel:active{background:rgba(255,255,255,.04)}
+.btn-submit{background:#f43f5e;color:#fff;border:none;border-radius:12px;padding:11px 22px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;letter-spacing:.4px}
+.btn-submit:active{transform:scale(.97)}
+</style>
+</head><body data-role="__ROLE__">
+<div class="top">
+  <div class="top-brand">
+    <div class="brand-mark">5&nbsp;SEC</div>
+    <div class="brand-sub">Picking</div>
+  </div>
+  <div class="top-show" id="topShow"></div>
+  <span class="mode-badge" id="modeBadge" title="This iPad is set as a picking station">📋 PICK iPAD</span>
+  <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">☀️</button>
+  <a href="/logout" class="top-logout">Logout</a>
+</div>
+
+<div class="page">
+  <!-- STATE A: Show picker -->
+  <div id="showView">
+    <div class="show-prompt">Step 1</div>
+    <div class="show-h1">Which show are you picking?</div>
+    <div class="show-help">Pick the show you'll be collecting orders for. You can switch later if you change tables.</div>
+    <div class="show-list" id="showList"></div>
+
+    <!-- Admin-only: configure this device as a permanent picking station -->
+    <div class="ipad-setup" id="ipadSetup">
+      <div class="ipad-setup-title">⚙️ Admin · iPad setup</div>
+      <div class="ipad-setup-help">Set this iPad as a dedicated picking station. After badge login from this device, workers will land directly on this screen — no choice menu in the way.</div>
+      <div class="ipad-setup-actions">
+        <button class="ipad-setup-btn primary" id="setPickBtn">📋 Set as picking iPad</button>
+        <button class="ipad-setup-btn" id="clearModeBtn" style="display:none">Clear setting</button>
+      </div>
+      <div class="ipad-setup-status" id="ipadSetupStatus"></div>
+    </div>
+  </div>
+
+  <!-- STATE B: Scan ready -->
+  <div id="scanView">
+    <div class="scan-icon">📋</div>
+    <div class="scan-title">Ready to scan</div>
+    <div class="scan-sub">Aim the scanner at the barcode on the packing label.</div>
+    <div class="scan-input-wrap">
+      <input class="scan-input" id="scanInput" placeholder="Waiting for scan…" inputmode="none" autocomplete="off">
+    </div>
+    <div class="scan-status"><span class="dot"></span><span>Scanner ready</span></div>
+    <div class="stats-row">
+      <div class="session-stat"><div class="num" id="sessionCount">0</div><div class="txt">this <b>session</b></div></div>
+      <div class="session-stat brand"><div class="num" id="todayCount">0</div><div class="txt">today total</div></div>
+      <div class="session-stat"><div class="num" id="weekCount">0</div><div class="txt">past 7 days</div></div>
+    </div>
+  </div>
+
+  <!-- STATE C: Checklist -->
+  <div id="listView">
+    <div class="list-head">
+      <button class="back-btn" id="backBtn">← Cancel — back to scan</button>
+      <div class="list-buyer" id="listBuyer">—</div>
+      <div class="list-meta" id="listMeta"></div>
+    </div>
+    <div class="progress-row">
+      <div class="progress-text"><b id="pickedCount">0</b> of <span id="totalCount">0</span> picked</div>
+      <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+    </div>
+    <div class="items-list" id="itemsList"></div>
+  </div>
+</div>
+
+<div class="done-bar" id="doneBar">
+  <button class="done-btn idle" id="doneBtn">Tap items above as you pick them</button>
+  <button class="issue-btn" id="issueBtn">🚧 Report a problem with this order</button>
+</div>
+
+<!-- Issue report modal -->
+<div class="issue-modal" id="issueModal" style="display:none">
+  <div class="issue-card">
+    <h3>Problem with this order</h3>
+    <div class="issue-help">Tell the manager what's wrong so they can fix it. The order moves to the "Issues" queue and you can continue picking the next one.</div>
+    <div class="issue-presets" id="issuePresets">
+      <button class="preset" data-r="Item missing — not on the table">Item missing</button>
+      <button class="preset" data-r="Item damaged">Damaged</button>
+      <button class="preset" data-r="Wrong SKU on the table">Wrong SKU</button>
+      <button class="preset" data-r="Can't find the table">Can't find</button>
+    </div>
+    <textarea id="issueReason" placeholder="Or describe the problem here…" rows="3"></textarea>
+    <div class="issue-actions">
+      <button class="btn-cancel" id="issueCancel">Cancel</button>
+      <button class="btn-submit" id="issueSubmit">Report & skip</button>
+    </div>
+  </div>
+</div>
+
+<!-- Cancelled alert -->
+<div class="cancel-overlay" id="cancelOverlay">
+  <div class="icn">🚨</div>
+  <div class="ttl">DO NOT PICK</div>
+  <div class="sub">This order has been cancelled by the customer.<br>Skip it and scan the next label.</div>
+  <button class="ok" id="cancelOk">Got it — back to scan</button>
+</div>
+
+<div class="toast" id="toast">—</div>
+
+<script>
+var currentShow=localStorage.getItem('pickShow')||'';
+var currentDetail=null,currentItems=[],sessionCount=0;
+var availableShows=[];
+
+// ─── Audio feedback (Web Audio API). Mobile Safari needs a user gesture to start. ───
+var audioCtx=null;
+function ensureAudio(){
+    if(audioCtx)return audioCtx;
+    try{audioCtx=new (window.AudioContext||window.webkitAudioContext)()}catch(e){}
+    return audioCtx;
+}
+function beep(freq,dur,type,vol){
+    var a=ensureAudio();if(!a)return;
+    var osc=a.createOscillator(),gain=a.createGain();
+    osc.type=type||'sine';osc.frequency.value=freq;
+    var v=vol||0.18;
+    gain.gain.setValueAtTime(0,a.currentTime);
+    gain.gain.linearRampToValueAtTime(v,a.currentTime+0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001,a.currentTime+dur/1000);
+    osc.connect(gain);gain.connect(a.destination);
+    osc.start();osc.stop(a.currentTime+dur/1000+0.01);
+}
+function sndClick(){beep(1400,40,'sine',0.12)}
+function sndCheck(){beep(880,80);setTimeout(function(){beep(1318,100)},90)}
+function sndComplete(){beep(659,90);setTimeout(function(){beep(988,90)},90);setTimeout(function(){beep(1318,180)},180)}
+function sndError(){beep(220,200,'square',0.12)}
+// Unlock audio on first touch (iOS requirement)
+document.body.addEventListener('touchstart',ensureAudio,{once:true,passive:true});
+document.body.addEventListener('click',ensureAudio,{once:true});
+
+// ─── Theme toggle (light/dark, persisted) ───
+function setTheme(mode){
+    document.documentElement.classList.toggle('theme-light',mode==='light');
+    localStorage.setItem('pickTheme',mode);
+    document.getElementById('themeToggle').textContent=mode==='light'?'🌙':'☀️';
+}
+setTheme(localStorage.getItem('pickTheme')||'dark');
+document.getElementById('themeToggle').addEventListener('click',function(){
+    var cur=localStorage.getItem('pickTheme')||'dark';
+    setTheme(cur==='light'?'dark':'light');
+});
+
+function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+
+function showToast(msg,ok){
+    var t=document.getElementById('toast');
+    t.textContent=msg;
+    t.className='toast on'+(ok?' ok':'');
+    setTimeout(function(){t.className='toast'},2200);
+}
+
+function switchState(s){
+    document.getElementById('showView').classList.toggle('on',s==='show');
+    document.getElementById('scanView').classList.toggle('on',s==='scan');
+    document.getElementById('listView').classList.toggle('on',s==='list');
+    document.getElementById('doneBar').classList.toggle('on',s==='list');
+    if(s==='scan'){
+        var inp=document.getElementById('scanInput');
+        inp.value='';
+        setTimeout(function(){inp.focus()},120);
+    }
+}
+
+function renderTopShow(){
+    var el=document.getElementById('topShow');
+    if(!currentShow){el.innerHTML='';return}
+    el.innerHTML='Show: <b>'+escapeHtml(currentShow)+'</b><a href="#" class="change-link" id="changeShowLink">Change</a>';
+    document.getElementById('changeShowLink').addEventListener('click',function(e){
+        e.preventDefault();
+        currentShow='';
+        localStorage.removeItem('pickShow');
+        renderTopShow();
+        loadShows();
+    });
+}
+
+function loadShows(){
+    fetch('/api/shows').then(function(r){
+        if(!r.ok)throw new Error('HTTP '+r.status);
+        return r.json();
+    }).then(function(rows){
+        availableShows=rows||[];
+        if(currentShow){
+            // Already chose one — go straight to scan
+            switchState('scan');
+            return;
+        }
+        // Render show picker
+        var list=document.getElementById('showList');
+        if(availableShows.length===0){
+            list.innerHTML='<div class="show-empty">No active shows in the last 5 days.<br>Ask your admin to import a CSV first.</div>';
+            switchState('show');
+            return;
+        }
+        list.innerHTML=availableShows.map(function(sh){
+            var platCls='pill-'+(sh.platform||'mixed');
+            if(sh.platform_count>1)platCls='pill-mixed';
+            var pendN=sh.pending||0;
+            return '<button class="show-card" data-name="'+escapeHtml(sh.name)+'">'+
+                '<div class="name">'+escapeHtml(sh.name)+'</div>'+
+                '<div class="meta">'+
+                    '<span class="pill '+platCls+'">'+(sh.platform_count>1?'mixed':escapeHtml(sh.platform||'?'))+'</span>'+
+                    '<span>'+sh.shipments+' total</span>'+
+                    '<span class="pending-count">'+pendN+'<span class="lbl">to pick</span></span>'+
+                '</div>'+
+            '</button>';
+        }).join('');
+        list.querySelectorAll('.show-card').forEach(function(b){
+            b.addEventListener('click',function(){
+                currentShow=b.dataset.name;
+                localStorage.setItem('pickShow',currentShow);
+                renderTopShow();
+                switchState('scan');
+            });
+        });
+        switchState('show');
+    }).catch(function(err){
+        // Network error or permission denied — keep the user informed instead of a blank screen
+        var list=document.getElementById('showList');
+        if(list)list.innerHTML='<div class="show-empty">Could not load shows.<br>Error: '+(err.message||err)+'<br>Try refreshing the page.</div>';
+        switchState('show');
+    });
+}
+
+// Scan input handling — the barcode scanner types into this field and hits Enter
+document.getElementById('scanInput').addEventListener('keydown',function(e){
+    if(e.key!=='Enter')return;
+    var code=this.value.trim();
+    if(!code)return;
+    this.value='';
+    lookupAndOpen(code);
+});
+// Keep focus on the scan input so barcode reads always land there
+setInterval(function(){
+    if(document.getElementById('scanView').classList.contains('on')){
+        var inp=document.getElementById('scanInput');
+        if(document.activeElement!==inp)inp.focus();
+    }
+},500);
+
+function lookupAndOpen(code){
+    fetch('/api/pick/'+encodeURIComponent(code)).then(function(r){return r.json()}).then(function(d){
+        // /api/pick/<id> takes shipment_id. The label barcode is likely tracking_code.
+        // Fall back to the generic shipment lookup which accepts either.
+        if(!d.ok){
+            return fetch('/api/shipment/'+encodeURIComponent(code)).then(function(r){return r.json()}).then(function(d2){
+                if(!d2.ok){sndError();showToast('No shipment for "'+code+'"');return}
+                openDetail(d2.shipment.shipment_id);
+            });
+        }
+        openDetail(d.shipment.shipment_id);
+    });
+}
+
+function openDetail(sid){
+    fetch('/api/pick/'+encodeURIComponent(sid)).then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){showToast(d.error||'Lookup failed');return}
+        var s=d.shipment, items=d.items||[];
+        if(s.status==='cancelled'){
+            sndError();
+            document.getElementById('cancelOverlay').classList.add('on');
+            return;
+        }
+        if(s.status==='picked'){
+            sndError();
+            showToast('Already picked by '+(s.picked_by||'someone'),true);
+            return;
+        }
+        // Optional: warn if from a different show than the one currently selected
+        if(currentShow && s.import_label && s.import_label!==currentShow){
+            if(!confirm('This order is from "'+s.import_label+'" but you are picking "'+currentShow+'". Continue anyway?'))return;
+        }
+        currentDetail=sid;
+        currentItems=items;
+        document.getElementById('listBuyer').textContent=s.buyer_name||s.buyer_username||'Customer';
+        var meta='<span class="pill pill-id">'+escapeHtml(s.shipment_id)+'</span>';
+        if(s.tracking_code)meta+='<span class="pill pill-track">'+escapeHtml(s.tracking_code)+'</span>';
+        document.getElementById('listMeta').innerHTML=meta;
+        renderItems();
+        switchState('list');
+        window.scrollTo(0,0);
+    });
+}
+
+function renderItems(){
+    var active=currentItems.filter(function(i){return !i.cancelled});
+    var pickedN=active.filter(function(i){return i.picked}).length;
+    var total=active.length;
+    document.getElementById('pickedCount').textContent=pickedN;
+    document.getElementById('totalCount').textContent=total;
+    document.getElementById('progressFill').style.width=(total?100*pickedN/total:0)+'%';
+    document.getElementById('itemsList').innerHTML=currentItems.map(function(it){
+        var cls='pi'+(it.cancelled?' cancelled':(it.picked?' done':''));
+        return '<div class="'+cls+'" data-id="'+it.id+'">'+
+            '<div class="pi-box"></div>'+
+            '<div class="pi-info">'+
+                '<div class="pi-sku">'+escapeHtml(it.sku||'?')+'</div>'+
+                '<div class="pi-name">'+escapeHtml(it.product_name||'')+(it.cancelled?' · CANCELLED':'')+'</div>'+
+            '</div>'+
+            '<div class="pi-qty">×'+(it.quantity||1)+'</div>'+
+        '</div>';
+    }).join('');
+    document.getElementById('itemsList').querySelectorAll('.pi').forEach(function(el){
+        if(el.classList.contains('cancelled'))return;
+        el.addEventListener('click',function(){toggleItem(parseInt(el.dataset.id))});
+    });
+    var btn=document.getElementById('doneBtn');
+    if(pickedN===total && total>0){
+        btn.classList.remove('idle');
+        btn.textContent='✓ Done — bring to packer';
+    } else {
+        btn.classList.add('idle');
+        btn.textContent=(total-pickedN)+' more to pick';
+    }
+}
+
+function toggleItem(itemId){
+    fetch('/api/pick/item/'+itemId+'/toggle',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){sndError();showToast(d.error||'Error');return}
+        var it=currentItems.find(function(x){return x.id===itemId});
+        if(it)it.picked=d.picked;
+        if(d.picked)sndCheck();else sndClick();
+        renderItems();
+    });
+}
+
+function refreshMyStats(){
+    fetch('/api/pick/my-stats').then(function(r){return r.json()}).then(function(d){
+        document.getElementById('todayCount').textContent=d.today||0;
+        document.getElementById('weekCount').textContent=d.week||0;
+    });
+}
+
+function completePick(){
+    if(!currentDetail)return;
+    var active=currentItems.filter(function(i){return !i.cancelled});
+    var pickedN=active.filter(function(i){return i.picked}).length;
+    if(pickedN<active.length){
+        if(!confirm('Only '+pickedN+' of '+active.length+' items are checked. Mark this order picked anyway?'))return;
+    }
+    fetch('/api/pick/complete/'+encodeURIComponent(currentDetail),{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){sndError();showToast(d.error||'Error');return}
+        sndComplete();
+        sessionCount++;
+        document.getElementById('sessionCount').textContent=sessionCount;
+        currentDetail=null;currentItems=[];
+        showToast('✓ Picked — bring to packer',true);
+        switchState('scan');
+        refreshMyStats();
+    });
+}
+
+document.getElementById('backBtn').addEventListener('click',function(){
+    currentDetail=null;currentItems=[];
+    switchState('scan');
+});
+document.getElementById('doneBtn').addEventListener('click',completePick);
+
+// ─── Issue reporting ───
+var issueModal=document.getElementById('issueModal');
+var issueReasonText='';
+function openIssue(){
+    issueReasonText='';
+    document.getElementById('issueReason').value='';
+    document.querySelectorAll('.issue-presets .preset').forEach(function(b){b.classList.remove('active')});
+    issueModal.style.display='flex';
+    setTimeout(function(){document.getElementById('issueReason').focus()},80);
+}
+function closeIssue(){issueModal.style.display='none'}
+document.getElementById('issueBtn').addEventListener('click',openIssue);
+document.getElementById('issueCancel').addEventListener('click',closeIssue);
+document.querySelectorAll('.issue-presets .preset').forEach(function(b){
+    b.addEventListener('click',function(){
+        document.querySelectorAll('.issue-presets .preset').forEach(function(x){x.classList.remove('active')});
+        b.classList.add('active');
+        issueReasonText=b.dataset.r;
+        document.getElementById('issueReason').value=b.dataset.r;
+    });
+});
+document.getElementById('issueSubmit').addEventListener('click',function(){
+    if(!currentDetail)return;
+    var reason=document.getElementById('issueReason').value.trim()||issueReasonText;
+    if(!reason){showToast('Pick a reason or type one');sndError();return}
+    fetch('/api/pick/issue/'+encodeURIComponent(currentDetail),{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:reason})
+    }).then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){sndError();showToast(d.error||'Failed');return}
+        sndClick();
+        closeIssue();
+        currentDetail=null;currentItems=[];
+        showToast('🚧 Issue reported — manager will handle it',true);
+        switchState('scan');
+        refreshMyStats();
+    });
+});
+document.getElementById('cancelOk').addEventListener('click',function(){
+    document.getElementById('cancelOverlay').classList.remove('on');
+    switchState('scan');
+});
+
+// Admin-only: check + manage machine_mode cookie that controls iPad behaviour.
+// When mode='pick', any badge login on this device routes straight to /pick.
+function refreshMachineMode(){
+    var isAdmin=document.body.dataset.role==='admin';
+    fetch('/api/machine-mode').then(function(r){return r.json()}).then(function(d){
+        var mode=d.mode||'';
+        var badge=document.getElementById('modeBadge');
+        badge.classList.toggle('on', mode==='pick');
+        if(!isAdmin)return;
+        var setup=document.getElementById('ipadSetup');
+        setup.classList.add('on');  // admins see the setup panel any time they hit the show picker
+        var status=document.getElementById('ipadSetupStatus');
+        var clearBtn=document.getElementById('clearModeBtn');
+        var setBtn=document.getElementById('setPickBtn');
+        if(mode==='pick'){
+            status.textContent='✓ This iPad is set as a picking station — workers go straight to /pick after badge login.';
+            clearBtn.style.display='inline-block';
+            setBtn.textContent='Already configured';
+            setBtn.style.opacity='.5';
+        } else {
+            status.textContent='Not configured yet. After tapping, any worker who scans their badge from this device goes straight to picking.';
+            clearBtn.style.display='none';
+            setBtn.textContent='📋 Set as picking iPad';
+            setBtn.style.opacity='1';
+        }
+    });
+}
+document.getElementById('setPickBtn').addEventListener('click',function(){
+    fetch('/api/machine-mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'pick'})})
+        .then(function(r){return r.json()}).then(function(d){
+            if(d.ok){showToast('✓ iPad set for picking',true);refreshMachineMode()}
+            else showToast(d.error||'Failed');
+        });
+});
+document.getElementById('clearModeBtn').addEventListener('click',function(){
+    if(!confirm('Clear iPad picking-station setting?'))return;
+    fetch('/api/machine-mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:''})})
+        .then(function(r){return r.json()}).then(function(d){
+            if(d.ok){showToast('Cleared',true);refreshMachineMode()}
+        });
+});
+document.getElementById('modeBadge').addEventListener('click',function(){
+    if(document.body.dataset.role==='admin'){
+        currentShow='';
+        localStorage.removeItem('pickShow');
+        renderTopShow();
+        loadShows();
+    }
+});
+
+renderTopShow();
+loadShows();
+refreshMachineMode();
+refreshMyStats();
+// Periodically refresh personal stats — picks made on other devices show up too
+setInterval(refreshMyStats,30000);
+</script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# PICKING ISSUES — admin queue for shipments flagged by pickers
+# ══════════════════════════════════════════════════════════
+
+ISSUES_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Picking issues — 5 SEC</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1100px;margin:0 auto;padding:40px 28px 0}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:6px;flex-wrap:wrap}
+.page-title{font-size:32px;font-weight:900;color:#fff;letter-spacing:-.5px;line-height:1.05}
+.page-sub{color:var(--text-muted);margin-top:8px;font-size:14px;margin-bottom:26px}
+.refresh-btn{background:var(--surface);border:1px solid var(--border);color:var(--text-muted);border-radius:10px;padding:9px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
+.refresh-btn:hover{color:var(--text);background:rgba(255,255,255,.06)}
+
+.count-pill{display:inline-flex;align-items:center;gap:8px;background:rgba(244,63,94,.1);border:1px solid rgba(244,63,94,.25);color:#fb7185;padding:8px 16px;border-radius:20px;font-size:13px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+.count-pill .dot{width:8px;height:8px;border-radius:50%;background:#fb7185;animation:pulse 1.5s ease infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+/* Issue cards */
+.issues-list{display:flex;flex-direction:column;gap:14px}
+.issue{background:var(--surface);border:1px solid rgba(244,63,94,.22);border-left:4px solid #fb7185;border-radius:16px;padding:20px 22px}
+.issue-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:12px;flex-wrap:wrap}
+.issue-buyer{font-size:20px;font-weight:800;color:#fff;line-height:1.2;margin-bottom:4px}
+.issue-meta{display:flex;flex-wrap:wrap;gap:6px;font-size:12px;align-items:center}
+.issue-meta .pill{padding:3px 10px;border-radius:7px;font-weight:700;font-size:11px;letter-spacing:.3px}
+.pill-show{background:rgba(243,201,196,.12);color:#f3c9c4}
+.pill-id{background:rgba(255,255,255,.05);color:var(--text-muted);font-family:'SF Mono',Menlo,monospace}
+.pill-track{background:rgba(99,102,241,.14);color:#a5b4fc;font-family:'SF Mono',Menlo,monospace}
+.pill-platform{background:rgba(148,163,184,.08);color:#94a3b8;text-transform:uppercase}
+
+.reason-box{background:rgba(244,63,94,.06);border:1px solid rgba(244,63,94,.15);border-radius:10px;padding:14px 18px;margin-bottom:14px;display:flex;gap:12px;align-items:flex-start}
+.reason-box .icon{font-size:22px;flex-shrink:0;line-height:1}
+.reason-box .txt{flex:1;font-size:14px;color:var(--text);line-height:1.5}
+.reason-box .txt b{color:#fb7185;font-weight:700}
+
+.items-strip{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+.item-tag{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:8px;padding:5px 10px;font-size:12px}
+.item-tag .sku{font-family:'SF Mono',Menlo,monospace;color:#f3c9c4;font-weight:700;background:rgba(243,201,196,.1);padding:2px 6px;border-radius:5px;font-size:11px}
+.item-tag .name{color:var(--text-muted);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item-tag .qty{color:var(--text-dim);font-weight:700}
+.item-tag.cancelled{opacity:.5;text-decoration:line-through}
+
+.issue-actions{display:flex;gap:10px;flex-wrap:wrap;padding-top:14px;border-top:1px solid var(--border)}
+.action-retry{background:rgba(16,185,129,.14);color:#34d399;border:1px solid rgba(16,185,129,.3);border-radius:11px;padding:11px 22px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;flex:1;min-width:200px;display:flex;align-items:center;justify-content:center;gap:8px}
+.action-retry:hover{background:rgba(16,185,129,.22)}
+.action-retry:active{transform:scale(.98)}
+.action-cancel{background:rgba(244,63,94,.1);color:#fb7185;border:1px solid rgba(244,63,94,.22);border-radius:11px;padding:11px 22px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;flex:1;min-width:200px;display:flex;align-items:center;justify-content:center;gap:8px}
+.action-cancel:hover{background:rgba(244,63,94,.18)}
+.action-cancel:active{transform:scale(.98)}
+
+.empty{text-align:center;padding:80px 20px;background:var(--surface);border:1px dashed var(--border);border-radius:18px}
+.empty-icon{font-size:64px;margin-bottom:14px;opacity:.6}
+.empty-title{font-size:20px;font-weight:800;color:#34d399;margin-bottom:6px}
+.empty-sub{font-size:14px;color:var(--text-muted)}
+.loading{text-align:center;padding:40px;color:var(--text-dim);font-size:14px}
+
+/* Resolution toast */
+.toast{position:fixed;top:80px;left:50%;transform:translateX(-50%);background:rgba(16,185,129,.95);color:#fff;padding:14px 26px;border-radius:12px;font-size:15px;font-weight:700;box-shadow:0 10px 30px rgba(16,185,129,.3);z-index:300;display:none}
+.toast.on{display:block}
+.toast.err{background:rgba(244,63,94,.95);box-shadow:0 10px 30px rgba(244,63,94,.3)}
+</style>
+</head><body data-role="__ROLE__">
+__NAVBAR__
+<div class="wrap">
+  <div class="page-head">
+    <div>
+      <div class="page-title">🚧 Picking issues</div>
+    </div>
+    <button class="refresh-btn" id="refreshBtn">↻ Refresh</button>
+  </div>
+  <div class="page-sub">
+    Orders flagged by pickers because something was wrong on the table.
+    Resolve by sending back to the queue (item is now available) or cancelling.
+  </div>
+  <div id="countWrap" style="margin-bottom:24px"></div>
+  <div id="list"></div>
+</div>
+
+<div class="toast" id="toast">—</div>
+
+<script>
+function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function showToast(msg,err){
+    var t=document.getElementById('toast');
+    t.textContent=msg;t.className='toast on'+(err?' err':'');
+    setTimeout(function(){t.className='toast'},2400);
+}
+
+function load(){
+    document.getElementById('list').innerHTML='<div class="loading">Loading issues…</div>';
+    fetch('/api/issues').then(function(r){return r.json()}).then(function(rows){
+        var count=rows.length;
+        document.getElementById('countWrap').innerHTML=count>0
+            ? '<span class="count-pill"><span class="dot"></span>'+count+' open '+(count===1?'issue':'issues')+'</span>'
+            : '';
+        var list=document.getElementById('list');
+        if(count===0){
+            list.innerHTML='<div class="empty"><div class="empty-icon">✓</div><div class="empty-title">All clear</div><div class="empty-sub">No picking issues right now. Pickers can keep going.</div></div>';
+            return;
+        }
+        list.innerHTML='<div class="issues-list">'+rows.map(function(s){
+            var platCls='pill-platform';
+            var itemsHtml=(s.items||[]).map(function(it){
+                var cls='item-tag'+(it.cancelled?' cancelled':'');
+                return '<span class="'+cls+'"><span class="sku">'+escapeHtml(it.sku||'?')+'</span><span class="name">'+escapeHtml(it.product_name||'')+'</span><span class="qty">×'+it.quantity+'</span></span>';
+            }).join('');
+            return '<div class="issue" data-sid="'+escapeHtml(s.shipment_id)+'">'+
+                '<div class="issue-head">'+
+                    '<div>'+
+                        '<div class="issue-buyer">'+escapeHtml(s.buyer_name||s.buyer_username||'(unknown buyer)')+'</div>'+
+                        '<div class="issue-meta">'+
+                            (s.import_label?'<span class="pill pill-show">'+escapeHtml(s.import_label)+'</span>':'')+
+                            (s.platform?'<span class="pill '+platCls+'">'+escapeHtml(s.platform)+'</span>':'')+
+                            '<span class="pill pill-id">'+escapeHtml(s.shipment_id)+'</span>'+
+                            (s.tracking_code?'<span class="pill pill-track">'+escapeHtml(s.tracking_code)+'</span>':'')+
+                        '</div>'+
+                    '</div>'+
+                '</div>'+
+                '<div class="reason-box">'+
+                    '<div class="icon">🚧</div>'+
+                    '<div class="txt"><b>Reported issue:</b><br>'+escapeHtml(s.flag_reason||'(no reason given)')+'</div>'+
+                '</div>'+
+                (itemsHtml?'<div class="items-strip">'+itemsHtml+'</div>':'')+
+                '<div class="issue-actions">'+
+                    '<button class="action-retry" data-act="retry">↻ Resolved — send back to picking</button>'+
+                    '<button class="action-cancel" data-act="cancel">✕ Cancel order</button>'+
+                '</div>'+
+            '</div>';
+        }).join('')+'</div>';
+        // Wire buttons
+        list.querySelectorAll('.issue button').forEach(function(btn){
+            btn.addEventListener('click',function(){
+                var card=btn.closest('.issue');
+                var sid=card.dataset.sid;
+                var act=btn.dataset.act;
+                var msg=act==='retry'
+                    ? 'Send this order back to the pick queue?'
+                    : 'Cancel this order permanently?';
+                if(!confirm(msg))return;
+                btn.disabled=true;btn.textContent='Working…';
+                fetch('/api/pick/resolve/'+encodeURIComponent(sid),{
+                    method:'POST',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({action:act})
+                }).then(function(r){return r.json()}).then(function(d){
+                    if(d.ok){
+                        showToast(act==='retry'?'✓ Back in pick queue':'Cancelled');
+                        load();
+                    } else {
+                        showToast(d.error||'Failed',true);
+                        btn.disabled=false;
+                        btn.textContent=act==='retry'?'↻ Resolved — send back to picking':'✕ Cancel order';
+                    }
+                });
+            });
+        });
+    });
+}
+
+document.getElementById('refreshBtn').addEventListener('click',load);
+load();
+// Auto-refresh every 30s so a manager who leaves the page open sees new issues as they come in
+setInterval(load,30000);
 </script>
 </body></html>'''
