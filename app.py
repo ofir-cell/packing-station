@@ -1579,13 +1579,29 @@ def api_shipments_recent():
 @req_login
 def api_shipment_lookup(code):
     """Look up a single shipment by tracking_code OR shipment_id.
-    Used by worker page when a barcode is scanned."""
+    Used by worker page when a barcode is scanned.
+    USPS / IMpb barcodes embed extras (e.g. "420" + ZIP + tracking), so we also
+    fall back to substring matching when an exact match fails."""
     code = (code or "").strip()
     if not re.match(r'^[A-Za-z0-9_\-]{1,64}$', code):
         return jsonify({"ok": False, "error": "Invalid code"})
     c = sdb()
+    # 1) Exact match
     row = c.execute("""SELECT * FROM shipments
                        WHERE tracking_code=? OR shipment_id=? LIMIT 1""", (code, code)).fetchone()
+    # 2) Stored tracking is a SUBSTRING of the scanned code (USPS prefix case)
+    if not row and len(code) > 10:
+        row = c.execute("""SELECT * FROM shipments
+                           WHERE tracking_code IS NOT NULL
+                             AND length(tracking_code) >= 10
+                             AND ? LIKE '%' || tracking_code || '%'
+                           LIMIT 1""", (code,)).fetchone()
+    # 3) Scanned is a substring of stored — handles rare truncation
+    if not row and len(code) >= 10:
+        row = c.execute("""SELECT * FROM shipments
+                           WHERE tracking_code IS NOT NULL
+                             AND tracking_code LIKE '%' || ? || '%'
+                           LIMIT 1""", (code,)).fetchone()
     if not row:
         c.close()
         return jsonify({"ok": False, "error": "Shipment not found"})
