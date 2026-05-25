@@ -524,8 +524,12 @@ capPhoto().then(function(pb){var fd=new FormData();fd.append('tracking',ct);fd.a
 return fetch('/api/upload',{method:'POST',body:fd})}).then(function(r){return r.json()}).then(function(d){
 if(d.ok){n++;document.getElementById('cn').textContent=n;document.getElementById('dkk').textContent=ct;document.getElementById('ddd').textContent='Duration: '+dur+'s';go('d');setTimeout(function(){go('r')},3000)}
 else{alert('Failed');go('r')}}).catch(function(){alert('Upload failed');go('r')})}
-mi.addEventListener('keydown',function(e){if(e.key==='Enter'){var t=mi.value.trim();if(t)startRec(t)}});
-ri.addEventListener('keydown',function(e){if(e.key!=='Enter')return;var t=ri.value.trim();if(!t)return;stopTmr();
+// USPS labels carry "service + ZIP + tracking" in the barcode (up to ~33 digits)
+// but humans only see the 22-digit tracking. Strip the prefix on entry so the
+// recording, the upload payload, and the CSV log all carry the clean 22-digit code.
+function normTrk(s){s=(s||'').trim();if(/^\d{23,40}$/.test(s))return s.slice(-22);return s}
+mi.addEventListener('keydown',function(e){if(e.key==='Enter'){var t=normTrk(mi.value);if(t)startRec(t)}});
+ri.addEventListener('keydown',function(e){if(e.key!=='Enter')return;var t=normTrk(ri.value);if(!t)return;stopTmr();
 if(t===ct){stopRec().then(upload)}else{stopRec().then(upload).then(function(){setTimeout(function(){startRec(t)},500)})}});
 function startTmr(){stopTmr();ti=setInterval(function(){var s=Math.floor((Date.now()-t0)/1000);document.getElementById('rmm').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')},200)}
 function stopTmr(){if(ti){clearInterval(ti);ti=null}}
@@ -1485,8 +1489,9 @@ function loadUsers(){
             var actions='';
             if(info.role==='worker'){
                 if(info.has_badge){
-                    actions='<a class="btn btn-s btn-sm" href="/api/users/badge/pdf/'+u+'" target="_blank">🖨️ Print</a>'+
-                        '<button class="btn btn-d btn-sm" data-act="regen" data-u="'+u+'">↻ Regenerate</button>'+
+                    actions='<a class="btn btn-s btn-sm" href="/api/users/badge/pdf/'+u+'" target="_blank">🖨️ Card</a>'+
+                        '<a class="btn btn-s btn-sm" href="/api/users/badge/label4x6/'+u+'" target="_blank">🖨️ 4×6 Label</a>'+
+                        '<button class="btn btn-d btn-sm" data-act="regen" data-u="'+u+'">↻ Regen</button>'+
                         '<button class="btn btn-d btn-sm" data-act="revoke" data-u="'+u+'">✕ Revoke</button>';
                 } else {
                     actions='<button class="btn btn-p btn-sm" data-act="regen" data-u="'+u+'">+ Issue Badge</button>';
@@ -4127,10 +4132,20 @@ function loadShows(){
     });
 }
 
+// USPS IMpb barcodes embed extras (service code + ZIP + ...) BEFORE the 22-digit
+// tracking number. We want clean 22-digit values everywhere in the system —
+// strip the prefix here so the server, the UI, and the API all see the same code.
+function normalizeTracking(s){
+    s=(s||'').trim();
+    // 23-40 all-digit string = USPS barcode with prefix → take the last 22 digits
+    if(/^\d{23,40}$/.test(s)) return s.slice(-22);
+    return s;
+}
+
 // Scan input handling — the barcode scanner types into this field and hits Enter
 document.getElementById('scanInput').addEventListener('keydown',function(e){
     if(e.key!=='Enter')return;
-    var code=this.value.trim();
+    var code=normalizeTracking(this.value);
     if(!code)return;
     this.value='';
     lookupAndOpen(code);

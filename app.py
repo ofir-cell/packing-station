@@ -795,10 +795,18 @@ def api_station():
 @req_login
 def api_stations(): return jsonify(ldj(STATIONS_FILE))
 
+def _normalize_tracking(s):
+    """USPS IMpb barcodes prepend service code + ZIP before the 22-digit tracking.
+    Strip the prefix so DB lookups and CSV logs always use the clean 22-digit code."""
+    s = (s or "").strip()
+    if re.match(r'^\d{23,40}$', s):
+        return s[-22:]
+    return s
+
 @app.route("/api/upload",methods=["POST"])
 @req_login
 def api_upload():
-    trk=request.form.get("tracking","").strip()
+    trk=_normalize_tracking(request.form.get("tracking",""))
     sta=request.form.get("station",session.get("station","S0"))
     dur=request.form.get("duration","0")
     wrk=session.get("name","Unknown")
@@ -1580,9 +1588,9 @@ def api_shipments_recent():
 def api_shipment_lookup(code):
     """Look up a single shipment by tracking_code OR shipment_id.
     Used by worker page when a barcode is scanned.
-    USPS / IMpb barcodes embed extras (e.g. "420" + ZIP + tracking), so we also
-    fall back to substring matching when an exact match fails."""
-    code = (code or "").strip()
+    First normalizes USPS IMpb barcodes (23-40 digit numeric → last 22 digits),
+    then tries exact match, then substring match as a safety net."""
+    code = _normalize_tracking(code or "")
     if not re.match(r'^[A-Za-z0-9_\-]{1,64}$', code):
         return jsonify({"ok": False, "error": "Invalid code"})
     c = sdb()
@@ -2295,6 +2303,72 @@ def api_badge_pdf(u):
     except Exception as e:
         print("Badge PDF error:",e,flush=True)
         return jsonify({"ok":False,"error":"PDF generation failed: "+str(e)[:100]}),500
+
+@app.route("/api/users/badge/label4x6/<u>")
+@req_role("admin")
+def api_badge_label4x6(u):
+    """Generate a 4×6 inch shipping-label-sized badge PDF.
+    The badge occupies a 4×3" area at the BOTTOM half of the label so the top
+    half can be folded over the badge or left blank for hole-punching/lamination.
+    Optimized for thermal label printers (DYMO 4XL, Rollo, Zebra, etc.)."""
+    users = ldj(USERS_FILE)
+    if u not in users: return ("", 404)
+    info = users[u]
+    token = info.get("badge_token")
+    if not token: return jsonify({"ok": False, "error": "User has no badge token"}), 400
+    try:
+        from io import BytesIO
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.units import inch
+        import barcode
+        from barcode.writer import ImageWriter
+        # Generate barcode image (Code 128 — scanner-friendly)
+        bio = BytesIO()
+        bc = barcode.Code128(token, writer=ImageWriter())
+        bc.write(bio, options={"module_height": 14.0, "module_width": 0.5, "font_size": 9,
+                               "text_distance": 3.0, "quiet_zone": 3})
+        bio.seek(0)
+        from reportlab.lib.utils import ImageReader
+        img = ImageReader(bio)
+        # Page = 4×6" (thermal label), with badge content in bottom 3"
+        page_w, page_h = 4 * inch, 6 * inch
+        out = BytesIO()
+        c = canvas.Canvas(out, pagesize=(page_w, page_h))
+        # ─── Bottom half: the badge (4×3", from y=0 to y=3") ───
+        # Outer rounded border
+        c.setStrokeColorRGB(0.2, 0.2, 0.2); c.setLineWidth(1.2)
+        c.roundRect(0.15*inch, 0.15*inch, page_w - 0.3*inch, 3*inch - 0.3*inch, 8, stroke=1, fill=0)
+        # Top stripe — brand pink
+        stripe_h = 0.6 * inch
+        c.setFillColorRGB(0.953, 0.788, 0.769)  # #f3c9c4 brand pink
+        c.roundRect(0.15*inch, 3*inch - 0.15*inch - stripe_h, page_w - 0.3*inch, stripe_h, 8, stroke=0, fill=1)
+        # Stripe text
+        c.setFillColorRGB(0.10, 0.06, 0.05)
+        c.setFont("Helvetica-Bold", 22); c.drawCentredString(page_w/2, 3*inch - 0.40*inch, "5 SEC")
+        c.setFont("Helvetica-Bold", 9); c.drawCentredString(page_w/2, 3*inch - 0.60*inch, "EMPLOYEE BADGE")
+        # Worker name (big, centered)
+        c.setFillColorRGB(0, 0, 0); c.setFont("Helvetica-Bold", 24)
+        c.drawCentredString(page_w/2, 3*inch - 1.15*inch, info["name"])
+        # Username
+        c.setFont("Helvetica", 11); c.setFillColorRGB(0.4, 0.4, 0.4)
+        c.drawCentredString(page_w/2, 3*inch - 1.42*inch, "@" + u)
+        # Role pill
+        role_text = info.get("role", "").upper()
+        if role_text:
+            c.setFont("Helvetica-Bold", 9); c.setFillColorRGB(0.4, 0.4, 0.4)
+            c.drawCentredString(page_w/2, 3*inch - 1.65*inch, role_text)
+        # Barcode (large, scanner-friendly across the bottom)
+        bc_w = page_w - 0.6*inch; bc_h = 1.0*inch
+        c.drawImage(img, 0.30*inch, 0.30*inch, width=bc_w, height=bc_h,
+                    preserveAspectRatio=True, mask='auto')
+        c.showPage(); c.save()
+        out.seek(0)
+        return send_file(out, mimetype="application/pdf",
+                         download_name="badge_4x6_" + u + ".pdf", as_attachment=False)
+    except Exception as e:
+        print("Badge 4x6 PDF error:", e, flush=True)
+        return jsonify({"ok": False, "error": "PDF generation failed: " + str(e)[:100]}), 500
+
 
 @app.route("/api/users/badge/sheet")
 @req_role("admin")
