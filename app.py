@@ -2084,27 +2084,29 @@ def sku_lookup_page():
 @app.route("/api/sku-lookup/batches")
 @req_role("admin", "cs")
 def api_sku_batches():
-    """List import batches so the manager can filter to current show."""
+    """List import labels (shows) so the manager can filter to a specific show.
+    Groups all CSVs of the same show into ONE row regardless of how many files were uploaded."""
     c = sdb()
-    rows = c.execute("""SELECT import_batch, MAX(import_label) AS label,
+    rows = c.execute("""SELECT import_label AS label,
                                COUNT(*) AS shipments,
                                MAX(imported_at) AS imported_at,
-                               MAX(platform) AS platform
-                        FROM shipments WHERE import_batch IS NOT NULL
-                        GROUP BY import_batch
-                        ORDER BY imported_at DESC""").fetchall()
+                               GROUP_CONCAT(DISTINCT platform) AS platform
+                        FROM shipments
+                        WHERE import_label IS NOT NULL AND import_label <> ''
+                        GROUP BY import_label
+                        ORDER BY MAX(imported_at) DESC""").fetchall()
     c.close()
     return jsonify([dict(r) for r in rows])
 
 @app.route("/api/sku-lookup/<sku>")
 @req_role("admin", "cs")
 def api_sku_lookup(sku):
-    """Find every item with this SKU. Optional filter by import_batch.
+    """Find every item with this SKU. Optional filter by import_label (show name).
     Returns enough info to identify which physical item this is and where it went."""
     sku = (sku or "").strip()
     if not sku or len(sku) > 64:
         return jsonify({"ok": False, "error": "Invalid SKU"})
-    batch = (request.args.get("batch") or "").strip()
+    label = (request.args.get("label") or request.args.get("batch") or "").strip()
     c = sdb()
     q = """SELECT i.id AS item_id, i.sku, i.product_name, i.quantity, i.cancelled, i.cancel_reason,
                   i.order_id, i.item_weight_g,
@@ -2115,16 +2117,16 @@ def api_sku_lookup(sku):
            JOIN shipments s ON s.shipment_id = i.shipment_id
            WHERE i.sku = ?"""
     params = [sku]
-    if batch:
-        q += " AND s.import_batch = ?"
-        params.append(batch)
-    q += " ORDER BY s.import_batch DESC, i.cancelled, s.status"
+    if label:
+        q += " AND s.import_label = ?"
+        params.append(label)
+    q += " ORDER BY s.import_label DESC, i.cancelled, s.status"
     rows = c.execute(q, params).fetchall()
     c.close()
     return jsonify({
         "ok": True,
         "sku": sku,
-        "batch_filter": batch or None,
+        "label_filter": label or None,
         "matches": [dict(r) for r in rows],
     })
 

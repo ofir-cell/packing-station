@@ -322,6 +322,8 @@ body.sc .check-area{display:block}
 .check-item.done .ci-box{background:#10b981;border-color:#10b981;color:#0a0d14}
 .ci-sku{flex-shrink:0;font-family:'SF Mono',Menlo,monospace;font-size:18px;font-weight:900;color:#f3c9c4;min-width:46px;text-align:center;background:rgba(243,201,196,.1);padding:4px 8px;border-radius:8px;letter-spacing:.5px}
 .ci-name{flex:1;font-size:13px;color:#e4e8f1;line-height:1.4;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ci-name .part-tag{display:inline-block;background:rgba(243,201,196,.18);color:#f3c9c4;font-family:'SF Mono',Menlo,monospace;font-weight:900;font-size:13px;padding:2px 8px;border-radius:6px;letter-spacing:.5px;margin-right:6px;vertical-align:middle;text-transform:uppercase}
+.check-item.done .ci-name .part-tag{opacity:.4}
 .ci-qty{font-size:14px;color:#9ba9c1;font-weight:800;flex-shrink:0}
 .check-status{margin-top:12px;font-size:13px;color:#9ba9c1;text-align:center;padding:10px 14px;background:rgba(255,255,255,.04);border-radius:10px;font-weight:600;transition:all .2s}
 .check-status.ready{background:rgba(16,185,129,.14);color:#10b981;border:1px solid rgba(16,185,129,.3);font-weight:800;letter-spacing:.5px}
@@ -467,12 +469,18 @@ function loadChecklist(tracking){
         items.forEach(function(it,i){if(it.picked)packedFlags[i]=true});
         var list=document.getElementById('checkItems');
         list.innerHTML=items.map(function(it,i){
-            var name=(it.product_name||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            var safe=(it.product_name||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            var partMatch=safe.match(/(Part\s*\d+)/i);
+            var nameHtml=safe;
+            if(partMatch){
+                var stripped=safe.replace(/[\s·,—–-]*Part\s*\d+[\s·,—–-]*/i,' ').replace(/\s{2,}/g,' ').trim();
+                nameHtml='<span class="part-tag">'+partMatch[1].toUpperCase()+'</span>'+stripped;
+            }
             var done=it.picked?' done':'';
             return '<div class="check-item'+done+'" data-i="'+i+'">'+
                 '<div class="ci-box"></div>'+
                 '<div class="ci-sku">'+(it.sku||'?')+'</div>'+
-                '<div class="ci-name">'+name+'</div>'+
+                '<div class="ci-name">'+nameHtml+'</div>'+
                 '<div class="ci-qty">×'+(it.quantity||1)+'</div>'+
             '</div>';
         }).join('');
@@ -3497,13 +3505,20 @@ __NAVBAR__
 function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function fmtDate(s){if(!s)return '';try{return new Date(s).toLocaleDateString(undefined,{month:'short',day:'numeric'})}catch(e){return s.slice(0,10)}}
 
-// Load batches
+// Highlight "Part N" pattern in product names — bold and colored, just like SKU numbers
+function highlightPart(s){
+  if(!s)return s;
+  return s.replace(/(Part\s*\d+)/gi,'<b style="color:var(--brand);font-weight:800">$1</b>');
+}
+
+// Load shows (grouped — one row per show name across all CSVs)
 fetch('/api/sku-lookup/batches').then(function(r){return r.json()}).then(function(batches){
   var sel=document.getElementById('batch');
   batches.forEach(function(b){
     var opt=document.createElement('option');
-    opt.value=b.import_batch;
-    opt.textContent=(b.label||b.import_batch)+' · '+b.shipments+' shipments';
+    opt.value=b.label||'';
+    var platforms=b.platform||'';
+    opt.textContent=(b.label||'(unnamed)')+' · '+b.shipments+' shipments'+(platforms?' · '+platforms:'');
     sel.appendChild(opt);
   });
 });
@@ -3519,7 +3534,7 @@ function doSearch(){
   }
   area.innerHTML='<div class="empty">Looking up SKU '+escapeHtml(sku)+'…</div>';
   var url='/api/sku-lookup/'+encodeURIComponent(sku);
-  if(batch)url+='?batch='+encodeURIComponent(batch);
+  if(batch)url+='?label='+encodeURIComponent(batch);
   fetch(url).then(function(r){return r.json()}).then(function(d){
     if(!d.ok){area.innerHTML='<div class="empty">'+escapeHtml(d.error||'Error')+'</div>';return}
     var m=d.matches||[];
@@ -3557,7 +3572,7 @@ function doSearch(){
       return '<div class="match '+cls+'">'+
         '<div class="match-status '+cls+'">'+statusText+'</div>'+
         '<div class="match-info">'+
-          '<div class="match-name">SKU '+escapeHtml(x.sku)+' × '+x.quantity+(x.product_name?'<span style="font-weight:400;color:var(--text-muted);font-size:13px">— '+escapeHtml(x.product_name)+'</span>':'')+'</div>'+
+          '<div class="match-name">SKU '+escapeHtml(x.sku)+' × '+x.quantity+(x.product_name?'<span style="font-weight:400;color:var(--text-muted);font-size:13px">— '+highlightPart(escapeHtml(x.product_name))+'</span>':'')+'</div>'+
           meta+
           (x.cancel_reason?'<div class="match-cancel">⚠️ '+escapeHtml(x.cancel_reason)+'</div>':'')+
         '</div>'+
@@ -3875,6 +3890,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .pi-info{min-width:0}
 .pi-sku{font-family:'SF Mono',Menlo,monospace;font-size:30px;font-weight:900;color:var(--brand);background:rgba(243,201,196,.12);padding:6px 14px;border-radius:12px;display:inline-block;letter-spacing:1px;line-height:1;margin-bottom:6px}
 .pi-name{font-size:14px;color:var(--text);line-height:1.4}
+.pi-name .part-tag{display:inline-block;background:rgba(243,201,196,.18);color:var(--brand);font-family:'SF Mono',Menlo,monospace;font-weight:900;font-size:15px;padding:3px 10px;border-radius:8px;letter-spacing:1px;margin-right:6px;vertical-align:middle;text-transform:uppercase}
+.pi.done .pi-name .part-tag{opacity:.5}
 .pi-qty{font-size:20px;font-weight:800;color:var(--text);background:rgba(255,255,255,.06);padding:8px 14px;border-radius:10px}
 
 .done-bar{position:fixed;bottom:0;left:0;right:0;padding:14px 18px 18px;background:linear-gradient(180deg,transparent,var(--bg) 30%);z-index:60;display:none;flex-direction:column;gap:8px;max-width:none}
@@ -4060,6 +4077,16 @@ document.getElementById('themeToggle').addEventListener('click',function(){
 
 function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 
+// Pull out a "Part N" tag from a product name and render it as a bold pink chip
+// next to the SKU number (critical for TikTok shows where Part 1/2/3 distinguishes items).
+function renderProductName(s){
+    var safe=escapeHtml(s||'');
+    var m=safe.match(/(Part\s*\d+)/i);
+    if(!m)return safe;
+    var stripped=safe.replace(/[\s·,—–-]*Part\s*\d+[\s·,—–-]*/i,' ').replace(/\s{2,}/g,' ').trim();
+    return '<span class="part-tag">'+m[1].toUpperCase()+'</span>'+stripped;
+}
+
 function showToast(msg,ok){
     var t=document.getElementById('toast');
     t.textContent=msg;
@@ -4223,7 +4250,7 @@ function renderItems(){
             '<div class="pi-box"></div>'+
             '<div class="pi-info">'+
                 '<div class="pi-sku">'+escapeHtml(it.sku||'?')+'</div>'+
-                '<div class="pi-name">'+escapeHtml(it.product_name||'')+(it.cancelled?' · CANCELLED':'')+'</div>'+
+                '<div class="pi-name">'+renderProductName(it.product_name||'')+(it.cancelled?' · CANCELLED':'')+'</div>'+
             '</div>'+
             '<div class="pi-qty">×'+(it.quantity||1)+'</div>'+
         '</div>';
