@@ -258,6 +258,8 @@ body.sr{background:#0c0f16}body.sc{background:#1c0a0f}body.sd{background:#061a0f
 .brand-mark-mini{font-size:14px;font-weight:900;color:#f3c9c4;letter-spacing:1.2px;flex-shrink:0}
 .portal-b{background:rgba(243,201,196,.08);border:1px solid rgba(243,201,196,.22);border-radius:8px;padding:7px 13px;font-size:12px;font-weight:700;color:#f3c9c4;text-decoration:none;font-family:inherit;transition:all .15s}
 .portal-b:hover{background:rgba(243,201,196,.16)}
+.role-switch{background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.28);border-radius:8px;padding:7px 13px;font-size:12px;font-weight:700;color:#34d399;text-decoration:none;font-family:inherit;transition:all .15s}
+.role-switch:hover{background:rgba(16,185,129,.2)}
 .badge{background:rgba(243,201,196,.12);border:1.5px solid rgba(243,201,196,.28);border-radius:50px;padding:8px 20px;font-size:13px;font-weight:700;color:#f3c9c4}
 .top-r{display:flex;gap:10px;align-items:center}
 .cam{display:flex;align-items:center;gap:5px;font-size:12px;padding:6px 12px;border-radius:20px;background:rgba(0,0,0,.3)}
@@ -367,7 +369,7 @@ body.sc #stepsLight{display:none}
 body.sw{background:linear-gradient(135deg,#0c0f16,#111827)}
 body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
 </style></head><body class="sr">
-<div class="top"><div class="brand-tag"><span class="brand-mark-mini">5&nbsp;SEC</span><span class="badge">__STATION__ — __NAME__</span></div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span>Camera</span></div><a href="/home" class="portal-b">🏠 Portal</a><button class="out-b" id="endBtn">End Shift</button></div></div>
+<div class="top"><div class="brand-tag"><span class="brand-mark-mini">5&nbsp;SEC</span><span class="badge">__STATION__ — __NAME__</span></div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span>Camera</span></div><a href="/pick" class="role-switch">📋 Switch to Picking</a><a href="/home" class="portal-b">🏠 Portal</a><button class="out-b" id="endBtn">End Shift</button></div></div>
 <div class="pv"><video id="pv" autoplay muted playsinline></video></div>
 
 <div class="x on" id="xw"><div class="w-icon">👋</div><div class="w-title">Welcome, __NAME__!</div><div class="w-sub">You are at <b>__STATION__</b></div><div class="w-msg">Have a great shift! Your camera is being set up...</div></div>
@@ -3774,6 +3776,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .top{position:fixed;top:0;left:0;right:0;height:60px;background:var(--top-bg);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 18px;gap:10px;z-index:50}
 .theme-toggle{background:var(--surface);border:1px solid var(--border);color:var(--text-muted);border-radius:10px;width:38px;height:38px;font-size:16px;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center}
 .theme-toggle:active{transform:scale(.95)}
+.role-switch-top{background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.3);color:#a5b4fc;text-decoration:none;font-size:12px;font-weight:700;padding:9px 14px;border-radius:10px;transition:all .15s;white-space:nowrap}
+.role-switch-top:hover{background:rgba(99,102,241,.22)}
 .brand-mark{font-size:18px;font-weight:900;color:var(--brand);letter-spacing:1.5px;line-height:1}
 .brand-sub{font-size:9px;color:var(--text-dim);letter-spacing:2px;text-transform:uppercase;font-weight:700;line-height:1;margin-top:3px}
 .top-brand{flex-shrink:0}
@@ -3921,6 +3925,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   </div>
   <div class="top-show" id="topShow"></div>
   <span class="mode-badge" id="modeBadge" title="This iPad is set as a picking station">📋 PICK iPAD</span>
+  <a href="/?force=pack" class="role-switch-top" title="Switch to packing screen (stays logged in)">📦 Switch to Packing</a>
   <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">☀️</button>
   <a href="/logout" class="top-logout">Logout</a>
 </div>

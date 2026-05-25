@@ -715,14 +715,18 @@ def _is_mobile_device():
 def index():
     machine_mode = request.cookies.get("machine_mode", "")
     machine_sta = request.cookies.get("machine_station", "")
+    # ?force=pack lets a picker explicitly switch to packing screen on the same device
+    # without the auto-routing pulling them back to /pick.
+    force = (request.args.get("force") or "").lower()
     if "user" not in session:
         # Default to badge-login (warehouse stations have no keyboard/mouse).
         # Admins/anyone needing password type can click "Use password instead" → /login
         return redirect("/badge-login")
     # Explicit admin override via cookie wins over auto-detection
-    if machine_mode == "pick":
+    if machine_mode == "pick" and force != "pack":
         return redirect("/pick")
-    if machine_mode != "pack" and session.get("role")=="worker" and _is_mobile_device():
+    if (machine_mode != "pack" and force != "pack" and
+        session.get("role")=="worker" and _is_mobile_device()):
         # Auto: worker on a touch device → picking UI
         return redirect("/pick")
     if session.get("role")=="worker":
