@@ -710,10 +710,9 @@ def index():
     machine_mode = request.cookies.get("machine_mode", "")
     machine_sta = request.cookies.get("machine_station", "")
     if "user" not in session:
-        # If the machine is provisioned (mode or station), send to badge login for quick scan-in
-        if machine_mode or machine_sta:
-            return redirect("/badge-login")
-        return LOGIN_HTML
+        # Default to badge-login (warehouse stations have no keyboard/mouse).
+        # Admins/anyone needing password type can click "Use password instead" → /login
+        return redirect("/badge-login")
     # If this machine is dedicated to picking, every logged-in worker/picker goes straight there
     if machine_mode == "pick":
         return redirect("/pick")
@@ -765,6 +764,14 @@ def dashboard():
 @app.route("/users")
 @req_role("admin")
 def users_page(): return USERS_HTML.replace("__NAVBAR__",_navbar("users")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/login")
+def login_page():
+    """Password login form — fallback for stations without a barcode scanner,
+    or admin/CS who don't carry a badge. Default landing is /badge-login."""
+    if "user" in session:
+        return redirect("/")
+    return LOGIN_HTML
 
 @app.route("/logout")
 def logout(): session.clear(); return redirect("/")

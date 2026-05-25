@@ -161,17 +161,20 @@ body{font-family:'DM Sans',sans-serif;background:#0a0d14;color:#e4e8f1;display:f
 .btn-primary:hover{background:#eab1a8;transform:translateY(-1px);box-shadow:0 10px 36px rgba(243,201,196,.32)}
 .btn-primary:active{transform:scale(.98)}
 .err{color:#f43f5e;font-size:13px;margin-top:14px;text-align:center;min-height:18px}
+.back-to-badge{display:block;margin-top:22px;padding:14px;text-align:center;background:rgba(243,201,196,.08);border:1px solid rgba(243,201,196,.22);border-radius:12px;color:#f3c9c4;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:.3px;transition:background .15s}
+.back-to-badge:hover{background:rgba(243,201,196,.16)}
 .foot{text-align:center;margin-top:28px;font-size:11px;color:#6b7a90;letter-spacing:1.5px}
 </style></head><body>
 <div class="glow g1"></div><div class="glow g2"></div>
 <div class="wrap">
 <div class="logo"><div class="brand-mark-big">5&nbsp;SEC</div><div class="brand-sub-big">Employee Hub</div></div>
 <div class="card">
-<h2>Welcome back</h2><p class="sub">Sign in to start your shift</p>
+<h2>Sign in with password</h2><p class="sub">For admin or when no badge is available</p>
 <div class="field"><label>Username</label><input type="text" id="u" placeholder="Enter your username" autofocus></div>
 <div class="field"><label>Password</label><input type="password" id="p" placeholder="Enter your password"></div>
 <button class="btn btn-primary" id="loginBtn">Sign In</button>
 <div class="err" id="e"></div>
+<a href="/badge-login" class="back-to-badge">🎫 Back to badge scan</a>
 </div>
 <div class="foot">5 SECOND BEAUTY &copy; 2026</div>
 </div>
@@ -1267,8 +1270,8 @@ h1{font-size:36px;font-weight:800;margin-bottom:12px}
 .scan-text{font-size:20px;font-weight:600;margin-bottom:8px}
 .scan-hint{color:#6b7a90;font-size:14px}
 input{position:absolute;opacity:0;pointer-events:none}
-.alt-link{color:#6b7a90;text-decoration:none;font-size:13px;display:inline-block;margin-top:20px;padding:8px 16px;border-radius:8px}
-.alt-link:hover{color:#f3c9c4;background:rgba(255,255,255,.04)}
+.alt-link{display:inline-block;margin-top:24px;padding:14px 28px;border-radius:12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);color:#9ba9c1;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:.3px;transition:all .15s}
+.alt-link:hover{color:#f3c9c4;background:rgba(243,201,196,.06);border-color:rgba(243,201,196,.22)}
 .toast{position:fixed;top:24px;left:50%;transform:translateX(-50%);background:#10b981;color:white;padding:14px 28px;border-radius:50px;font-weight:700;font-size:15px;box-shadow:0 10px 40px rgba(16,185,129,.4);z-index:100;display:none}
 .toast.err{background:#f43f5e;box-shadow:0 10px 40px rgba(244,63,94,.4)}
 
@@ -1295,7 +1298,7 @@ input{position:absolute;opacity:0;pointer-events:none}
 <div class="scan-hint">Hold your badge under the scanner</div>
 </div>
 <input type="text" id="tk" autofocus autocomplete="off" inputmode="none">
-<a href="/" class="alt-link">Use password instead</a>
+<a href="/login" class="alt-link">⌨ Use username & password instead</a>
 </div>
 <div class="welcome-ov" id="welcomeOv">
   <div class="welcome-avatar" id="welcomeAvatar">?</div>
