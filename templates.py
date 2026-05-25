@@ -299,36 +299,57 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 @keyframes spls{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.2)}50%{box-shadow:0 0 0 8px rgba(245,158,11,0)}}
 .hinp{position:absolute;top:-9999px;left:-9999px}
 
-/* Item checklist on recording screen */
-.check-area{margin-top:20px;width:100%;max-width:560px;display:none}
-body.sc .check-area{display:block}
-.check-show{display:none;align-items:center;gap:8px;background:rgba(243,201,196,.08);border:1px solid rgba(243,201,196,.22);border-radius:10px;padding:8px 14px;margin-bottom:8px;font-size:12px;color:#f3c9c4;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
-.check-show.on{display:inline-flex}
-.check-show .platform-dot{width:8px;height:8px;border-radius:50%;background:#f3c9c4}
-.check-prepick{display:none;align-items:center;gap:8px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.28);border-radius:10px;padding:8px 14px;margin-bottom:12px;font-size:12px;color:#34d399;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
-.check-prepick.on{display:inline-flex}
-.check-prepick::before{content:'✓';font-weight:900}
-.check-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px;padding:0 6px}
-.check-buyer{font-size:18px;font-weight:800;color:#e4e8f1;letter-spacing:.2px}
-.check-counter{font-size:14px;color:#9ba9c1;font-weight:600;font-feature-settings:'tnum'}
-.check-counter b{color:#f3c9c4;font-size:20px;font-weight:900}
-.check-items{display:flex;flex-direction:column;gap:6px;max-height:36vh;overflow-y:auto;padding:4px;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.1) transparent}
-.check-items::-webkit-scrollbar{width:6px}.check-items::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:3px}
-.check-item{display:flex;align-items:center;gap:14px;padding:11px 16px;background:rgba(21,25,33,.85);border:2px solid rgba(255,255,255,.06);border-radius:12px;cursor:pointer;user-select:none;transition:all .12s;text-align:left}
-.check-item:hover{border-color:rgba(243,201,196,.3);background:rgba(243,201,196,.04)}
-.check-item.done{opacity:.55;background:rgba(16,185,129,.06);border-color:rgba(16,185,129,.22)}
-.check-item.done .ci-name{text-decoration:line-through;text-decoration-color:rgba(255,255,255,.4)}
-.ci-box{width:28px;height:28px;border-radius:50%;border:3px solid rgba(255,255,255,.18);flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .15s;font-weight:900;font-size:14px;color:transparent}
-.check-item.done .ci-box{background:#10b981;border-color:#10b981;color:#0a0d14}
-.ci-sku{flex-shrink:0;font-family:'SF Mono',Menlo,monospace;font-size:18px;font-weight:900;color:#f3c9c4;min-width:46px;text-align:center;background:rgba(243,201,196,.1);padding:4px 8px;border-radius:8px;letter-spacing:.5px}
-.ci-name{flex:1;font-size:13px;color:#e4e8f1;line-height:1.4;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ci-name .part-tag{display:inline-block;background:rgba(243,201,196,.18);color:#f3c9c4;font-family:'SF Mono',Menlo,monospace;font-weight:900;font-size:13px;padding:2px 8px;border-radius:6px;letter-spacing:.5px;margin-right:6px;vertical-align:middle;text-transform:uppercase}
-.check-item.done .ci-name .part-tag{opacity:.4}
-.ci-qty{font-size:14px;color:#9ba9c1;font-weight:800;flex-shrink:0}
-.check-status{margin-top:12px;font-size:13px;color:#9ba9c1;text-align:center;padding:10px 14px;background:rgba(255,255,255,.04);border-radius:10px;font-weight:600;transition:all .2s}
-.check-status.ready{background:rgba(16,185,129,.14);color:#10b981;border:1px solid rgba(16,185,129,.3);font-weight:800;letter-spacing:.5px}
-.check-status.warn{background:rgba(245,158,11,.1);color:#f59e0b;font-weight:700}
-body.sc #stepsLight{display:none}
+/* ────────────────────────────────────────────────────────────────
+   PACKER ITEM-COUNT REMINDER (no-touch)
+   ────────────────────────────────────────────────────────────────
+   Stage 1 (first 8s after scan): big centered overlay showing how
+   many items should be in the package + SKU list. Impossible to miss.
+   Stage 2 (after 8s, persists during recording): same info shrunk
+   to a corner card so the packer can keep glancing at it.
+   NO buttons, NO clicking — packers work with scanner only.
+*/
+#countOverlay{position:fixed;inset:0;background:rgba(10,13,20,.94);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);z-index:900;display:none;align-items:center;justify-content:center;padding:24px;animation:countFade .25s ease}
+#countOverlay.on{display:flex}
+@keyframes countFade{from{opacity:0}to{opacity:1}}
+.count-card{max-width:640px;width:100%;text-align:center;animation:countPop .45s cubic-bezier(.175,.885,.32,1.275)}
+@keyframes countPop{from{transform:scale(.7);opacity:0}to{transform:scale(1);opacity:1}}
+.count-icon{font-size:80px;margin-bottom:8px}
+.count-buyer{font-size:18px;color:#9ba9c1;font-weight:700;margin-bottom:6px}
+.count-buyer b{color:#e4e8f1;font-weight:800}
+.count-big{font-size:180px;font-weight:900;color:#f3c9c4;line-height:.95;letter-spacing:-6px;font-feature-settings:'tnum';margin:8px 0 2px;text-shadow:0 8px 50px rgba(243,201,196,.35)}
+.count-label{font-size:30px;font-weight:900;color:#fff;letter-spacing:2px;text-transform:uppercase;margin-bottom:18px}
+.count-label.warn{color:#f59e0b}
+.count-items{display:flex;flex-direction:column;gap:8px;max-height:38vh;overflow-y:auto;padding:4px;margin-bottom:14px}
+.count-item{display:flex;align-items:center;gap:14px;padding:14px 18px;background:rgba(21,25,33,.85);border:2px solid rgba(243,201,196,.18);border-radius:14px;text-align:left}
+.count-item.cancelled{opacity:.5;border-color:rgba(244,63,94,.3);background:rgba(244,63,94,.04)}
+.count-item.cancelled .ci-name,.count-item.cancelled .ci-sku{text-decoration:line-through}
+.count-item .ci-sku{flex-shrink:0;font-family:'SF Mono',Menlo,monospace;font-size:24px;font-weight:900;color:#f3c9c4;min-width:60px;text-align:center;background:rgba(243,201,196,.14);padding:6px 12px;border-radius:10px;letter-spacing:.5px}
+.count-item .ci-name{flex:1;font-size:16px;color:#e4e8f1;line-height:1.4;min-width:0;font-weight:600}
+.count-item .ci-name .part-tag{display:inline-block;background:rgba(243,201,196,.22);color:#f3c9c4;font-family:'SF Mono',Menlo,monospace;font-weight:900;font-size:15px;padding:3px 10px;border-radius:8px;letter-spacing:.5px;margin-right:8px;vertical-align:middle;text-transform:uppercase}
+.count-item .ci-qty{font-size:22px;color:#fff;font-weight:900;flex-shrink:0;font-feature-settings:'tnum'}
+.count-foot{font-size:14px;color:#6b7a90;font-weight:600;letter-spacing:.5px;text-transform:uppercase}
+.count-foot.warn{color:#f59e0b}
+
+/* Stage 2 — persistent side card during recording */
+.reminder-side{position:fixed;top:90px;right:24px;width:280px;background:rgba(21,25,33,.92);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(243,201,196,.28);border-radius:18px;padding:18px 20px;z-index:50;display:none;box-shadow:0 14px 40px rgba(0,0,0,.5);animation:sideIn .35s ease}
+@keyframes sideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+.reminder-side.on{display:block}
+.reminder-side .rs-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.reminder-side .rs-count{font-size:48px;font-weight:900;color:#f3c9c4;line-height:1;font-feature-settings:'tnum';letter-spacing:-2px}
+.reminder-side .rs-lbl{font-size:11px;color:#9ba9c1;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;text-align:right}
+.reminder-side .rs-lbl b{color:#f3c9c4;display:block;font-size:13px}
+.reminder-side .rs-list{display:flex;flex-direction:column;gap:6px;max-height:42vh;overflow-y:auto;padding-right:4px}
+.reminder-side .rs-list::-webkit-scrollbar{width:4px}.reminder-side .rs-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:2px}
+.rs-item{display:flex;align-items:center;gap:10px;padding:9px 12px;background:rgba(255,255,255,.04);border-radius:10px;font-size:12px}
+.rs-item.cancelled{opacity:.45;text-decoration:line-through}
+.rs-item .rs-sku{font-family:'SF Mono',Menlo,monospace;font-size:14px;font-weight:900;color:#f3c9c4;background:rgba(243,201,196,.12);padding:2px 8px;border-radius:6px;min-width:38px;text-align:center;letter-spacing:.4px}
+.rs-item .rs-name{flex:1;color:#e4e8f1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.rs-item .rs-name .part-tag{display:inline-block;background:rgba(243,201,196,.18);color:#f3c9c4;font-family:'SF Mono',Menlo,monospace;font-weight:900;font-size:11px;padding:1px 6px;border-radius:5px;letter-spacing:.4px;margin-right:5px;vertical-align:middle;text-transform:uppercase}
+.rs-item .rs-qty{font-size:14px;font-weight:900;color:#fff;font-feature-settings:'tnum'}
+.reminder-side.warn{border-color:rgba(245,158,11,.4)}
+.reminder-side.warn .rs-count{color:#f59e0b}
+.reminder-side .rs-show{font-size:10px;color:#6b7a90;font-weight:700;letter-spacing:.5px;text-transform:uppercase;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.06)}
+.reminder-side .rs-show b{color:#f3c9c4}
 
 /* Cancellation alert — fullscreen red overlay */
 #cancelOverlay{position:fixed;inset:0;background:rgba(35,5,10,.96);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);z-index:1000;align-items:center;justify-content:center;padding:24px;animation:cancelIn .3s ease}
@@ -379,17 +400,29 @@ body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
 <div class="x" id="xr"><div class="r-icon">📦</div><div class="r-title">Scan Tracking Number</div><div class="r-sub">Scan the barcode to start recording</div><div class="inp-w"><input class="inp" id="mi" placeholder="Waiting for scan..." autocomplete="off"></div><div class="hint"><span class="pd"></span>Scanner ready</div><div class="ctr">Recorded: <b id="cn">0</b></div></div>
 
 <div class="x" id="xc"><div class="rp"><div class="rd"></div><div class="rl">RECORDING</div></div><div class="rk" id="rk"></div><div class="rm" id="rmm">00:00</div>
-<div class="check-area" id="checkArea">
-  <div class="check-show" id="checkShow"></div>
-  <div class="check-prepick" id="checkPrepick"></div>
-  <div class="check-head">
-    <div class="check-buyer" id="checkBuyer">Looking up order…</div>
-    <div class="check-counter"><b id="checkDone">0</b> / <b id="checkTotal">?</b></div>
-  </div>
-  <div class="check-items" id="checkItems"></div>
-  <div class="check-status" id="checkStatus">Loading…</div>
-</div>
 <div class="steps" id="stepsLight"><div class="step ok"><div class="si">✓</div><span>Scan tracking number</span></div><div class="step now"><div class="si">2</div><span>Pack the order in front of the camera</span></div><div class="step"><div class="si">3</div><span>Scan again to finish</span></div></div><input class="hinp" id="ri" autocomplete="off"></div>
+
+<!-- Stage 1 (8s): big centered count overlay shown after every scan -->
+<div id="countOverlay">
+  <div class="count-card">
+    <div class="count-icon">📦</div>
+    <div class="count-buyer" id="countBuyer">Looking up order…</div>
+    <div class="count-big" id="countBig">—</div>
+    <div class="count-label" id="countLabel">items in package</div>
+    <div class="count-items" id="countItems"></div>
+    <div class="count-foot" id="countFoot">If an item is missing — set the package aside</div>
+  </div>
+</div>
+
+<!-- Stage 2: small persistent reminder card while recording -->
+<div class="reminder-side" id="reminderSide">
+  <div class="rs-head">
+    <div class="rs-count" id="rsCount">—</div>
+    <div class="rs-lbl">items<br><b id="rsBuyer">—</b></div>
+  </div>
+  <div class="rs-list" id="rsList"></div>
+  <div class="rs-show" id="rsShow"></div>
+</div>
 
 <!-- Cancellation alert overlay - shows red full-screen when scanned shipment is cancelled -->
 <div id="cancelOverlay" style="display:none">
@@ -425,100 +458,133 @@ function initCam(){navigator.mediaDevices.getUserMedia({video:{width:{ideal:854}
 initCam();
 function startRec(t){if(!sm){alert('No camera');return}ct=t;ch=[];mr=new MediaRecorder(sm,{mimeType:'video/webm;codecs=vp8',videoBitsPerSecond:500000});mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};mr.start(1000);t0=Date.now();startTmr();document.getElementById('rk').textContent=t;go('c');loadChecklist(t)}
 
-// Fetch the items expected in this shipment and render an item checklist on the
-// recording screen. Worker taps each one as it goes in the box. If the shipment
-// is marked cancelled, show a big red overlay and abort the recording.
+// ─── Packer item-count reminder (NO touch / NO buttons) ───
+// After each scan we look up the shipment and:
+//   1) Pop a huge centered overlay showing the count for ~8 seconds.
+//   2) Slide a small side card with the count + SKU list into the corner so the
+//      packer can keep glancing at it while packing.
+// The packer scans the tracking number a second time to finish — no clicks ever.
+var countTimer=null;
+
+function renderProductNameHtml(s){
+    var safe=(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    var m=safe.match(/(Part\s*\d+)/i);
+    if(!m)return safe;
+    var stripped=safe.replace(/[\s·,—–-]*Part\s*\d+[\s·,—–-]*/i,' ').replace(/\s{2,}/g,' ').trim();
+    return '<span class="part-tag">'+m[1].toUpperCase()+'</span>'+stripped;
+}
+
+function hideReminder(){
+    var ov=document.getElementById('countOverlay');
+    var side=document.getElementById('reminderSide');
+    if(ov)ov.classList.remove('on');
+    if(side)side.classList.remove('on');
+    if(countTimer){clearTimeout(countTimer);countTimer=null}
+}
+
 function loadChecklist(tracking){
-    document.getElementById('checkBuyer').textContent='Looking up order…';
-    document.getElementById('checkItems').innerHTML='';
-    document.getElementById('checkDone').textContent='0';
-    document.getElementById('checkTotal').textContent='?';
-    var showEl=document.getElementById('checkShow');
-    showEl.classList.remove('on');showEl.innerHTML='';
-    var prepickEl=document.getElementById('checkPrepick');
-    prepickEl.classList.remove('on');prepickEl.innerHTML='';
-    var st=document.getElementById('checkStatus');
-    st.textContent='Loading order info…';st.className='check-status';
+    // Clear any leftover reminder from a previous scan
+    hideReminder();
+    var ov=document.getElementById('countOverlay');
+    var side=document.getElementById('reminderSide');
+    document.getElementById('countBuyer').textContent='Looking up order…';
+    document.getElementById('countBig').textContent='—';
+    document.getElementById('countLabel').textContent='items in package';
+    document.getElementById('countLabel').className='count-label';
+    document.getElementById('countItems').innerHTML='';
+    document.getElementById('countFoot').textContent='If an item is missing — set the package aside';
+    document.getElementById('countFoot').className='count-foot';
+    ov.classList.add('on');
+
     fetch('/api/shipment/'+encodeURIComponent(tracking)).then(function(r){return r.json()}).then(function(d){
         if(!d.ok){
-            document.getElementById('checkBuyer').textContent='Order not found in system';
-            st.textContent='⚠️ Not in current imports — record anyway, but verify manually';
-            st.className='check-status warn';
+            // Order not in system — still show the overlay so the packer knows to verify manually
+            document.getElementById('countBuyer').textContent='Order not found in system';
+            document.getElementById('countBig').textContent='?';
+            document.getElementById('countLabel').textContent='unknown — verify by hand';
+            document.getElementById('countLabel').className='count-label warn';
+            document.getElementById('countItems').innerHTML='';
+            document.getElementById('countFoot').textContent='⚠️ Not in current imports';
+            document.getElementById('countFoot').className='count-foot warn';
+            // Side card with a warning state
+            document.getElementById('rsCount').textContent='?';
+            document.getElementById('rsBuyer').textContent='(not in system)';
+            document.getElementById('rsList').innerHTML='';
+            document.getElementById('rsShow').innerHTML='';
+            side.classList.add('warn');
+            countTimer=setTimeout(function(){ov.classList.remove('on');side.classList.add('on')},8000);
             return;
         }
         var s=d.shipment, items=d.items||[];
         if(s.status==='cancelled'){
+            ov.classList.remove('on');
             showCancelAlert(s.buyer_name||s.buyer_username||'(unknown)', s.flag_reason||'Order was cancelled');
             return;
         }
-        document.getElementById('checkBuyer').textContent=s.buyer_name||s.buyer_username||'Customer';
-        document.getElementById('checkTotal').textContent=items.length;
-        if(s.import_label){
-            showEl.innerHTML='<span class="platform-dot"></span>Show: '+(s.import_label.replace(/</g,'&lt;'))+(s.platform?' · '+s.platform:'');
-            showEl.classList.add('on');
-        }
-        // If a picker has already pulled the items, surface that so the packer just verifies.
-        if(s.status==='picked' && s.picked_by){
-            var when=s.picked_at?' at '+(s.picked_at.replace('T',' ').slice(0,16)):'';
-            prepickEl.innerHTML='Pre-picked by '+s.picked_by.replace(/</g,'&lt;')+when;
-            prepickEl.classList.add('on');
-        }
-        var packedFlags={};
-        // If the shipment was already picked, start with every item ticked off so the
-        // packer's job is just to verify visually and record. Tap to uncheck if anything's off.
-        items.forEach(function(it,i){if(it.picked)packedFlags[i]=true});
-        var list=document.getElementById('checkItems');
-        list.innerHTML=items.map(function(it,i){
-            var safe=(it.product_name||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-            var partMatch=safe.match(/(Part\s*\d+)/i);
-            var nameHtml=safe;
-            if(partMatch){
-                var stripped=safe.replace(/[\s·,—–-]*Part\s*\d+[\s·,—–-]*/i,' ').replace(/\s{2,}/g,' ').trim();
-                nameHtml='<span class="part-tag">'+partMatch[1].toUpperCase()+'</span>'+stripped;
-            }
-            var done=it.picked?' done':'';
-            return '<div class="check-item'+done+'" data-i="'+i+'">'+
-                '<div class="ci-box"></div>'+
-                '<div class="ci-sku">'+(it.sku||'?')+'</div>'+
-                '<div class="ci-name">'+nameHtml+'</div>'+
+
+        // Active items only (skip cancelled lines for the count)
+        var active=items.filter(function(it){return !it.cancelled});
+        var totalQty=active.reduce(function(sum,it){return sum+(it.quantity||1)},0);
+        var buyer=s.buyer_name||s.buyer_username||'Customer';
+        var safeBuyer=buyer.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+        // ── Stage 1: big overlay ─────────────────────────────
+        document.getElementById('countBuyer').innerHTML='Buyer: <b>'+safeBuyer+'</b>';
+        document.getElementById('countBig').textContent=totalQty;
+        document.getElementById('countLabel').textContent=(totalQty===1?'item in package':'items in package');
+        document.getElementById('countLabel').className='count-label';
+        document.getElementById('countItems').innerHTML=items.map(function(it){
+            var cls='count-item'+(it.cancelled?' cancelled':'');
+            return '<div class="'+cls+'">'+
+                '<div class="ci-sku">'+(it.sku||'?').toString().replace(/</g,'&lt;')+'</div>'+
+                '<div class="ci-name">'+renderProductNameHtml(it.product_name||'')+(it.cancelled?' · CANCELLED':'')+'</div>'+
                 '<div class="ci-qty">×'+(it.quantity||1)+'</div>'+
             '</div>';
         }).join('');
-        list.querySelectorAll('.check-item').forEach(function(el){
-            el.addEventListener('click',function(){
-                el.classList.toggle('done');
-                packedFlags[el.dataset.i]=el.classList.contains('done');
-                var doneN=0;for(var k in packedFlags)if(packedFlags[k])doneN++;
-                document.getElementById('checkDone').textContent=doneN;
-                if(doneN===items.length&&items.length>0){
-                    st.textContent='✓ All items packed — scan again to finish';
-                    st.className='check-status ready';
-                } else {
-                    st.textContent='Pack each item, tap when it goes in the box';
-                    st.className='check-status';
-                }
-            });
-        });
-        var initialDone=Object.keys(packedFlags).length;
-        document.getElementById('checkDone').textContent=initialDone;
         if(items.length===0){
-            st.textContent='No items registered — record anyway';
-            st.className='check-status warn';
-        } else if(initialDone===items.length){
-            st.textContent='✓ All items pre-picked — verify and scan again to finish';
-            st.className='check-status ready';
+            document.getElementById('countFoot').textContent='⚠️ No items registered — verify manually';
+            document.getElementById('countFoot').className='count-foot warn';
+        } else if(s.status==='picked' && s.picked_by){
+            var when=s.picked_at?' '+(s.picked_at.replace('T',' ').slice(0,16)):'';
+            document.getElementById('countFoot').textContent='✓ Pre-picked by '+s.picked_by+when+' · just verify count and pack';
+            document.getElementById('countFoot').className='count-foot';
         } else {
-            st.textContent='Pack each item, tap when it goes in the box';
-            st.className='check-status';
+            document.getElementById('countFoot').textContent='Count what you put in the box — if anything is missing, set the package aside';
+            document.getElementById('countFoot').className='count-foot';
         }
+
+        // ── Stage 2: side reminder ───────────────────────────
+        document.getElementById('rsCount').textContent=totalQty;
+        document.getElementById('rsBuyer').textContent=buyer;
+        document.getElementById('rsList').innerHTML=items.map(function(it){
+            var cls='rs-item'+(it.cancelled?' cancelled':'');
+            return '<div class="'+cls+'">'+
+                '<div class="rs-sku">'+(it.sku||'?').toString().replace(/</g,'&lt;')+'</div>'+
+                '<div class="rs-name">'+renderProductNameHtml(it.product_name||'')+'</div>'+
+                '<div class="rs-qty">×'+(it.quantity||1)+'</div>'+
+            '</div>';
+        }).join('');
+        side.classList.remove('warn');
+        document.getElementById('rsShow').innerHTML=s.import_label?('Show: <b>'+s.import_label.replace(/</g,'&lt;')+'</b>'+(s.platform?' · '+s.platform:'')):'';
+
+        // After 8 seconds, hide overlay, slide in side card. Stays until next scan / scan-out.
+        countTimer=setTimeout(function(){
+            ov.classList.remove('on');
+            side.classList.add('on');
+        },8000);
     }).catch(function(){
-        document.getElementById('checkBuyer').textContent='—';
-        st.textContent='⚠️ Lookup failed — record anyway';
-        st.className='check-status warn';
+        document.getElementById('countBuyer').textContent='—';
+        document.getElementById('countBig').textContent='?';
+        document.getElementById('countLabel').textContent='lookup failed';
+        document.getElementById('countLabel').className='count-label warn';
+        document.getElementById('countFoot').textContent='⚠️ Could not reach server — record anyway';
+        document.getElementById('countFoot').className='count-foot warn';
+        countTimer=setTimeout(function(){ov.classList.remove('on')},8000);
     });
 }
 
 function showCancelAlert(buyer,reason){
+    hideReminder();
     document.getElementById('cancelBuyer').textContent=buyer;
     document.getElementById('cancelReason').textContent=reason;
     document.getElementById('cancelOverlay').style.display='flex';
@@ -528,6 +594,7 @@ function showCancelAlert(buyer,reason){
 }
 document.getElementById('cancelOk').addEventListener('click',function(){
     document.getElementById('cancelOverlay').style.display='none';
+    hideReminder();
     go('r');
 });
 function stopRec(){return new Promise(function(res){mr.onstop=res;mr.stop()})}
@@ -543,6 +610,7 @@ else{alert('Failed');go('r')}}).catch(function(){alert('Upload failed');go('r')}
 function normTrk(s){s=(s||'').trim();if(/^\d{23,40}$/.test(s))return s.slice(-22);return s}
 mi.addEventListener('keydown',function(e){if(e.key==='Enter'){var t=normTrk(mi.value);if(t)startRec(t)}});
 ri.addEventListener('keydown',function(e){if(e.key!=='Enter')return;var t=normTrk(ri.value);if(!t)return;stopTmr();
+hideReminder();
 if(t===ct){stopRec().then(upload)}else{stopRec().then(upload).then(function(){setTimeout(function(){startRec(t)},500)})}});
 function startTmr(){stopTmr();ti=setInterval(function(){var s=Math.floor((Date.now()-t0)/1000);document.getElementById('rmm').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')},200)}
 function stopTmr(){if(ti){clearInterval(ti);ti=null}}
