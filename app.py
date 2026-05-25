@@ -705,6 +705,12 @@ def _worker_summary(worker_name):
     }
 
 
+def _is_mobile_device():
+    """User-Agent sniff. Used to send workers to /pick on iPad/phone automatically
+    (touch-first UI), and keep desktop workers on the packing/recording screen."""
+    ua = (request.headers.get("User-Agent", "") or "").lower()
+    return any(m in ua for m in ("iphone", "ipad", "android", "mobile", "tablet"))
+
 @app.route("/")
 def index():
     machine_mode = request.cookies.get("machine_mode", "")
@@ -713,8 +719,11 @@ def index():
         # Default to badge-login (warehouse stations have no keyboard/mouse).
         # Admins/anyone needing password type can click "Use password instead" → /login
         return redirect("/badge-login")
-    # If this machine is dedicated to picking, every logged-in worker/picker goes straight there
+    # Explicit admin override via cookie wins over auto-detection
     if machine_mode == "pick":
+        return redirect("/pick")
+    if machine_mode != "pack" and session.get("role")=="worker" and _is_mobile_device():
+        # Auto: worker on a touch device → picking UI
         return redirect("/pick")
     if session.get("role")=="worker":
         # Auto-assign a station so the worker never sees the picker — they don't care

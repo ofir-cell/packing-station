@@ -188,9 +188,9 @@ async function login(){
     var r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
     var d=await r.json();
     if(d.ok){
-        // Workers see a choice screen between Portal and Packing.
-        // Admin/CS skip it (they don't pack).
-        window.location.href = d.role==='worker' ? '/welcome' : '/';
+        // / does device-aware routing: workers on mobile → /pick,
+        // workers on desktop → packing screen, admin/cs → /home.
+        window.location.href = '/';
     } else document.getElementById('e').textContent=d.error;
 }
 </script></body></html>'''
