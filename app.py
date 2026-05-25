@@ -717,17 +717,21 @@ def index():
     if machine_mode == "pick":
         return redirect("/pick")
     if session.get("role")=="worker":
-        # If station already chosen for this session, go to worker page
-        if "station" in session:
-            return WORKER_HTML.replace("__NAME__",session["name"]).replace("__STATION__",session.get("station_name","")).replace("__SID__",session.get("station","S0"))
-        # Auto-assign station from machine cookie if set
-        if machine_sta:
-            stations=ldj(STATIONS_FILE)
-            if machine_sta in stations:
-                session["station"]=machine_sta;session["station_name"]=stations[machine_sta]
-                return WORKER_HTML.replace("__NAME__",session["name"]).replace("__STATION__",stations[machine_sta]).replace("__SID__",machine_sta)
-        # Fallback: manual station picker
-        return STATION_HTML.replace("__NAME__",session["name"])
+        # Auto-assign a station so the worker never sees the picker — they don't care
+        # which station they're at. Order of preference:
+        #   1. Station already in session (returning visit)
+        #   2. machine_station cookie (set by admin on this device)
+        #   3. First station defined in stations.json
+        #   4. Hard-coded "S1"
+        if "station" not in session:
+            stations = ldj(STATIONS_FILE)
+            sid = machine_sta if machine_sta in stations else (next(iter(stations), "S1"))
+            session["station"] = sid
+            session["station_name"] = stations.get(sid, "Station 1")
+        return (WORKER_HTML
+            .replace("__NAME__", session["name"])
+            .replace("__STATION__", session.get("station_name",""))
+            .replace("__SID__", session.get("station","S1")))
     return redirect("/home")
 
 @app.route("/home")
