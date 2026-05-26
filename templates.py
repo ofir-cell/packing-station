@@ -51,8 +51,17 @@ def _navbar(active_page=""):
             "key": "team",
             "label": "👥 Team",
             "items": [
+                ("hires", "/admin/hires", "New Hires · Onboarding"),
                 ("users", "/users", "Users"),
                 ("badges", "/users/badges", "Badges"),
+            ],
+        })
+    elif role == "cs":
+        entries.append({
+            "key": "team",
+            "label": "👥 Team",
+            "items": [
+                ("hires", "/admin/hires", "New Hires · Onboarding"),
             ],
         })
     # Render
@@ -4961,5 +4970,711 @@ document.getElementById('backLink').addEventListener('click',function(e){
 });
 
 loadShows();
+</script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# NEW HIRE ONBOARDING — admin list + per-hire detail + public flow
+# ══════════════════════════════════════════════════════════
+
+HIRES_ADMIN_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>New Hires — 5 SEC</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1300px;margin:0 auto;padding:40px 28px 0}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:26px;flex-wrap:wrap}
+.page-title{font-size:32px;font-weight:900;color:#fff;letter-spacing:-.5px}
+.page-sub{color:var(--text-muted);margin-top:6px;font-size:14px;max-width:600px}
+.new-btn{background:var(--brand);color:#1a0e0b;border:none;border-radius:12px;padding:14px 24px;font-size:15px;font-weight:800;cursor:pointer;font-family:inherit;display:inline-flex;gap:8px;align-items:center;transition:all .15s}
+.new-btn:hover{background:var(--brand-strong);transform:translateY(-1px)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:28px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 22px}
+.kpi .lbl{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px;font-weight:700}
+.kpi .val{font-size:30px;font-weight:900;color:#fff;line-height:1;margin-top:8px}
+.kpi.brand .val{color:var(--brand)}.kpi.good .val{color:#34d399}.kpi.warn .val{color:#fbbf24}
+.tbl{width:100%;background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden;border-collapse:separate;border-spacing:0}
+.tbl th,.tbl td{padding:14px 18px;text-align:left;border-bottom:1px solid var(--border);font-size:14px}
+.tbl th{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--text-dim);font-weight:700;background:rgba(255,255,255,.02)}
+.tbl tr:hover td{background:rgba(255,255,255,.025)}
+.tbl tr:last-child td{border-bottom:none}
+.tbl td.name{font-weight:700;color:#fff}
+.tbl td.name a{color:inherit;text-decoration:none}
+.tbl td.name a:hover{color:var(--brand)}
+.status{display:inline-block;padding:4px 10px;border-radius:8px;font-size:11px;font-weight:800;letter-spacing:.5px;text-transform:uppercase}
+.status.invited{background:rgba(148,163,184,.18);color:#94a3b8}
+.status.in_progress{background:rgba(99,102,241,.18);color:#a5b4fc}
+.status.complete{background:rgba(16,185,129,.18);color:#34d399}
+.prog{display:flex;align-items:center;gap:10px;min-width:140px}
+.prog-bar{flex:1;height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden}
+.prog-fill{height:100%;background:linear-gradient(90deg,var(--brand),var(--brand-strong));transition:width .3s}
+.prog-txt{font-size:12px;color:var(--text-muted);font-weight:700;font-feature-settings:'tnum';white-space:nowrap}
+.empty{text-align:center;padding:80px 20px;color:var(--text-dim);background:var(--surface);border:1px dashed var(--border);border-radius:14px}
+.empty .icn{font-size:56px;margin-bottom:14px;opacity:.55}
+.empty .ttl{font-size:18px;font-weight:800;color:var(--text-muted);margin-bottom:6px}
+
+/* Modal */
+.modal{position:fixed;inset:0;background:rgba(10,13,20,.86);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);z-index:300;display:none;align-items:center;justify-content:center;padding:24px;animation:fade .15s ease}
+.modal.on{display:flex}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.modal-card{background:#0f1219;border:1px solid var(--border);border-radius:22px;padding:32px;max-width:520px;width:100%;animation:pop .2s ease}
+@keyframes pop{from{transform:scale(.96);opacity:0}to{transform:scale(1);opacity:1}}
+.modal-card h3{font-size:24px;font-weight:900;color:#fff;margin-bottom:6px}
+.modal-card p{font-size:13px;color:var(--text-muted);margin-bottom:20px}
+.field{display:block;margin-bottom:14px}
+.field-lbl{display:block;font-size:12px;color:var(--text-muted);font-weight:700;margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px}
+.field-in,.field-sel{width:100%;background:rgba(11,14,20,.6);border:1px solid var(--border);border-radius:10px;padding:11px 14px;font-size:14px;color:var(--text);font-family:inherit;outline:none;transition:border .15s}
+.field-in:focus,.field-sel:focus{border-color:var(--brand)}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}
+.btn-cancel{background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:10px;padding:11px 22px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-primary{background:var(--brand);color:#1a0e0b;border:none;border-radius:10px;padding:11px 22px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit}
+.invite-show{background:rgba(243,201,196,.08);border:1px solid rgba(243,201,196,.22);border-radius:12px;padding:18px;margin-top:16px;display:none}
+.invite-show.on{display:block}
+.invite-show .ttl{font-size:12px;color:var(--brand);font-weight:800;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.invite-show .url{display:flex;gap:8px;align-items:center}
+.invite-show .url input{flex:1;background:rgba(11,14,20,.8);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-family:'SF Mono',Menlo,monospace;font-size:11px;color:var(--text);outline:none}
+.invite-show .url button{background:var(--brand);color:#1a0e0b;border:none;border-radius:8px;padding:9px 14px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;white-space:nowrap}
+.invite-show .help{font-size:12px;color:var(--text-muted);margin-top:10px;line-height:1.5}
+.toast{position:fixed;top:80px;left:50%;transform:translateX(-50%);background:rgba(16,185,129,.96);color:#fff;padding:13px 24px;border-radius:11px;font-size:13px;font-weight:800;z-index:400;display:none;box-shadow:0 10px 30px rgba(0,0,0,.4)}
+.toast.on{display:block}.toast.err{background:rgba(244,63,94,.96)}
+</style>
+</head><body data-role="__ROLE__">
+__NAVBAR__
+<div class="wrap">
+  <div class="page-head">
+    <div>
+      <div class="page-title">👥 New Hires</div>
+      <div class="page-sub">Onboard new team members with paperwork, signatures, and ID verification — all in one link.</div>
+    </div>
+    <button class="new-btn" id="newBtn">+ New Hire</button>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="lbl">Total</div><div class="val" id="kTotal">0</div></div>
+    <div class="kpi warn"><div class="lbl">Invited (not started)</div><div class="val" id="kInvited">0</div></div>
+    <div class="kpi brand"><div class="lbl">In progress</div><div class="val" id="kInProgress">0</div></div>
+    <div class="kpi good"><div class="lbl">Complete</div><div class="val" id="kComplete">0</div></div>
+  </div>
+
+  <div id="content"></div>
+</div>
+
+<div class="modal" id="modal">
+  <div class="modal-card">
+    <h3>New Hire</h3>
+    <p>Create their record and you'll get a one-time link to send.</p>
+    <label class="field"><span class="field-lbl">Full legal name</span><input class="field-in" id="fName" placeholder="Jane Doe"></label>
+    <label class="field"><span class="field-lbl">Email (optional)</span><input class="field-in" id="fEmail" type="email" placeholder="jane@example.com"></label>
+    <label class="field"><span class="field-lbl">Phone (optional)</span><input class="field-in" id="fPhone" type="tel" placeholder="+1 555…"></label>
+    <label class="field"><span class="field-lbl">Onboarding workflow</span><select class="field-sel" id="fWorkflow"></select></label>
+    <label class="field"><span class="field-lbl">Preferred language</span><select class="field-sel" id="fLang">
+      <option value="en">🇺🇸 English</option>
+      <option value="es">🇪🇸 Español</option>
+    </select></label>
+    <label class="field"><span class="field-lbl">Role</span><select class="field-sel" id="fRole">
+      <option value="worker">Packer / Worker</option>
+      <option value="picker">Picker</option>
+      <option value="cs">Customer Service</option>
+      <option value="host">Live Show Host</option>
+      <option value="admin">Admin</option>
+    </select></label>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="cBtn">Cancel</button>
+      <button class="btn-primary" id="okBtn">Create & get invite link</button>
+    </div>
+    <div class="invite-show" id="inviteShow">
+      <div class="ttl">✓ Hire created — share this link</div>
+      <div class="url"><input id="inviteUrl" readonly><button id="copyBtn">Copy</button></div>
+      <div class="help">Send this link to your new hire via WhatsApp, email, or SMS. They open it (no password needed) and walk through onboarding step-by-step. You can see their progress on their detail page.</div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function toast(m,err){var t=document.getElementById('toast');t.textContent=m;t.className='toast on'+(err?' err':'');setTimeout(function(){t.className='toast'},2500)}
+
+function load(){
+    fetch('/api/hires').then(function(r){return r.json()}).then(function(rows){
+        var content=document.getElementById('content');
+        document.getElementById('kTotal').textContent=rows.length;
+        document.getElementById('kInvited').textContent=rows.filter(function(r){return r.status==='invited'}).length;
+        document.getElementById('kInProgress').textContent=rows.filter(function(r){return r.status==='in_progress'}).length;
+        document.getElementById('kComplete').textContent=rows.filter(function(r){return r.status==='complete'}).length;
+        if(rows.length===0){
+            content.innerHTML='<div class="empty"><div class="icn">👥</div><div class="ttl">No hires yet</div><div>Click "+ New Hire" to send your first onboarding invite.</div></div>';
+            return;
+        }
+        var html='<table class="tbl"><thead><tr><th>Name</th><th>Role</th><th>Status</th><th>Progress</th><th>Created</th></tr></thead><tbody>';
+        rows.forEach(function(r){
+            html+='<tr>'+
+                '<td class="name"><a href="/admin/hires/'+r.id+'">'+esc(r.full_name)+'</a></td>'+
+                '<td>'+esc(r.role_target||'')+'</td>'+
+                '<td><span class="status '+r.status+'">'+r.status.replace('_',' ')+'</span></td>'+
+                '<td><div class="prog"><div class="prog-bar"><div class="prog-fill" style="width:'+r.progress_pct+'%"></div></div><div class="prog-txt">'+r.progress_done+'/'+r.progress_total+'</div></div></td>'+
+                '<td>'+(r.created_at||'').slice(0,10)+'</td>'+
+            '</tr>';
+        });
+        html+='</tbody></table>';
+        content.innerHTML=html;
+    });
+}
+load();
+
+// Populate workflow dropdown once on page load
+fetch('/api/workflows').then(function(r){return r.json()}).then(function(wfs){
+    var sel=document.getElementById('fWorkflow');
+    sel.innerHTML=(wfs||[]).map(function(w){
+        return '<option value="'+w.id+'"'+(w.is_default?' selected':'')+'>'+esc(w.name)+'</option>';
+    }).join('');
+});
+
+document.getElementById('newBtn').addEventListener('click',function(){
+    document.getElementById('modal').classList.add('on');
+    document.getElementById('inviteShow').classList.remove('on');
+    document.getElementById('fName').value='';
+    document.getElementById('fEmail').value='';
+    document.getElementById('fPhone').value='';
+    document.getElementById('fName').focus();
+});
+document.getElementById('cBtn').addEventListener('click',function(){document.getElementById('modal').classList.remove('on')});
+document.getElementById('okBtn').addEventListener('click',function(){
+    var btn=this;btn.disabled=true;
+    fetch('/api/hires',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+            full_name:document.getElementById('fName').value,
+            email:document.getElementById('fEmail').value,
+            phone:document.getElementById('fPhone').value,
+            role_target:document.getElementById('fRole').value,
+            workflow_id:document.getElementById('fWorkflow').value,
+            preferred_language:document.getElementById('fLang').value
+        })
+    }).then(function(r){return r.json()}).then(function(d){
+        btn.disabled=false;
+        if(!d.ok){toast(d.error||'Failed',true);return}
+        document.getElementById('inviteUrl').value=d.invite_url;
+        document.getElementById('inviteShow').classList.add('on');
+        load();
+    });
+});
+document.getElementById('copyBtn').addEventListener('click',function(){
+    var inp=document.getElementById('inviteUrl');inp.select();
+    document.execCommand('copy');
+    toast('✓ Link copied');
+});
+</script>
+</body></html>'''
+
+
+HIRE_DETAIL_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>__HIRE_NAME__ — 5 SEC</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var(--text);min-height:100vh;padding-bottom:120px}
+.wrap{max-width:1100px;margin:0 auto;padding:36px 28px 0}
+.back{color:var(--text-muted);font-size:13px;font-weight:700;text-decoration:none;display:inline-flex;align-items:center;gap:6px;margin-bottom:14px}
+.back:hover{color:var(--text)}
+.head{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;margin-bottom:24px}
+.h-name{font-size:30px;font-weight:900;color:#fff;letter-spacing:-.4px;line-height:1.1}
+.h-meta{font-size:13px;color:var(--text-muted);margin-top:6px;display:flex;flex-wrap:wrap;gap:14px}
+.h-meta b{color:var(--text);font-weight:700}
+.status-big{display:inline-block;padding:7px 14px;border-radius:10px;font-size:12px;font-weight:800;letter-spacing:.5px;text-transform:uppercase}
+.status-big.invited{background:rgba(148,163,184,.18);color:#94a3b8}
+.status-big.in_progress{background:rgba(99,102,241,.18);color:#a5b4fc}
+.status-big.complete{background:rgba(16,185,129,.18);color:#34d399}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:22px 24px;margin-bottom:14px}
+.card-title{font-size:13px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px;font-weight:800;margin-bottom:14px}
+.invite-row{display:flex;gap:8px;align-items:center}
+.invite-row input{flex:1;background:rgba(11,14,20,.8);border:1px solid var(--border);border-radius:10px;padding:10px 14px;font-family:'SF Mono',Menlo,monospace;font-size:11px;color:var(--text);outline:none}
+.invite-row button{background:var(--brand);color:#1a0e0b;border:none;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;white-space:nowrap}
+.invite-row button.warn{background:rgba(244,63,94,.16);color:#fb7185;border:1px solid rgba(244,63,94,.3)}
+
+.bigprog{display:flex;align-items:center;gap:18px;margin-bottom:20px;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:18px 22px}
+.bigprog .pct{font-size:34px;font-weight:900;color:var(--brand);font-feature-settings:'tnum';min-width:80px}
+.bigprog .bar{flex:1;height:12px;background:rgba(255,255,255,.06);border-radius:6px;overflow:hidden}
+.bigprog .fill{height:100%;background:linear-gradient(90deg,var(--brand),var(--brand-strong));transition:width .35s}
+.bigprog .txt{font-size:13px;color:var(--text-muted);font-weight:700;white-space:nowrap}
+
+.step{display:grid;grid-template-columns:50px 1fr auto;gap:18px;align-items:start;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 22px;margin-bottom:8px}
+.step.done{background:rgba(16,185,129,.05);border-color:rgba(16,185,129,.22)}
+.step .num{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;font-weight:900;color:var(--text-muted);font-size:14px;flex-shrink:0}
+.step.done .num{background:#10b981;color:#0a0d14}
+.step.done .num::before{content:'✓'}
+.step.done .num span{display:none}
+.step .info{min-width:0}
+.step .ttl{font-size:15px;font-weight:800;color:var(--text);margin-bottom:4px}
+.step .typ{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px}
+.step .typ .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--brand);margin-right:6px;vertical-align:middle}
+.step .data{font-size:12px;color:var(--text-muted);margin-top:8px;line-height:1.5;background:rgba(255,255,255,.025);padding:10px 14px;border-radius:10px;display:none}
+.step .data.on{display:block}
+.step .data b{color:var(--text)}
+.step .stamp{font-size:11px;color:#34d399;font-weight:700;text-align:right;white-space:nowrap;line-height:1.5}
+.step:not(.done) .stamp{color:var(--text-dim)}
+</style>
+</head><body data-role="__ROLE__">
+__NAVBAR__
+<div class="wrap">
+  <a href="/admin/hires" class="back">← All hires</a>
+
+  <div class="head">
+    <div>
+      <div class="h-name">__HIRE_NAME__</div>
+      <div class="h-meta" id="hMeta"></div>
+    </div>
+    <div id="hStatus"></div>
+  </div>
+
+  <div class="bigprog">
+    <div class="pct" id="bpPct">0%</div>
+    <div class="bar"><div class="fill" id="bpFill" style="width:0%"></div></div>
+    <div class="txt" id="bpTxt">—</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">🔗 Invite link</div>
+    <div class="invite-row">
+      <input id="iUrl" readonly value="__INVITE_URL__">
+      <button id="copyBtn">Copy</button>
+      <button id="regenBtn" class="warn">Regenerate</button>
+    </div>
+    <div style="font-size:12px;color:var(--text-muted);margin-top:10px">Send to the new hire via WhatsApp, email, or SMS. Regenerate to invalidate the old link if it was shared by mistake.</div>
+  </div>
+
+  <div class="card-title" style="margin-top:8px;padding:0 4px">📋 Onboarding steps</div>
+  <div id="stepsList"></div>
+</div>
+
+<script>
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function fmtData(s){
+    if(!s||s.status!=='done')return '';
+    var d={};try{d=JSON.parse(s.data_json||'{}')}catch(e){return ''}
+    var parts=[];
+    if(d.signed_name)parts.push('Signed as: <b>'+esc(d.signed_name)+'</b>');
+    if(d.acknowledged && !d.signed_name)parts.push('Acknowledged');
+    if(d.responses){
+        Object.keys(d.responses).forEach(function(k){
+            var v=d.responses[k];if(!v)return;
+            parts.push(esc(k)+': <b>'+esc(String(v).slice(0,80))+'</b>');
+        });
+    }
+    return parts.length?parts.join(' · '):'';
+}
+
+function load(){
+    fetch('/api/hires/__HIRE_ID__').then(function(r){return r.json()}).then(function(d){
+        if(!d.ok)return;
+        var h=d.hire;
+        document.getElementById('hMeta').innerHTML=
+            (h.email?'<span>📧 <b>'+esc(h.email)+'</b></span>':'')+
+            (h.phone?'<span>📞 <b>'+esc(h.phone)+'</b></span>':'')+
+            (h.role_target?'<span>Role: <b>'+esc(h.role_target)+'</b></span>':'')+
+            '<span>Created '+(h.created_at||'').slice(0,10)+'</span>';
+        document.getElementById('hStatus').innerHTML='<span class="status-big '+h.status+'">'+h.status.replace('_',' ')+'</span>';
+        document.getElementById('bpPct').textContent=d.progress.pct+'%';
+        document.getElementById('bpFill').style.width=d.progress.pct+'%';
+        document.getElementById('bpTxt').textContent=d.progress.done+' of '+d.progress.total+' steps complete';
+        var html='';
+        (d.steps||[]).forEach(function(s,i){
+            var done=s.status==='done';
+            var dataLine=fmtData(s);
+            html+='<div class="step'+(done?' done':'')+'">'+
+                '<div class="num"><span>'+(i+1)+'</span></div>'+
+                '<div class="info">'+
+                    '<div class="typ"><span class="dot"></span>'+s.step_type+'</div>'+
+                    '<div class="ttl">'+esc(s.title)+'</div>'+
+                    (s.description?'<div style="font-size:13px;color:var(--text-muted);margin-top:3px">'+esc(s.description)+'</div>':'')+
+                    (dataLine?'<div class="data on">'+dataLine+'</div>':'')+
+                '</div>'+
+                '<div class="stamp">'+(done?'Done '+(s.completed_at||'').slice(0,16):'Pending')+'</div>'+
+            '</div>';
+        });
+        document.getElementById('stepsList').innerHTML=html;
+    });
+}
+load();
+
+document.getElementById('copyBtn').addEventListener('click',function(){
+    var inp=document.getElementById('iUrl');inp.select();
+    document.execCommand('copy');
+    this.textContent='✓ Copied';
+    setTimeout(function(){document.getElementById('copyBtn').textContent='Copy'},1200);
+});
+document.getElementById('regenBtn').addEventListener('click',function(){
+    if(!confirm('Generate a new invite link? The old link will stop working.'))return;
+    fetch('/api/hires/__HIRE_ID__/regenerate-token',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+        if(d.ok){document.getElementById('iUrl').value=d.invite_url;alert('✓ New link generated')}
+    });
+});
+</script>
+</body></html>'''
+
+
+# Public token-based onboarding (no login)
+HIRE_ONBOARDING_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Welcome — 5 SEC Onboarding</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:#e4e8f1;min-height:100vh;padding-bottom:80px;-webkit-font-smoothing:antialiased}
+:root{--brand:#f3c9c4;--brand-strong:#eab1a8}
+.top{background:rgba(10,13,20,.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid rgba(255,255,255,.06);padding:16px 22px;position:sticky;top:0;z-index:50}
+.brand-mark{font-size:18px;font-weight:900;color:var(--brand);letter-spacing:1.5px;line-height:1}
+.brand-sub{font-size:9px;color:#94a3b8;letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-top:3px}
+
+.wrap{max-width:760px;margin:0 auto;padding:30px 22px 0}
+.hello{font-size:30px;font-weight:900;color:#fff;letter-spacing:-.4px;margin-bottom:8px}
+.hello-sub{font-size:15px;color:#9ba9c1;margin-bottom:24px;line-height:1.5}
+
+.progress-card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:16px;padding:18px 22px;margin-bottom:24px;display:flex;align-items:center;gap:16px}
+.pc-pct{font-size:30px;font-weight:900;color:var(--brand);font-feature-settings:'tnum';min-width:70px}
+.pc-bar{flex:1;height:10px;background:rgba(255,255,255,.06);border-radius:5px;overflow:hidden}
+.pc-fill{height:100%;background:linear-gradient(90deg,var(--brand),var(--brand-strong));transition:width .4s}
+.pc-txt{font-size:13px;color:#9ba9c1;white-space:nowrap;font-weight:700}
+
+.step-card{background:rgba(255,255,255,.04);border:2px solid rgba(255,255,255,.07);border-radius:18px;padding:24px 24px;margin-bottom:14px;transition:all .15s}
+.step-card.next{border-color:rgba(243,201,196,.4);background:rgba(243,201,196,.04)}
+.step-card.done{opacity:.65}
+.step-head{display:flex;align-items:center;gap:14px;cursor:pointer;user-select:none}
+.step-num{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;font-weight:900;color:#9ba9c1;font-size:14px;flex-shrink:0}
+.step-card.done .step-num{background:#10b981;color:#0a0d14}
+.step-card.done .step-num::before{content:'✓'}
+.step-card.done .step-num span{display:none}
+.step-card.next .step-num{background:var(--brand);color:#1a0e0b}
+.step-info{flex:1;min-width:0}
+.step-title{font-size:18px;font-weight:800;color:#fff;line-height:1.25}
+.step-card.done .step-title{color:#9ba9c1;text-decoration:line-through;text-decoration-color:rgba(255,255,255,.3)}
+.step-desc{font-size:13px;color:#9ba9c1;margin-top:3px;line-height:1.4}
+.step-status{font-size:11px;color:#9ba9c1;font-weight:700;text-transform:uppercase;letter-spacing:.4px;flex-shrink:0}
+.step-card.done .step-status{color:#34d399}
+.step-card.next .step-status{color:var(--brand)}
+
+.step-body{margin-top:18px;padding-top:18px;border-top:1px solid rgba(255,255,255,.06);display:none}
+.step-card.open .step-body{display:block;animation:expand .25s ease}
+@keyframes expand{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+.doc-body{background:rgba(11,14,20,.6);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:18px 20px;color:#e4e8f1;font-size:14px;line-height:1.6;margin-bottom:18px;white-space:pre-line;max-height:50vh;overflow-y:auto}
+.ack-row{display:flex;align-items:flex-start;gap:12px;padding:14px;background:rgba(243,201,196,.06);border:1px solid rgba(243,201,196,.18);border-radius:12px;margin-bottom:14px;cursor:pointer;user-select:none}
+.ack-row input[type=checkbox]{width:22px;height:22px;accent-color:var(--brand);flex-shrink:0;margin-top:1px}
+.ack-row label{font-size:14px;color:#e4e8f1;cursor:pointer;line-height:1.5;font-weight:600}
+
+.sign-block{background:rgba(255,255,255,.04);border:1px dashed rgba(255,255,255,.18);border-radius:12px;padding:18px 20px;margin-bottom:16px}
+.sign-lbl{font-size:12px;color:var(--brand);font-weight:800;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.sign-input{width:100%;background:rgba(11,14,20,.7);border:none;border-bottom:2px solid var(--brand);padding:14px 4px;font-size:24px;color:var(--brand);font-family:"Brush Script MT",cursive;outline:none;font-style:italic}
+.sign-input:focus{border-bottom-color:#fff}
+.sign-hint{font-size:11px;color:#94a3b8;margin-top:8px;line-height:1.5}
+
+.field{display:block;margin-bottom:14px}
+.field-lbl{display:block;font-size:13px;color:#9ba9c1;font-weight:700;margin-bottom:6px}
+.field-lbl .req{color:#fb7185;margin-left:4px}
+.field-in,.field-sel,.field-ta{width:100%;background:rgba(11,14,20,.7);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:12px 14px;font-size:15px;color:#e4e8f1;font-family:inherit;outline:none;transition:border .15s}
+.field-in:focus,.field-sel:focus,.field-ta:focus{border-color:var(--brand)}
+.field-ta{min-height:80px;resize:vertical}
+
+.complete-btn{width:100%;background:var(--brand);color:#1a0e0b;border:none;border-radius:14px;padding:16px;font-size:15px;font-weight:900;letter-spacing:.5px;text-transform:uppercase;cursor:pointer;font-family:inherit;transition:all .15s}
+.complete-btn:hover{background:var(--brand-strong);transform:translateY(-1px)}
+.complete-btn:disabled{background:rgba(255,255,255,.06);color:#6b7a90;cursor:not-allowed;transform:none}
+
+.finished{text-align:center;padding:60px 20px;background:rgba(16,185,129,.05);border:1px solid rgba(16,185,129,.25);border-radius:18px;margin-top:20px;display:none}
+.finished.on{display:block}
+.finished .icn{font-size:80px;margin-bottom:14px}
+.finished .ttl{font-size:28px;font-weight:900;color:#34d399;margin-bottom:6px}
+.finished .sub{font-size:15px;color:#9ba9c1}
+
+.upload-zone{background:rgba(255,255,255,.04);border:2px dashed rgba(255,255,255,.18);border-radius:14px;padding:24px;text-align:center;cursor:pointer;transition:all .15s;margin-bottom:14px}
+.upload-zone:hover{border-color:var(--brand);background:rgba(243,201,196,.04)}
+.upload-zone .icn{font-size:42px;margin-bottom:8px;opacity:.7}
+.upload-zone .ttl{font-size:14px;color:#e4e8f1;font-weight:700}
+.upload-zone input{display:none}
+.upload-note{font-size:12px;color:#94a3b8;margin-top:14px;padding:10px 14px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:10px;color:#fbbf24}
+
+.toast{position:fixed;top:60px;left:50%;transform:translateX(-50%);background:rgba(16,185,129,.95);color:#fff;padding:13px 24px;border-radius:11px;font-size:13px;font-weight:800;z-index:300;display:none;box-shadow:0 10px 30px rgba(0,0,0,.4)}
+.toast.on{display:block}.toast.err{background:rgba(244,63,94,.95)}
+
+/* Language toggle in top bar */
+.top{display:flex;justify-content:space-between;align-items:center;gap:14px}
+.top-brand{display:flex;flex-direction:column}
+.lang-toggle{display:inline-flex;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:3px;gap:0}
+.lang-btn{background:transparent;border:none;color:#9ba9c1;font-size:13px;font-weight:700;padding:7px 14px;border-radius:8px;cursor:pointer;font-family:inherit;transition:all .15s}
+.lang-btn.active{background:var(--brand);color:#1a0e0b}
+.lang-btn:not(.active):hover{color:#e4e8f1}
+</style>
+</head><body>
+<div class="top">
+  <div class="top-brand">
+    <div class="brand-mark">5&nbsp;SEC</div>
+    <div class="brand-sub" id="brandSub">Onboarding</div>
+  </div>
+  <div class="lang-toggle">
+    <button class="lang-btn" data-lang="en" id="langEn">🇺🇸 EN</button>
+    <button class="lang-btn" data-lang="es" id="langEs">🇪🇸 ES</button>
+  </div>
+</div>
+
+<div class="wrap">
+  <div class="hello" id="hello">Welcome, __HIRE_NAME__ 👋</div>
+  <div class="hello-sub" id="helloSub">Let's get you set up. Work through each step below — your progress saves automatically. You can leave and come back anytime using this link.</div>
+
+  <div class="progress-card">
+    <div class="pc-pct" id="pcPct">0%</div>
+    <div class="pc-bar"><div class="pc-fill" id="pcFill" style="width:0%"></div></div>
+    <div class="pc-txt" id="pcTxt">—</div>
+  </div>
+
+  <div id="stepsList"></div>
+
+  <div class="finished" id="finished">
+    <div class="icn">🎉</div>
+    <div class="ttl">All done!</div>
+    <div class="sub">Your manager has been notified. They'll reach out about your start date and getting you a badge.</div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+var TOKEN='__TOKEN__';
+var STEPS=[];
+// Locale strings for static UI chrome. Step content itself comes from the API.
+var I18N = {
+    en: {
+        sub:'Onboarding',
+        hello:'Welcome, __HIRE_NAME__ 👋',
+        helloSub:"Let's get you set up. Work through each step below — your progress saves automatically. You can leave and come back anytime using this link.",
+        progressTxt:function(done,total){return done+' of '+total+' done'},
+        finishedTtl:'All done!',
+        finishedSub:"Your manager has been notified. They'll reach out about your start date and getting you a badge.",
+        statusDone:'Done',
+        statusNext:'Next →',
+        statusPending:'Pending',
+        infoCta:'Got it — mark complete',
+        ackBoxLabel:'I have read this and agree to abide by it.',
+        signLabel:'Type your full name to sign',
+        signPlaceholder:'Your full legal name',
+        signHintAck:'By typing your name you confirm you have read and agree to the policy above. Your signature is recorded with the current timestamp and your IP address as proof.',
+        signHintSign:'By typing your name you legally sign this document. We record the document content, your name, current timestamp, and your IP address as proof of signature (ESIGN Act compliant).',
+        ackCta:'Submit & continue',
+        signCta:'Sign & continue',
+        formCta:'Save & continue',
+        selectPrompt:'— select —',
+        uploadNote:'📎 File upload coming in the next release. For now, please email your ID to your hiring manager and they will mark this step complete on your behalf.',
+        uploadCta:'Upload coming soon',
+        savingCta:'Saving…',
+        tryAgain:'Try again',
+        savedToast:'✓ Saved',
+        invalidLink:'Invalid link. Ask your manager for a new one.',
+    },
+    es: {
+        sub:'Orientación',
+        hello:'Bienvenido, __HIRE_NAME__ 👋',
+        helloSub:'Vamos a configurarte. Completa cada paso abajo — tu progreso se guarda automáticamente. Puedes salir y volver cuando quieras desde este mismo enlace.',
+        progressTxt:function(done,total){return done+' de '+total+' completados'},
+        finishedTtl:'¡Todo listo!',
+        finishedSub:'Tu gerente ha sido notificado. Te contactará sobre tu fecha de inicio y para entregarte tu credencial.',
+        statusDone:'Listo',
+        statusNext:'Siguiente →',
+        statusPending:'Pendiente',
+        infoCta:'Entendido — marcar como completo',
+        ackBoxLabel:'He leído esto y acepto cumplir con ello.',
+        signLabel:'Escribe tu nombre completo para firmar',
+        signPlaceholder:'Tu nombre legal completo',
+        signHintAck:'Al escribir tu nombre confirmas que has leído y aceptas la política anterior. Tu firma se registra con la fecha/hora actual y tu dirección IP como prueba.',
+        signHintSign:'Al escribir tu nombre firmas legalmente este documento. Registramos el contenido del documento, tu nombre, la fecha/hora actual y tu dirección IP como prueba de firma (cumple con la ley ESIGN).',
+        ackCta:'Enviar y continuar',
+        signCta:'Firmar y continuar',
+        formCta:'Guardar y continuar',
+        selectPrompt:'— selecciona —',
+        uploadNote:'📎 La carga de archivos llegará en la próxima versión. Por ahora, envía tu identificación por correo a tu gerente y lo marcarán como completo por ti.',
+        uploadCta:'Carga próximamente',
+        savingCta:'Guardando…',
+        tryAgain:'Intenta de nuevo',
+        savedToast:'✓ Guardado',
+        invalidLink:'Enlace no válido. Pide a tu gerente uno nuevo.',
+    }
+};
+var CUR_LANG='en';
+var L=I18N.en;
+
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function toast(m,err){var t=document.getElementById('toast');t.textContent=m;t.className='toast on'+(err?' err':'');setTimeout(function(){t.className='toast'},2400)}
+
+function applyStaticI18n(){
+    document.getElementById('brandSub').textContent=L.sub;
+    document.getElementById('hello').textContent=L.hello.replace('__HIRE_NAME__',document.title.split('—')[0].trim()||'');
+    document.getElementById('helloSub').textContent=L.helloSub;
+    document.getElementById('finished').querySelector('.ttl').textContent=L.finishedTtl;
+    document.getElementById('finished').querySelector('.sub').textContent=L.finishedSub;
+    document.getElementById('langEn').classList.toggle('active',CUR_LANG==='en');
+    document.getElementById('langEs').classList.toggle('active',CUR_LANG==='es');
+    document.documentElement.lang=CUR_LANG;
+}
+
+function setLang(lang,persist){
+    CUR_LANG = (lang==='es')?'es':'en';
+    L = I18N[CUR_LANG];
+    try{localStorage.setItem('hireLang',CUR_LANG)}catch(e){}
+    if(persist){
+        // Server-side preference (so admin sees what the hire chose)
+        fetch('/api/hire/'+TOKEN+'/lang',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({lang:CUR_LANG})}).catch(function(){});
+    }
+    applyStaticI18n();
+    load();
+}
+
+function load(){
+    fetch('/api/hire/'+TOKEN+'?lang='+CUR_LANG).then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){document.body.innerHTML='<div style="padding:80px 20px;text-align:center;color:#fb7185">'+L.invalidLink+'</div>';return}
+        STEPS=d.steps||[];
+        // On first load, sync to whichever language the hire actually has saved
+        if(!window._langInited){
+            // Order of preference: query string > localStorage > server-side preference > browser language > en
+            var url=new URLSearchParams(location.search).get('lang');
+            var stored=null;try{stored=localStorage.getItem('hireLang')}catch(e){}
+            var browser=((navigator.language||'en').toLowerCase().slice(0,2)==='es')?'es':'en';
+            var chosen=url||stored||d.lang||browser;
+            window._langInited=true;
+            if(chosen!==CUR_LANG){setLang(chosen,false);return}
+        }
+        document.getElementById('pcPct').textContent=d.progress.pct+'%';
+        document.getElementById('pcFill').style.width=d.progress.pct+'%';
+        document.getElementById('pcTxt').textContent=L.progressTxt(d.progress.done,d.progress.total);
+        document.getElementById('finished').classList.toggle('on',d.progress.pct===100 && d.progress.total>0);
+        applyStaticI18n();
+        render();
+    });
+}
+
+document.getElementById('langEn').addEventListener('click',function(){setLang('en',true)});
+document.getElementById('langEs').addEventListener('click',function(){setLang('es',true)});
+
+function render(){
+    var firstPendingIdx=STEPS.findIndex(function(s){return s.status!=='done'});
+    document.getElementById('stepsList').innerHTML=STEPS.map(function(s,i){
+        var done=s.status==='done';
+        var isNext=(i===firstPendingIdx);
+        var cls='step-card'+(done?' done':'')+(isNext?' next':'');
+        return '<div class="'+cls+'" data-id="'+s.step_id+'" data-idx="'+i+'">'+
+            '<div class="step-head">'+
+                '<div class="step-num"><span>'+(i+1)+'</span></div>'+
+                '<div class="step-info">'+
+                    '<div class="step-title">'+esc(s.title)+'</div>'+
+                    (s.description?'<div class="step-desc">'+esc(s.description)+'</div>':'')+
+                '</div>'+
+                '<div class="step-status">'+(done?L.statusDone:(isNext?L.statusNext:L.statusPending))+'</div>'+
+            '</div>'+
+            '<div class="step-body"></div>'+
+        '</div>';
+    }).join('');
+    document.querySelectorAll('.step-card').forEach(function(el){
+        el.querySelector('.step-head').addEventListener('click',function(){
+            if(el.classList.contains('done'))return;
+            var open=el.classList.contains('open');
+            document.querySelectorAll('.step-card.open').forEach(function(x){x.classList.remove('open');x.querySelector('.step-body').innerHTML=''});
+            if(!open){
+                el.classList.add('open');
+                renderStepBody(el);
+            }
+        });
+    });
+    // Auto-open the next pending step on load
+    var nextEl=document.querySelector('.step-card.next');
+    if(nextEl && !nextEl.classList.contains('open')){
+        nextEl.classList.add('open');
+        renderStepBody(nextEl);
+    }
+}
+
+function renderStepBody(el){
+    var idx=parseInt(el.dataset.idx);
+    var s=STEPS[idx];
+    var bodyEl=el.querySelector('.step-body');
+    if(s.step_type==='info'){
+        bodyEl.innerHTML=(s.body?'<div class="doc-body">'+esc(s.body)+'</div>':'')+
+            '<button class="complete-btn" data-act="info">'+L.infoCta+'</button>';
+    } else if(s.step_type==='ack'){
+        bodyEl.innerHTML=(s.body?'<div class="doc-body">'+esc(s.body)+'</div>':'')+
+            '<label class="ack-row"><input type="checkbox" id="ackChk_'+s.step_id+'"><label for="ackChk_'+s.step_id+'">'+L.ackBoxLabel+'</label></label>'+
+            '<div class="sign-block"><div class="sign-lbl">'+L.signLabel+'</div>'+
+                '<input class="sign-input" id="ackName_'+s.step_id+'" placeholder="'+L.signPlaceholder+'">'+
+                '<div class="sign-hint">'+L.signHintAck+'</div></div>'+
+            '<button class="complete-btn" data-act="ack" disabled>'+L.ackCta+'</button>';
+        var chk=bodyEl.querySelector('input[type=checkbox]');
+        var name=bodyEl.querySelector('.sign-input');
+        var btn=bodyEl.querySelector('.complete-btn');
+        function upd(){btn.disabled=!(chk.checked && name.value.trim().length>=2)}
+        chk.addEventListener('change',upd);name.addEventListener('input',upd);
+    } else if(s.step_type==='sign'){
+        bodyEl.innerHTML=(s.body?'<div class="doc-body">'+esc(s.body)+'</div>':'')+
+            '<div class="sign-block"><div class="sign-lbl">'+L.signLabel+'</div>'+
+                '<input class="sign-input" id="signName_'+s.step_id+'" placeholder="'+L.signPlaceholder+'">'+
+                '<div class="sign-hint">'+L.signHintSign+'</div></div>'+
+            '<button class="complete-btn" data-act="sign" disabled>'+L.signCta+'</button>';
+        var name=bodyEl.querySelector('.sign-input');
+        var btn=bodyEl.querySelector('.complete-btn');
+        name.addEventListener('input',function(){btn.disabled=name.value.trim().length<2});
+    } else if(s.step_type==='form'){
+        var cfg={};try{cfg=JSON.parse(s.config_json||'{}')}catch(e){}
+        var fields=cfg.fields||[];
+        var existing={};try{existing=(JSON.parse(s.data_json||'{}').responses)||{}}catch(e){}
+        bodyEl.innerHTML=fields.map(function(f){
+            var req=f.required?'<span class="req">*</span>':'';
+            var val=esc(existing[f.name]||'');
+            if(f.type==='select'){
+                var opts=(f.options||[]).map(function(o){return '<option'+(existing[f.name]===o?' selected':'')+'>'+esc(o)+'</option>'}).join('');
+                return '<label class="field"><span class="field-lbl">'+esc(f.label)+req+'</span><select class="field-sel" data-name="'+esc(f.name)+'"><option value="">'+L.selectPrompt+'</option>'+opts+'</select></label>';
+            }
+            if(f.type==='textarea'){
+                return '<label class="field"><span class="field-lbl">'+esc(f.label)+req+'</span><textarea class="field-ta" data-name="'+esc(f.name)+'">'+val+'</textarea></label>';
+            }
+            return '<label class="field"><span class="field-lbl">'+esc(f.label)+req+'</span><input class="field-in" data-name="'+esc(f.name)+'" type="'+esc(f.type||'text')+'" value="'+val+'"></label>';
+        }).join('')+'<button class="complete-btn" data-act="form">'+L.formCta+'</button>';
+    } else if(s.step_type==='upload'){
+        bodyEl.innerHTML=(s.body?'<div class="doc-body">'+esc(s.body)+'</div>':'')+
+            '<div class="upload-note">'+L.uploadNote+'</div>'+
+            '<button class="complete-btn" data-act="upload" disabled>'+L.uploadCta+'</button>';
+    }
+    bodyEl.querySelectorAll('button.complete-btn').forEach(function(b){
+        b.addEventListener('click',function(){submitStep(b,s,bodyEl)});
+    });
+}
+
+function submitStep(btn,s,bodyEl){
+    var act=btn.dataset.act;
+    var body={};
+    if(act==='info'){body={};}
+    else if(act==='ack'){
+        body={acknowledged:bodyEl.querySelector('input[type=checkbox]').checked,
+              signed_name:bodyEl.querySelector('.sign-input').value.trim()};
+    } else if(act==='sign'){
+        body={signed_name:bodyEl.querySelector('.sign-input').value.trim()};
+    } else if(act==='form'){
+        var responses={};
+        bodyEl.querySelectorAll('[data-name]').forEach(function(el){responses[el.dataset.name]=el.value});
+        body={responses:responses};
+    } else if(act==='upload'){return}
+    btn.disabled=true;btn.textContent=L.savingCta;
+    fetch('/api/hire/'+TOKEN+'/step/'+s.step_id+'/complete',{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)
+    }).then(function(r){return r.json()}).then(function(d){
+        btn.disabled=false;
+        if(!d.ok){toast(d.error||'Failed',true);btn.textContent=L.tryAgain;return}
+        toast(L.savedToast);
+        load();
+        window.scrollTo({top:0,behavior:'smooth'});
+    });
+}
+
+// Force a load — the inside of load() detects first-visit language preference
+load();
 </script>
 </body></html>'''

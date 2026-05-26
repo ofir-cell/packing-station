@@ -17,7 +17,8 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ME_HTML, LEADERBOARD_HTML, HOME_HTML, DOCUMENTS_HTML, WELCOME_HTML,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
-    ISSUES_HTML, CLEANUP_HTML)
+    ISSUES_HTML, CLEANUP_HTML,
+    HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML)
 
 
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
@@ -351,6 +352,13 @@ def sdb_init():
         "ALTER TABLE shipment_items ADD COLUMN cancel_reason TEXT",
         "ALTER TABLE shipment_items ADD COLUMN picked INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN picked_at TEXT",
+        # Bilingual onboarding — Spanish translations live in *_es columns
+        # alongside the English originals. NULL ES → frontend falls back to EN.
+        "ALTER TABLE onboarding_steps ADD COLUMN title_es TEXT",
+        "ALTER TABLE onboarding_steps ADD COLUMN description_es TEXT",
+        "ALTER TABLE onboarding_steps ADD COLUMN body_es TEXT",
+        "ALTER TABLE onboarding_steps ADD COLUMN config_json_es TEXT",
+        "ALTER TABLE new_hires ADD COLUMN preferred_language TEXT DEFAULT 'en'",
     ):
         try: c.execute(stmt)
         except sqlite3.OperationalError: pass  # column already exists
@@ -383,6 +391,90 @@ def sdb_init():
         removed_by TEXT,
         PRIMARY KEY (import_label, sku, part)
     )""")
+    # ── New-hire onboarding system ────────────────────────────────────
+    # `new_hires` is one row per candidate moving through onboarding (may
+    # not yet be a real user account). `onboarding_workflows` is a template
+    # (e.g. "Standard Packer Onboarding") with ordered `onboarding_steps`.
+    # Per-hire status lives in `onboarding_progress`. Signatures and uploaded
+    # files (ID, certifications) go in their own tables with full audit trail.
+    c.execute("""CREATE TABLE IF NOT EXISTS new_hires(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        full_name TEXT NOT NULL,
+        email TEXT,
+        phone TEXT,
+        role_target TEXT,
+        workflow_id INTEGER,
+        invite_token TEXT UNIQUE NOT NULL,
+        status TEXT DEFAULT 'invited',
+        started_at TEXT,
+        completed_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        created_by TEXT,
+        notes TEXT,
+        preferred_language TEXT DEFAULT 'en'
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS onboarding_workflows(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT,
+        role_target TEXT,
+        is_default INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        created_by TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS onboarding_steps(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workflow_id INTEGER NOT NULL,
+        step_order INTEGER NOT NULL,
+        step_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        body TEXT,
+        config_json TEXT,
+        is_required INTEGER DEFAULT 1,
+        title_es TEXT,
+        description_es TEXT,
+        body_es TEXT,
+        config_json_es TEXT,
+        FOREIGN KEY (workflow_id) REFERENCES onboarding_workflows(id) ON DELETE CASCADE
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS onboarding_progress(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        hire_id INTEGER NOT NULL,
+        step_id INTEGER NOT NULL,
+        status TEXT DEFAULT 'pending',
+        started_at TEXT,
+        completed_at TEXT,
+        data_json TEXT,
+        UNIQUE (hire_id, step_id)
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS onboarding_signatures(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        hire_id INTEGER NOT NULL,
+        step_id INTEGER NOT NULL,
+        document_title TEXT,
+        signed_name TEXT NOT NULL,
+        signature_type TEXT DEFAULT 'typed',
+        signature_data TEXT,
+        document_hash TEXT,
+        signed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        ip_address TEXT,
+        user_agent TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS onboarding_uploads(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        hire_id INTEGER NOT NULL,
+        step_id INTEGER NOT NULL,
+        field_name TEXT,
+        original_filename TEXT,
+        storage_key TEXT,
+        mime_type TEXT,
+        size_bytes INTEGER,
+        uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_hires_token ON new_hires(invite_token)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_progress_hire ON onboarding_progress(hire_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_steps_wf ON onboarding_steps(workflow_id, step_order)")
     # Indexes
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ship_tracking ON shipments(tracking_code) WHERE tracking_code IS NOT NULL")
     c.execute("CREATE INDEX IF NOT EXISTS idx_ship_status ON shipments(status)")
@@ -495,6 +587,334 @@ def _cleanup_progress(label):
 def _show_is_clean(label):
     """Quick bool — used by /pick to decide whether to allow scanning."""
     return _cleanup_progress(label)["is_clean"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# NEW HIRE ONBOARDING HELPERS
+# ──────────────────────────────────────────────────────────────────────
+# Workflow = ordered list of steps. A hire gets a private invite_token,
+# opens /hire/<token>, walks the workflow, and the admin gets a per-hire
+# detail page with all collected data, signatures, and uploaded docs.
+# ──────────────────────────────────────────────────────────────────────
+import secrets as _secrets_hire
+
+# Step types — kept small and composable. UI dispatches on these strings.
+HIRE_STEP_TYPES = {
+    "info":     "Read-only briefing (handbook section, policy summary, etc.)",
+    "ack":      "Acknowledgement — read, tick a box, type your name to sign",
+    "sign":     "Document signing — full document + typed signature",
+    "form":     "Fill a form with multiple fields",
+    "upload":   "Upload a file (ID, certificate, headshot)",
+    "video":    "Watch a video, then mark complete",
+}
+
+def _new_invite_token():
+    """Cryptographically-random URL-safe token for invite links."""
+    return _secrets_hire.token_urlsafe(24)
+
+def _seed_workflows_from_module():
+    """Seed the real workflows from onboarding_seed.WORKFLOWS on first boot.
+    Each workflow gets created once (skipped if a workflow with the same name
+    already exists). The first one becomes the default for new hires."""
+    try:
+        from onboarding_seed import WORKFLOWS
+    except ImportError:
+        return None
+    c = sdb()
+    first_wf_id = None
+    for idx, wf in enumerate(WORKFLOWS):
+        existing = c.execute("SELECT id FROM onboarding_workflows WHERE name=?",
+                             (wf["name"],)).fetchone()
+        if existing:
+            if first_wf_id is None: first_wf_id = existing["id"]
+            continue
+        is_default = 1 if idx == 0 else 0
+        cur = c.execute("""INSERT INTO onboarding_workflows
+                           (name, description, role_target, is_default, created_by)
+                           VALUES (?, ?, ?, ?, 'system')""",
+                        (wf["name"], wf.get("description", ""), wf.get("role", ""), is_default))
+        wf_id = cur.lastrowid
+        if first_wf_id is None: first_wf_id = wf_id
+        for order, step in enumerate(wf["steps"], start=1):
+            cfg = step.get("config_json") or step.get("config_json_en")
+            cfg_es = step.get("config_json_es")
+            c.execute("""INSERT INTO onboarding_steps
+                         (workflow_id, step_order, step_type,
+                          title, description, body, config_json, is_required,
+                          title_es, description_es, body_es, config_json_es)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
+                      (wf_id, order, step["step_type"],
+                       step.get("title_en"), step.get("description_en"),
+                       step.get("body_en"), cfg,
+                       step.get("title_es"), step.get("description_es"),
+                       step.get("body_es"), cfg_es))
+    c.commit(); c.close()
+    return first_wf_id
+
+def _seed_default_workflow_if_missing():
+    """Backward-compat shim. If the real seed module ran, that's what we use.
+    If for some reason it failed (e.g. file not deployed yet), fall back to a
+    minimal hard-coded placeholder so the system isn't completely broken."""
+    seeded = _seed_workflows_from_module()
+    if seeded is not None:
+        return seeded
+    c = sdb()
+    existing = c.execute("SELECT id FROM onboarding_workflows ORDER BY id LIMIT 1").fetchone()
+    if existing:
+        c.close()
+        return existing["id"]
+    cur = c.execute("""INSERT INTO onboarding_workflows (name, description, role_target, is_default, created_by)
+                       VALUES (?, ?, ?, 1, 'system')""",
+                    ("Standard Onboarding", "Fallback workflow.", ""))
+    wf_id = cur.lastrowid
+    # Each tuple: (step_type, title_en, description_en, body_en, config_json,
+    #              title_es, description_es, body_es, config_json_es)
+    # ES entries are placeholders ready to be replaced when the user sends their
+    # official translated content.
+    default_steps = [
+        ("info", "Welcome to 5 Second Beauty",
+         "A quick intro to the team and what your first week looks like.",
+         "Welcome aboard! Over the next 30 minutes you'll work through a short series of forms and policies. "
+         "Each step is saved automatically — you can pause and resume from the same link anytime. "
+         "When you finish, your warehouse manager gets notified and your badge becomes active.",
+         None,
+         "Bienvenido a 5 Second Beauty",
+         "Una breve introducción al equipo y a tu primera semana.",
+         "¡Bienvenido a bordo! Durante los próximos 30 minutos completarás una serie corta de formularios y políticas. "
+         "Cada paso se guarda automáticamente — puedes pausar y continuar desde el mismo enlace cuando quieras. "
+         "Cuando termines, tu gerente de almacén recibirá una notificación y tu credencial se activará.",
+         None),
+        ("form", "Your contact information",
+         "Tell us how to reach you and your emergency contact.",
+         None,
+         '{"fields":['
+         '{"name":"full_legal_name","label":"Full legal name (as on ID)","type":"text","required":true},'
+         '{"name":"preferred_name","label":"Preferred name / nickname","type":"text","required":false},'
+         '{"name":"date_of_birth","label":"Date of birth","type":"date","required":true},'
+         '{"name":"phone","label":"Personal phone","type":"tel","required":true},'
+         '{"name":"address","label":"Home address","type":"textarea","required":true},'
+         '{"name":"emergency_name","label":"Emergency contact — name","type":"text","required":true},'
+         '{"name":"emergency_relation","label":"Emergency contact — relationship","type":"text","required":true},'
+         '{"name":"emergency_phone","label":"Emergency contact — phone","type":"tel","required":true}'
+         ']}',
+         "Tu información de contacto",
+         "Cuéntanos cómo contactarte y a tu contacto de emergencia.",
+         None,
+         '{"fields":['
+         '{"name":"full_legal_name","label":"Nombre legal completo (como aparece en el ID)","type":"text","required":true},'
+         '{"name":"preferred_name","label":"Nombre preferido / apodo","type":"text","required":false},'
+         '{"name":"date_of_birth","label":"Fecha de nacimiento","type":"date","required":true},'
+         '{"name":"phone","label":"Teléfono personal","type":"tel","required":true},'
+         '{"name":"address","label":"Dirección de casa","type":"textarea","required":true},'
+         '{"name":"emergency_name","label":"Contacto de emergencia — nombre","type":"text","required":true},'
+         '{"name":"emergency_relation","label":"Contacto de emergencia — parentesco","type":"text","required":true},'
+         '{"name":"emergency_phone","label":"Contacto de emergencia — teléfono","type":"tel","required":true}'
+         ']}'),
+        ("ack", "Employee Handbook",
+         "Read and acknowledge our company policies.",
+         "By signing below you confirm you have read and agree to follow the 5 Second Beauty Employee Handbook, "
+         "including policies on attendance, conduct, dress code, breaks, and workplace safety. You understand "
+         "that violation of these policies may result in disciplinary action up to and including termination.",
+         None,
+         "Manual del Empleado",
+         "Lee y reconoce nuestras políticas de la empresa.",
+         "Al firmar abajo confirmas que has leído y aceptas seguir el Manual del Empleado de 5 Second Beauty, "
+         "incluyendo las políticas de asistencia, conducta, código de vestimenta, descansos y seguridad en el lugar de trabajo. "
+         "Entiendes que la violación de estas políticas puede resultar en medidas disciplinarias hasta e incluyendo el despido.",
+         None),
+        ("sign", "Confidentiality Agreement (NDA)",
+         "Protect customer data and company secrets.",
+         "I agree to keep all company information confidential, including customer data, business processes, "
+         "supplier relationships, sales figures, and any other non-public information I learn during my employment. "
+         "This obligation continues after my employment ends. I will not share customer details, share screenshots "
+         "of internal systems, or remove company property without written permission. Breach of this agreement "
+         "may result in legal action and immediate termination.",
+         None,
+         "Acuerdo de Confidencialidad (NDA)",
+         "Protege los datos de los clientes y los secretos de la empresa.",
+         "Acepto mantener toda la información de la empresa de forma confidencial, incluyendo datos de clientes, procesos de negocio, "
+         "relaciones con proveedores, cifras de ventas y cualquier otra información no pública que aprenda durante mi empleo. "
+         "Esta obligación continúa después de que termine mi empleo. No compartiré detalles de clientes, no compartiré capturas de pantalla "
+         "de sistemas internos, ni retiraré propiedad de la empresa sin permiso por escrito. La violación de este acuerdo "
+         "puede resultar en acción legal y despido inmediato.",
+         None),
+        ("form", "Tax information (W-4 essentials)",
+         "Basic federal tax withholding information.",
+         None,
+         '{"fields":['
+         '{"name":"ssn_last4","label":"Last 4 digits of your SSN (full SSN given separately)","type":"text","required":true},'
+         '{"name":"filing_status","label":"Filing status","type":"select","required":true,"options":["Single or married filing separately","Married filing jointly","Head of household"]},'
+         '{"name":"dependents","label":"Number of dependents claimed","type":"number","required":false},'
+         '{"name":"additional_withholding","label":"Additional withholding per paycheck ($)","type":"number","required":false},'
+         '{"name":"exempt","label":"Claiming exempt from withholding?","type":"select","required":true,"options":["No","Yes"]}'
+         ']}',
+         "Información tributaria (W-4 básico)",
+         "Información básica de retención de impuestos federales.",
+         None,
+         '{"fields":['
+         '{"name":"ssn_last4","label":"Últimos 4 dígitos de tu SSN (el SSN completo se entrega aparte)","type":"text","required":true},'
+         '{"name":"filing_status","label":"Estado civil para impuestos","type":"select","required":true,"options":["Soltero/a o casado/a declarando por separado","Casado/a declarando en conjunto","Cabeza de familia"]},'
+         '{"name":"dependents","label":"Número de dependientes declarados","type":"number","required":false},'
+         '{"name":"additional_withholding","label":"Retención adicional por cheque ($)","type":"number","required":false},'
+         '{"name":"exempt","label":"¿Reclamas exención de retención?","type":"select","required":true,"options":["No","Sí"]}'
+         ']}'),
+        ("form", "Direct deposit setup",
+         "Where should we send your paychecks?",
+         None,
+         '{"fields":['
+         '{"name":"bank_name","label":"Bank name","type":"text","required":true},'
+         '{"name":"account_type","label":"Account type","type":"select","required":true,"options":["Checking","Savings"]},'
+         '{"name":"routing_number","label":"Routing number (9 digits)","type":"text","required":true},'
+         '{"name":"account_number","label":"Account number","type":"text","required":true},'
+         '{"name":"confirm_account","label":"Confirm account number","type":"text","required":true}'
+         ']}',
+         "Configuración de depósito directo",
+         "¿Dónde debemos enviar tus cheques de pago?",
+         None,
+         '{"fields":['
+         '{"name":"bank_name","label":"Nombre del banco","type":"text","required":true},'
+         '{"name":"account_type","label":"Tipo de cuenta","type":"select","required":true,"options":["Corriente","Ahorros"]},'
+         '{"name":"routing_number","label":"Número de ruta (9 dígitos)","type":"text","required":true},'
+         '{"name":"account_number","label":"Número de cuenta","type":"text","required":true},'
+         '{"name":"confirm_account","label":"Confirma el número de cuenta","type":"text","required":true}'
+         ']}'),
+        ("upload", "Upload your ID",
+         "We need a photo of a government-issued ID to verify your eligibility to work (I-9 requirement).",
+         "Take a clear photo of one of the following: passport, driver's license, state ID, or permanent resident card. "
+         "Make sure all four corners are visible and the text is readable.",
+         '{"accept":"image/*,.pdf","max_mb":15,"fields":[{"name":"id_front","label":"Front of ID","required":true},{"name":"id_back","label":"Back of ID (if applicable)","required":false}]}',
+         "Sube tu identificación",
+         "Necesitamos una foto de una identificación oficial para verificar tu elegibilidad para trabajar (requisito I-9).",
+         "Toma una foto clara de uno de los siguientes: pasaporte, licencia de conducir, identificación estatal o tarjeta de residente permanente. "
+         "Asegúrate de que las cuatro esquinas sean visibles y que el texto se pueda leer.",
+         '{"accept":"image/*,.pdf","max_mb":15,"fields":[{"name":"id_front","label":"Frente del ID","required":true},{"name":"id_back","label":"Reverso del ID (si aplica)","required":false}]}'),
+        ("sign", "Anti-harassment policy acknowledgment",
+         "We take a zero-tolerance stance on harassment.",
+         "5 Second Beauty is committed to a workplace free of harassment and discrimination. By signing below I confirm "
+         "I have read the Anti-Harassment Policy, understand my responsibilities, and will not engage in any conduct "
+         "that creates a hostile work environment based on race, gender, religion, sexual orientation, disability, age, "
+         "or any other protected category. I understand how to report concerns to my manager or HR, and that retaliation "
+         "for good-faith reports is prohibited.",
+         None,
+         "Reconocimiento de la política antiacoso",
+         "Tenemos una postura de cero tolerancia hacia el acoso.",
+         "5 Second Beauty está comprometido con un lugar de trabajo libre de acoso y discriminación. Al firmar abajo confirmo "
+         "que he leído la Política Antiacoso, entiendo mis responsabilidades, y no participaré en ninguna conducta "
+         "que cree un ambiente de trabajo hostil basado en raza, género, religión, orientación sexual, discapacidad, edad, "
+         "o cualquier otra categoría protegida. Entiendo cómo reportar inquietudes a mi gerente o a Recursos Humanos, y que la represalia "
+         "por reportes de buena fe está prohibida.",
+         None),
+        ("ack", "Camera & recording consent",
+         "Our packing stations record video of every order for quality control.",
+         "I understand that while I am working at a packing station, video is recorded of the area in front of me "
+         "(the packing surface) for the purpose of verifying order accuracy. The video does not capture audio. "
+         "Videos are kept for 30 days unless flagged by customer service. I consent to this recording as part of my "
+         "job responsibilities.",
+         None,
+         "Consentimiento de cámara y grabación",
+         "Nuestras estaciones de empaque graban video de cada pedido para control de calidad.",
+         "Entiendo que mientras trabajo en una estación de empaque, se graba video del área frente a mí "
+         "(la superficie de empaque) con el propósito de verificar la exactitud del pedido. El video no captura audio. "
+         "Los videos se conservan durante 30 días a menos que el equipo de servicio al cliente los marque. Doy mi consentimiento a esta grabación como parte "
+         "de mis responsabilidades laborales.",
+         None),
+    ]
+    for order, row in enumerate(default_steps, start=1):
+        # Bilingual rows are 9-tuples; legacy 5-tuples still work (ES left NULL)
+        if len(row) == 9:
+            stype, title, desc, body, cfg, t_es, d_es, b_es, cfg_es = row
+        else:
+            stype, title, desc, body, cfg = row
+            t_es = d_es = b_es = cfg_es = None
+        c.execute("""INSERT INTO onboarding_steps
+                     (workflow_id, step_order, step_type, title, description, body, config_json, is_required,
+                      title_es, description_es, body_es, config_json_es)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
+                  (wf_id, order, stype, title, desc, body, cfg, t_es, d_es, b_es, cfg_es))
+    c.commit(); c.close()
+    return wf_id
+
+# Run once at boot
+_seed_default_workflow_if_missing()
+
+def _hire_by_token(token):
+    """Look up a hire by their invite token. Returns dict or None."""
+    if not token or len(token) > 64: return None
+    c = sdb()
+    row = c.execute("SELECT * FROM new_hires WHERE invite_token=?", (token,)).fetchone()
+    c.close()
+    return dict(row) if row else None
+
+def _hire_steps_with_progress(hire_id, workflow_id, lang="en"):
+    """Returns the ordered list of steps for a workflow with each hire's progress
+    merged in. Each row: step + status (pending|in_progress|done) + data_json.
+    If lang='es', returns Spanish title/description/body/config_json with
+    English fallback for any field where the Spanish version is missing."""
+    c = sdb()
+    rows = c.execute("""
+        SELECT s.id AS step_id, s.step_order, s.step_type,
+               s.title, s.description, s.body, s.config_json,
+               s.title_es, s.description_es, s.body_es, s.config_json_es,
+               s.is_required,
+               p.status, p.started_at, p.completed_at, p.data_json
+        FROM onboarding_steps s
+        LEFT JOIN onboarding_progress p
+          ON p.step_id = s.id AND p.hire_id = ?
+        WHERE s.workflow_id = ?
+        ORDER BY s.step_order
+    """, (hire_id, workflow_id)).fetchall()
+    c.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if lang == "es":
+            # Swap to Spanish where present, fall back to English where not
+            d["title"] = d.get("title_es") or d["title"]
+            d["description"] = d.get("description_es") or d.get("description")
+            d["body"] = d.get("body_es") or d.get("body")
+            d["config_json"] = d.get("config_json_es") or d.get("config_json")
+        # Always strip the *_es scratch columns from the output payload
+        for k in ("title_es", "description_es", "body_es", "config_json_es"):
+            d.pop(k, None)
+        out.append(d)
+    return out
+
+def _hire_completion_pct(hire_id, workflow_id):
+    """Returns (done_count, total_count, pct)."""
+    steps = _hire_steps_with_progress(hire_id, workflow_id)
+    total = len(steps)
+    done = sum(1 for s in steps if s["status"] == "done")
+    return done, total, int(100 * done / total) if total else 0
+
+def _mark_step(hire_id, step_id, data_dict=None, status="done"):
+    """Insert/update a progress row for this hire+step. data_dict serialized to JSON."""
+    import json as _json
+    c = sdb()
+    payload = _json.dumps(data_dict, ensure_ascii=False) if data_dict else None
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute("""
+        INSERT INTO onboarding_progress (hire_id, step_id, status, started_at, completed_at, data_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(hire_id, step_id) DO UPDATE SET
+          status=excluded.status,
+          completed_at=excluded.completed_at,
+          data_json=excluded.data_json
+    """, (hire_id, step_id, status, now, now if status == "done" else None, payload))
+    # If this is the first completed step, mark the hire as started
+    c.execute("UPDATE new_hires SET status='in_progress', started_at=COALESCE(started_at,?) WHERE id=? AND status='invited'",
+              (now, hire_id))
+    # Check if every required step is done — auto-promote to 'complete'
+    workflow_id = c.execute("SELECT workflow_id FROM new_hires WHERE id=?", (hire_id,)).fetchone()["workflow_id"]
+    pending = c.execute("""
+        SELECT COUNT(*) AS pending
+        FROM onboarding_steps s
+        LEFT JOIN onboarding_progress p ON p.step_id=s.id AND p.hire_id=?
+        WHERE s.workflow_id=? AND s.is_required=1 AND COALESCE(p.status,'pending')<>'done'
+    """, (hire_id, workflow_id)).fetchone()["pending"]
+    if pending == 0:
+        c.execute("UPDATE new_hires SET status='complete', completed_at=? WHERE id=? AND status<>'complete'",
+                  (now, hire_id))
+    c.commit(); c.close()
 
 def _sku_weight(sku):
     """Look up a single SKU's weight in grams. Returns None if unknown."""
@@ -2266,6 +2686,283 @@ def api_sku_lookup(sku):
         "label_filter": label or None,
         "matches": [dict(r) for r in rows],
     })
+
+
+# ──────────────────────────────────────────────────────────────────────
+# NEW-HIRE ONBOARDING — admin + public token-based flow
+# ──────────────────────────────────────────────────────────────────────
+@app.route("/admin/hires")
+@req_role("admin", "cs")
+def admin_hires_page():
+    """List of all new hires with status + create-new-hire button."""
+    return (HIRES_ADMIN_HTML
+        .replace("__USER__", session.get("username", ""))
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("hires"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/admin/hires/<int:hire_id>")
+@req_role("admin", "cs")
+def admin_hire_detail(hire_id):
+    """Per-hire detail: progress, signed docs, uploaded files, copy-link button."""
+    c = sdb()
+    h = c.execute("SELECT * FROM new_hires WHERE id=?", (hire_id,)).fetchone()
+    c.close()
+    if not h:
+        return "Hire not found", 404
+    return (HIRE_DETAIL_HTML
+        .replace("__USER__", session.get("username", ""))
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__HIRE_ID__", str(hire_id))
+        .replace("__HIRE_NAME__", h["full_name"])
+        .replace("__INVITE_URL__", request.url_root.rstrip("/") + "/hire/" + h["invite_token"])
+        .replace("__NAVBAR__", _navbar("hires"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/hires", methods=["GET"])
+@req_role("admin", "cs")
+def api_hires_list():
+    """Return all hires with progress %."""
+    c = sdb()
+    rows = c.execute("""
+        SELECT h.*, w.name AS workflow_name
+        FROM new_hires h
+        LEFT JOIN onboarding_workflows w ON w.id = h.workflow_id
+        ORDER BY h.created_at DESC
+    """).fetchall()
+    c.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d["workflow_id"]:
+            done, total, pct = _hire_completion_pct(d["id"], d["workflow_id"])
+            d["progress_done"] = done
+            d["progress_total"] = total
+            d["progress_pct"] = pct
+        else:
+            d["progress_done"] = d["progress_total"] = d["progress_pct"] = 0
+        # Don't expose the raw token in the list view — only on detail page
+        d.pop("invite_token", None)
+        out.append(d)
+    return jsonify(out)
+
+@app.route("/api/workflows")
+@req_role("admin", "cs")
+def api_workflows_list():
+    """List all onboarding workflows for the create-hire dropdown."""
+    c = sdb()
+    rows = c.execute("""SELECT id, name, description, role_target, is_default
+                        FROM onboarding_workflows ORDER BY is_default DESC, id""").fetchall()
+    c.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/hires", methods=["POST"])
+@req_role("admin", "cs")
+def api_hires_create():
+    """Create a new hire + assign workflow + return the invite link."""
+    d = request.get_json() or {}
+    full_name = (d.get("full_name") or "").strip()
+    if not full_name or len(full_name) > 200:
+        return jsonify({"ok": False, "error": "Full name is required"}), 400
+    email = (d.get("email") or "").strip() or None
+    phone = (d.get("phone") or "").strip() or None
+    role_target = (d.get("role_target") or "worker").strip()
+    preferred_language = (d.get("preferred_language") or "en").lower()
+    if preferred_language not in ("en", "es"):
+        preferred_language = "en"
+    workflow_id = d.get("workflow_id")
+    c = sdb()
+    if not workflow_id:
+        row = c.execute("SELECT id FROM onboarding_workflows WHERE is_default=1 ORDER BY id LIMIT 1").fetchone()
+        if not row:
+            c.close()
+            wf_id = _seed_default_workflow_if_missing()
+            c = sdb()
+        else:
+            wf_id = row["id"]
+    else:
+        wf_id = int(workflow_id)
+    token = _new_invite_token()
+    cur = c.execute("""INSERT INTO new_hires (full_name, email, phone, role_target, workflow_id,
+                       invite_token, status, created_by, preferred_language)
+                       VALUES (?, ?, ?, ?, ?, ?, 'invited', ?, ?)""",
+                    (full_name, email, phone, role_target, wf_id, token,
+                     session.get("username", ""), preferred_language))
+    hire_id = cur.lastrowid
+    c.commit(); c.close()
+    invite_url = request.url_root.rstrip("/") + "/hire/" + token
+    return jsonify({"ok": True, "id": hire_id, "invite_token": token, "invite_url": invite_url})
+
+@app.route("/api/hires/<int:hire_id>", methods=["GET"])
+@req_role("admin", "cs")
+def api_hire_get(hire_id):
+    """Full detail for admin view: hire info, workflow, every step + status + data."""
+    c = sdb()
+    h = c.execute("SELECT * FROM new_hires WHERE id=?", (hire_id,)).fetchone()
+    if not h:
+        c.close()
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    h = dict(h)
+    steps = _hire_steps_with_progress(h["id"], h["workflow_id"]) if h["workflow_id"] else []
+    sigs = [dict(r) for r in c.execute("SELECT * FROM onboarding_signatures WHERE hire_id=? ORDER BY signed_at DESC",
+                                       (hire_id,)).fetchall()]
+    uploads = [dict(r) for r in c.execute("SELECT * FROM onboarding_uploads WHERE hire_id=? ORDER BY uploaded_at DESC",
+                                          (hire_id,)).fetchall()]
+    c.close()
+    done, total, pct = _hire_completion_pct(h["id"], h["workflow_id"]) if h["workflow_id"] else (0, 0, 0)
+    return jsonify({"ok": True, "hire": h, "steps": steps, "signatures": sigs,
+                    "uploads": uploads,
+                    "progress": {"done": done, "total": total, "pct": pct}})
+
+@app.route("/api/hires/<int:hire_id>/regenerate-token", methods=["POST"])
+@req_role("admin", "cs")
+def api_hire_regen_token(hire_id):
+    """Rotate the invite token — invalidates the old link. Useful if it leaked."""
+    new_tok = _new_invite_token()
+    c = sdb()
+    c.execute("UPDATE new_hires SET invite_token=? WHERE id=?", (new_tok, hire_id))
+    c.commit(); c.close()
+    invite_url = request.url_root.rstrip("/") + "/hire/" + new_tok
+    return jsonify({"ok": True, "invite_token": new_tok, "invite_url": invite_url})
+
+@app.route("/api/hires/<int:hire_id>", methods=["DELETE"])
+@req_role("admin")
+def api_hire_delete(hire_id):
+    """Hard-delete a hire and their progress (admin only). Use with care."""
+    c = sdb()
+    c.execute("DELETE FROM onboarding_progress WHERE hire_id=?", (hire_id,))
+    c.execute("DELETE FROM onboarding_signatures WHERE hire_id=?", (hire_id,))
+    c.execute("DELETE FROM onboarding_uploads WHERE hire_id=?", (hire_id,))
+    c.execute("DELETE FROM new_hires WHERE id=?", (hire_id,))
+    c.commit(); c.close()
+    return jsonify({"ok": True})
+
+# ─── Public flow (no login — token IS the auth) ────────────────────────
+@app.route("/hire/<token>")
+def public_hire_onboarding(token):
+    """The new hire's own page. They reach this from the invite link.
+    No login required — the URL token authenticates them to their own record."""
+    h = _hire_by_token(token)
+    if not h:
+        return "<h1>Invite link not valid</h1><p>Please ask your manager to send a new link.</p>", 404
+    return (HIRE_ONBOARDING_HTML
+        .replace("__TOKEN__", token)
+        .replace("__HIRE_NAME__", h["full_name"])
+        .replace("__HIRE_ROLE__", h["role_target"] or ""))
+
+@app.route("/api/hire/<token>")
+def api_public_hire_get(token):
+    """Public API the onboarding page uses to load its data.
+    Language selection priority: ?lang query param → hire's preferred_language → 'en'."""
+    h = _hire_by_token(token)
+    if not h:
+        return jsonify({"ok": False, "error": "Invalid token"}), 404
+    lang = (request.args.get("lang") or h.get("preferred_language") or "en").lower()
+    if lang not in ("en", "es"):
+        lang = "en"
+    steps = _hire_steps_with_progress(h["id"], h["workflow_id"], lang=lang) if h["workflow_id"] else []
+    done, total, pct = _hire_completion_pct(h["id"], h["workflow_id"]) if h["workflow_id"] else (0, 0, 0)
+    h.pop("invite_token", None)
+    return jsonify({"ok": True, "hire": h, "lang": lang, "steps": steps,
+                    "progress": {"done": done, "total": total, "pct": pct}})
+
+@app.route("/api/hire/<token>/lang", methods=["POST"])
+def api_public_hire_set_lang(token):
+    """Persist the new hire's chosen language so the admin sees what they prefer."""
+    h = _hire_by_token(token)
+    if not h:
+        return jsonify({"ok": False, "error": "Invalid token"}), 404
+    lang = ((request.get_json() or {}).get("lang") or "en").lower()
+    if lang not in ("en", "es"):
+        lang = "en"
+    c = sdb()
+    c.execute("UPDATE new_hires SET preferred_language=? WHERE id=?", (lang, h["id"]))
+    c.commit(); c.close()
+    return jsonify({"ok": True, "lang": lang})
+
+@app.route("/api/hire/<token>/step/<int:step_id>/complete", methods=["POST"])
+def api_public_hire_complete_step(token, step_id):
+    """Mark a step complete. Body is type-specific. Validated by step_type."""
+    import json as _json, hashlib as _hashlib
+    h = _hire_by_token(token)
+    if not h:
+        return jsonify({"ok": False, "error": "Invalid token"}), 404
+    c = sdb()
+    step = c.execute("SELECT * FROM onboarding_steps WHERE id=? AND workflow_id=?",
+                     (step_id, h["workflow_id"])).fetchone()
+    if not step:
+        c.close()
+        return jsonify({"ok": False, "error": "Step not found"}), 404
+    step = dict(step)
+    payload = request.get_json() or {}
+    data = {}
+    if step["step_type"] in ("info", "video"):
+        # Nothing required — just mark done
+        data = {"acknowledged": True}
+    elif step["step_type"] == "ack":
+        # Require the checkbox confirmation
+        if not payload.get("acknowledged"):
+            c.close()
+            return jsonify({"ok": False, "error": "You must check the acknowledgement box"}), 400
+        data = {"acknowledged": True, "signed_name": (payload.get("signed_name") or "").strip()}
+        if data["signed_name"]:
+            # Capture signature record for audit trail
+            body_hash = _hashlib.sha256((step.get("body") or "").encode("utf-8")).hexdigest()
+            c.execute("""INSERT INTO onboarding_signatures
+                         (hire_id, step_id, document_title, signed_name, signature_type, signature_data,
+                          document_hash, ip_address, user_agent)
+                         VALUES (?, ?, ?, ?, 'typed', ?, ?, ?, ?)""",
+                      (h["id"], step_id, step["title"], data["signed_name"], data["signed_name"],
+                       body_hash, request.remote_addr, request.headers.get("User-Agent", "")[:300]))
+    elif step["step_type"] == "sign":
+        signed_name = (payload.get("signed_name") or "").strip()
+        if not signed_name or len(signed_name) < 2:
+            c.close()
+            return jsonify({"ok": False, "error": "Type your full name to sign"}), 400
+        body_hash = _hashlib.sha256((step.get("body") or "").encode("utf-8")).hexdigest()
+        c.execute("""INSERT INTO onboarding_signatures
+                     (hire_id, step_id, document_title, signed_name, signature_type, signature_data,
+                      document_hash, ip_address, user_agent)
+                     VALUES (?, ?, ?, ?, 'typed', ?, ?, ?, ?)""",
+                  (h["id"], step_id, step["title"], signed_name, signed_name,
+                   body_hash, request.remote_addr, request.headers.get("User-Agent", "")[:300]))
+        data = {"signed_name": signed_name, "document_hash": body_hash}
+    elif step["step_type"] == "form":
+        # Validate against the configured fields
+        try:
+            cfg = _json.loads(step.get("config_json") or "{}")
+        except: cfg = {}
+        fields = cfg.get("fields", [])
+        responses = payload.get("responses", {}) or {}
+        missing = []
+        for f in fields:
+            if f.get("required") and not str(responses.get(f["name"], "")).strip():
+                missing.append(f.get("label") or f.get("name"))
+        if missing:
+            c.close()
+            return jsonify({"ok": False, "error": "Missing: " + ", ".join(missing)}), 400
+        data = {"responses": responses}
+    elif step["step_type"] == "upload":
+        # The actual file upload uses a separate endpoint; this completes the step
+        # after at least one required field has a row in onboarding_uploads.
+        try:
+            cfg = _json.loads(step.get("config_json") or "{}")
+        except: cfg = {}
+        for f in cfg.get("fields", []):
+            if f.get("required"):
+                count = c.execute("""SELECT COUNT(*) AS n FROM onboarding_uploads
+                                     WHERE hire_id=? AND step_id=? AND field_name=?""",
+                                  (h["id"], step_id, f["name"])).fetchone()["n"]
+                if count == 0:
+                    c.close()
+                    return jsonify({"ok": False, "error": "Please upload: " + (f.get("label") or f["name"])}), 400
+        data = {"completed": True}
+    else:
+        c.close()
+        return jsonify({"ok": False, "error": "Unknown step type"}), 400
+    c.commit(); c.close()
+    _mark_step(h["id"], step_id, data, status="done")
+    return jsonify({"ok": True})
 
 
 # ──────────────────────────────────────────────────────────────────────
