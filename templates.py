@@ -36,6 +36,7 @@ def _navbar(active_page=""):
         ops_items = [
             ("shows", "/admin/shows", "Shows · Last 5 days"),
             ("shipments", "/admin/shipments", "Shipments · Import CSV"),
+            ("cleanup", "/admin/cleanup", "🧹 Table Cleanup"),
             ("issues", "/admin/issues", "🚧 Picking Issues"),
             ("dash", "/dashboard", "Search Recordings"),
             ("customers", "/customers", "Customer Lookup"),
@@ -2048,6 +2049,12 @@ __NAVBAR__
         <div class="card-desc">End-of-show tool: type a leftover sticker number and find where it was supposed to go.</div>
         <div class="card-meta"><span>Find SKU</span><span class="arrow">→</span></div>
       </a>
+      <a href="/admin/cleanup" class="card" id="cardCleanup">
+        <div class="card-icon">🧹</div>
+        <div class="card-title">Table Cleanup</div>
+        <div class="card-desc">Before each show: pull cancelled items off the table. Pickers can't start until this hits 100%.</div>
+        <div class="card-meta"><span id="cleanupMeta">Open cleanup</span><span class="arrow">→</span></div>
+      </a>
       <a href="/customers" class="card">
         <div class="card-icon">🔎</div>
         <div class="card-title">Customer Lookup</div>
@@ -2115,6 +2122,23 @@ var role=document.body.dataset.role;
 if(role==='cs'){
   var ca=document.getElementById('cardAnalytics');
   if(ca)ca.style.display='none';
+}
+
+// Surface pending table-cleanup work on the home card so the manager sees it
+// before opening anything else. If any show is dirty, badge the card.
+if(role==='admin'||role==='cs'){
+  fetch('/api/cleanup/shows').then(function(r){return r.json()}).then(function(shows){
+    if(!Array.isArray(shows))return;
+    var dirty=shows.filter(function(s){return !s.is_clean && s.total_groups>0});
+    var card=document.getElementById('cardCleanup');
+    var meta=document.getElementById('cleanupMeta');
+    if(card && dirty.length>0){
+      card.style.borderColor='rgba(245,158,11,.4)';
+      card.style.background='rgba(245,158,11,.06)';
+      var totalPending=dirty.reduce(function(sum,s){return sum+s.groups_pending},0);
+      if(meta)meta.innerHTML='⚠ <b style="color:#fbbf24">'+totalPending+'</b> pending across '+dirty.length+' show'+(dirty.length===1?'':'s');
+    }
+  }).catch(function(){});
 }
 
 // Load my stats for the hero
@@ -3886,6 +3910,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .show-card .pill-tiktok{background:rgba(244,63,94,.14);color:#fb7185}
 .show-card .pill-whatnot{background:rgba(168,85,247,.14);color:#c4b5fd}
 .show-card .pill-mixed{background:rgba(99,102,241,.14);color:#a5b4fc}
+.show-card.show-dirty{border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.04)}
+.show-card.show-dirty:active{background:rgba(245,158,11,.08);border-color:#fbbf24}
 .show-card .pending-count{margin-left:auto;font-size:22px;font-weight:900;color:var(--brand);font-feature-settings:'tnum'}
 .show-card .pending-count .lbl{font-size:9px;color:var(--text-dim);font-weight:700;letter-spacing:.6px;text-transform:uppercase;display:block;text-align:right;margin-top:-3px}
 .show-empty{text-align:center;padding:60px 20px;color:var(--text-dim);font-size:15px}
@@ -4209,10 +4235,18 @@ function loadShows(){
             var platCls='pill-'+(sh.platform||'mixed');
             if(sh.platform_count>1)platCls='pill-mixed';
             var pendN=sh.pending||0;
-            return '<button class="show-card" data-name="'+escapeHtml(sh.name)+'">'+
+            // Cleanup status pill — shows "🧹 X to clear" on dirty shows so the
+            // picker knows up-front they need to clear the table first.
+            var cleanupPill='';
+            var dirty=sh.cleanup && !sh.cleanup.is_clean && sh.cleanup.groups_total>0;
+            if(dirty){
+                cleanupPill='<span class="pill" style="background:rgba(245,158,11,.18);color:#fbbf24">🧹 '+sh.cleanup.groups_pending+' to clear</span>';
+            }
+            return '<button class="show-card'+(dirty?' show-dirty':'')+'" data-name="'+escapeHtml(sh.name)+'" data-dirty="'+(dirty?'1':'0')+'">'+
                 '<div class="name">'+escapeHtml(sh.name)+'</div>'+
                 '<div class="meta">'+
                     '<span class="pill '+platCls+'">'+(sh.platform_count>1?'mixed':escapeHtml(sh.platform||'?'))+'</span>'+
+                    cleanupPill+
                     '<span>'+sh.shipments+' total</span>'+
                     '<span class="pending-count">'+pendN+'<span class="lbl">to pick</span></span>'+
                 '</div>'+
@@ -4220,6 +4254,11 @@ function loadShows(){
         }).join('');
         list.querySelectorAll('.show-card').forEach(function(b){
             b.addEventListener('click',function(){
+                if(b.dataset.dirty==='1'){
+                    // Hard block — send to cleanup screen for this show
+                    location.href='/admin/cleanup?show='+encodeURIComponent(b.dataset.name);
+                    return;
+                }
                 currentShow=b.dataset.name;
                 localStorage.setItem('pickShow',currentShow);
                 renderTopShow();
@@ -4279,6 +4318,15 @@ function openDetail(sid){
     fetch('/api/pick/'+encodeURIComponent(sid)).then(function(r){return r.json()}).then(function(d){
         if(!d.ok){showToast(d.error||'Lookup failed');return}
         var s=d.shipment, items=d.items||[];
+        // Hard cleanup gate — server tells us the show isn't clean yet.
+        // Send the picker straight to the cleanup screen for that show.
+        if(d.cleanup_blocked){
+            sndError();
+            var lbl=s.import_label||'';
+            showToast('Clear cancelled items off the table first',true);
+            setTimeout(function(){location.href='/admin/cleanup?show='+encodeURIComponent(lbl)},900);
+            return;
+        }
         if(s.status==='cancelled'){
             sndError();
             document.getElementById('cancelOverlay').classList.add('on');
@@ -4648,5 +4696,270 @@ document.getElementById('refreshBtn').addEventListener('click',load);
 load();
 // Auto-refresh every 30s so a manager who leaves the page open sees new issues as they come in
 setInterval(load,30000);
+</script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# TABLE CLEANUP — pre-pick cancellation removal
+# Manager + workers see this. One tap per (SKU, Part) group as
+# inventory is pulled off the warehouse table. Hard-blocks /pick
+# until the show hits 100% clean.
+# ══════════════════════════════════════════════════════════
+
+CLEANUP_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Table Cleanup — 5 SEC</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1100px;margin:0 auto;padding:40px 28px 0}
+.page-head{margin-bottom:14px}
+.page-title{font-size:32px;font-weight:900;color:#fff;letter-spacing:-.5px;line-height:1.05}
+.page-sub{color:var(--text-muted);margin-top:6px;font-size:14px}
+
+/* Show picker */
+.shows-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-bottom:34px}
+.show-card{background:var(--surface);border:2px solid var(--border);border-radius:18px;padding:22px;cursor:pointer;text-align:left;color:inherit;font-family:inherit;transition:all .15s;display:block;width:100%}
+.show-card:hover{border-color:var(--brand);transform:translateY(-2px)}
+.show-card.dirty{border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.05)}
+.show-card.clean{border-color:rgba(16,185,129,.35);background:rgba(16,185,129,.04)}
+.show-card .name{font-size:20px;font-weight:800;color:#fff;margin-bottom:8px;line-height:1.2}
+.show-card .meta{display:flex;gap:10px;align-items:center;font-size:12px;color:var(--text-muted);margin-bottom:12px}
+.show-card .pill{font-size:10px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;padding:3px 9px;border-radius:6px}
+.show-card .pill-clean{background:rgba(16,185,129,.18);color:#34d399}
+.show-card .pill-dirty{background:rgba(245,158,11,.18);color:#fbbf24}
+.show-card .pill-empty{background:rgba(148,163,184,.18);color:#94a3b8}
+.show-card .prog{display:flex;align-items:center;gap:12px}
+.show-card .prog-bar{flex:1;height:8px;background:rgba(255,255,255,.06);border-radius:4px;overflow:hidden}
+.show-card .prog-fill{height:100%;background:linear-gradient(90deg,#10b981,#34d399);transition:width .3s}
+.show-card.dirty .prog-fill{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+.show-card .prog-txt{font-size:13px;font-weight:800;color:var(--text);font-feature-settings:'tnum';white-space:nowrap}
+
+/* Detail view (single show, group list) */
+.detail{display:none}
+.detail.on{display:block}
+.detail-head{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;margin-bottom:18px;flex-wrap:wrap}
+.back-btn{background:var(--surface);border:1px solid var(--border);color:var(--text-muted);font-size:14px;font-weight:700;padding:10px 18px;border-radius:12px;cursor:pointer;font-family:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+.back-btn:hover{color:var(--text);border-color:var(--border-strong)}
+.detail-title{font-size:26px;font-weight:900;color:#fff;letter-spacing:-.3px}
+.detail-help{font-size:13px;color:var(--text-muted);margin-top:4px}
+
+/* Big progress bar */
+.big-prog{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px 24px;margin-bottom:18px}
+.big-prog-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.big-prog-count{font-size:18px;font-weight:800;color:var(--text)}
+.big-prog-count b{font-size:26px;color:var(--brand);font-feature-settings:'tnum'}
+.big-prog-status{font-size:13px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;padding:5px 12px;border-radius:8px}
+.big-prog-status.dirty{background:rgba(245,158,11,.16);color:#fbbf24}
+.big-prog-status.clean{background:rgba(16,185,129,.16);color:#34d399}
+.big-prog-bar{height:14px;background:rgba(255,255,255,.06);border-radius:7px;overflow:hidden}
+.big-prog-fill{height:100%;background:linear-gradient(90deg,#f59e0b,#fbbf24);transition:width .35s ease;border-radius:7px}
+.big-prog-fill.done{background:linear-gradient(90deg,#10b981,#34d399)}
+
+/* Clean banner */
+.clean-banner{background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.35);border-radius:16px;padding:18px 22px;margin-bottom:18px;display:none;align-items:center;gap:14px}
+.clean-banner.on{display:flex}
+.clean-banner .icn{font-size:34px}
+.clean-banner .txt{font-size:16px;color:#34d399;font-weight:800;letter-spacing:.3px}
+.clean-banner .txt b{color:#6ee7b7}
+
+/* Group rows — the actual checklist */
+.groups{display:flex;flex-direction:column;gap:10px}
+.grp{display:grid;grid-template-columns:60px auto 1fr auto auto;gap:18px;align-items:center;background:var(--surface);border:2px solid var(--border);border-radius:16px;padding:18px 22px;cursor:pointer;transition:all .12s;user-select:none}
+.grp:hover{border-color:rgba(243,201,196,.3)}
+.grp:active{transform:scale(.995)}
+.grp.done{background:rgba(16,185,129,.05);border-color:rgba(16,185,129,.22);opacity:.7}
+.grp.done .g-name,.grp.done .g-sku{text-decoration:line-through;text-decoration-color:rgba(255,255,255,.4)}
+.g-box{width:42px;height:42px;border-radius:50%;border:4px solid rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:transparent;flex-shrink:0;transition:all .15s}
+.grp.done .g-box{background:#10b981;border-color:#10b981;color:#0a0d14}
+.grp.done .g-box::before{content:'✓'}
+.g-sku{font-family:'SF Mono',Menlo,monospace;font-size:30px;font-weight:900;color:var(--brand);background:rgba(243,201,196,.14);padding:8px 16px;border-radius:12px;min-width:80px;text-align:center;letter-spacing:.5px;line-height:1}
+.g-info{min-width:0}
+.g-name{font-size:15px;color:var(--text);font-weight:600;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.g-name .part-tag{display:inline-block;background:rgba(243,201,196,.2);color:var(--brand);font-family:'SF Mono',Menlo,monospace;font-weight:900;font-size:15px;padding:3px 10px;border-radius:8px;letter-spacing:.5px;margin-right:8px;vertical-align:middle;text-transform:uppercase}
+.grp.done .g-name .part-tag{opacity:.45}
+.g-meta{font-size:11px;color:var(--text-dim);margin-top:4px;letter-spacing:.4px}
+.g-meta b{color:var(--text-muted);font-weight:700}
+.g-qty{font-size:34px;font-weight:900;color:#fff;font-feature-settings:'tnum';line-height:1}
+.g-qty-lbl{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px;font-weight:800;margin-top:3px;text-align:center}
+.g-stamp{font-size:11px;color:#34d399;font-weight:700;text-align:right;line-height:1.4;white-space:nowrap;display:none}
+.grp.done .g-stamp{display:block}
+
+.empty{text-align:center;padding:80px 20px;color:var(--text-dim);background:var(--surface);border:1px dashed var(--border);border-radius:14px}
+.empty .icn{font-size:64px;margin-bottom:12px;opacity:.55}
+.empty .ttl{font-size:18px;font-weight:800;color:var(--text-muted);margin-bottom:6px}
+
+.toast{position:fixed;top:80px;left:50%;transform:translateX(-50%);background:rgba(16,185,129,.95);color:#fff;padding:14px 26px;border-radius:12px;font-size:14px;font-weight:700;z-index:200;display:none;box-shadow:0 10px 30px rgba(0,0,0,.4)}
+.toast.on{display:block}
+.toast.err{background:rgba(244,63,94,.95)}
+</style>
+</head><body data-role="__ROLE__">
+__NAVBAR__
+<div class="wrap">
+
+  <!-- VIEW A: pick a show -->
+  <div id="listView">
+    <div class="page-head">
+      <div class="page-title">🧹 Table Cleanup</div>
+      <div class="page-sub">Pull cancelled inventory off the warehouse table before picking starts. Pick a show below to see what needs to come off.</div>
+    </div>
+    <div id="showsGrid" class="shows-grid"></div>
+    <div id="emptyShows"></div>
+  </div>
+
+  <!-- VIEW B: single show, list of groups to clear -->
+  <div id="detailView" class="detail">
+    <div class="detail-head">
+      <div>
+        <a href="#" id="backLink" class="back-btn">← All shows</a>
+        <div class="detail-title" id="detailTitle" style="margin-top:10px"></div>
+        <div class="detail-help">One row per <b>SKU + Part</b>. Tap a row when those items are off the table. Pickers can start as soon as the bar hits 100%.</div>
+      </div>
+    </div>
+
+    <div class="big-prog">
+      <div class="big-prog-row">
+        <div class="big-prog-count"><b id="bpDone">0</b> / <b id="bpTotal">0</b> groups cleared</div>
+        <div class="big-prog-status dirty" id="bpStatus">Not clean</div>
+      </div>
+      <div class="big-prog-bar"><div class="big-prog-fill" id="bpFill" style="width:0%"></div></div>
+    </div>
+
+    <div class="clean-banner" id="cleanBanner">
+      <div class="icn">✅</div>
+      <div class="txt">Table is clean. <b>Pickers can start picking this show.</b></div>
+    </div>
+
+    <div id="groupsList" class="groups"></div>
+  </div>
+
+</div>
+<div class="toast" id="toast">—</div>
+
+<script>
+var currentLabel=null;
+var role='__ROLE__';
+var preLabel=new URLSearchParams(location.search).get('show');
+
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function fmtPart(name){var safe=esc(name||'');var m=safe.match(/(Part\\s*\\d+)/i);if(!m)return safe;var stripped=safe.replace(/[\\s·,—–-]*Part\\s*\\d+[\\s·,—–-]*/i,' ').replace(/\\s{2,}/g,' ').trim();return '<span class="part-tag">'+m[1].toUpperCase()+'</span>'+stripped}
+function toast(m,err){var t=document.getElementById('toast');t.textContent=m;t.className='toast on'+(err?' err':'');setTimeout(function(){t.className='toast'},2200)}
+
+function loadShows(){
+    fetch('/api/cleanup/shows').then(function(r){return r.json()}).then(function(shows){
+        var grid=document.getElementById('showsGrid');
+        var empty=document.getElementById('emptyShows');
+        if(!shows||shows.length===0){
+            grid.innerHTML='';
+            empty.innerHTML='<div class="empty"><div class="icn">📦</div><div class="ttl">No active shows in the last 5 days</div><div>Import a TikTok or Whatnot CSV to get started.</div></div>';
+            return;
+        }
+        empty.innerHTML='';
+        grid.innerHTML=shows.map(function(s){
+            var pct=s.total_groups>0?Math.round(100*s.groups_done/s.total_groups):100;
+            var cls=s.total_groups===0?'show-card':(s.is_clean?'show-card clean':'show-card dirty');
+            var pill=s.total_groups===0?'<span class="pill pill-empty">No cancellations</span>':(s.is_clean?'<span class="pill pill-clean">✓ Clean</span>':'<span class="pill pill-dirty">⚠ '+s.groups_pending+' to clear</span>');
+            var platform=s.platform?'<span>· '+esc(s.platform)+'</span>':'';
+            return '<button class="'+cls+'" data-label="'+esc(s.label)+'">'+
+                '<div class="name">'+esc(s.label)+'</div>'+
+                '<div class="meta">'+pill+platform+'<span>· '+s.shipments+' shipments</span></div>'+
+                '<div class="prog"><div class="prog-bar"><div class="prog-fill" style="width:'+pct+'%"></div></div><div class="prog-txt">'+s.groups_done+'/'+s.total_groups+'</div></div>'+
+            '</button>';
+        }).join('');
+        grid.querySelectorAll('.show-card').forEach(function(el){
+            el.addEventListener('click',function(){openShow(el.dataset.label)});
+        });
+        // Deep-link via ?show=NAME — pickers get redirected here from /pick.
+        if(preLabel){var match=shows.find(function(x){return x.label===preLabel});if(match){openShow(preLabel);preLabel=null}}
+    });
+}
+
+function openShow(label){
+    currentLabel=label;
+    document.getElementById('listView').style.display='none';
+    document.getElementById('detailView').classList.add('on');
+    document.getElementById('detailTitle').textContent=label;
+    loadDetail();
+}
+
+function loadDetail(){
+    if(!currentLabel)return;
+    fetch('/api/cleanup/'+encodeURIComponent(currentLabel)).then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){toast('Failed to load',true);return}
+        renderDetail(d);
+    });
+}
+
+function renderDetail(d){
+    var groups=d.groups||[];
+    document.getElementById('bpDone').textContent=d.groups_done;
+    document.getElementById('bpTotal').textContent=d.total_groups;
+    var pct=d.total_groups>0?(100*d.groups_done/d.total_groups):100;
+    var fill=document.getElementById('bpFill');
+    fill.style.width=pct+'%';
+    fill.classList.toggle('done',d.is_clean);
+    var st=document.getElementById('bpStatus');
+    st.textContent=d.is_clean?'✓ Clean':'Not clean';
+    st.className='big-prog-status '+(d.is_clean?'clean':'dirty');
+    document.getElementById('cleanBanner').classList.toggle('on',d.is_clean && d.total_groups>0);
+    var list=document.getElementById('groupsList');
+    if(groups.length===0){
+        list.innerHTML='<div class="empty"><div class="icn">🎉</div><div class="ttl">No cancelled items for this show</div><div>Nothing to remove. Pickers can start whenever.</div></div>';
+        return;
+    }
+    list.innerHTML=groups.map(function(g){
+        var done=g.removed_at?'done':'';
+        var when=g.removed_at?('Cleared '+g.removed_at.replace('T',' ').slice(0,16)+'<br>by '+esc(g.removed_by||'')):'';
+        return '<div class="grp '+done+'" data-sku="'+esc(g.sku)+'" data-part="'+esc(g.part)+'">'+
+            '<div class="g-box"></div>'+
+            '<div class="g-sku">'+esc(g.sku||'?')+'</div>'+
+            '<div class="g-info">'+
+                '<div class="g-name">'+fmtPart(g.product_name)+'</div>'+
+                '<div class="g-meta">From <b>'+g.order_count+'</b> cancelled order'+(g.order_count===1?'':'s')+'</div>'+
+            '</div>'+
+            '<div style="text-align:center"><div class="g-qty">×'+g.total_qty+'</div><div class="g-qty-lbl">to remove</div></div>'+
+            '<div class="g-stamp">'+when+'</div>'+
+        '</div>';
+    }).join('');
+    list.querySelectorAll('.grp').forEach(function(el){
+        el.addEventListener('click',function(){toggleGroup(el)});
+    });
+}
+
+function toggleGroup(el){
+    var isDone=el.classList.contains('done');
+    var newRemoved=!isDone;
+    var sku=el.dataset.sku;
+    var part=el.dataset.part||'';
+    // Optimistic UI
+    el.classList.toggle('done',newRemoved);
+    fetch('/api/cleanup/'+encodeURIComponent(currentLabel)+'/mark',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({sku:sku,part:part,removed:newRemoved})
+    }).then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){
+            el.classList.toggle('done',!newRemoved);
+            toast(d.error||'Failed',true);
+            return;
+        }
+        toast(newRemoved?'✓ Cleared':'Marked pending');
+        // Refresh so stamps + progress are accurate
+        loadDetail();
+    });
+}
+
+document.getElementById('backLink').addEventListener('click',function(e){
+    e.preventDefault();
+    currentLabel=null;
+    document.getElementById('detailView').classList.remove('on');
+    document.getElementById('listView').style.display='block';
+    loadShows();  // refresh tile progress
+});
+
+loadShows();
 </script>
 </body></html>'''

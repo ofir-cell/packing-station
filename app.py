@@ -17,7 +17,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ME_HTML, LEADERBOARD_HTML, HOME_HTML, DOCUMENTS_HTML, WELCOME_HTML,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
-    ISSUES_HTML)
+    ISSUES_HTML, CLEANUP_HTML)
 
 
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
@@ -370,6 +370,19 @@ def sdb_init():
     )""")
     # Singleton config row
     c.execute("INSERT OR IGNORE INTO weight_config (id, tolerance_percent, tolerance_absolute_g, packaging_overhead_g) VALUES (1, 10, 5, 30)")
+    # ── Table cleanup state ───────────────────────────────────────────
+    # Tracks whether the warehouse manager has pulled cancelled items off
+    # the table before picking starts. Keyed by (show name, SKU, Part N).
+    # The /pick screen is hard-blocked from scanning until every SKU+Part
+    # group for the show has a removed_at timestamp.
+    c.execute("""CREATE TABLE IF NOT EXISTS cleanup_state(
+        import_label TEXT NOT NULL,
+        sku TEXT NOT NULL,
+        part TEXT NOT NULL DEFAULT '',
+        removed_at TEXT,
+        removed_by TEXT,
+        PRIMARY KEY (import_label, sku, part)
+    )""")
     # Indexes
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ship_tracking ON shipments(tracking_code) WHERE tracking_code IS NOT NULL")
     c.execute("CREATE INDEX IF NOT EXISTS idx_ship_status ON shipments(status)")
@@ -389,6 +402,99 @@ def _weight_config():
     row = c.execute("SELECT * FROM weight_config WHERE id=1").fetchone()
     c.close()
     return dict(row) if row else {"tolerance_percent": 10, "tolerance_absolute_g": 5, "packaging_overhead_g": 30}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CANCELLATION CLEANUP HELPERS
+# ──────────────────────────────────────────────────────────────────────
+# A "table cleanup" pass happens before pickers start: the manager directs
+# workers to physically pull every cancelled item off the warehouse table
+# so whatever remains is known-good. State is per show + SKU + Part.
+# A show is "clean" iff every cancelled (sku, part) group has been marked.
+# ──────────────────────────────────────────────────────────────────────
+import re as _re_cleanup
+def _extract_part(product_name):
+    """Pull a 'Part N' label out of a product name. Returns empty string when
+    there's no part suffix — that's the normal case for non-TikTok shows."""
+    if not product_name:
+        return ""
+    m = _re_cleanup.search(r"Part\s*(\d+)", product_name, _re_cleanup.IGNORECASE)
+    return f"Part {m.group(1)}" if m else ""
+
+def _cleanup_groups(label):
+    """Aggregate cancelled items for a show into (sku, part) groups.
+    Returns a list of dicts with sku, part, total_qty, product_name (one example),
+    order_count, removed_at, removed_by. Sorted by SKU numerically when possible."""
+    if not label:
+        return []
+    c = sdb()
+    rows = c.execute("""
+        SELECT i.sku, i.product_name, i.quantity, i.order_id, i.shipment_id
+        FROM shipment_items i
+        JOIN shipments s ON s.shipment_id = i.shipment_id
+        WHERE s.import_label = ? AND COALESCE(i.cancelled, 0) = 1
+    """, (label,)).fetchall()
+    state_rows = c.execute("""
+        SELECT sku, part, removed_at, removed_by
+        FROM cleanup_state WHERE import_label = ?
+    """, (label,)).fetchall()
+    c.close()
+    state = {(r["sku"], r["part"]): r for r in state_rows}
+    groups = {}
+    for r in rows:
+        sku = (r["sku"] or "").strip()
+        part = _extract_part(r["product_name"] or "")
+        key = (sku, part)
+        g = groups.setdefault(key, {
+            "sku": sku, "part": part, "total_qty": 0,
+            "product_name": r["product_name"] or "",
+            "order_count": 0, "orders": set(),
+            "removed_at": None, "removed_by": None,
+        })
+        g["total_qty"] += int(r["quantity"] or 1)
+        oid = r["order_id"] or r["shipment_id"]
+        if oid: g["orders"].add(oid)
+        # Prefer the longest product_name we see (most descriptive)
+        if r["product_name"] and len(r["product_name"]) > len(g["product_name"]):
+            g["product_name"] = r["product_name"]
+    out = []
+    for (sku, part), g in groups.items():
+        g["order_count"] = len(g["orders"])
+        g.pop("orders", None)
+        st = state.get((sku, part))
+        if st:
+            g["removed_at"] = st["removed_at"]
+            g["removed_by"] = st["removed_by"]
+        out.append(g)
+    # Sort numerically by SKU when SKU is numeric, alphabetically otherwise, then by Part
+    def sort_key(g):
+        s = g["sku"]
+        try:
+            return (0, int(s), g["part"])
+        except (ValueError, TypeError):
+            return (1, s, g["part"])
+    out.sort(key=sort_key)
+    return out
+
+def _cleanup_progress(label):
+    """Returns dict with total/done/pending counts + is_clean bool. is_clean is
+    True when every cancelled (sku,part) group has been pulled. A show with NO
+    cancelled items is also considered clean (nothing to do)."""
+    groups = _cleanup_groups(label)
+    total = len(groups)
+    done = sum(1 for g in groups if g.get("removed_at"))
+    return {
+        "label": label,
+        "total_groups": total,
+        "groups_done": done,
+        "groups_pending": total - done,
+        "is_clean": total == 0 or done == total,
+        "has_cancellations": total > 0,
+    }
+
+def _show_is_clean(label):
+    """Quick bool — used by /pick to decide whether to allow scanning."""
+    return _cleanup_progress(label)["is_clean"]
 
 def _sku_weight(sku):
     """Look up a single SKU's weight in grams. Returns None if unknown."""
@@ -1841,7 +1947,8 @@ def api_pick_queue():
 @app.route("/api/pick/<sid>")
 @req_role("picker", "worker", "admin", "cs")
 def api_pick_get(sid):
-    """Detail for picking — items with picked flag for tap-to-check workflow."""
+    """Detail for picking — items with picked flag for tap-to-check workflow.
+    Hard-blocks picking when the show still has cancelled items on the table."""
     if not re.match(r'^[A-Za-z0-9_\-]{1,64}$', sid):
         return jsonify({"ok": False, "error": "Invalid id"})
     c = sdb()
@@ -1849,12 +1956,30 @@ def api_pick_get(sid):
     if not s:
         c.close()
         return jsonify({"ok": False, "error": "Shipment not found"})
+    label = s["import_label"]
     items = c.execute("""SELECT id, sku, product_name, quantity, COALESCE(picked,0) AS picked,
                                 picked_at, COALESCE(cancelled,0) AS cancelled
                          FROM shipment_items WHERE shipment_id=?
                          ORDER BY COALESCE(cancelled,0), COALESCE(picked,0), id""", (sid,)).fetchall()
     c.close()
-    return jsonify({"ok": True, "shipment": dict(s), "items": [dict(i) for i in items]})
+    # Cleanup gate — if the show has cancelled items still sitting on the table,
+    # tell the picker to go clear them first. Admin/CS can override via ?force=1.
+    force = request.args.get("force") == "1"
+    role = session.get("role", "")
+    cleanup_blocked = False
+    cleanup_info = None
+    if label:
+        cp = _cleanup_progress(label)
+        if not cp["is_clean"] and not (force and role in ("admin", "cs")):
+            cleanup_blocked = True
+        cleanup_info = cp
+    return jsonify({
+        "ok": True,
+        "shipment": dict(s),
+        "items": [dict(i) for i in items],
+        "cleanup_blocked": cleanup_blocked,
+        "cleanup": cleanup_info,
+    })
 
 @app.route("/api/pick/item/<int:item_id>/toggle", methods=["POST"])
 @req_role("picker", "worker", "admin", "cs")
@@ -2041,7 +2166,19 @@ def api_shows():
         ORDER BY last_import DESC
     """, (cutoff_dt,)).fetchall()
     c.close()
-    return jsonify([dict(r) for r in rows])
+    # Attach cleanup status so the picker can warn / block on unclean shows.
+    out = []
+    for r in rows:
+        d = dict(r)
+        cp = _cleanup_progress(d["name"])
+        d["cleanup"] = {
+            "is_clean": cp["is_clean"],
+            "groups_total": cp["total_groups"],
+            "groups_done": cp["groups_done"],
+            "groups_pending": cp["groups_pending"],
+        }
+        out.append(d)
+    return jsonify(out)
 
 @app.route("/api/shows/recent")
 @req_role("admin","cs","picker","worker")
@@ -2129,6 +2266,89 @@ def api_sku_lookup(sku):
         "label_filter": label or None,
         "matches": [dict(r) for r in rows],
     })
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TABLE CLEANUP — admin page + API
+# ──────────────────────────────────────────────────────────────────────
+@app.route("/admin/cleanup")
+@req_role("admin", "cs", "worker", "picker")
+def admin_cleanup_page():
+    """Table-cleanup tab. Lists shows with cancelled items, lets manager and
+    workers tap rows as they pull cancelled inventory off the warehouse table.
+    Workers reach this page via /pick when their show is still blocked."""
+    return (CLEANUP_HTML
+        .replace("__USER__", session.get("username", ""))
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("cleanup"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/cleanup/shows")
+@req_role("admin", "cs", "worker", "picker")
+def api_cleanup_shows():
+    """List shows from the active 5-day window with cleanup progress for each.
+    The picker frontend uses this to decide whether to allow scanning."""
+    c = sdb()
+    rows = c.execute("""
+        SELECT import_label AS label,
+               COUNT(*) AS shipments,
+               MAX(imported_at) AS imported_at,
+               GROUP_CONCAT(DISTINCT platform) AS platform
+        FROM shipments
+        WHERE import_label IS NOT NULL AND import_label <> ''
+          AND imported_at >= datetime('now', '-5 days')
+        GROUP BY import_label
+        ORDER BY MAX(imported_at) DESC
+    """).fetchall()
+    c.close()
+    out = []
+    for r in rows:
+        p = _cleanup_progress(r["label"])
+        out.append({
+            "label": r["label"],
+            "shipments": r["shipments"],
+            "platform": r["platform"],
+            "imported_at": r["imported_at"],
+            **p,
+        })
+    return jsonify(out)
+
+@app.route("/api/cleanup/<path:label>")
+@req_role("admin", "cs", "worker", "picker")
+def api_cleanup_groups(label):
+    """Get cancelled-item groups for a show. One row per (SKU, Part) combo
+    with the total quantity to physically pull and an order_count for context."""
+    groups = _cleanup_groups(label)
+    progress = _cleanup_progress(label)
+    return jsonify({"ok": True, "label": label, "groups": groups, **progress})
+
+@app.route("/api/cleanup/<path:label>/mark", methods=["POST"])
+@req_role("admin", "cs", "worker", "picker")
+def api_cleanup_mark(label):
+    """Toggle a (sku, part) cleanup row as removed/not-removed. Body: {sku, part, removed:bool}."""
+    d = request.get_json() or {}
+    sku = (d.get("sku") or "").strip()
+    part = (d.get("part") or "").strip()
+    removed = bool(d.get("removed", True))
+    if not sku:
+        return jsonify({"ok": False, "error": "Missing SKU"}), 400
+    user = session.get("username", "")
+    c = sdb()
+    if removed:
+        # Upsert — set removed_at to now
+        c.execute("""
+            INSERT INTO cleanup_state (import_label, sku, part, removed_at, removed_by)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+            ON CONFLICT(import_label, sku, part)
+            DO UPDATE SET removed_at = CURRENT_TIMESTAMP, removed_by = excluded.removed_by
+        """, (label, sku, part, user))
+    else:
+        # Unmark — delete the row so it goes back to pending
+        c.execute("""DELETE FROM cleanup_state WHERE import_label=? AND sku=? AND part=?""",
+                  (label, sku, part))
+    c.commit(); c.close()
+    progress = _cleanup_progress(label)
+    return jsonify({"ok": True, **progress})
 
 
 @app.route("/api/weight-config", methods=["GET", "POST"])
