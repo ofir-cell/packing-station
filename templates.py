@@ -5250,6 +5250,14 @@ __NAVBAR__
     <div style="font-size:12px;color:var(--text-muted);margin-top:10px">Send to the new hire via WhatsApp, email, or SMS. Regenerate to invalidate the old link if it was shared by mistake.</div>
   </div>
 
+  <div class="card">
+    <div class="card-title">📁 Employee File</div>
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <a href="/admin/hires/__HIRE_ID__/file" target="_blank" style="background:var(--brand);color:#1a0e0b;border:none;border-radius:10px;padding:11px 22px;font-size:14px;font-weight:800;text-decoration:none;display:inline-flex;align-items:center;gap:6px">📄 Open printable file</a>
+      <span style="font-size:12px;color:var(--text-muted);max-width:480px">Comprehensive packet with all signed documents, form responses, and uploaded IDs. Use your browser's Print → Save as PDF for the deliverable.</span>
+    </div>
+  </div>
+
   <div class="card-title" style="margin-top:8px;padding:0 4px">📋 Onboarding steps</div>
   <div id="stepsList"></div>
 </div>
@@ -5395,7 +5403,19 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:#e4
 .upload-zone:hover{border-color:var(--brand);background:rgba(243,201,196,.04)}
 .upload-zone .icn{font-size:42px;margin-bottom:8px;opacity:.7}
 .upload-zone .ttl{font-size:14px;color:#e4e8f1;font-weight:700}
+.upload-zone .sub{font-size:11px;color:#94a3b8;margin-top:4px;letter-spacing:.3px}
 .upload-zone input{display:none}
+.upload-field{margin-bottom:18px}
+.upload-lbl{font-size:13px;color:#9ba9c1;font-weight:700;margin-bottom:8px}
+.upload-pick{padding:8px}
+.upload-have{display:flex;align-items:center;gap:14px;padding:6px;background:rgba(16,185,129,.05);border-radius:10px;text-align:left;border:1px solid rgba(16,185,129,.25)}
+.upload-have .icn{font-size:24px;flex-shrink:0;opacity:1}
+.upload-have .fn{flex:1;color:#34d399;font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upload-have .upload-rm{background:rgba(244,63,94,.12);border:1px solid rgba(244,63,94,.3);color:#fb7185;font-size:11px;font-weight:700;padding:6px 12px;border-radius:8px;cursor:pointer;font-family:inherit;flex-shrink:0}
+.upload-have .upload-rm:hover{background:rgba(244,63,94,.22)}
+.upload-status{font-size:12px;color:#9ba9c1;margin-top:6px;min-height:16px}
+.upload-status.err{color:#fb7185}
+.upload-status.ok{color:#34d399}
 .upload-note{font-size:12px;color:#94a3b8;margin-top:14px;padding:10px 14px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:10px;color:#fbbf24}
 
 .toast{position:fixed;top:60px;left:50%;transform:translateX(-50%);background:rgba(16,185,129,.95);color:#fff;padding:13px 24px;border-radius:11px;font-size:13px;font-weight:800;z-index:300;display:none;box-shadow:0 10px 30px rgba(0,0,0,.4)}
@@ -5466,8 +5486,15 @@ var I18N = {
         signCta:'Sign & continue',
         formCta:'Save & continue',
         selectPrompt:'— select —',
-        uploadNote:'📎 File upload coming in the next release. For now, please email your ID to your hiring manager and they will mark this step complete on your behalf.',
-        uploadCta:'Upload coming soon',
+        uploadNote:'',
+        uploadCta:'Continue',
+        tapToUpload:'Tap to upload',
+        maxSize:'Max',
+        uploading:'Uploading…',
+        uploadError:'Upload failed',
+        uploadOk:'✓ Uploaded',
+        uploadRemove:'Remove',
+        uploadRequired:'Please upload all required files first.',
         savingCta:'Saving…',
         tryAgain:'Try again',
         savedToast:'✓ Saved',
@@ -5493,8 +5520,15 @@ var I18N = {
         signCta:'Firmar y continuar',
         formCta:'Guardar y continuar',
         selectPrompt:'— selecciona —',
-        uploadNote:'📎 La carga de archivos llegará en la próxima versión. Por ahora, envía tu identificación por correo a tu gerente y lo marcarán como completo por ti.',
-        uploadCta:'Carga próximamente',
+        uploadNote:'',
+        uploadCta:'Continuar',
+        tapToUpload:'Toca para subir',
+        maxSize:'Máx',
+        uploading:'Subiendo…',
+        uploadError:'Falló la subida',
+        uploadOk:'✓ Subido',
+        uploadRemove:'Quitar',
+        uploadRequired:'Por favor sube todos los archivos requeridos primero.',
         savingCta:'Guardando…',
         tryAgain:'Intenta de nuevo',
         savedToast:'✓ Guardado',
@@ -5639,13 +5673,86 @@ function renderStepBody(el){
             return '<label class="field"><span class="field-lbl">'+esc(f.label)+req+'</span><input class="field-in" data-name="'+esc(f.name)+'" type="'+esc(f.type||'text')+'" value="'+val+'"></label>';
         }).join('')+'<button class="complete-btn" data-act="form">'+L.formCta+'</button>';
     } else if(s.step_type==='upload'){
+        // Real file upload — multipart POST per field, then mark step complete
+        // when all required fields have a saved upload.
+        var cfg={};try{cfg=JSON.parse(s.config_json||'{}')}catch(e){}
+        var fields=cfg.fields||[{name:'file',label:'File',required:true}];
+        var accept=cfg.accept||'image/*,.pdf';
+        var maxMb=cfg.max_mb||15;
+        var existing={};try{existing=JSON.parse(s.data_json||'{}').uploads||{}}catch(e){existing={}}
         bodyEl.innerHTML=(s.body?'<div class="doc-body">'+esc(s.body)+'</div>':'')+
-            '<div class="upload-note">'+L.uploadNote+'</div>'+
-            '<button class="complete-btn" data-act="upload" disabled>'+L.uploadCta+'</button>';
+            fields.map(function(f){
+                var has=existing[f.name];
+                return '<div class="upload-field" data-field="'+esc(f.name)+'">'+
+                    '<div class="upload-lbl">'+esc(f.label||f.name)+(f.required?' <span style="color:#fb7185">*</span>':'')+'</div>'+
+                    '<div class="upload-zone" data-field="'+esc(f.name)+'">'+
+                      (has
+                        ? '<div class="upload-have"><span class="icn">📎</span><span class="fn">'+esc(has.filename||'uploaded')+'</span>'+
+                          '<button class="upload-rm" data-field="'+esc(f.name)+'">Remove</button></div>'
+                        : '<div class="upload-pick"><div class="icn">📤</div><div class="ttl">'+(L.tapToUpload||'Tap to upload')+'</div><div class="sub">'+(L.maxSize||'Max')+' '+maxMb+'MB · '+esc(accept)+'</div></div>')+
+                      '<input type="file" accept="'+esc(accept)+'" data-field="'+esc(f.name)+'">'+
+                    '</div>'+
+                    '<div class="upload-status" data-status="'+esc(f.name)+'"></div>'+
+                '</div>';
+            }).join('')+
+            '<button class="complete-btn" data-act="upload">'+L.uploadCta+'</button>';
+
+        // Wire upload zones
+        bodyEl.querySelectorAll('.upload-zone').forEach(function(zone){
+            var fname=zone.dataset.field;
+            var input=zone.querySelector('input[type=file]');
+            zone.addEventListener('click',function(e){
+                if(e.target.classList.contains('upload-rm'))return;
+                input.click();
+            });
+            input.addEventListener('change',function(){
+                if(!input.files||input.files.length===0)return;
+                doUpload(s.step_id,fname,input.files[0],bodyEl);
+            });
+        });
+        bodyEl.querySelectorAll('.upload-rm').forEach(function(btn){
+            btn.addEventListener('click',function(e){
+                e.stopPropagation();
+                doDeleteUpload(s.step_id,btn.dataset.field,bodyEl,s);
+            });
+        });
     }
     bodyEl.querySelectorAll('button.complete-btn').forEach(function(b){
         b.addEventListener('click',function(){submitStep(b,s,bodyEl)});
     });
+}
+
+function doUpload(stepId,fieldName,file,bodyEl){
+    var status=bodyEl.querySelector('[data-status="'+fieldName+'"]');
+    status.textContent=L.uploading;
+    status.className='upload-status';
+    var fd=new FormData();
+    fd.append('file',file);
+    fd.append('field_name',fieldName);
+    fetch('/api/hire/'+TOKEN+'/step/'+stepId+'/upload',{method:'POST',body:fd})
+      .then(function(r){return r.json()})
+      .then(function(d){
+        if(!d.ok){
+            status.textContent=d.error||L.uploadError;
+            status.className='upload-status err';
+            return;
+        }
+        status.textContent=L.uploadOk;
+        status.className='upload-status ok';
+        // Re-render the step to flip the zone into 'have' state with delete button
+        load();
+      })
+      .catch(function(){
+        status.textContent=L.uploadError;
+        status.className='upload-status err';
+      });
+}
+
+function doDeleteUpload(stepId,fieldName,bodyEl,s){
+    fetch('/api/hire/'+TOKEN+'/step/'+stepId+'/upload/'+encodeURIComponent(fieldName),{method:'DELETE'})
+      .then(function(r){return r.json()}).then(function(d){
+        load();
+      });
 }
 
 function submitStep(btn,s,bodyEl){
@@ -5661,7 +5768,10 @@ function submitStep(btn,s,bodyEl){
         var responses={};
         bodyEl.querySelectorAll('[data-name]').forEach(function(el){responses[el.dataset.name]=el.value});
         body={responses:responses};
-    } else if(act==='upload'){return}
+    } else if(act==='upload'){
+        // Server checks required fields against onboarding_uploads — just POST nothing
+        body={};
+    }
     btn.disabled=true;btn.textContent=L.savingCta;
     fetch('/api/hire/'+TOKEN+'/step/'+s.step_id+'/complete',{
         method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)
@@ -5677,4 +5787,172 @@ function submitStep(btn,s,bodyEl){
 // Force a load — the inside of load() detects first-visit language preference
 load();
 </script>
+</body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# EMPLOYEE FILE — printable per-hire packet for HR
+# Comprehensive view of everything an admin needs in the file:
+# profile, every signed document with audit trail, form responses,
+# uploaded IDs. CSS @media print yields clean paper output;
+# browser Print → Save as PDF gives the deliverable.
+# ══════════════════════════════════════════════════════════
+
+HIRE_FILE_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Employee File — __HIRE_NAME__</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --brand:#d4807a;
+  --bg:#fff;
+  --text:#1a1a1f;
+  --text-muted:#5a5a6a;
+  --text-dim:#9b9bab;
+  --border:#dadae3;
+  --surface:#f7f7f9;
+}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#e9e9ec;color:var(--text);min-height:100vh;padding:40px 20px;-webkit-font-smoothing:antialiased}
+.page{max-width:850px;margin:0 auto;background:var(--bg);border-radius:10px;box-shadow:0 4px 24px rgba(0,0,0,.08);padding:60px 70px}
+
+/* Header / cover area */
+.cover{border-bottom:3px solid var(--brand);padding-bottom:28px;margin-bottom:32px}
+.cover-top{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;flex-wrap:wrap;margin-bottom:18px}
+.cover-brand{font-size:14px;font-weight:900;color:var(--brand);letter-spacing:3px;text-transform:uppercase}
+.cover-brand-sub{font-size:10px;color:var(--text-dim);letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-top:3px}
+.cover-meta{font-size:11px;color:var(--text-dim);text-align:right;line-height:1.6}
+.cover-meta b{color:var(--text)}
+.cover h1{font-size:38px;font-weight:900;color:var(--text);letter-spacing:-.5px;line-height:1.1;margin-bottom:6px}
+.cover-sub{font-size:14px;color:var(--text-muted);font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+
+/* Profile facts grid */
+.profile-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px 32px;margin:24px 0 40px;padding:20px 24px;background:var(--surface);border-radius:8px}
+.fact{display:flex;flex-direction:column;gap:3px}
+.fact-lbl{font-size:10px;color:var(--text-dim);font-weight:800;text-transform:uppercase;letter-spacing:1px}
+.fact-val{font-size:14px;color:var(--text);font-weight:600;word-break:break-word}
+.fact-val.status-complete{color:#1f7a52}
+.fact-val.status-in_progress{color:#9a6500}
+.fact-val.status-invited{color:var(--text-muted)}
+
+/* Section heading */
+.section-head{margin-top:48px;margin-bottom:8px;padding-bottom:8px;border-bottom:2px solid var(--text)}
+.section-head h2{font-size:22px;font-weight:900;color:var(--text);letter-spacing:-.2px}
+.section-head-sub{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-top:3px}
+
+/* Each step block */
+.step{padding:24px 0;border-bottom:1px dashed var(--border);page-break-inside:avoid}
+.step:last-child{border-bottom:none}
+.step-num{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;font-weight:800;margin-bottom:4px}
+.step h2{font-size:18px;font-weight:800;color:var(--text);margin-bottom:6px;letter-spacing:-.1px}
+.step-desc{font-size:13px;color:var(--text-muted);margin-bottom:12px;line-height:1.5}
+.step-status{display:inline-block;font-size:10px;padding:3px 10px;border-radius:6px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;margin-bottom:14px;background:var(--surface);color:var(--text-muted)}
+.step-status.done{background:#dcf5e8;color:#1f7a52}
+.step-status.in_progress{background:#fff4d6;color:#9a6500}
+.step-status.pending{background:#fce0e0;color:#a13a3a}
+
+.doc-body{background:#fafafc;border:1px solid var(--border);border-radius:6px;padding:18px 22px;font-size:13px;line-height:1.6;color:var(--text);margin:14px 0}
+
+/* Form responses table */
+.form-table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px}
+.form-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--text-dim);font-weight:800;padding:8px 12px;border-bottom:2px solid var(--border);background:var(--surface)}
+.form-table td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+.form-table td:first-child{color:var(--text-muted);width:42%;font-weight:600}
+.form-table td:last-child{font-weight:700;color:var(--text)}
+
+/* Signature block */
+.sig-block{margin:18px 0 6px;padding:14px 18px;background:#fff;border:1.5px solid var(--brand);border-radius:6px}
+.sig-name{font-size:30px;line-height:1.1;margin-bottom:4px}
+.sig-name .cursive{font-family:'Brush Script MT','Lucida Handwriting',cursive;color:var(--brand);font-style:italic;font-weight:400}
+.sig-line{border-bottom:1px solid var(--text);margin:2px 0 8px;width:60%}
+.sig-audit{font-size:10px;color:var(--text-muted);font-family:'SF Mono',Menlo,monospace;letter-spacing:.2px}
+.sig-audit b{color:var(--text);font-weight:700}
+
+/* Uploads */
+.uploads-list{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+.upload-item{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;page-break-inside:avoid}
+.upload-meta{font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.4}
+.upload-meta b{color:var(--text);font-weight:700}
+.upload-thumb{width:100%;height:auto;max-height:260px;object-fit:contain;border-radius:4px;background:#fff;border:1px solid var(--border)}
+.upload-link{display:inline-block;margin-top:6px;font-size:12px;color:var(--brand);text-decoration:none;font-weight:700}
+.upload-link:hover{text-decoration:underline}
+
+.empty-note{font-size:12px;color:var(--text-dim);font-style:italic;padding:14px;background:var(--surface);border-radius:6px}
+
+/* Action bar — visible on screen, hidden in print */
+.action-bar{position:sticky;top:0;background:rgba(255,255,255,.96);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border);padding:14px 20px;margin:-40px -20px 30px;z-index:50;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;border-radius:0}
+.action-bar-info{font-size:12px;color:var(--text-muted)}
+.action-bar-info b{color:var(--text);font-weight:700}
+.action-bar-buttons{display:flex;gap:8px;flex-wrap:wrap}
+.btn{background:var(--brand);color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:6px;letter-spacing:.3px}
+.btn:hover{background:#c46961}
+.btn.secondary{background:transparent;color:var(--text-muted);border:1px solid var(--border)}
+.btn.secondary:hover{background:var(--surface);color:var(--text)}
+
+.footer{margin-top:50px;padding-top:20px;border-top:1px solid var(--border);font-size:10px;color:var(--text-dim);text-align:center;letter-spacing:.5px;text-transform:uppercase;font-weight:700;line-height:1.7}
+
+/* Print styles — clean paper */
+@media print{
+  body{background:#fff;padding:0;margin:0}
+  .page{box-shadow:none;border-radius:0;padding:0.5in 0.6in;max-width:none;margin:0}
+  .no-print,.action-bar{display:none !important}
+  .step{page-break-inside:avoid}
+  .sig-block{page-break-inside:avoid}
+  .upload-item{page-break-inside:avoid}
+  .section-head{page-break-after:avoid}
+  @page{size:Letter;margin:0.5in 0.6in}
+}
+</style>
+</head><body>
+<div class="page">
+
+  <div class="action-bar no-print">
+    <div class="action-bar-info">
+      Employee File &middot; <b>__HIRE_NAME__</b> &middot; ID #__HIRE_ID__
+    </div>
+    <div class="action-bar-buttons">
+      <a href="/admin/hires/__HIRE_ID__" class="btn secondary">← Back to detail</a>
+      <button class="btn" onclick="window.print()">🖨️ Print / Save as PDF</button>
+    </div>
+  </div>
+
+  <div class="cover">
+    <div class="cover-top">
+      <div>
+        <div class="cover-brand">5 SECOND BEAUTY</div>
+        <div class="cover-brand-sub">Employee File</div>
+      </div>
+      <div class="cover-meta">
+        Workflow: <b>__WORKFLOW_NAME__</b><br>
+        Generated: <b>__GENERATED_AT__</b><br>
+        Hire ID: <b>#__HIRE_ID__</b>
+      </div>
+    </div>
+    <h1>__HIRE_NAME__</h1>
+    <div class="cover-sub">Role · __HIRE_ROLE__</div>
+  </div>
+
+  <div class="profile-grid">
+    <div class="fact"><div class="fact-lbl">Email</div><div class="fact-val">__HIRE_EMAIL__</div></div>
+    <div class="fact"><div class="fact-lbl">Phone</div><div class="fact-val">__HIRE_PHONE__</div></div>
+    <div class="fact"><div class="fact-lbl">Status</div><div class="fact-val status-__HIRE_STATUS__">__HIRE_STATUS__</div></div>
+    <div class="fact"><div class="fact-lbl">Preferred Language</div><div class="fact-val">__HIRE_LANG__</div></div>
+    <div class="fact"><div class="fact-lbl">Created</div><div class="fact-val">__HIRE_CREATED__</div></div>
+    <div class="fact"><div class="fact-lbl">Onboarding Completed</div><div class="fact-val">__HIRE_COMPLETED__</div></div>
+  </div>
+
+  <div class="section-head">
+    <h2>📋 Onboarding Steps</h2>
+    <div class="section-head-sub">Full record of every document acknowledged, signed, submitted, or uploaded</div>
+  </div>
+
+  __STEPS_HTML__
+
+  <div class="footer">
+    This document is an official Employee File generated by the 5 Second Beauty HR system.<br>
+    All signatures are recorded with timestamps and IP addresses for compliance with the ESIGN Act.<br>
+    Confidential — for HR use only.
+  </div>
+
+</div>
 </body></html>'''

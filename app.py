@@ -18,7 +18,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML,
-    HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML)
+    HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
 
 
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
@@ -612,13 +612,192 @@ def _new_invite_token():
     """Cryptographically-random URL-safe token for invite links."""
     return _secrets_hire.token_urlsafe(24)
 
+def _i9_section1_step():
+    """I-9 Section 1 form step. US federal Employment Eligibility Verification.
+    Body text reproduces the legal attestation language; the form captures all
+    Section 1 fields the new hire must complete. Spanish translation provided
+    per USCIS guidance (the form itself remains in English but a Spanish form
+    is permitted in Puerto Rico only — we provide ES labels as guidance)."""
+    return {
+        "step_type": "form",
+        "title_en": "Form I-9 — Section 1 (Employee)",
+        "title_es": "Formulario I-9 — Sección 1 (Empleado)",
+        "description_en": "Federal Employment Eligibility Verification. Required by USCIS.",
+        "description_es": "Verificación Federal de Elegibilidad de Empleo. Requerido por USCIS.",
+        "body_en": (
+            "FORM I-9 — EMPLOYMENT ELIGIBILITY VERIFICATION (Section 1)\n\n"
+            "ANTI-DISCRIMINATION NOTICE: It is illegal to discriminate against any work-authorized "
+            "individual in hiring, firing, or recruitment. The refusal to hire or continue to employ "
+            "an individual because of a future expiration date may also constitute illegal discrimination.\n\n"
+            "INSTRUCTIONS: This section must be completed by the employee no later than the first day "
+            "of employment. Provide your full legal name as it appears on your government-issued ID. "
+            "Select the correct citizenship/immigration status, and provide the corresponding identifier "
+            "if applicable.\n\n"
+            "ATTESTATION: I am aware that federal law provides for imprisonment and/or fines for false "
+            "statements, or the use of false documents, in connection with the completion of this form. "
+            "By signing the next step, I attest under penalty of perjury that the information provided "
+            "here is true and correct."
+        ),
+        "body_es": (
+            "FORMULARIO I-9 — VERIFICACIÓN DE ELEGIBILIDAD DE EMPLEO (Sección 1)\n\n"
+            "AVISO ANTIDISCRIMINACIÓN: Es ilegal discriminar a cualquier persona autorizada a trabajar "
+            "en la contratación, despido o reclutamiento. La negativa a contratar o continuar empleando "
+            "a una persona debido a una fecha futura de vencimiento también puede constituir discriminación "
+            "ilegal.\n\n"
+            "INSTRUCCIONES: Esta sección debe ser completada por el empleado a más tardar el primer día "
+            "de empleo. Proporciona tu nombre legal completo tal como aparece en tu identificación oficial. "
+            "Selecciona el estado correcto de ciudadanía/inmigración, y proporciona el identificador "
+            "correspondiente si aplica.\n\n"
+            "DECLARACIÓN: Tengo conocimiento de que la ley federal prevé pena de prisión y/o multas por "
+            "declaraciones falsas o el uso de documentos falsos en relación con la cumplimentación de este "
+            "formulario. Al firmar en el siguiente paso, declaro bajo pena de perjurio que la información "
+            "proporcionada aquí es verdadera y correcta."
+        ),
+        "config_json": (
+            '{"fields":['
+            '{"name":"last_name","label":"Last name (Family name)","type":"text","required":true},'
+            '{"name":"first_name","label":"First name (Given name)","type":"text","required":true},'
+            '{"name":"middle_initial","label":"Middle initial","type":"text","required":false},'
+            '{"name":"other_last_names","label":"Other last names used (if any)","type":"text","required":false},'
+            '{"name":"address_street","label":"Address (Street number and name)","type":"text","required":true},'
+            '{"name":"address_apt","label":"Apt. number","type":"text","required":false},'
+            '{"name":"address_city","label":"City or town","type":"text","required":true},'
+            '{"name":"address_state","label":"State","type":"text","required":true},'
+            '{"name":"address_zip","label":"ZIP code","type":"text","required":true},'
+            '{"name":"date_of_birth","label":"Date of birth (mm/dd/yyyy)","type":"date","required":true},'
+            '{"name":"ssn","label":"U.S. Social Security Number","type":"text","required":true},'
+            '{"name":"email","label":"Email address","type":"email","required":true},'
+            '{"name":"phone","label":"Telephone number","type":"tel","required":true},'
+            '{"name":"citizenship_status","label":"Citizenship / Immigration status","type":"select","required":true,'
+            '"options":["1. A citizen of the United States","2. A noncitizen national of the United States","3. A lawful permanent resident","4. An alien authorized to work"]},'
+            '{"name":"a_number_or_uscis","label":"Alien Registration / USCIS Number (only for status 3 or 4)","type":"text","required":false},'
+            '{"name":"work_auth_expiration","label":"Work authorization expiration (only for status 4, mm/dd/yyyy)","type":"date","required":false},'
+            '{"name":"foreign_passport_number","label":"Foreign passport number (only for status 4, if applicable)","type":"text","required":false},'
+            '{"name":"country_of_issuance","label":"Country of issuance (only for status 4, if applicable)","type":"text","required":false}'
+            ']}'
+        ),
+        "config_json_es": (
+            '{"fields":['
+            '{"name":"last_name","label":"Apellido","type":"text","required":true},'
+            '{"name":"first_name","label":"Nombre","type":"text","required":true},'
+            '{"name":"middle_initial","label":"Inicial del segundo nombre","type":"text","required":false},'
+            '{"name":"other_last_names","label":"Otros apellidos usados (si aplica)","type":"text","required":false},'
+            '{"name":"address_street","label":"Dirección (Número y nombre de la calle)","type":"text","required":true},'
+            '{"name":"address_apt","label":"Número de apto.","type":"text","required":false},'
+            '{"name":"address_city","label":"Ciudad o pueblo","type":"text","required":true},'
+            '{"name":"address_state","label":"Estado","type":"text","required":true},'
+            '{"name":"address_zip","label":"Código postal","type":"text","required":true},'
+            '{"name":"date_of_birth","label":"Fecha de nacimiento (mm/dd/aaaa)","type":"date","required":true},'
+            '{"name":"ssn","label":"Número de Seguro Social (EE.UU.)","type":"text","required":true},'
+            '{"name":"email","label":"Correo electrónico","type":"email","required":true},'
+            '{"name":"phone","label":"Número de teléfono","type":"tel","required":true},'
+            '{"name":"citizenship_status","label":"Estado de ciudadanía / inmigración","type":"select","required":true,'
+            '"options":["1. Ciudadano de los Estados Unidos","2. Nacional no ciudadano de los EE.UU.","3. Residente permanente legal","4. Extranjero autorizado a trabajar"]},'
+            '{"name":"a_number_or_uscis","label":"Número de Registro de Extranjero / USCIS (solo para estado 3 o 4)","type":"text","required":false},'
+            '{"name":"work_auth_expiration","label":"Vencimiento de la autorización (solo estado 4, mm/dd/aaaa)","type":"date","required":false},'
+            '{"name":"foreign_passport_number","label":"Número de pasaporte extranjero (solo estado 4, si aplica)","type":"text","required":false},'
+            '{"name":"country_of_issuance","label":"País de emisión (solo estado 4, si aplica)","type":"text","required":false}'
+            ']}'
+        ),
+    }
+
+def _i9_documents_step():
+    """The companion upload step — supporting documents proving identity and work authorization."""
+    return {
+        "step_type": "upload",
+        "title_en": "I-9 Supporting Documents",
+        "title_es": "Documentos de Apoyo para I-9",
+        "description_en": "Upload one List A document, OR one document from List B + one from List C.",
+        "description_es": "Sube un documento de la Lista A, O un documento de la Lista B + uno de la Lista C.",
+        "body_en": (
+            "ACCEPTABLE DOCUMENTS (Form I-9):\n\n"
+            "LIST A — Documents that establish BOTH identity AND employment authorization:\n"
+            "  • U.S. Passport or U.S. Passport Card\n"
+            "  • Permanent Resident Card or Alien Registration Receipt Card (Form I-551)\n"
+            "  • Employment Authorization Document with photo (Form I-766)\n"
+            "  • Foreign passport with Form I-94/I-94A bearing a work-authorized endorsement\n\n"
+            "LIST B — Documents that establish IDENTITY ONLY (must combine with a List C document):\n"
+            "  • Driver's license or ID card issued by a U.S. state or outlying possession\n"
+            "  • ID card issued by federal, state, or local government agencies\n"
+            "  • School ID card with a photograph\n"
+            "  • U.S. Military card or draft record\n\n"
+            "LIST C — Documents that establish EMPLOYMENT AUTHORIZATION ONLY (must combine with a List B document):\n"
+            "  • U.S. Social Security Account Number card\n"
+            "  • Certification of Birth Abroad (Form FS-545)\n"
+            "  • Original or certified copy of birth certificate issued by a U.S. state or municipal authority\n"
+            "  • U.S. Citizen ID Card (Form I-197)\n\n"
+            "Take clear photos. All four corners visible. Text must be readable. You may upload one List A document, "
+            "or one each from Lists B and C."
+        ),
+        "body_es": (
+            "DOCUMENTOS ACEPTABLES (Formulario I-9):\n\n"
+            "LISTA A — Documentos que establecen TANTO identidad COMO autorización de empleo:\n"
+            "  • Pasaporte de EE.UU. o Tarjeta de Pasaporte\n"
+            "  • Tarjeta de Residente Permanente o Tarjeta de Recibo de Registro de Extranjero (Formulario I-551)\n"
+            "  • Documento de Autorización de Empleo con foto (Formulario I-766)\n"
+            "  • Pasaporte extranjero con Formulario I-94/I-94A con endoso de autorización de trabajo\n\n"
+            "LISTA B — Documentos que establecen SOLO IDENTIDAD (debe combinarse con un documento de la Lista C):\n"
+            "  • Licencia de conducir o tarjeta de identificación emitida por un estado o territorio de EE.UU.\n"
+            "  • Tarjeta de identificación emitida por agencias federales, estatales o locales\n"
+            "  • Tarjeta de identificación escolar con fotografía\n"
+            "  • Tarjeta militar de EE.UU. o registro de reclutamiento\n\n"
+            "LISTA C — Documentos que establecen SOLO AUTORIZACIÓN DE EMPLEO (debe combinarse con Lista B):\n"
+            "  • Tarjeta de Número de Seguro Social\n"
+            "  • Certificación de Nacimiento en el Extranjero (Formulario FS-545)\n"
+            "  • Copia original o certificada del certificado de nacimiento emitido por una autoridad estatal o municipal\n"
+            "  • Tarjeta de Identidad de Ciudadano de EE.UU. (Formulario I-197)\n\n"
+            "Toma fotos claras. Las cuatro esquinas visibles. El texto debe ser legible. Puedes subir un documento "
+            "de la Lista A, o uno de la Lista B y uno de la Lista C."
+        ),
+        "config_json": (
+            '{"accept":"image/*,.pdf","max_mb":15,"fields":['
+            '{"name":"list_a_or_b","label":"List A document OR List B identity document","required":true},'
+            '{"name":"list_c","label":"List C employment authorization document (only if you uploaded a List B above)","required":false},'
+            '{"name":"back_side","label":"Back side of any document (if applicable)","required":false}'
+            ']}'
+        ),
+        "config_json_es": (
+            '{"accept":"image/*,.pdf","max_mb":15,"fields":['
+            '{"name":"list_a_or_b","label":"Documento de Lista A O documento de identidad de Lista B","required":true},'
+            '{"name":"list_c","label":"Documento de autorización de empleo de Lista C (solo si subiste un documento de Lista B)","required":false},'
+            '{"name":"back_side","label":"Reverso de cualquier documento (si aplica)","required":false}'
+            ']}'
+        ),
+    }
+
+def _ensure_i9_steps_on_existing_workflows():
+    """Append the I-9 form + supporting documents step to every existing workflow
+    that doesn't already have them. Idempotent — runs once per workflow."""
+    c = sdb()
+    workflows = c.execute("SELECT id, name FROM onboarding_workflows").fetchall()
+    for wf in workflows:
+        already = c.execute("""SELECT id FROM onboarding_steps
+                               WHERE workflow_id=? AND step_type='form' AND title LIKE 'Form I-9%'""",
+                            (wf["id"],)).fetchone()
+        if already:
+            continue
+        max_order = c.execute("SELECT COALESCE(MAX(step_order),0) AS m FROM onboarding_steps WHERE workflow_id=?",
+                              (wf["id"],)).fetchone()["m"]
+        for offset, step in enumerate([_i9_section1_step(), _i9_documents_step()], start=1):
+            c.execute("""INSERT INTO onboarding_steps
+                         (workflow_id, step_order, step_type, title, description, body, config_json,
+                          is_required, title_es, description_es, body_es, config_json_es)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
+                      (wf["id"], max_order + offset, step["step_type"],
+                       step["title_en"], step["description_en"], step["body_en"], step["config_json"],
+                       step["title_es"], step["description_es"], step["body_es"], step["config_json_es"]))
+    c.commit(); c.close()
+
+
 def _seed_workflows_from_module():
     """Seed the real workflows from onboarding_seed.WORKFLOWS on first boot.
     Each workflow gets created once (skipped if a workflow with the same name
-    already exists). The first one becomes the default for new hires."""
+    already exists). The first one becomes the default for new hires.
+    After seeding, ensures every workflow has I-9 steps appended."""
     try:
         from onboarding_seed import WORKFLOWS
     except ImportError:
+        _ensure_i9_steps_on_existing_workflows()
         return None
     c = sdb()
     first_wf_id = None
@@ -649,6 +828,8 @@ def _seed_workflows_from_module():
                        step.get("title_es"), step.get("description_es"),
                        step.get("body_es"), cfg_es))
     c.commit(); c.close()
+    # Backfill I-9 onto every workflow (including ones we just seeded)
+    _ensure_i9_steps_on_existing_workflows()
     return first_wf_id
 
 def _seed_default_workflow_if_missing():
@@ -849,7 +1030,11 @@ def _hire_steps_with_progress(hire_id, workflow_id, lang="en"):
     """Returns the ordered list of steps for a workflow with each hire's progress
     merged in. Each row: step + status (pending|in_progress|done) + data_json.
     If lang='es', returns Spanish title/description/body/config_json with
-    English fallback for any field where the Spanish version is missing."""
+    English fallback for any field where the Spanish version is missing.
+    For upload steps, the data_json is enriched with an `uploads` dict keyed
+    by field_name with {filename, size_bytes, mime_type} so the page can show
+    'already uploaded' state on resume."""
+    import json as _json
     c = sdb()
     rows = c.execute("""
         SELECT s.id AS step_id, s.step_order, s.step_type,
@@ -863,19 +1048,36 @@ def _hire_steps_with_progress(hire_id, workflow_id, lang="en"):
         WHERE s.workflow_id = ?
         ORDER BY s.step_order
     """, (hire_id, workflow_id)).fetchall()
+    # Pre-fetch uploads for this hire (one extra query — keeps the inner loop simple)
+    upload_rows = c.execute("""SELECT step_id, field_name, original_filename, mime_type, size_bytes
+                                FROM onboarding_uploads WHERE hire_id=?""", (hire_id,)).fetchall()
+    uploads_by_step = {}
+    for u in upload_rows:
+        uploads_by_step.setdefault(u["step_id"], {})[u["field_name"]] = {
+            "filename": u["original_filename"],
+            "mime_type": u["mime_type"],
+            "size_bytes": u["size_bytes"],
+        }
     c.close()
     out = []
     for r in rows:
         d = dict(r)
         if lang == "es":
-            # Swap to Spanish where present, fall back to English where not
             d["title"] = d.get("title_es") or d["title"]
             d["description"] = d.get("description_es") or d.get("description")
             d["body"] = d.get("body_es") or d.get("body")
             d["config_json"] = d.get("config_json_es") or d.get("config_json")
-        # Always strip the *_es scratch columns from the output payload
         for k in ("title_es", "description_es", "body_es", "config_json_es"):
             d.pop(k, None)
+        # Merge upload info into data_json so the JS can show existing uploads on resume
+        if d["step_type"] == "upload":
+            existing = uploads_by_step.get(d["step_id"], {})
+            current = {}
+            if d.get("data_json"):
+                try: current = _json.loads(d["data_json"]) or {}
+                except: current = {}
+            current["uploads"] = existing
+            d["data_json"] = _json.dumps(current, ensure_ascii=False)
         out.append(d)
     return out
 
@@ -2701,6 +2903,124 @@ def admin_hires_page():
         .replace("__NAVBAR__", _navbar("hires"))
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
+@app.route("/admin/hires/<int:hire_id>/file")
+@req_role("admin", "cs")
+def admin_hire_file(hire_id):
+    """Printable Employee File. Renders all hire data + signed docs + uploads
+    on one long page styled for print. Admin's browser does the PDF export."""
+    c = sdb()
+    h = c.execute("SELECT * FROM new_hires WHERE id=?", (hire_id,)).fetchone()
+    if not h:
+        c.close()
+        return "Hire not found", 404
+    h = dict(h)
+    # English content for the printed file regardless of hire's preferred language
+    # (HR/legal/IRS need English for compliance).
+    steps = _hire_steps_with_progress(h["id"], h["workflow_id"], lang="en") if h["workflow_id"] else []
+    sigs = [dict(r) for r in c.execute("SELECT * FROM onboarding_signatures WHERE hire_id=? ORDER BY signed_at",
+                                       (hire_id,)).fetchall()]
+    uploads = [dict(r) for r in c.execute("SELECT * FROM onboarding_uploads WHERE hire_id=? ORDER BY uploaded_at",
+                                          (hire_id,)).fetchall()]
+    wf = c.execute("SELECT name FROM onboarding_workflows WHERE id=?", (h["workflow_id"],)).fetchone()
+    c.close()
+    workflow_name = wf["name"] if wf else "Onboarding"
+    # Build the page as plain HTML — print stylesheet handles paper-friendly layout
+    return render_hire_file_page(h, steps, sigs, uploads, workflow_name)
+
+def render_hire_file_page(h, steps, sigs, uploads, workflow_name):
+    """Helper to assemble HIRE_FILE_HTML — keeps the route slim."""
+    import json as _json
+    # Index uploads by step_id for inline rendering
+    uploads_by_step = {}
+    for u in uploads:
+        uploads_by_step.setdefault(u["step_id"], []).append(u)
+    # Index signatures by step_id
+    sigs_by_step = {}
+    for s in sigs:
+        sigs_by_step.setdefault(s["step_id"], []).append(s)
+    # Build the step sections
+    step_html = []
+    for s in steps:
+        title = (s["title"] or "").replace("<", "&lt;")
+        desc = (s["description"] or "").replace("<", "&lt;")
+        body = (s["body"] or "").replace("<", "&lt;").replace("\n", "<br>")
+        section = f'<section class="step">'
+        section += f'<div class="step-num">Step {s["step_order"]}</div>'
+        section += f'<h2>{title}</h2>'
+        if desc: section += f'<p class="step-desc">{desc}</p>'
+        status = s.get("status") or "pending"
+        completed_at = (s.get("completed_at") or "")[:16].replace("T", " ")
+        section += f'<div class="step-status {status}">Status: <b>{status.upper()}</b>'
+        if completed_at: section += f' &middot; Completed: {completed_at}'
+        section += '</div>'
+        if body:
+            section += f'<div class="doc-body">{body}</div>'
+        # Form responses
+        if s["step_type"] == "form" and s.get("data_json"):
+            try: data = _json.loads(s["data_json"]) or {}
+            except: data = {}
+            responses = data.get("responses") or {}
+            if responses:
+                section += '<table class="form-table"><thead><tr><th>Field</th><th>Response</th></tr></thead><tbody>'
+                cfg = {}
+                try: cfg = _json.loads(s.get("config_json") or "{}")
+                except: pass
+                label_lookup = {f.get("name"): f.get("label", f.get("name")) for f in cfg.get("fields", [])}
+                for k, v in responses.items():
+                    label = label_lookup.get(k, k).replace("<", "&lt;")
+                    val = str(v).replace("<", "&lt;") if v else "—"
+                    section += f'<tr><td>{label}</td><td>{val}</td></tr>'
+                section += '</tbody></table>'
+        # Signatures
+        for sig in sigs_by_step.get(s["step_id"], []):
+            section += '<div class="sig-block">'
+            section += f'<div class="sig-name"><span class="cursive">{(sig["signed_name"] or "").replace("<", "&lt;")}</span></div>'
+            section += '<div class="sig-line"></div>'
+            section += f'<div class="sig-audit">'
+            section += f'Signed by <b>{(sig["signed_name"] or "").replace("<", "&lt;")}</b> &middot; '
+            section += f'{(sig.get("signed_at") or "")[:19].replace("T"," ")} UTC &middot; '
+            section += f'IP {sig.get("ip_address") or "—"}'
+            if sig.get("document_hash"):
+                section += f' &middot; doc hash {sig["document_hash"][:16]}…'
+            section += '</div>'
+            section += '</div>'
+        # Uploaded files
+        if s["step_type"] == "upload":
+            ups = uploads_by_step.get(s["step_id"], [])
+            if ups:
+                section += '<div class="uploads-list">'
+                for u in ups:
+                    fn = (u["original_filename"] or "file").replace("<", "&lt;")
+                    field = (u["field_name"] or "").replace("<", "&lt;")
+                    size_kb = (u["size_bytes"] or 0) / 1024
+                    is_image = (u.get("mime_type") or "").startswith("image/")
+                    section += f'<div class="upload-item">'
+                    section += f'<div class="upload-meta"><b>{field}</b> &middot; {fn} &middot; {size_kb:.0f} KB</div>'
+                    if is_image:
+                        section += f'<img class="upload-thumb" src="/api/hires/{h["id"]}/upload/{u["id"]}?inline=1" alt="{fn}">'
+                    else:
+                        section += f'<a href="/api/hires/{h["id"]}/upload/{u["id"]}" class="upload-link no-print">📎 Download {fn}</a>'
+                    section += '</div>'
+                section += '</div>'
+            else:
+                section += '<p class="empty-note">No files uploaded for this step.</p>'
+        section += '</section>'
+        step_html.append(section)
+    return (HIRE_FILE_HTML
+        .replace("__HIRE_NAME__", (h["full_name"] or "").replace("<", "&lt;"))
+        .replace("__HIRE_EMAIL__", (h.get("email") or "—").replace("<", "&lt;"))
+        .replace("__HIRE_PHONE__", (h.get("phone") or "—").replace("<", "&lt;"))
+        .replace("__HIRE_ROLE__", (h.get("role_target") or "—").replace("<", "&lt;"))
+        .replace("__HIRE_STATUS__", (h.get("status") or "").upper().replace("_", " "))
+        .replace("__HIRE_CREATED__", (h.get("created_at") or "")[:10])
+        .replace("__HIRE_COMPLETED__", (h.get("completed_at") or "—")[:16].replace("T", " "))
+        .replace("__HIRE_LANG__", (h.get("preferred_language") or "en").upper())
+        .replace("__WORKFLOW_NAME__", workflow_name.replace("<", "&lt;"))
+        .replace("__STEPS_HTML__", "\n".join(step_html))
+        .replace("__HIRE_ID__", str(h["id"]))
+        .replace("__GENERATED_AT__", datetime.now().strftime("%Y-%m-%d %H:%M")))
+
+
 @app.route("/admin/hires/<int:hire_id>")
 @req_role("admin", "cs")
 def admin_hire_detail(hire_id):
@@ -2879,6 +3199,129 @@ def api_public_hire_set_lang(token):
     c.execute("UPDATE new_hires SET preferred_language=? WHERE id=?", (lang, h["id"]))
     c.commit(); c.close()
     return jsonify({"ok": True, "lang": lang})
+
+
+# ─── File upload on an onboarding step ─────────────────────────────────
+HIRE_UPLOAD_MAX_BYTES = 15 * 1024 * 1024   # 15 MB
+HIRE_UPLOAD_ALLOWED_EXT = {"pdf", "png", "jpg", "jpeg", "gif", "webp", "heic"}
+HIRE_LOCAL_UPLOAD_DIR = os.path.join(DATA_DIR, "hire_uploads")
+os.makedirs(HIRE_LOCAL_UPLOAD_DIR, exist_ok=True)
+
+def _hire_upload_storage_key(hire_id, step_id, field_name, filename):
+    """Build a deterministic-ish R2 key for this upload. Filename collisions
+    inside a hire+step+field overwrite the old one — that's intentional, the
+    hire can re-upload to fix a blurry photo."""
+    safe_field = re.sub(r'[^A-Za-z0-9_\-]', '_', field_name)[:40] or "file"
+    safe_fn = secure_filename(filename) or "file"
+    return f"hire_uploads/{hire_id}/{step_id}/{safe_field}_{safe_fn}"
+
+@app.route("/api/hire/<token>/step/<int:step_id>/upload", methods=["POST"])
+def api_public_hire_upload(token, step_id):
+    """Accept a file upload from the new hire. multipart fields:
+       file: the actual file
+       field_name: which slot this fills (e.g. 'id_front' / 'id_back')"""
+    h = _hire_by_token(token)
+    if not h:
+        return jsonify({"ok": False, "error": "Invalid token"}), 404
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "Pick a file to upload"}), 400
+    field_name = (request.form.get("field_name") or "file").strip()[:40]
+    fn = secure_filename(f.filename) or "file"
+    ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
+    if ext not in HIRE_UPLOAD_ALLOWED_EXT:
+        return jsonify({"ok": False, "error": "File type not allowed. Use PDF or image."}), 400
+    # Validate step exists and is an upload step
+    c = sdb()
+    step = c.execute("SELECT * FROM onboarding_steps WHERE id=? AND workflow_id=?",
+                     (step_id, h["workflow_id"])).fetchone()
+    if not step or step["step_type"] != "upload":
+        c.close()
+        return jsonify({"ok": False, "error": "Not an upload step"}), 400
+    # Size check by reading into memory once
+    f.stream.seek(0, 2)
+    size = f.stream.tell()
+    f.stream.seek(0)
+    if size > HIRE_UPLOAD_MAX_BYTES:
+        c.close()
+        return jsonify({"ok": False, "error": f"File too large (max {HIRE_UPLOAD_MAX_BYTES // (1024*1024)}MB)"}), 400
+    key = _hire_upload_storage_key(h["id"], step_id, field_name, fn)
+    mime = f.mimetype or "application/octet-stream"
+    if r2:
+        try:
+            r2.upload_fileobj(f.stream, R2_BUCKET, key,
+                              ExtraArgs={"ContentType": mime})
+        except Exception as e:
+            print("R2 hire upload failed:", e, flush=True)
+            c.close()
+            return jsonify({"ok": False, "error": "Storage upload failed"}), 500
+    else:
+        local_path = os.path.join(HIRE_LOCAL_UPLOAD_DIR, key.replace("/", "__"))
+        f.save(local_path)
+    # Replace any previous upload for this (hire, step, field) so re-uploads work
+    c.execute("""DELETE FROM onboarding_uploads
+                 WHERE hire_id=? AND step_id=? AND field_name=?""",
+              (h["id"], step_id, field_name))
+    c.execute("""INSERT INTO onboarding_uploads
+                 (hire_id, step_id, field_name, original_filename, storage_key, mime_type, size_bytes)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
+              (h["id"], step_id, field_name, fn, key, mime, size))
+    c.commit(); c.close()
+    return jsonify({"ok": True, "field_name": field_name, "filename": fn, "size_bytes": size, "mime_type": mime})
+
+@app.route("/api/hire/<token>/step/<int:step_id>/upload/<field>", methods=["DELETE"])
+def api_public_hire_upload_delete(token, step_id, field):
+    """Remove an uploaded file (re-upload often does this via the POST handler,
+    but this lets the hire actively delete a slot before completion)."""
+    h = _hire_by_token(token)
+    if not h:
+        return jsonify({"ok": False, "error": "Invalid token"}), 404
+    c = sdb()
+    rows = c.execute("""SELECT id, storage_key FROM onboarding_uploads
+                        WHERE hire_id=? AND step_id=? AND field_name=?""",
+                     (h["id"], step_id, field)).fetchall()
+    for r in rows:
+        if r2:
+            try: r2.delete_object(Bucket=R2_BUCKET, Key=r["storage_key"])
+            except: pass
+        else:
+            try: os.remove(os.path.join(HIRE_LOCAL_UPLOAD_DIR, r["storage_key"].replace("/", "__")))
+            except: pass
+        c.execute("DELETE FROM onboarding_uploads WHERE id=?", (r["id"],))
+    c.commit(); c.close()
+    return jsonify({"ok": True, "deleted": len(rows)})
+
+@app.route("/api/hires/<int:hire_id>/upload/<int:upload_id>")
+@req_role("admin", "cs")
+def api_admin_hire_upload_view(hire_id, upload_id):
+    """Admin-side: redirect to a short-lived presigned R2 URL (or serve local file)
+    so they can view/download the new hire's ID, certifications, etc."""
+    c = sdb()
+    row = c.execute("SELECT * FROM onboarding_uploads WHERE id=? AND hire_id=?",
+                    (upload_id, hire_id)).fetchone()
+    c.close()
+    if not row:
+        return "Not found", 404
+    key = row["storage_key"]
+    fn = row["original_filename"] or "file"
+    inline = request.args.get("inline") == "1"
+    disposition = "inline" if inline else f'attachment; filename="{fn}"'
+    if r2:
+        try:
+            url = r2.generate_presigned_url("get_object",
+                Params={"Bucket": R2_BUCKET, "Key": key,
+                        "ResponseContentDisposition": disposition},
+                ExpiresIn=R2_PRESIGN_TTL)
+            return redirect(url)
+        except Exception as e:
+            return f"Storage error: {e}", 500
+    local_path = os.path.join(HIRE_LOCAL_UPLOAD_DIR, key.replace("/", "__"))
+    if not os.path.exists(local_path):
+        return "File missing", 404
+    from flask import send_file
+    return send_file(local_path, mimetype=row["mime_type"] or "application/octet-stream",
+                     as_attachment=not inline, download_name=fn)
+
 
 @app.route("/api/hire/<token>/step/<int:step_id>/complete", methods=["POST"])
 def api_public_hire_complete_step(token, step_id):
