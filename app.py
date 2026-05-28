@@ -317,6 +317,7 @@ def sdb_init():
         weighed_at TEXT,
         weighed_by TEXT,
         packed_at TEXT,
+        packed_by TEXT,
         show_date TEXT,
         status TEXT NOT NULL DEFAULT 'pending',
         flag_reason TEXT,
@@ -347,6 +348,7 @@ def sdb_init():
         "ALTER TABLE shipments ADD COLUMN import_label TEXT",
         "ALTER TABLE shipments ADD COLUMN picked_at TEXT",
         "ALTER TABLE shipments ADD COLUMN picked_by TEXT",
+        "ALTER TABLE shipments ADD COLUMN packed_by TEXT",
         "ALTER TABLE shipment_items ADD COLUMN order_id TEXT",
         "ALTER TABLE shipment_items ADD COLUMN cancelled INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN cancel_reason TEXT",
@@ -1598,7 +1600,75 @@ def api_upload():
             pf.save(pp)
     with open(LOG_FILE,"a") as f:
         f.write(trk+","+sta+","+now.strftime('%Y-%m-%d')+","+now.strftime('%H:%M:%S')+","+str(dur)+","+str(vn)+","+str(pn)+","+wrk+"\n")
+    # Mark the shipment row as packed in the SQL table — that's what the Shows /
+    # Customers / SKU Reconciliation pages read from. Without this update, every
+    # shipment looks 'pending' even after the recording is done.
+    # Skip if no matching shipment, if it's already shipped, or if it's cancelled.
+    try:
+        c = sdb()
+        row = c.execute("SELECT shipment_id, status FROM shipments WHERE tracking_code=?", (trk,)).fetchone()
+        if row and row["status"] not in ("shipped", "cancelled"):
+            c.execute("""UPDATE shipments
+                         SET status='packed', packed_at=CURRENT_TIMESTAMP, packed_by=?
+                         WHERE tracking_code=?""", (wrk, trk))
+            c.commit()
+        c.close()
+    except Exception as e:
+        # Don't fail the upload if the SQL update has a hiccup — the CSV log is the source of truth
+        # for the recording itself, and we can backfill the shipments table later.
+        print("packed-status update failed for", trk, ":", e, flush=True)
     return jsonify({"ok":True})
+
+@app.route("/api/backfill-packed-status", methods=["POST"])
+@req_role("admin")
+def api_backfill_packed():
+    """One-shot fix-up: walk the packing CSV log and mark any shipment whose
+    tracking_code appears there as 'packed' (unless already shipped/cancelled).
+    Use this after deploying the packed-status fix to retroactively close out
+    shipments that were already recorded before the fix went live."""
+    if not os.path.exists(LOG_FILE):
+        return jsonify({"ok": True, "log_rows": 0, "shipments_updated": 0})
+    # Collect (tracking, latest_timestamp, worker) tuples from the CSV log
+    by_track = {}
+    with open(LOG_FILE) as f:
+        for row in csv.DictReader(f):
+            trk = (row.get("tracking_number") or "").strip()
+            if not trk: continue
+            ts = (row.get("date","") + " " + row.get("time","")).strip()
+            w = (row.get("worker") or "").strip()
+            prev = by_track.get(trk)
+            if not prev or ts > prev[0]:
+                by_track[trk] = (ts, w)
+    if not by_track:
+        return jsonify({"ok": True, "log_rows": 0, "shipments_updated": 0})
+    c = sdb()
+    updated = 0
+    not_found = 0
+    skipped = 0
+    for trk, (ts, w) in by_track.items():
+        row = c.execute("SELECT shipment_id, status, packed_at FROM shipments WHERE tracking_code=?",
+                        (trk,)).fetchone()
+        if not row:
+            not_found += 1
+            continue
+        if row["status"] in ("shipped", "cancelled"):
+            skipped += 1
+            continue
+        if row["status"] == "packed" and row["packed_at"]:
+            skipped += 1
+            continue
+        # Use the recording timestamp as packed_at; worker as packed_by
+        c.execute("""UPDATE shipments SET status='packed',
+                     packed_at=COALESCE(packed_at, ?), packed_by=COALESCE(packed_by, ?)
+                     WHERE tracking_code=?""",
+                  (ts or None, w or None, trk))
+        updated += 1
+    c.commit(); c.close()
+    return jsonify({"ok": True, "log_rows": len(by_track),
+                    "shipments_updated": updated,
+                    "not_in_imports": not_found,
+                    "skipped": skipped})
+
 
 @app.route("/api/search/<trk>")
 @req_role("admin","cs")
