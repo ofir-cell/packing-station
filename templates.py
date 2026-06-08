@@ -446,6 +446,17 @@ body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
   </div>
 </div>
 
+<!-- Giveaway add overlay - green full-screen when the scanned order has a prize to add -->
+<div id="giveawayOverlay" style="display:none;position:fixed;inset:0;z-index:60;background:rgba(6,12,9,.93);align-items:center;justify-content:center">
+  <div class="cancel-box" style="border-color:rgba(52,211,153,.5)">
+    <div class="cancel-icon">🎁</div>
+    <div class="cancel-title" style="color:#34d399">ADD GIVEAWAY</div>
+    <div class="cancel-sub">This order includes a giveaway prize — put it in the box before sealing</div>
+    <div id="gvList" style="margin:16px 0;font-size:20px;font-weight:800;color:#e4e8f1"></div>
+    <button class="cancel-ok" id="gvOk" style="background:#10b981">✓ Added — continue</button>
+  </div>
+</div>
+
 <div class="x" id="xu"><div class="us"></div><div class="ut">Saving recording...</div><div class="uu">Please wait</div></div>
 
 <div class="x" id="xd"><div class="d-icon">✓</div><div class="dt">Saved!</div><div class="dk" id="dkk"></div><div class="dd" id="ddd"></div><div class="dn">Next order...</div></div>
@@ -577,6 +588,10 @@ function loadChecklist(tracking){
         side.classList.remove('warn');
         document.getElementById('rsShow').innerHTML=s.import_label?('Show: <b>'+s.import_label.replace(/</g,'&lt;')+'</b>'+(s.platform?' · '+s.platform:'')):'';
 
+        // Giveaway piggyback: if this order has a prize waiting to be added, pop a
+        // must-acknowledge overlay so the packer puts it in the box before sealing.
+        if(d.giveaways&&d.giveaways.length){showGiveawayAdd(d.giveaways);}
+
         // After 8 seconds, hide overlay, slide in side card. Stays until next scan / scan-out.
         countTimer=setTimeout(function(){
             ov.classList.remove('on');
@@ -606,6 +621,23 @@ document.getElementById('cancelOk').addEventListener('click',function(){
     document.getElementById('cancelOverlay').style.display='none';
     hideReminder();
     go('r');
+});
+// ── Giveaway piggyback overlay (packer) ──
+var gvPending=[];
+function showGiveawayAdd(list){
+    gvPending=list||[];
+    document.getElementById('gvList').innerHTML=gvPending.map(function(g){
+        return '🎁 '+(g.prize_name||'').replace(/</g,'&lt;')+(g.brand?' · '+g.brand:'');
+    }).join('<br>');
+    document.getElementById('giveawayOverlay').style.display='flex';
+}
+document.getElementById('gvOk').addEventListener('click',function(){
+    document.getElementById('giveawayOverlay').style.display='none';
+    gvPending.forEach(function(g){
+        fetch('/api/giveaway/'+g.id+'/mark-added',{method:'POST'}).catch(function(){});
+    });
+    gvPending=[];
+    if(st==='c')ri.focus();
 });
 function stopRec(){return new Promise(function(res){mr.onstop=res;mr.stop()})}
 function capPhoto(){var v=document.getElementById('pv'),c=document.createElement('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);return new Promise(function(res){c.toBlob(res,'image/jpeg',.7)})}
@@ -1073,6 +1105,18 @@ __NAVBAR__
 </div>
 </div>
 
+<div class="add-card" style="border-color:rgba(52,211,153,.25)">
+<div class="add-title" style="color:#34d399">🎁➕ Attach Prize to an Existing Order</div>
+<div class="add-row" style="grid-template-columns:1.4fr 1fr 1fr 1.2fr auto">
+<div class="f"><label>Prize Name</label><input id="a-prize" placeholder="e.g. Mini glow set"></div>
+<div class="f"><label>First Name</label><input id="a-first" placeholder="First"></div>
+<div class="f"><label>Last Name</label><input id="a-last" placeholder="Last"></div>
+<div class="f"><label>Username</label><input id="a-user" placeholder="@username"></div>
+<button class="btn btn-s" id="a-find">Find Order</button>
+</div>
+<div id="a-result" style="margin-top:14px;display:none"></div>
+</div>
+
 <div class="cols">
 <div class="col pa"><div class="col-h"><div class="col-t">📋 Pending Address</div><div class="cnt" id="c-pa">0</div></div><div id="g-pa"></div></div>
 <div class="col ar"><div class="col-h"><div class="col-t">✏️ Address Received</div><div class="cnt" id="c-ar">0</div></div><div id="g-ar"></div></div>
@@ -1087,11 +1131,66 @@ function timeAgo(ts){if(!ts)return '';var d=new Date(ts);var s=Math.floor((Date.
 function card(g){
     var pl=g.platform==='tiktok'?'<span class="pl tt">TikTok</span>':'<span class="pl wn">Whatnot</span>';
     var br=g.brand?' · '+g.brand:'';
+    var extra='';
+    if(g.attach_mode==='piggyback'){
+        var ast=g.attach_status==='added'
+            ?'<span style="color:#34d399;font-weight:700">✓ ADDED</span>'
+            :'<span style="color:#fbbf24;font-weight:700">⏳ PENDING IN ORDER</span>';
+        extra='<div class="card-m" style="margin-top:6px"><span style="color:#a5b4fc;font-family:monospace">📦 '+(g.linked_tracking||g.linked_shipment_id||'')+'</span>'+ast+'</div>';
+    }
     return '<a class="card" href="/giveaway/'+g.id+'">'+
         '<div class="card-w"><span class="at">@</span>'+g.winner_username+'</div>'+
         '<div class="card-p">'+g.prize_name+'</div>'+
-        '<div class="card-m">'+pl+'<span>'+timeAgo(g.created_at)+br+'</span></div>'+
+        '<div class="card-m">'+pl+'<span>'+timeAgo(g.created_at)+br+'</span></div>'+extra+
         '</a>';
+}
+var attachPrizeName='';
+function shipRow(s,best){
+    var col={pending:'#fbbf24',picked:'#60a5fa',packed:'#a78bfa'}[s.status]||'#6b7a90';
+    return '<div class="card" style="cursor:default;border-color:'+(best?'rgba(52,211,153,.45)':'rgba(255,255,255,.06)')+'">'+
+        '<div class="card-w">'+(s.buyer_name||'?')+' <span class="at">@'+(s.buyer_username||'')+'</span></div>'+
+        '<div class="card-m"><span style="color:'+col+';font-weight:700;text-transform:uppercase">'+s.status+'</span>'+
+        '<span>'+(s.import_label||'')+' · '+(s.total_items||0)+' items</span></div>'+
+        '<div class="card-m" style="margin-top:8px"><span style="font-family:monospace">'+(s.tracking_code||s.shipment_id||'')+'</span>'+
+        '<button class="btn btn-p" style="padding:6px 14px;font-size:12px" onclick="doAttach(\\''+s.shipment_id+'\\')">'+(best?'Attach here →':'Use this')+'</button></div>'+
+        '</div>';
+}
+document.getElementById('a-find').addEventListener('click',function(){
+    var prize=document.getElementById('a-prize').value.trim();
+    var first=document.getElementById('a-first').value.trim();
+    var last=document.getElementById('a-last').value.trim();
+    var user=document.getElementById('a-user').value.trim().replace(/^@/,'');
+    if(!prize){toast('Prize name required',true);return}
+    if(!user&&!(first&&last)){toast('Enter username, or first + last name',true);return}
+    attachPrizeName=prize;
+    var box=document.getElementById('a-result');box.style.display='block';box.innerHTML='<div class="empty">Searching…</div>';
+    fetch('/api/giveaway/match',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({username:user,first_name:first,last_name:last})})
+    .then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){box.innerHTML='<div class="empty">Lookup failed</div>';return}
+        if(!d.candidates.length){
+            var msg=d.reason==='all_shipped'
+                ?'All matching orders already shipped — ship the prize separately using "Add New Giveaway Winner" above.'
+                :'No matching order found in the pipeline for that winner.';
+            box.innerHTML='<div class="empty">'+msg+'</div>';return;
+        }
+        var html='<div style="font-size:12px;color:#34d399;font-weight:700;margin-bottom:8px">BEST MATCH (auto-selected) — confirm, or pick another:</div>';
+        html+=d.candidates.map(function(s,i){return shipRow(s,i===0)}).join('');
+        box.innerHTML=html;
+    });
+});
+function doAttach(sid){
+    fetch('/api/giveaway/attach',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({prize_name:attachPrizeName,shipment_id:sid,
+            username:document.getElementById('a-user').value.trim().replace(/^@/,''),
+            platform:document.getElementById('pl').value})})
+    .then(function(r){return r.json()}).then(function(d){
+        if(d.ok){
+            toast('Attached to '+(d.linked.tracking_code||d.linked.shipment_id)+' ✓');
+            ['a-prize','a-first','a-last','a-user'].forEach(function(id){document.getElementById(id).value=''});
+            document.getElementById('a-result').style.display='none';load();
+        } else toast(d.error||'Failed',true);
+    });
 }
 function load(){
     fetch('/api/giveaway/list').then(function(r){return r.json()}).then(function(d){
@@ -4355,6 +4454,9 @@ function openDetail(sid){
         document.getElementById('listBuyer').textContent=s.buyer_name||s.buyer_username||'Customer';
         var meta='<span class="pill pill-id">'+escapeHtml(s.shipment_id)+'</span>';
         if(s.tracking_code)meta+='<span class="pill pill-track">'+escapeHtml(s.tracking_code)+'</span>';
+        if(d.giveaways&&d.giveaways.length){
+            meta+='<span class="pill" style="background:rgba(52,211,153,.18);color:#34d399;font-weight:800">🎁 ADD GIVEAWAY: '+d.giveaways.map(function(g){return escapeHtml(g.prize_name)}).join(', ')+'</span>';
+        }
         document.getElementById('listMeta').innerHTML=meta;
         renderItems();
         switchState('list');

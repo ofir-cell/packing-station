@@ -282,6 +282,22 @@ def gdb_init():
     c.execute("CREATE INDEX IF NOT EXISTS idx_giveaways_status ON giveaways(status)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_giveaways_created ON giveaways(created_at DESC)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_giveaways_winner ON giveaways(winner_username)")
+    # --- "piggyback" attach feature: link a giveaway to an existing order so the
+    #     prize ships inside that order's box instead of a separate shipment. ---
+    _gv_cols={
+        "attach_mode":"TEXT DEFAULT 'standalone'",  # 'standalone' | 'piggyback'
+        "linked_shipment_id":"TEXT",
+        "linked_tracking":"TEXT",
+        "attach_status":"TEXT",                     # 'pending' | 'added' | 'missed'
+        "attach_added_at":"TEXT",
+        "attach_added_by":"TEXT",
+        "attach_show":"TEXT",
+    }
+    _have={r[1] for r in c.execute("PRAGMA table_info(giveaways)").fetchall()}
+    for _col,_decl in _gv_cols.items():
+        if _col not in _have:
+            c.execute("ALTER TABLE giveaways ADD COLUMN %s %s" % (_col,_decl))
+    c.execute("CREATE INDEX IF NOT EXISTS idx_giveaways_linked ON giveaways(linked_shipment_id)")
     c.commit();c.close()
 
 gdb_init()
@@ -2466,6 +2482,7 @@ def api_shipment_lookup(code):
         "shipment": dict(row),
         "items": [dict(i) for i in items],
         "config": dict(cfg) if cfg else {},
+        "giveaways": _pending_giveaways_for(row["shipment_id"], row["tracking_code"]),
     })
 
 
@@ -2693,6 +2710,7 @@ def api_pick_get(sid):
         "items": [dict(i) for i in items],
         "cleanup_blocked": cleanup_blocked,
         "cleanup": cleanup_info,
+        "giveaways": _pending_giveaways_for(s["shipment_id"], s["tracking_code"]),
     })
 
 @app.route("/api/pick/item/<int:item_id>/toggle", methods=["POST"])
@@ -4010,56 +4028,65 @@ def api_repair_videos():
     header (the cause of 'video found but won't play'). Strips everything before
     the first 1A45DFA3 and rewrites a clean object.
 
+    Processes ONE bounded page per call (so the request can never time out) and
+    returns next_cursor for the following page. Drive it with a small JS loop that
+    keeps calling until next_cursor is null. Idempotent: a clean file (magic at
+    offset 0) is skipped.
+
     Params (JSON body or query string):
       dry_run : 'true' (default) only reports; 'false' actually rewrites.
-      max     : batch cap per call (default 100). The op is idempotent — once a
-                file is clean the magic sits at offset 0, so reruns skip it.
+      max     : objects per page (default 40, capped 200). Keep small for repair
+                runs since each corrupt file is fully downloaded + re-uploaded.
+      cursor  : continuation token from the previous call's next_cursor.
 
     Detection reads only the first 64KB of each object (cheap); a full download
-    happens only when a file is actually being repaired."""
+    happens only when a corrupt file is actually being repaired."""
     if not r2:
         return jsonify({"ok":False,"error":"R2 not configured (backend is local)"})
     d=request.get_json(silent=True) or {}
-    dry=str(d.get("dry_run", request.args.get("dry_run","true"))).lower() not in ("false","0","no")
-    try: max_n=int(d.get("max", request.args.get("max",100)))
-    except Exception: max_n=100
+    def _p(name,default): return d.get(name, request.args.get(name,default))
+    dry=str(_p("dry_run","true")).lower() not in ("false","0","no")
+    try: page_size=max(1,min(200,int(_p("max",40))))
+    except Exception: page_size=40
+    cursor=_p("cursor",None)
     scanned=0;corrupt=0;repaired=0;errors=0;no_header=0;samples=[]
+    kw={"Bucket":R2_BUCKET,"Prefix":"videos/","MaxKeys":page_size}
+    if cursor: kw["ContinuationToken"]=cursor
     try:
-        paginator=r2.get_paginator('list_objects_v2')
-        done=False
-        for page in paginator.paginate(Bucket=R2_BUCKET,Prefix='videos/'):
-            if done: break
-            for obj in page.get('Contents',[]):
-                key=obj['Key']
-                if not key.lower().endswith('.webm'): continue
-                if scanned>=max_n: done=True; break
-                scanned+=1
-                try:
-                    head=r2.get_object(Bucket=R2_BUCKET,Key=key,Range='bytes=0-65535')['Body'].read()
-                    i=head.find(EBML_MAGIC)
-                    if i==0:
-                        continue            # already clean
-                    if i<0:
-                        no_header+=1        # magic not in first 64KB — flag, don't touch
-                        if len(samples)<25: samples.append({"key":key,"status":"no_header_in_64kb"})
-                        continue
-                    corrupt+=1
-                    if len(samples)<25: samples.append({"key":key,"junk_bytes":i})
-                    if not dry:
-                        body=r2.get_object(Bucket=R2_BUCKET,Key=key)['Body'].read()
-                        j=body.find(EBML_MAGIC)
-                        if j>0:
-                            r2.put_object(Bucket=R2_BUCKET,Key=key,Body=body[j:],ContentType='video/webm')
-                            repaired+=1
-                except Exception as e:
-                    errors+=1
-                    print("repair-videos failed for",key,":",e,flush=True)
+        resp=r2.list_objects_v2(**kw)
     except Exception as e:
         return jsonify({"ok":False,"error":"R2 listing failed: %s"%e})
+    for obj in resp.get("Contents",[]):
+        key=obj["Key"]
+        if not key.lower().endswith(".webm"): continue
+        scanned+=1
+        try:
+            # Read first 1MB so we catch even a large junk prefix (cheap Range read).
+            head=r2.get_object(Bucket=R2_BUCKET,Key=key,Range='bytes=0-1048575')['Body'].read()
+            i=head.find(EBML_MAGIC)
+            if i==0:
+                continue                # already clean
+            if i<0:
+                no_header+=1            # magic not in first 1MB — likely truly broken
+                if len(samples)<25: samples.append({"key":key,"status":"no_header",
+                    "size":obj.get("Size"),"first8":head[:8].hex()})
+                continue
+            corrupt+=1
+            if len(samples)<25: samples.append({"key":key,"junk_bytes":i})
+            if not dry:
+                body=r2.get_object(Bucket=R2_BUCKET,Key=key)['Body'].read()
+                j=body.find(EBML_MAGIC)
+                if j>0:
+                    r2.put_object(Bucket=R2_BUCKET,Key=key,Body=body[j:],ContentType='video/webm')
+                    repaired+=1
+        except Exception as e:
+            errors+=1
+            print("repair-videos failed for",key,":",e,flush=True)
+    next_cursor=resp.get("NextContinuationToken") if resp.get("IsTruncated") else None
     return jsonify({"ok":True,"dry_run":dry,"scanned":scanned,"corrupt":corrupt,
                     "repaired":repaired,"no_header":no_header,"errors":errors,
-                    "max":max_n,"samples":samples,
-                    "hint":"Run with dry_run=false to apply. Rerun until corrupt=0 (idempotent)."})
+                    "page_size":page_size,"next_cursor":next_cursor,"samples":samples,
+                    "hint":"Use the auto-loop snippet; reruns are safe (idempotent)."})
 
 @app.route("/api/cleanup",methods=["POST"])
 @req_role("admin")
@@ -4225,6 +4252,127 @@ def api_giveaway_ship(gid):
 def api_giveaway_cancel(gid):
     c=gdb()
     c.execute("UPDATE giveaways SET status='cancelled' WHERE id=?",(gid,))
+    c.commit();c.close()
+    return jsonify({"ok":True})
+
+# ── PIGGYBACK GIVEAWAYS — attach a prize to an order already in the pipeline ──
+def _rank_attachable(c, username, first, last, show):
+    """Return shipments (not yet shipped/cancelled) matching the winner, ranked so
+    the best candidate to receive the prize is first: pending → picked → packed,
+    and within a status the most recent show. Username match is preferred over name."""
+    username=(username or "").strip()
+    first=(first or "").strip().lower()
+    last=(last or "").strip().lower()
+    ors=[]; params=[]
+    if username:
+        ors.append("LOWER(buyer_username)=LOWER(?)"); params.append(username)
+    name_conds=[]
+    if first:
+        name_conds.append("LOWER(buyer_name) LIKE ?"); params.append("%"+first+"%")
+    if last:
+        name_conds.append("LOWER(buyer_name) LIKE ?"); params.append("%"+last+"%")
+    if name_conds:
+        ors.append("("+" AND ".join(name_conds)+")")
+    if not ors:
+        return [], False
+    base="SELECT * FROM shipments WHERE (%s)" % " OR ".join(ors)
+    extra=""; qp=list(params)
+    if show:
+        extra=" AND import_label=?"; qp.append(show)
+    attachable=c.execute(base+" AND status IN ('pending','picked','packed')"+extra, qp).fetchall()
+    # Was there anything at all (incl. shipped)? Used to decide fallback messaging.
+    any_match=c.execute(base+extra, qp).fetchone() is not None
+    prio={"pending":0,"picked":1,"packed":2}
+    cand=[dict(r) for r in attachable]
+    cand.sort(key=lambda r:((r.get("show_date") or ""),(r.get("shipment_id") or "")),reverse=True)
+    cand.sort(key=lambda r:prio.get(r.get("status"),9))
+    return cand, any_match
+
+def _slim_ship(r):
+    return {"shipment_id":r.get("shipment_id"),"tracking_code":r.get("tracking_code"),
+            "buyer_name":r.get("buyer_name"),"buyer_username":r.get("buyer_username"),
+            "status":r.get("status"),"import_label":r.get("import_label"),
+            "show_date":r.get("show_date"),"total_items":r.get("total_items")}
+
+def _pending_giveaways_for(shipment_id, tracking=None):
+    """Piggyback giveaways still waiting to be added to this order. Cheap lookup
+    used by the pick/pack scan flows."""
+    try:
+        c=gdb()
+        rows=c.execute("""SELECT id,prize_name,brand,winner_username FROM giveaways
+                          WHERE attach_mode='piggyback' AND attach_status='pending'
+                            AND (linked_shipment_id=? OR (linked_tracking IS NOT NULL AND linked_tracking=?))""",
+                       (shipment_id, tracking or "")).fetchall()
+        c.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print("pending-giveaways lookup failed:",e,flush=True)
+        return []
+
+@app.route("/api/giveaway/match",methods=["POST"])
+@req_role("admin","cs")
+def api_giveaway_match():
+    """Preview matching orders for a winner (no write). Body: username, first_name,
+    last_name, show (optional import_label)."""
+    d=request.get_json() or {}
+    c=sdb()
+    cand,any_match=_rank_attachable(c, d.get("username"), d.get("first_name"),
+                                    d.get("last_name"), (d.get("show") or "").strip() or None)
+    c.close()
+    if not cand:
+        reason="all_shipped" if any_match else "no_match"
+        return jsonify({"ok":True,"candidates":[],"best":None,"reason":reason})
+    slim=[_slim_ship(r) for r in cand]
+    return jsonify({"ok":True,"candidates":slim,"best":slim[0]})
+
+@app.route("/api/giveaway/attach",methods=["POST"])
+@req_role("admin","cs")
+def api_giveaway_attach():
+    """Create a piggyback giveaway linked to an order in the pipeline. Body:
+    prize_name (req), brand, username (winner), platform, and either shipment_id
+    (explicit choice) or the matcher fields to auto-pick the best order."""
+    d=request.get_json() or {}
+    prize=(d.get("prize_name") or "").strip()
+    if not prize:
+        return jsonify({"ok":False,"error":"Prize name required"})
+    brand=(d.get("brand") or "").strip() or None
+    if brand and brand not in GIVEAWAY_BRANDS:
+        return jsonify({"ok":False,"error":"Invalid brand"})
+    username=(d.get("username") or "").strip()
+    sid=(d.get("shipment_id") or "").strip()
+    c=sdb()
+    if sid:
+        row=c.execute("SELECT * FROM shipments WHERE shipment_id=?",(sid,)).fetchone()
+        ship=dict(row) if row else None
+        if ship and ship.get("status") in ("shipped","cancelled"):
+            c.close(); return jsonify({"ok":False,"error":"Order already %s — ship the prize separately."%ship["status"]})
+    else:
+        cand,_=_rank_attachable(c, username, d.get("first_name"), d.get("last_name"),
+                                (d.get("show") or "").strip() or None)
+        ship=cand[0] if cand else None
+    c.close()
+    if not ship:
+        return jsonify({"ok":False,"error":"No attachable order found for this winner"})
+    g=gdb()
+    cur=g.execute("""INSERT INTO giveaways(winner_username,prize_name,brand,platform,status,created_by,
+                        attach_mode,linked_shipment_id,linked_tracking,attach_status,attach_show)
+                     VALUES(?,?,?,?, 'address_received', ?, 'piggyback',?,?, 'pending', ?)""",
+                  (username or ship.get("buyer_username") or "", prize, brand,
+                   (d.get("platform") or "tiktok"), session.get("name","")[:60],
+                   ship.get("shipment_id"), ship.get("tracking_code"), ship.get("import_label")))
+    gid=cur.lastrowid
+    g.commit();g.close()
+    return jsonify({"ok":True,"giveaway_id":gid,"linked":_slim_ship(ship)})
+
+@app.route("/api/giveaway/<int:gid>/mark-added",methods=["POST"])
+@req_login
+def api_giveaway_mark_added(gid):
+    """Packer/picker confirms the prize is in the box. Sets attach_status='added'."""
+    c=gdb()
+    c.execute("""UPDATE giveaways SET attach_status='added',
+                    attach_added_at=?, attach_added_by=?
+                 WHERE id=? AND attach_mode='piggyback'""",
+              (datetime.now().isoformat(timespec='seconds'), session.get("name","")[:60], gid))
     c.commit();c.close()
     return jsonify({"ok":True})
 
