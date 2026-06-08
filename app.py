@@ -17,7 +17,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ME_HTML, LEADERBOARD_HTML, HOME_HTML, DOCUMENTS_HTML, WELCOME_HTML,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
-    ISSUES_HTML, CLEANUP_HTML,
+    ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
 
 
@@ -365,6 +365,11 @@ def sdb_init():
         "ALTER TABLE shipments ADD COLUMN picked_at TEXT",
         "ALTER TABLE shipments ADD COLUMN picked_by TEXT",
         "ALTER TABLE shipments ADD COLUMN packed_by TEXT",
+        # USPS delivery tracking (statusCategory bucket + last event + timestamps)
+        "ALTER TABLE shipments ADD COLUMN delivery_status TEXT",
+        "ALTER TABLE shipments ADD COLUMN delivery_detail TEXT",
+        "ALTER TABLE shipments ADD COLUMN delivered_at TEXT",
+        "ALTER TABLE shipments ADD COLUMN tracked_at TEXT",
         "ALTER TABLE shipment_items ADD COLUMN order_id TEXT",
         "ALTER TABLE shipment_items ADD COLUMN cancelled INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN cancel_reason TEXT",
@@ -504,6 +509,120 @@ def sdb_init():
     c.commit(); c.close()
 
 sdb_init()
+
+
+# ══════════════════════════════════════════════════════════
+# USPS DELIVERY TRACKING — official USPS v3 API (developers.usps.com)
+# OAuth2 client_credentials → Tracking API. Env-driven; no-op if unset.
+# Set USPS_CLIENT_ID / USPS_CLIENT_SECRET on Railway to enable.
+# ══════════════════════════════════════════════════════════
+import urllib.request as _urlreq, urllib.parse as _urlparse, urllib.error as _urlerr
+
+USPS_CLIENT_ID=os.environ.get("USPS_CLIENT_ID")
+USPS_CLIENT_SECRET=os.environ.get("USPS_CLIENT_SECRET")
+USPS_BASE=os.environ.get("USPS_BASE","https://apis.usps.com").rstrip("/")
+USPS_ENABLED=bool(USPS_CLIENT_ID and USPS_CLIENT_SECRET)
+_usps_tok={"token":None,"exp":0}
+_usps_lock=threading.Lock()
+
+def _usps_token():
+    """Valid OAuth bearer token, refreshing if needed (USPS tokens last ~8h)."""
+    with _usps_lock:
+        if _usps_tok["token"] and time.time()<_usps_tok["exp"]-120:
+            return _usps_tok["token"]
+        body=_urlparse.urlencode({"grant_type":"client_credentials",
+            "client_id":USPS_CLIENT_ID,"client_secret":USPS_CLIENT_SECRET}).encode()
+        req=_urlreq.Request(USPS_BASE+"/oauth2/v3/token",data=body,
+            headers={"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json"})
+        with _urlreq.urlopen(req,timeout=20) as r:
+            d=json.loads(r.read().decode())
+        _usps_tok["token"]=d.get("access_token")
+        _usps_tok["exp"]=time.time()+int(d.get("expires_in",3600))
+        return _usps_tok["token"]
+
+_USPS_BUCKET={"pre-shipment":"PRE_TRANSIT","pre shipment":"PRE_TRANSIT","accepted":"IN_TRANSIT",
+    "in transit":"IN_TRANSIT","in-transit":"IN_TRANSIT","out for delivery":"OUT_FOR_DELIVERY",
+    "delivered":"DELIVERED","available for pickup":"OUT_FOR_DELIVERY","alert":"EXCEPTION",
+    "delivery attempt":"EXCEPTION","return to sender":"RETURNED"}
+
+def _norm_usps_status(cat, status_text):
+    c=(cat or "").strip().lower()
+    if c in _USPS_BUCKET: return _USPS_BUCKET[c]
+    s=(status_text or "").lower()
+    if "delivered" in s: return "DELIVERED"
+    if "out for delivery" in s: return "OUT_FOR_DELIVERY"
+    if "return" in s: return "RETURNED"
+    if "alert" in s or "no record" in s: return "EXCEPTION"
+    if "pre-shipment" in s or ("label" in s and "created" in s): return "PRE_TRANSIT"
+    return "IN_TRANSIT" if s else "UNKNOWN"
+
+def _usps_track_one(tracking):
+    """Fetch one tracking number → {status,detail,delivered_at} or None on hard error."""
+    if not USPS_ENABLED or not tracking: return None
+    try:
+        tok=_usps_token()
+        url=USPS_BASE+"/tracking/v3r2/tracking/"+_urlparse.quote(tracking)
+        req=_urlreq.Request(url,headers={"Authorization":"Bearer "+tok,"Accept":"application/json"})
+        with _urlreq.urlopen(req,timeout=20) as r:
+            d=json.loads(r.read().decode())
+        bucket=_norm_usps_status(d.get("statusCategory"), d.get("status") or "")
+        events=d.get("trackingEvents") or []
+        delivered_at=None
+        for ev in events:
+            if "delivered" in (ev.get("eventType") or "").lower():
+                delivered_at=ev.get("eventTimestamp"); break
+        if bucket=="DELIVERED" and not delivered_at and events:
+            delivered_at=events[0].get("eventTimestamp")
+        detail=(d.get("status") or (events[0].get("eventType") if events else "")) or ""
+        return {"status":bucket,"detail":detail[:200],"delivered_at":delivered_at}
+    except _urlerr.HTTPError as e:
+        if e.code==404:
+            return {"status":"UNKNOWN","detail":"No USPS record yet","delivered_at":None}
+        print("USPS track HTTP",e.code,"for",tracking,flush=True); return None
+    except Exception as e:
+        print("USPS track failed for",tracking,":",e,flush=True); return None
+
+def refresh_tracking_batch(limit=120):
+    """Poll USPS for not-yet-delivered shipments with a tracking code; update rows.
+    Bounded per call and gentle on rate limits. Idempotent."""
+    if not USPS_ENABLED: return {"checked":0,"updated":0,"note":"usps_disabled"}
+    c=sdb()
+    rows=c.execute("""SELECT shipment_id,tracking_code FROM shipments
+                      WHERE tracking_code IS NOT NULL AND tracking_code!=''
+                        AND COALESCE(delivery_status,'') NOT IN ('DELIVERED','RETURNED')
+                      ORDER BY COALESCE(tracked_at,'') ASC LIMIT ?""",(limit,)).fetchall()
+    checked=0;updated=0;now=datetime.now().isoformat(timespec='seconds')
+    for r in rows:
+        res=_usps_track_one(r["tracking_code"]); checked+=1
+        if res:
+            c.execute("""UPDATE shipments SET delivery_status=?,delivery_detail=?,
+                            delivered_at=COALESCE(?,delivered_at),tracked_at=? WHERE shipment_id=?""",
+                      (res["status"],res["detail"],res["delivered_at"],now,r["shipment_id"]))
+            updated+=1
+        time.sleep(0.15)
+    c.commit();c.close()
+    return {"checked":checked,"updated":updated}
+
+def _tracking_loop():
+    # Refresh a few times a day. A shared marker file on the Railway volume keeps
+    # the 4 gunicorn workers from all polling at once.
+    while True:
+        time.sleep(6*3600)
+        if not USPS_ENABLED: continue
+        try:
+            marker=os.path.join(DATA_DIR,".tracking_last")
+            last=os.path.getmtime(marker) if os.path.exists(marker) else 0
+            if time.time()-last < 5*3600: continue
+            open(marker,"w").close()
+            refresh_tracking_batch(limit=600)
+        except Exception as e:
+            print("tracking loop error:",e,flush=True)
+
+if USPS_ENABLED:
+    threading.Thread(target=_tracking_loop,daemon=True).start()
+    print("USPS tracking enabled (base="+USPS_BASE+")",flush=True)
+else:
+    print("USPS tracking not configured — set USPS_CLIENT_ID / USPS_CLIENT_SECRET to enable",flush=True)
 
 
 def _weight_config():
@@ -4375,6 +4494,70 @@ def api_giveaway_mark_added(gid):
               (datetime.now().isoformat(timespec='seconds'), session.get("name","")[:60], gid))
     c.commit();c.close()
     return jsonify({"ok":True})
+
+@app.route("/api/tracking/refresh",methods=["POST"])
+@req_role("admin","cs")
+def api_tracking_refresh():
+    """Poll USPS now for not-yet-delivered shipments. Body/query: limit (default 150)."""
+    if not USPS_ENABLED:
+        return jsonify({"ok":False,"error":"USPS not configured. Set USPS_CLIENT_ID / USPS_CLIENT_SECRET on Railway."})
+    d=request.get_json(silent=True) or {}
+    try: lim=max(1,min(600,int(d.get("limit",request.args.get("limit",150)))))
+    except Exception: lim=150
+    res=refresh_tracking_batch(limit=lim); res["ok"]=True
+    return jsonify(res)
+
+# Unified status across ALL store orders: prefer the live USPS delivery bucket,
+# otherwise fall back to the internal pipeline status. Used for counts + filtering.
+_UNIFIED_CASE="""CASE
+  WHEN COALESCE(delivery_status,'')!='' THEN delivery_status
+  WHEN status='pending' THEN 'PENDING'
+  WHEN status='picked'  THEN 'PICKED'
+  WHEN status='packed'  THEN 'PACKED'
+  WHEN status='shipped' THEN 'SHIPPED'
+  WHEN status='cancelled' THEN 'CANCELLED'
+  WHEN status='issue'   THEN 'ISSUE'
+  ELSE 'UNKNOWN' END"""
+
+@app.route("/api/tracking/summary")
+@req_role("admin","cs")
+def api_tracking_summary():
+    """Counts + list across ALL store orders. Filters: status, show (import_label),
+    date (show_date). Status is the unified bucket (USPS if tracked, else pipeline)."""
+    show=(request.args.get("show") or "").strip()
+    date=(request.args.get("date") or "").strip()
+    flt=(request.args.get("status") or "").strip().upper()
+    base=[]; bp=[]
+    if show: base.append("import_label=?"); bp.append(show)
+    if date: base.append("show_date=?"); bp.append(date)
+    basewhere=(" WHERE "+" AND ".join(base)) if base else ""
+    c=sdb()
+    counts={}
+    for row in c.execute("SELECT "+_UNIFIED_CASE+" AS st, COUNT(*) n FROM shipments"+basewhere+" GROUP BY st", bp).fetchall():
+        counts[row["st"]]=row["n"]
+    lw=list(base); lp=list(bp)
+    if flt:
+        lw.append("("+_UNIFIED_CASE+")=?"); lp.append(flt)
+    listwhere=(" WHERE "+" AND ".join(lw)) if lw else ""
+    rows=c.execute("SELECT shipment_id,tracking_code,buyer_name,buyer_username,delivery_status,"
+                   "delivery_detail,delivered_at,tracked_at,import_label,show_date,status, "
+                   +_UNIFIED_CASE+" AS unified FROM shipments"+listwhere+
+                   " ORDER BY COALESCE(show_date,'') DESC, COALESCE(tracked_at,'') DESC LIMIT 400", lp).fetchall()
+    shows=c.execute("""SELECT import_label, MAX(show_date) AS show_date FROM shipments
+                       WHERE import_label IS NOT NULL AND import_label!=''
+                       GROUP BY import_label ORDER BY show_date DESC LIMIT 100""").fetchall()
+    dates=c.execute("""SELECT DISTINCT show_date FROM shipments
+                       WHERE show_date IS NOT NULL AND show_date!='' ORDER BY show_date DESC LIMIT 60""").fetchall()
+    c.close()
+    return jsonify({"ok":True,"enabled":USPS_ENABLED,"counts":counts,
+        "rows":[dict(r) for r in rows],
+        "shows":[{"label":s["import_label"],"date":s["show_date"]} for s in shows],
+        "dates":[d["show_date"] for d in dates]})
+
+@app.route("/shipping-status")
+@req_role("admin","cs")
+def shipping_status_page():
+    return SHIPPING_STATUS_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("shipstatus")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/giveaway/<int:gid>/notes",methods=["POST"])
 @req_role("admin","cs")

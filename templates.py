@@ -41,6 +41,7 @@ def _navbar(active_page=""):
             ("dash", "/dashboard", "Search Recordings"),
             ("customers", "/customers", "Customer Lookup"),
             ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation"),
+            ("shipstatus", "/shipping-status", "🚚 Shipping Status"),
             ("giveaway", "/giveaway", "Giveaways"),
         ]
         if role == "admin":
@@ -6058,3 +6059,132 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#e9e9ec;color:var
 
 </div>
 </body></html>'''
+
+# ── SHIPPING STATUS — USPS delivery tracking dashboard ──
+SHIPPING_STATUS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Shipping Status</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;display:flex;align-items:center;justify-content:space-between;max-width:1500px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}
+.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1500px;margin:0 auto;padding:0 28px 28px}
+.btn{border:none;border-radius:10px;padding:11px 20px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .15s}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;box-shadow:0 4px 16px rgba(79,70,229,.3)}
+.btn-p:hover{transform:translateY(-1px)}.btn-p:disabled{opacity:.5;cursor:default;transform:none}
+.cards{display:grid;grid-template-columns:repeat(8,1fr);gap:10px;margin:18px 0 22px}
+@media(max-width:1100px){.cards{grid-template-columns:repeat(4,1fr)}}
+@media(max-width:560px){.cards{grid-template-columns:repeat(2,1fr)}}
+.sc{background:rgba(21,25,33,.5);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:14px;cursor:pointer;transition:all .15s;text-align:center}
+.sc:hover{border-color:rgba(79,70,229,.5)}.sc.active{border-color:#4f46e5;background:rgba(79,70,229,.12)}
+.sc .n{font-size:26px;font-weight:800}.sc .l{font-size:11px;color:#6b7a90;margin-top:4px;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.sc.delivered .n{color:#34d399}.sc.transit .n{color:#60a5fa}.sc.ofd .n{color:#22d3ee}.sc.pre .n{color:#fbbf24}
+.sc.exc .n{color:#f43f5e}.sc.ret .n{color:#fb923c}.sc.unk .n{color:#94a3b8}.sc.none .n{color:#64748b}
+table{width:100%;border-collapse:collapse;background:rgba(21,25,33,.4);border-radius:12px;overflow:hidden}
+th,td{text-align:left;padding:11px 14px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.05)}
+th{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px}
+.tn{font-family:monospace;color:#a5b4fc}
+.pill{padding:3px 9px;border-radius:50px;font-size:11px;font-weight:700;text-transform:uppercase}
+.p-DELIVERED{background:rgba(52,211,153,.16);color:#34d399}.p-IN_TRANSIT{background:rgba(96,165,250,.16);color:#60a5fa}
+.p-OUT_FOR_DELIVERY{background:rgba(34,211,238,.16);color:#22d3ee}.p-PRE_TRANSIT{background:rgba(251,191,36,.16);color:#fbbf24}
+.p-EXCEPTION{background:rgba(244,63,94,.16);color:#f43f5e}.p-RETURNED{background:rgba(251,146,60,.16);color:#fb923c}
+.p-UNKNOWN,.p-UNCHECKED{background:rgba(148,163,184,.16);color:#94a3b8}
+.p-PENDING{background:rgba(148,163,184,.16);color:#cbd5e1}.p-PICKED{background:rgba(129,140,248,.16);color:#a5b4fc}
+.p-PACKED{background:rgba(167,139,250,.16);color:#c4b5fd}.p-SHIPPED{background:rgba(45,212,191,.16);color:#5eead4}
+.p-CANCELLED{background:rgba(100,116,139,.18);color:#94a3b8}.p-ISSUE{background:rgba(244,63,94,.16);color:#f43f5e}
+.sc.pending .n{color:#cbd5e1}.sc.picked .n{color:#a5b4fc}.sc.packed .n{color:#c4b5fd}.sc.shipped .n{color:#5eead4}.sc.cancelled .n{color:#94a3b8}.sc.issue .n{color:#f43f5e}
+.filters{display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin:6px 0 4px}
+.filters .f label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
+.filters select{background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:9px 12px;font-size:13px;color:#e4e8f1;font-family:inherit;outline:none;min-width:180px}
+.filters select:focus{border-color:#4f46e5}
+.filters .clr{background:rgba(255,255,255,.06);color:#e4e8f1;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:9px 16px;font-size:13px;font-weight:700;cursor:pointer}
+.empty{text-align:center;color:#6b7a90;font-style:italic;padding:30px}
+.warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);color:#fbbf24;padding:12px 16px;border-radius:10px;margin-bottom:18px;font-size:13px}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}
+.toast.err{background:#f43f5e}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🚚 Shipping Status <span>__NAME__</span></div>
+<button class="btn btn-p" id="refresh">↻ Refresh from USPS</button></div>
+<div class="wrap">
+<div id="notice"></div>
+<div class="filters">
+<div class="f"><label>Show</label><select id="fShow"><option value="">All shows</option></select></div>
+<div class="f"><label>Date</label><select id="fDate"><option value="">All dates</option></select></div>
+<button class="clr" id="fClear">Clear filters</button>
+</div>
+<div class="cards" id="cards"></div>
+<table><thead><tr><th>Buyer</th><th>Tracking</th><th>Status</th><th>Detail</th><th>Show</th><th>Delivered</th><th>Checked</th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody></table>
+</div>
+<div class="toast" id="t"></div>
+<script>
+var BUCKETS=[['PENDING','Pending','pending'],['PICKED','Picked','picked'],['PACKED','Packed','packed'],
+['SHIPPED','Shipped','shipped'],['PRE_TRANSIT','Pre-transit','pre'],['IN_TRANSIT','In transit','transit'],
+['OUT_FOR_DELIVERY','Out for delivery','ofd'],['DELIVERED','Delivered','delivered'],
+['EXCEPTION','Exception','exc'],['RETURNED','Returned','ret'],['CANCELLED','Cancelled','cancelled'],
+['ISSUE','Issue','issue'],['UNKNOWN','Unknown','unk']];
+var filter='';var fillsDone=false;
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3500)}
+function esc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function fmt(ts){if(!ts)return '—';var d=new Date(ts);return isNaN(d)?esc(ts):d.toLocaleDateString()+' '+d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}
+function qs(){
+    var p=[];if(filter)p.push('status='+encodeURIComponent(filter));
+    var sh=document.getElementById('fShow').value;if(sh)p.push('show='+encodeURIComponent(sh));
+    var dt=document.getElementById('fDate').value;if(dt)p.push('date='+encodeURIComponent(dt));
+    return p.length?('?'+p.join('&')):'';
+}
+function fillSelect(sel,opts,cur){
+    sel.innerHTML=opts;sel.value=cur||'';
+}
+function load(){
+    fetch('/api/tracking/summary'+qs()).then(function(r){return r.json()}).then(function(d){
+        if(!d.enabled){document.getElementById('notice').innerHTML='<div class="warn">⚠️ USPS API not configured yet — delivery statuses won\\'t update until you add <b>USPS_CLIENT_ID</b> and <b>USPS_CLIENT_SECRET</b> on Railway and redeploy. (Free account at developers.usps.com.) Pipeline statuses (pending/picked/packed) still work.</div>'}
+        else{document.getElementById('notice').innerHTML=''}
+        // Populate the show/date dropdowns once (preserve current selection)
+        if(!fillsDone){
+            var shOpts='<option value="">All shows</option>'+(d.shows||[]).map(function(s){return '<option value="'+esc(s.label)+'">'+esc(s.label)+(s.date?(' · '+esc(s.date)):'')+'</option>'}).join('');
+            var dtOpts='<option value="">All dates</option>'+(d.dates||[]).map(function(x){return '<option value="'+esc(x)+'">'+esc(x)+'</option>'}).join('');
+            fillSelect(document.getElementById('fShow'),shOpts,document.getElementById('fShow').value);
+            fillSelect(document.getElementById('fDate'),dtOpts,document.getElementById('fDate').value);
+            fillsDone=true;
+        }
+        var ch='';BUCKETS.forEach(function(b){
+            var n=(d.counts&&d.counts[b[0]])||0;
+            ch+='<div class="sc '+b[2]+(filter===b[0]?' active':'')+'" onclick="setFilter(\\''+b[0]+'\\')"><div class="n">'+n+'</div><div class="l">'+b[1]+'</div></div>';
+        });
+        document.getElementById('cards').innerHTML=ch;
+        var rows=d.rows||[];
+        if(!rows.length){document.getElementById('rows').innerHTML='<tr><td colspan="7" class="empty">No orders'+(filter?' in this status':'')+'</td></tr>';return}
+        document.getElementById('rows').innerHTML=rows.map(function(s){
+            var st=s.unified||'UNKNOWN';
+            return '<tr><td>'+esc(s.buyer_name||s.buyer_username||'—')+'</td>'+
+                '<td class="tn">'+esc(s.tracking_code||'—')+'</td>'+
+                '<td><span class="pill p-'+st+'">'+st.replace(/_/g,' ')+'</span></td>'+
+                '<td>'+esc(s.delivery_detail||'')+'</td>'+
+                '<td>'+esc(s.import_label||'')+'</td>'+
+                '<td>'+(s.delivered_at?fmt(s.delivered_at):'—')+'</td>'+
+                '<td>'+fmt(s.tracked_at)+'</td></tr>';
+        }).join('');
+    });
+}
+function setFilter(b){filter=(filter===b?'':b);load()}
+document.getElementById('fShow').addEventListener('change',load);
+document.getElementById('fDate').addEventListener('change',load);
+document.getElementById('fClear').addEventListener('click',function(){
+    filter='';document.getElementById('fShow').value='';document.getElementById('fDate').value='';load();
+});
+document.getElementById('refresh').addEventListener('click',function(){
+    var btn=this;btn.disabled=true;btn.textContent='Refreshing…';
+    fetch('/api/tracking/refresh?limit=200',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+        btn.disabled=false;btn.textContent='↻ Refresh from USPS';
+        if(!d.ok){toast(d.error||'Refresh failed',true);return}
+        toast('Checked '+d.checked+', updated '+d.updated);load();
+    }).catch(function(){btn.disabled=false;btn.textContent='↻ Refresh from USPS';toast('Refresh failed',true)});
+});
+load();
+</script></body></html>'''
