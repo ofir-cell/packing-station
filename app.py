@@ -1557,6 +1557,20 @@ def _normalize_tracking(s):
         return s[-22:]
     return s
 
+# A valid WebM/Matroska file must begin with the EBML magic 1A45DFA3.
+# Some uploads have arrived with a corrupt high-entropy prefix prepended *before*
+# that header. The video stream after the header is intact, but the junk prefix
+# makes the container unparseable, so NO browser (Chrome or Safari) can play it.
+# We defensively cut everything before the first EBML magic on the way in.
+EBML_MAGIC = b'\x1a\x45\xdf\xa3'
+
+def _clean_webm(data):
+    """Return (cleaned_bytes, stripped_count). Strips any junk before EBML magic."""
+    i = data.find(EBML_MAGIC)
+    if i <= 0:          # 0 = already clean, -1 = no header found (leave as-is)
+        return data, 0
+    return data[i:], i
+
 @app.route("/api/upload",methods=["POST"])
 @req_login
 def api_upload():
@@ -1571,19 +1585,27 @@ def api_upload():
     fn=sta+"_"+trk;now=datetime.now()
     vf=request.files.get("video");vn=None
     if vf:
+        # Read fully so we can sanitize before storage (videos are small, ~3.5MB).
+        vdata=vf.read()
+        vdata,stripped=_clean_webm(vdata)
+        if stripped:
+            print("upload: stripped %d junk bytes before EBML for %s" % (stripped,fn),flush=True)
+        if not vdata.startswith(EBML_MAGIC):
+            # No header even after scanning — store raw but warn loudly for diagnosis.
+            print("upload: WARNING no EBML header for %s (first8=%s)" % (fn,vdata[:8].hex()),flush=True)
         if r2:
             # R2 mode: always include timestamp to ensure uniqueness without an existence check
             vn=fn+"_"+now.strftime('%H%M%S')+".webm"
             try:
-                r2.upload_fileobj(vf.stream,R2_BUCKET,"videos/"+vn,
-                    ExtraArgs={'ContentType':'video/webm'})
+                r2.put_object(Bucket=R2_BUCKET,Key="videos/"+vn,Body=vdata,
+                    ContentType='video/webm')
             except Exception as e:
                 print("R2 video upload failed:",e,flush=True)
                 return jsonify({"ok":False,"error":"Storage upload failed"})
         else:
             vn=fn+".webm";vp=os.path.join(VIDEO_DIR,vn)
             if os.path.exists(vp):vn=fn+"_"+now.strftime('%H%M%S')+".webm";vp=os.path.join(VIDEO_DIR,vn)
-            vf.save(vp)
+            with open(vp,"wb") as out: out.write(vdata)
     pf=request.files.get("photo");pn=None
     if pf:
         if r2:
@@ -3980,6 +4002,64 @@ def api_storage():
         "newest":datetime.fromtimestamp(newest).strftime('%Y-%m-%d') if newest else None,
         "backend":"local"
     })
+
+@app.route("/api/admin/repair-videos",methods=["POST"])
+@req_role("admin")
+def api_repair_videos():
+    """Repair existing R2 webm objects that have a corrupt prefix before the EBML
+    header (the cause of 'video found but won't play'). Strips everything before
+    the first 1A45DFA3 and rewrites a clean object.
+
+    Params (JSON body or query string):
+      dry_run : 'true' (default) only reports; 'false' actually rewrites.
+      max     : batch cap per call (default 100). The op is idempotent — once a
+                file is clean the magic sits at offset 0, so reruns skip it.
+
+    Detection reads only the first 64KB of each object (cheap); a full download
+    happens only when a file is actually being repaired."""
+    if not r2:
+        return jsonify({"ok":False,"error":"R2 not configured (backend is local)"})
+    d=request.get_json(silent=True) or {}
+    dry=str(d.get("dry_run", request.args.get("dry_run","true"))).lower() not in ("false","0","no")
+    try: max_n=int(d.get("max", request.args.get("max",100)))
+    except Exception: max_n=100
+    scanned=0;corrupt=0;repaired=0;errors=0;no_header=0;samples=[]
+    try:
+        paginator=r2.get_paginator('list_objects_v2')
+        done=False
+        for page in paginator.paginate(Bucket=R2_BUCKET,Prefix='videos/'):
+            if done: break
+            for obj in page.get('Contents',[]):
+                key=obj['Key']
+                if not key.lower().endswith('.webm'): continue
+                if scanned>=max_n: done=True; break
+                scanned+=1
+                try:
+                    head=r2.get_object(Bucket=R2_BUCKET,Key=key,Range='bytes=0-65535')['Body'].read()
+                    i=head.find(EBML_MAGIC)
+                    if i==0:
+                        continue            # already clean
+                    if i<0:
+                        no_header+=1        # magic not in first 64KB — flag, don't touch
+                        if len(samples)<25: samples.append({"key":key,"status":"no_header_in_64kb"})
+                        continue
+                    corrupt+=1
+                    if len(samples)<25: samples.append({"key":key,"junk_bytes":i})
+                    if not dry:
+                        body=r2.get_object(Bucket=R2_BUCKET,Key=key)['Body'].read()
+                        j=body.find(EBML_MAGIC)
+                        if j>0:
+                            r2.put_object(Bucket=R2_BUCKET,Key=key,Body=body[j:],ContentType='video/webm')
+                            repaired+=1
+                except Exception as e:
+                    errors+=1
+                    print("repair-videos failed for",key,":",e,flush=True)
+    except Exception as e:
+        return jsonify({"ok":False,"error":"R2 listing failed: %s"%e})
+    return jsonify({"ok":True,"dry_run":dry,"scanned":scanned,"corrupt":corrupt,
+                    "repaired":repaired,"no_header":no_header,"errors":errors,
+                    "max":max_n,"samples":samples,
+                    "hint":"Run with dry_run=false to apply. Rerun until corrupt=0 (idempotent)."})
 
 @app.route("/api/cleanup",methods=["POST"])
 @req_role("admin")
