@@ -452,7 +452,7 @@ body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
   <div class="cancel-box" style="border-color:rgba(52,211,153,.5)">
     <div class="cancel-icon">🎁</div>
     <div class="cancel-title" style="color:#34d399">ADD GIVEAWAY</div>
-    <div class="cancel-sub">This order includes a giveaway prize — put it in the box before sealing</div>
+    <div class="cancel-sub">Go to the <b>manager</b> to get the prize, then add it to the box before sealing</div>
     <div id="gvList" style="margin:16px 0;font-size:20px;font-weight:800;color:#e4e8f1"></div>
     <button class="cancel-ok" id="gvOk" style="background:#10b981">✓ Added — continue</button>
   </div>
@@ -587,6 +587,14 @@ function loadChecklist(tracking){
             '</div>';
         }).join('');
         side.classList.remove('warn');
+        if(d.giveaways&&d.giveaways.length){
+            document.getElementById('rsList').innerHTML+=d.giveaways.map(function(g){
+                return '<div class="rs-item" style="background:rgba(52,211,153,.14);border:1px solid rgba(52,211,153,.45)">'+
+                    '<div class="rs-sku">🎁</div>'+
+                    '<div class="rs-name"><b>GIVEAWAY</b> · '+(g.prize_name||"").replace(/</g,"&lt;")+' — get from manager</div>'+
+                    '<div class="rs-qty">+1</div></div>';
+            }).join('');
+        }
         document.getElementById('rsShow').innerHTML=s.import_label?('Show: <b>'+s.import_label.replace(/</g,'&lt;')+'</b>'+(s.platform?' · '+s.platform:'')):'';
 
         // Giveaway piggyback: if this order has a prize waiting to be added, pop a
@@ -628,7 +636,7 @@ var gvPending=[];
 function showGiveawayAdd(list){
     gvPending=list||[];
     document.getElementById('gvList').innerHTML=gvPending.map(function(g){
-        return '🎁 '+(g.prize_name||'').replace(/</g,'&lt;')+(g.brand?' · '+g.brand:'');
+        return '🎁 '+(g.prize_name||'').replace(/</g,'&lt;')+(g.winner_username?' · for @'+g.winner_username:'')+(g.brand?' · '+g.brand:'');
     }).join('<br>');
     document.getElementById('giveawayOverlay').style.display='flex';
 }
@@ -1137,7 +1145,13 @@ function card(g){
         var ast=g.attach_status==='added'
             ?'<span style="color:#34d399;font-weight:700">✓ ADDED</span>'
             :'<span style="color:#fbbf24;font-weight:700">⏳ PENDING IN ORDER</span>';
-        extra='<div class="card-m" style="margin-top:6px"><span style="color:#a5b4fc;font-family:monospace">📦 '+(g.linked_tracking||g.linked_shipment_id||'')+'</span>'+ast+'</div>';
+        // Live order stage: prefer USPS delivery bucket, else pipeline status
+        var STAGE={pending:'🕗 Awaiting pick',picked:'📋 Picked',packed:'📦 Packed',shipped:'🚚 Shipped',cancelled:'🚫 Cancelled',
+            PRE_TRANSIT:'🚚 Shipped',IN_TRANSIT:'✈️ In transit',OUT_FOR_DELIVERY:'📬 Out for delivery',DELIVERED:'✅ Delivered',EXCEPTION:'⚠️ Exception',RETURNED:'↩️ Returned'};
+        var raw=g.order_delivery||g.order_status||'';
+        var stage=STAGE[raw]||(raw?String(raw).replace(/_/g,' '):'');
+        extra='<div class="card-m" style="margin-top:6px"><span style="color:#a5b4fc;font-family:monospace">📦 '+(g.linked_tracking||g.linked_shipment_id||'')+'</span>'+ast+'</div>'+
+            (stage?'<div class="card-m" style="margin-top:4px"><span style="color:#cbd5e1;font-weight:600">Order: '+stage+'</span></div>':'');
     }
     return '<a class="card" href="/giveaway/'+g.id+'">'+
         '<div class="card-w"><span class="at">@</span>'+g.winner_username+'</div>'+
@@ -4456,7 +4470,7 @@ function openDetail(sid){
         var meta='<span class="pill pill-id">'+escapeHtml(s.shipment_id)+'</span>';
         if(s.tracking_code)meta+='<span class="pill pill-track">'+escapeHtml(s.tracking_code)+'</span>';
         if(d.giveaways&&d.giveaways.length){
-            meta+='<span class="pill" style="background:rgba(52,211,153,.18);color:#34d399;font-weight:800">🎁 ADD GIVEAWAY: '+d.giveaways.map(function(g){return escapeHtml(g.prize_name)}).join(', ')+'</span>';
+            meta+='<span class="pill" style="background:rgba(52,211,153,.2);color:#34d399;font-weight:800;display:block;width:100%;margin-top:8px;padding:10px 12px;font-size:14px">🎁 GIVEAWAY: '+d.giveaways.map(function(g){return escapeHtml(g.prize_name)+(g.winner_username?' (@'+escapeHtml(g.winner_username)+')':'')}).join(', ')+' — GO TO MANAGER TO GET IT</span>';
         }
         document.getElementById('listMeta').innerHTML=meta;
         renderItems();

@@ -556,51 +556,99 @@ def _norm_usps_status(cat, status_text):
     if "pre-shipment" in s or ("label" in s and "created" in s): return "PRE_TRANSIT"
     return "IN_TRANSIT" if s else "UNKNOWN"
 
-def _usps_track_one(tracking):
-    """Fetch one tracking number → {status,detail,delivered_at} or None on hard error."""
-    if not USPS_ENABLED or not tracking: return None
+def _parse_track_detail(d):
+    """Map one USPS TrackingDetail object → {status,detail,delivered_at}."""
+    bucket=_norm_usps_status(d.get("statusCategory"), d.get("status") or "")
+    events=d.get("trackingEvents") or []
+    delivered_at=None
+    for ev in events:
+        if "delivered" in (ev.get("eventType") or "").lower():
+            delivered_at=ev.get("eventTimestamp"); break
+    if bucket=="DELIVERED" and not delivered_at and events:
+        delivered_at=events[0].get("eventTimestamp")   # events are reverse-chronological
+    detail=(d.get("statusSummary") or d.get("status") or (events[0].get("eventType") if events else "")) or ""
+    return {"status":bucket,"detail":detail[:200],"delivered_at":delivered_at}
+
+# Which tracking API the account actually serves. Auto-detected: we try the modern
+# v3r2 (POST, batched) first; if that endpoint isn't available we fall back to the
+# legacy v3 (GET, one number per call). Both use the same OAuth credentials.
+_usps_mode={"v":"v3r2"}
+
+def _usps_track_v3(tn):
+    """Legacy v3: GET /tracking/v3/tracking/{trackingNumber}."""
     try:
         tok=_usps_token()
-        url=USPS_BASE+"/tracking/v3r2/tracking/"+_urlparse.quote(tracking)
+        url=USPS_BASE+"/tracking/v3/tracking/"+_urlparse.quote(tn)
         req=_urlreq.Request(url,headers={"Authorization":"Bearer "+tok,"Accept":"application/json"})
         with _urlreq.urlopen(req,timeout=20) as r:
             d=json.loads(r.read().decode())
-        bucket=_norm_usps_status(d.get("statusCategory"), d.get("status") or "")
-        events=d.get("trackingEvents") or []
-        delivered_at=None
-        for ev in events:
-            if "delivered" in (ev.get("eventType") or "").lower():
-                delivered_at=ev.get("eventTimestamp"); break
-        if bucket=="DELIVERED" and not delivered_at and events:
-            delivered_at=events[0].get("eventTimestamp")
-        detail=(d.get("status") or (events[0].get("eventType") if events else "")) or ""
-        return {"status":bucket,"detail":detail[:200],"delivered_at":delivered_at}
+        return _parse_track_detail(d)
     except _urlerr.HTTPError as e:
-        if e.code==404:
-            return {"status":"UNKNOWN","detail":"No USPS record yet","delivered_at":None}
-        print("USPS track HTTP",e.code,"for",tracking,flush=True); return None
+        if e.code==404: return {"status":"UNKNOWN","detail":"No USPS record yet","delivered_at":None}
+        print("USPS v3 HTTP",e.code,"for",tn,flush=True); return None
     except Exception as e:
-        print("USPS track failed for",tracking,":",e,flush=True); return None
+        print("USPS v3 failed",tn,":",e,flush=True); return None
+
+def _usps_track_batch(tns):
+    """Return {trackingNumber: {status,detail,delivered_at}} for up to 35 numbers.
+    Prefers v3r2 (POST array, 200/207 both return arrays); auto-falls back to v3 GET."""
+    out={}
+    if not USPS_ENABLED or not tns: return out
+    if _usps_mode["v"]=="v3":
+        for t in tns:
+            r=_usps_track_v3(t)
+            if r: out[t]=r
+        return out
+    try:
+        tok=_usps_token()
+        body=json.dumps([{"trackingNumber":t} for t in tns]).encode()
+        req=_urlreq.Request(USPS_BASE+"/tracking/v3r2/tracking",data=body,
+            headers={"Authorization":"Bearer "+tok,"Content-Type":"application/json","Accept":"application/json"})
+        with _urlreq.urlopen(req,timeout=30) as r:
+            data=json.loads(r.read().decode())
+        if isinstance(data,dict): data=[data]
+        for item in (data or []):
+            tn=item.get("trackingNumber")
+            if not tn: continue
+            if item.get("statusCategory") or item.get("status"):
+                out[tn]=_parse_track_detail(item)
+            else:
+                out[tn]={"status":"UNKNOWN","detail":"No USPS record yet","delivered_at":None}
+        return out
+    except _urlerr.HTTPError as e:
+        if e.code in (404,405,415):     # endpoint/method/content not available → use legacy v3
+            print("USPS v3r2 unavailable (HTTP",e.code,") — switching to legacy v3 GET",flush=True)
+            _usps_mode["v"]="v3"
+            return _usps_track_batch(tns)
+        print("USPS track HTTP",e.code,flush=True); return out
+    except Exception as e:
+        print("USPS track batch failed:",e,flush=True); return out
 
 def refresh_tracking_batch(limit=120):
     """Poll USPS for not-yet-delivered shipments with a tracking code; update rows.
-    Bounded per call and gentle on rate limits. Idempotent."""
+    Batches 30 tracking numbers per request. Bounded per call and idempotent."""
     if not USPS_ENABLED: return {"checked":0,"updated":0,"note":"usps_disabled"}
     c=sdb()
     rows=c.execute("""SELECT shipment_id,tracking_code FROM shipments
                       WHERE tracking_code IS NOT NULL AND tracking_code!=''
                         AND COALESCE(delivery_status,'') NOT IN ('DELIVERED','RETURNED')
                       ORDER BY COALESCE(tracked_at,'') ASC LIMIT ?""",(limit,)).fetchall()
+    by_tn={}
+    for r in rows: by_tn.setdefault(r["tracking_code"], r["shipment_id"])
+    tns=list(by_tn.keys())
     checked=0;updated=0;now=datetime.now().isoformat(timespec='seconds')
-    for r in rows:
-        res=_usps_track_one(r["tracking_code"]); checked+=1
-        if res:
+    for i in range(0,len(tns),30):
+        chunk=tns[i:i+30]; checked+=len(chunk)
+        res=_usps_track_batch(chunk)
+        for tn,info in res.items():
+            sid=by_tn.get(tn)
+            if not sid: continue
             c.execute("""UPDATE shipments SET delivery_status=?,delivery_detail=?,
                             delivered_at=COALESCE(?,delivered_at),tracked_at=? WHERE shipment_id=?""",
-                      (res["status"],res["detail"],res["delivered_at"],now,r["shipment_id"]))
+                      (info["status"],info["detail"],info["delivered_at"],now,sid))
             updated+=1
-        time.sleep(0.15)
-    c.commit();c.close()
+        c.commit(); time.sleep(0.4)
+    c.close()
     return {"checked":checked,"updated":updated}
 
 def _tracking_loop():
@@ -4271,15 +4319,33 @@ def giveaway_detail(gid):
 @app.route("/api/giveaway/list")
 @req_role("admin","cs")
 def api_giveaway_list():
-    """Get all giveaways grouped by status for dashboard."""
+    """Get all giveaways grouped by status for dashboard.
+    Piggyback giveaways are enriched with the linked order's LIVE stage
+    (pipeline status + USPS delivery) so the screen follows the sequence."""
     c=gdb()
     rows=c.execute("SELECT * FROM giveaways WHERE status!='cancelled' ORDER BY created_at DESC").fetchall()
     c.close()
+    items=[dict(r) for r in rows]
+    # Pull the linked order's current status from the shipments DB (one query)
+    sids=[d.get("linked_shipment_id") for d in items
+          if d.get("attach_mode")=="piggyback" and d.get("linked_shipment_id")]
+    statusmap={}
+    if sids:
+        try:
+            sc=sdb(); qmarks=",".join("?"*len(sids))
+            for sr in sc.execute("SELECT shipment_id,status,delivery_status,packed_at,picked_at "
+                                  "FROM shipments WHERE shipment_id IN ("+qmarks+")", sids).fetchall():
+                statusmap[sr["shipment_id"]]={"order_status":sr["status"],
+                    "order_delivery":sr["delivery_status"],
+                    "order_packed_at":sr["packed_at"],"order_picked_at":sr["picked_at"]}
+            sc.close()
+        except Exception as e:
+            print("giveaway order-status lookup failed:",e,flush=True)
     grouped={"pending_address":[],"address_received":[],"label_created":[],"shipped":[]}
     today=datetime.now().strftime('%Y-%m-%d')
-    for r in rows:
-        d=dict(r)
-        # Only show today's shipped on the dashboard to keep it focused
+    for d in items:
+        if d.get("linked_shipment_id") in statusmap:
+            d.update(statusmap[d["linked_shipment_id"]])
         if d["status"]=="shipped":
             ship_date=(d.get("shipped_at") or "")[:10]
             if ship_date!=today: continue
