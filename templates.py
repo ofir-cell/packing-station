@@ -1188,7 +1188,7 @@ document.getElementById('a-find').addEventListener('click',function(){
     fetch('/api/giveaway/match',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({username:user,first_name:first,last_name:last})})
     .then(function(r){return r.json()}).then(function(d){
-        if(!d.ok){box.innerHTML='<div class="empty">Lookup failed</div>';return}
+        if(!d.ok){box.innerHTML='<div class="empty">'+esc(d.error||'Lookup failed')+'</div>';return}
         if(!d.candidates.length){
             var msg=d.reason==='all_shipped'
                 ?'All matching orders already shipped — ship the prize separately using "Add New Giveaway Winner" above.'
@@ -1198,7 +1198,7 @@ document.getElementById('a-find').addEventListener('click',function(){
         var html='<div style="font-size:12px;color:#34d399;font-weight:700;margin-bottom:8px">BEST MATCH (auto-selected) — confirm, or pick another:</div>';
         html+=d.candidates.map(function(s,i){return shipRow(s,i===0)}).join('');
         box.innerHTML=html;
-    });
+    }).catch(function(e){box.innerHTML='<div class="empty">Request failed: '+esc(String(e))+'</div>'});
 });
 function doAttach(sid){
     fetch('/api/giveaway/attach',{method:'POST',headers:{'Content-Type':'application/json'},

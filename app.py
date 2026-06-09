@@ -4519,18 +4519,22 @@ def api_giveaway_match():
     """Preview matching orders for a winner (no write). Body: username, first_name,
     last_name, show (optional import_label)."""
     d=request.get_json() or {}
-    c=sdb()
-    cand,any_match=_rank_attachable(c, d.get("username"), d.get("first_name"),
-                                    d.get("last_name"), (d.get("show") or "").strip() or None)
-    # How many orders this customer has in history (per username)
-    hist={}
-    unames=sorted({(r.get("buyer_username") or "") for r in cand if r.get("buyer_username")})
-    if unames:
-        uq=",".join("?"*len(unames))
-        for hr in c.execute("SELECT buyer_username, COUNT(*) n FROM shipments "
-                            "WHERE buyer_username IN ("+uq+") GROUP BY buyer_username", unames).fetchall():
-            hist[hr["buyer_username"]]=hr["n"]
-    c.close()
+    try:
+        c=sdb()
+        cand,any_match=_rank_attachable(c, d.get("username"), d.get("first_name"),
+                                        d.get("last_name"), (d.get("show") or "").strip() or None)
+        # How many orders this customer has in history (per username)
+        hist={}
+        unames=sorted({(r.get("buyer_username") or "") for r in cand if r.get("buyer_username")})
+        if unames:
+            uq=",".join("?"*len(unames))
+            for hr in c.execute("SELECT buyer_username, COUNT(*) n FROM shipments "
+                                "WHERE buyer_username IN ("+uq+") GROUP BY buyer_username", unames).fetchall():
+                hist[hr["buyer_username"]]=hr["n"]
+        c.close()
+    except Exception as e:
+        print("giveaway match failed:",e,flush=True)
+        return jsonify({"ok":False,"error":"Match failed: "+str(e)})
     if not cand:
         reason="all_shipped" if any_match else "no_match"
         return jsonify({"ok":True,"candidates":[],"best":None,"reason":reason})
