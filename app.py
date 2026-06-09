@@ -4319,37 +4319,55 @@ def giveaway_detail(gid):
 @app.route("/api/giveaway/list")
 @req_role("admin","cs")
 def api_giveaway_list():
-    """Get all giveaways grouped by status for dashboard.
-    Piggyback giveaways are enriched with the linked order's LIVE stage
-    (pipeline status + USPS delivery) so the screen follows the sequence."""
+    """Giveaways grouped by their position in the piggyback process:
+       toadd → added → shipped → delivered.
+    Each card is enriched from the linked order: recipient, address, customer
+    order-history count, current tracking, live stage, who added the prize, and
+    (for customer service) the shipping/delivery record — so nothing is lost."""
     c=gdb()
     rows=c.execute("SELECT * FROM giveaways WHERE status!='cancelled' ORDER BY created_at DESC").fetchall()
     c.close()
     items=[dict(r) for r in rows]
-    # Pull the linked order's current status from the shipments DB (one query)
-    sids=[d.get("linked_shipment_id") for d in items
-          if d.get("attach_mode")=="piggyback" and d.get("linked_shipment_id")]
-    statusmap={}
+    sids=[d["linked_shipment_id"] for d in items if d.get("linked_shipment_id")]
+    smap={}; hist={}
     if sids:
         try:
-            sc=sdb(); qmarks=",".join("?"*len(sids))
-            for sr in sc.execute("SELECT shipment_id,status,delivery_status,packed_at,picked_at "
-                                  "FROM shipments WHERE shipment_id IN ("+qmarks+")", sids).fetchall():
-                statusmap[sr["shipment_id"]]={"order_status":sr["status"],
-                    "order_delivery":sr["delivery_status"],
-                    "order_packed_at":sr["packed_at"],"order_picked_at":sr["picked_at"]}
+            sc=sdb(); qm=",".join("?"*len(sids))
+            srows=sc.execute("SELECT shipment_id,buyer_username,buyer_name,address_full,postal_code,"
+                             "tracking_code,status,delivery_status,delivery_detail,delivered_at,"
+                             "packed_by,packed_at,picked_by FROM shipments WHERE shipment_id IN ("+qm+")", sids).fetchall()
+            for sr in srows: smap[sr["shipment_id"]]=dict(sr)
+            unames=sorted({(sr["buyer_username"] or "") for sr in srows if sr["buyer_username"]})
+            if unames:
+                uq=",".join("?"*len(unames))
+                for hr in sc.execute("SELECT buyer_username, COUNT(*) n FROM shipments "
+                                     "WHERE buyer_username IN ("+uq+") GROUP BY buyer_username", unames).fetchall():
+                    hist[hr["buyer_username"]]=hr["n"]
             sc.close()
         except Exception as e:
-            print("giveaway order-status lookup failed:",e,flush=True)
-    grouped={"pending_address":[],"address_received":[],"label_created":[],"shipped":[]}
-    today=datetime.now().strftime('%Y-%m-%d')
+            print("giveaway enrich failed:",e,flush=True)
+    def _stage(d,s):
+        if d.get("attach_mode")!="piggyback" or not s:
+            return "shipped" if d.get("status")=="shipped" else "toadd"
+        dv=(s.get("delivery_status") or "")
+        if dv=="DELIVERED": return "delivered"
+        if dv in ("PRE_TRANSIT","IN_TRANSIT","OUT_FOR_DELIVERY","RETURNED","EXCEPTION") or s.get("status")=="shipped":
+            return "shipped"
+        if d.get("attach_status")=="added": return "added"
+        return "toadd"
+    grouped={"toadd":[],"added":[],"shipped":[],"delivered":[]}
     for d in items:
-        if d.get("linked_shipment_id") in statusmap:
-            d.update(statusmap[d["linked_shipment_id"]])
-        if d["status"]=="shipped":
-            ship_date=(d.get("shipped_at") or "")[:10]
-            if ship_date!=today: continue
-        if d["status"] in grouped: grouped[d["status"]].append(d)
+        s=smap.get(d.get("linked_shipment_id"))
+        if s:
+            d["order_recipient"]=s.get("buyer_name")
+            d["order_address"]=s.get("address_full")
+            d["order_status"]=s.get("status")
+            d["order_delivery"]=s.get("delivery_status")
+            d["order_delivery_detail"]=s.get("delivery_detail")
+            d["order_delivered_at"]=s.get("delivered_at")
+            d["order_tracking"]=s.get("tracking_code") or d.get("linked_tracking")
+            d["order_history"]=hist.get(s.get("buyer_username"),1)
+        grouped[_stage(d,s)].append(d)
     return jsonify({"groups":grouped,"brands":GIVEAWAY_BRANDS})
 
 @app.route("/api/giveaway/<int:gid>")
@@ -4477,7 +4495,8 @@ def _slim_ship(r):
     return {"shipment_id":r.get("shipment_id"),"tracking_code":r.get("tracking_code"),
             "buyer_name":r.get("buyer_name"),"buyer_username":r.get("buyer_username"),
             "status":r.get("status"),"import_label":r.get("import_label"),
-            "show_date":r.get("show_date"),"total_items":r.get("total_items")}
+            "show_date":r.get("show_date"),"total_items":r.get("total_items"),
+            "address_full":r.get("address_full"),"postal_code":r.get("postal_code")}
 
 def _pending_giveaways_for(shipment_id, tracking=None):
     """Piggyback giveaways still waiting to be added to this order. Cheap lookup
@@ -4503,11 +4522,21 @@ def api_giveaway_match():
     c=sdb()
     cand,any_match=_rank_attachable(c, d.get("username"), d.get("first_name"),
                                     d.get("last_name"), (d.get("show") or "").strip() or None)
+    # How many orders this customer has in history (per username)
+    hist={}
+    unames=sorted({(r.get("buyer_username") or "") for r in cand if r.get("buyer_username")})
+    if unames:
+        uq=",".join("?"*len(unames))
+        for hr in c.execute("SELECT buyer_username, COUNT(*) n FROM shipments "
+                            "WHERE buyer_username IN ("+uq+") GROUP BY buyer_username", unames).fetchall():
+            hist[hr["buyer_username"]]=hr["n"]
     c.close()
     if not cand:
         reason="all_shipped" if any_match else "no_match"
         return jsonify({"ok":True,"candidates":[],"best":None,"reason":reason})
-    slim=[_slim_ship(r) for r in cand]
+    slim=[]
+    for r in cand:
+        s=_slim_ship(r); s["order_history"]=hist.get(r.get("buyer_username"),1); slim.append(s)
     return jsonify({"ok":True,"candidates":slim,"best":slim[0]})
 
 @app.route("/api/giveaway/attach",methods=["POST"])

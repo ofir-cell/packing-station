@@ -1127,46 +1127,52 @@ __NAVBAR__
 </div>
 
 <div class="cols">
-<div class="col pa"><div class="col-h"><div class="col-t">📋 Pending Address</div><div class="cnt" id="c-pa">0</div></div><div id="g-pa"></div></div>
-<div class="col ar"><div class="col-h"><div class="col-t">✏️ Address Received</div><div class="cnt" id="c-ar">0</div></div><div id="g-ar"></div></div>
-<div class="col lc"><div class="col-h"><div class="col-t">📦 Label Created</div><div class="cnt" id="c-lc">0</div></div><div id="g-lc"></div></div>
-<div class="col sh"><div class="col-h"><div class="col-t">✅ Shipped Today</div><div class="cnt" id="c-sh">0</div></div><div id="g-sh"></div></div>
+<div class="col pa"><div class="col-h"><div class="col-t">🎯 To Add</div><div class="cnt" id="c-toadd">0</div></div><div id="g-toadd"></div></div>
+<div class="col ar"><div class="col-h"><div class="col-t">✅ Added · awaiting ship</div><div class="cnt" id="c-added">0</div></div><div id="g-added"></div></div>
+<div class="col lc"><div class="col-h"><div class="col-t">🚚 Shipped</div><div class="cnt" id="c-shipped">0</div></div><div id="g-shipped"></div></div>
+<div class="col sh"><div class="col-h"><div class="col-t">📬 Delivered</div><div class="cnt" id="c-delivered">0</div></div><div id="g-delivered"></div></div>
 </div>
 </div>
 <div class="toast" id="t"></div>
 <script>
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
 function timeAgo(ts){if(!ts)return '';var d=new Date(ts);var s=Math.floor((Date.now()-d.getTime())/1000);if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}
+var STAGE={pending:'🕗 Awaiting pick',picked:'📋 Picked',packed:'📦 Packed',shipped:'🚚 Shipped',cancelled:'🚫 Cancelled',
+    PRE_TRANSIT:'🚚 Shipped',IN_TRANSIT:'✈️ In transit',OUT_FOR_DELIVERY:'📬 Out for delivery',DELIVERED:'✅ Delivered',EXCEPTION:'⚠️ Exception',RETURNED:'↩️ Returned'};
 function card(g){
     var pl=g.platform==='tiktok'?'<span class="pl tt">TikTok</span>':'<span class="pl wn">Whatnot</span>';
-    var br=g.brand?' · '+g.brand:'';
     var extra='';
     if(g.attach_mode==='piggyback'){
-        var ast=g.attach_status==='added'
-            ?'<span style="color:#34d399;font-weight:700">✓ ADDED</span>'
-            :'<span style="color:#fbbf24;font-weight:700">⏳ PENDING IN ORDER</span>';
-        // Live order stage: prefer USPS delivery bucket, else pipeline status
-        var STAGE={pending:'🕗 Awaiting pick',picked:'📋 Picked',packed:'📦 Packed',shipped:'🚚 Shipped',cancelled:'🚫 Cancelled',
-            PRE_TRANSIT:'🚚 Shipped',IN_TRANSIT:'✈️ In transit',OUT_FOR_DELIVERY:'📬 Out for delivery',DELIVERED:'✅ Delivered',EXCEPTION:'⚠️ Exception',RETURNED:'↩️ Returned'};
         var raw=g.order_delivery||g.order_status||'';
         var stage=STAGE[raw]||(raw?String(raw).replace(/_/g,' '):'');
-        extra='<div class="card-m" style="margin-top:6px"><span style="color:#a5b4fc;font-family:monospace">📦 '+(g.linked_tracking||g.linked_shipment_id||'')+'</span>'+ast+'</div>'+
-            (stage?'<div class="card-m" style="margin-top:4px"><span style="color:#cbd5e1;font-weight:600">Order: '+stage+'</span></div>':'');
+        var ast=g.attach_status==='added'
+            ?'<span style="color:#34d399;font-weight:700">✓ ADDED'+(g.attach_added_by?' · '+esc(g.attach_added_by):'')+'</span>'
+            :'<span style="color:#fbbf24;font-weight:700">⏳ get from manager</span>';
+        var hist=g.order_history?(' · <span style="color:#a5b4fc">'+g.order_history+' order'+(g.order_history>1?'s':'')+'</span>'):'';
+        var deliv=g.order_delivered_at?('<span style="color:#34d399">✅ '+esc((g.order_delivered_at||'').slice(0,16).replace('T',' '))+'</span>')
+                  :(g.order_delivery_detail?('<span style="color:#6b7a90;font-size:11px">'+esc(g.order_delivery_detail)+'</span>'):'');
+        extra='<div style="font-size:13px;color:#cbd5e1;margin-bottom:2px">👤 '+esc(g.order_recipient||g.winner_username||'')+hist+'</div>'+
+            (g.order_address?'<div style="font-size:11px;color:#6b7a90;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">📍 '+esc(g.order_address)+'</div>':'')+
+            '<div class="card-m"><span style="font-family:monospace;color:#a5b4fc">📦 '+esc(g.order_tracking||g.linked_tracking||'')+'</span><span style="color:#cbd5e1;font-weight:600">'+stage+'</span></div>'+
+            '<div class="card-m" style="margin-top:4px">'+ast+deliv+'</div>';
     }
     return '<a class="card" href="/giveaway/'+g.id+'">'+
-        '<div class="card-w"><span class="at">@</span>'+g.winner_username+'</div>'+
-        '<div class="card-p">'+g.prize_name+'</div>'+
-        '<div class="card-m">'+pl+'<span>'+timeAgo(g.created_at)+br+'</span></div>'+extra+
+        '<div class="card-w"><span class="at">@</span>'+esc(g.winner_username)+'</div>'+
+        '<div class="card-p">🎁 '+esc(g.prize_name)+'</div>'+
+        extra+
+        '<div class="card-m" style="margin-top:8px">'+pl+'<span>'+timeAgo(g.created_at)+'</span></div>'+
         '</a>';
 }
 var attachPrizeName='';
 function shipRow(s,best){
     var col={pending:'#fbbf24',picked:'#60a5fa',packed:'#a78bfa'}[s.status]||'#6b7a90';
+    var hist=s.order_history?(' · '+s.order_history+' order'+(s.order_history>1?'s':'')+' in history'):'';
     return '<div class="card" style="cursor:default;border-color:'+(best?'rgba(52,211,153,.45)':'rgba(255,255,255,.06)')+'">'+
-        '<div class="card-w">'+(s.buyer_name||'?')+' <span class="at">@'+(s.buyer_username||'')+'</span></div>'+
+        '<div class="card-w">'+esc(s.buyer_name||'?')+' <span class="at">@'+esc(s.buyer_username||'')+'</span></div>'+
+        '<div style="font-size:11px;color:#6b7a90;margin:2px 0 6px">📍 '+esc(s.address_full||'—')+hist+'</div>'+
         '<div class="card-m"><span style="color:'+col+';font-weight:700;text-transform:uppercase">'+s.status+'</span>'+
-        '<span>'+(s.import_label||'')+' · '+(s.total_items||0)+' items</span></div>'+
-        '<div class="card-m" style="margin-top:8px"><span style="font-family:monospace">'+(s.tracking_code||s.shipment_id||'')+'</span>'+
+        '<span>'+esc(s.import_label||'')+' · '+(s.total_items||0)+' items</span></div>'+
+        '<div class="card-m" style="margin-top:8px"><span style="font-family:monospace">'+esc(s.tracking_code||s.shipment_id||'')+'</span>'+
         '<button class="btn btn-p" style="padding:6px 14px;font-size:12px" onclick="doAttach(\\''+s.shipment_id+'\\')">'+(best?'Attach here →':'Use this')+'</button></div>'+
         '</div>';
 }
@@ -1211,7 +1217,7 @@ function load(){
     fetch('/api/giveaway/list').then(function(r){return r.json()}).then(function(d){
         var br=document.getElementById('br');
         if(br.children.length===1){d.brands.forEach(function(b){var o=document.createElement('option');o.value=b;o.textContent=b;br.appendChild(o)})}
-        var groups={pa:'pending_address',ar:'address_received',lc:'label_created',sh:'shipped'};
+        var groups={toadd:'toadd',added:'added',shipped:'shipped',delivered:'delivered'};
         Object.keys(groups).forEach(function(k){
             var arr=d.groups[groups[k]]||[];
             document.getElementById('c-'+k).textContent=arr.length;
