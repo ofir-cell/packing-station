@@ -3290,50 +3290,72 @@ function loadShipments(){
       '<div class="stat"><div class="lbl">With tracking</div><div class="val">'+withTracking+'</div><div class="sub">label generated</div></div>'+
       '<div class="stat good"><div class="lbl">Packed</div><div class="val">'+packed+'</div><div class="sub">already weighed</div></div>';
 
-    // Table
-    if(rows.length===0){
-      document.getElementById('listWrap').innerHTML='<div class="empty"><div class="empty-icon">📦</div>No shipments imported yet. Click "＋ Import Whatnot CSV" to start.</div>';
-      return;
-    }
-    var html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Shipment</th><th>Buyer</th><th>Items</th><th>Tracking</th><th>Expected</th><th>Actual</th><th>Status</th><th>Show date</th></tr></thead><tbody>';
-    rows.forEach(function(s,i){
-      var weightCls='unknown';
-      if(s.expected_weight_g>0)weightCls=s.missing_weights>0?'unknown':'ok';
-      var trk=s.tracking_code?'<span class="col-tracking">'+escapeHtml(s.tracking_code)+'</span>':'<span class="col-id" style="opacity:.5">—</span>';
-      html+='<tr class="row" data-i="'+i+'">'+
-        '<td class="col-id">'+escapeHtml(s.shipment_id)+'</td>'+
-        '<td>'+escapeHtml(s.buyer_name||s.buyer_username||'?')+'</td>'+
-        '<td>'+s.total_items+'</td>'+
-        '<td>'+trk+'</td>'+
-        '<td class="weight-cell '+weightCls+'">'+fmtWeight(s.expected_weight_g)+(s.missing_weights>0?' <span style="font-size:10px;opacity:.7">('+s.missing_weights+' missing)</span>':'')+'</td>'+
-        '<td class="weight-cell">'+fmtWeight(s.actual_weight_g)+'</td>'+
-        '<td><span class="status-pill st-'+s.status+'">'+s.status.replace('_',' ')+'</span></td>'+
-        '<td style="color:var(--text-dim)">'+fmtDate(s.show_date||s.imported_at)+'</td>'+
-      '</tr>'+
-      '<tr class="detail" data-detail="'+i+'" style="display:none"><td colspan="8"><div class="detail-inner" id="detail-'+i+'">Loading…</div></td></tr>';
-    });
-    html+='</tbody></table></div>';
-    document.getElementById('listWrap').innerHTML=html;
-    document.querySelectorAll('tr.row').forEach(function(tr){
-      tr.addEventListener('click',function(){
-        var i=tr.dataset.i;
-        var detail=document.querySelector('tr.detail[data-detail="'+i+'"]');
-        if(detail.style.display==='table-row'){detail.style.display='none';return}
-        detail.style.display='table-row';
-        var s=rows[i];
-        if(detail.dataset.loaded){return}
-        fetch('/api/shipment/'+encodeURIComponent(s.shipment_id)).then(function(r){return r.json()}).then(function(d){
-          if(!d.ok){document.getElementById('detail-'+i).innerHTML='<div style="color:#fb7185">Failed: '+(d.error||'?')+'</div>';return}
-          var box=document.getElementById('detail-'+i);
-          var addr=d.shipment.address_full||'';
-          var itemsHtml=d.items.map(function(it){
-            return '<div class="item-pill'+(it.item_weight_g==null?' no-weight':'')+'"><span>'+escapeHtml(it.product_name||it.sku||'?')+'</span><span class="qty">×'+it.quantity+(it.item_weight_g!=null?' · '+it.item_weight_g+'g':' · ?')+'</span></div>';
-          }).join('');
-          box.innerHTML=
-            '<h4>Address</h4><div style="color:var(--text);margin-bottom:14px">'+escapeHtml(addr)+'</div>'+
-            '<h4>Items ('+d.items.length+')</h4><div class="items-grid">'+itemsHtml+'</div>';
-          detail.dataset.loaded='1';
-        });
+    // Store rows and render with the current status filter.
+    window._allRows=rows;
+    renderTable();
+  });
+}
+var _statusFilter='all';
+var _MOVING=['DELIVERED','IN_TRANSIT','OUT_FOR_DELIVERY'];
+function setFilter(f){_statusFilter=f;renderTable();}
+function renderTable(){
+  var rows=window._allRows||[];
+  var lw=document.getElementById('listWrap');
+  if(rows.length===0){lw.innerHTML='<div class="empty"><div class="empty-icon">📦</div>No shipments imported yet. Click "＋ Import" to start.</div>';return}
+  var counts={all:rows.length,
+    pending:rows.filter(function(s){return s.status==='pending'}).length,
+    packed:rows.filter(function(s){return s.status==='packed'}).length,
+    shipped:rows.filter(function(s){return s.status==='shipped'}).length,
+    cancelled:rows.filter(function(s){return s.status==='cancelled'}).length,
+    pdel:rows.filter(function(s){return s.status==='pending'&&_MOVING.indexOf(s.delivery_status)>=0}).length};
+  var fb=[['all','All'],['pending','Pending'],['packed','Packed'],['shipped','Shipped'],['cancelled','Cancelled'],['pdel','⚠️ Pending but moving/delivered']];
+  var bar='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">'+fb.map(function(f){
+    var a=_statusFilter===f[0];
+    return '<button onclick="setFilter(\\''+f[0]+'\\')" style="background:'+(a?'var(--brand)':'var(--surface)')+';color:'+(a?'#1a1a1f':'var(--text-muted)')+';border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">'+f[1]+' ('+(counts[f[0]]||0)+')</button>';
+  }).join('')+'</div>';
+  var view=rows.filter(function(s){
+    if(_statusFilter==='all')return true;
+    if(_statusFilter==='pdel')return s.status==='pending'&&_MOVING.indexOf(s.delivery_status)>=0;
+    return s.status===_statusFilter;
+  });
+  var DEL={DELIVERED:['#34d399','✅ Delivered'],IN_TRANSIT:['#60a5fa','✈️ In transit'],OUT_FOR_DELIVERY:['#22d3ee','📬 Out for delivery'],PRE_TRANSIT:['#fbbf24','🚚 Shipped'],EXCEPTION:['#f43f5e','⚠️ Exception'],RETURNED:['#fb923c','↩️ Returned'],UNKNOWN:['#94a3b8','—']};
+  var html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Shipment</th><th>Buyer</th><th>Items</th><th>Tracking</th><th>Status</th><th>USPS</th><th>Show date</th></tr></thead><tbody>';
+  view.forEach(function(s,i){
+    var trk=s.tracking_code?'<span class="col-tracking">'+escapeHtml(s.tracking_code)+'</span>':'<span class="col-id" style="opacity:.5">—</span>';
+    var dv=s.delivery_status?(DEL[s.delivery_status]||['#94a3b8',s.delivery_status]):null;
+    var delCell=dv?'<span style="color:'+dv[0]+';font-weight:600;font-size:12px" title="'+escapeHtml(s.delivery_detail||'')+'">'+dv[1]+'</span>':'<span style="opacity:.4">—</span>';
+    html+='<tr class="row" data-i="'+i+'">'+
+      '<td class="col-id">'+escapeHtml(s.shipment_id)+'</td>'+
+      '<td>'+escapeHtml(s.buyer_name||s.buyer_username||'?')+'</td>'+
+      '<td>'+s.total_items+'</td>'+
+      '<td>'+trk+'</td>'+
+      '<td><span class="status-pill st-'+s.status+'">'+s.status.replace('_',' ')+'</span></td>'+
+      '<td>'+delCell+'</td>'+
+      '<td style="color:var(--text-dim)">'+fmtDate(s.show_date||s.imported_at)+'</td>'+
+    '</tr>'+
+    '<tr class="detail" data-detail="'+i+'" style="display:none"><td colspan="7"><div class="detail-inner" id="detail-'+i+'">Loading…</div></td></tr>';
+  });
+  html+='</tbody></table></div>';
+  lw.innerHTML=bar+html;
+  document.querySelectorAll('tr.row').forEach(function(tr){
+    tr.addEventListener('click',function(){
+      var i=tr.dataset.i;
+      var detail=document.querySelector('tr.detail[data-detail="'+i+'"]');
+      if(detail.style.display==='table-row'){detail.style.display='none';return}
+      detail.style.display='table-row';
+      var s=view[i];
+      if(detail.dataset.loaded){return}
+      fetch('/api/shipment/'+encodeURIComponent(s.shipment_id)).then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){document.getElementById('detail-'+i).innerHTML='<div style="color:#fb7185">Failed</div>';return}
+        var box=document.getElementById('detail-'+i);
+        var addr=d.shipment.address_full||'';
+        var itemsHtml=d.items.map(function(it){
+          return '<div class="item-pill'+(it.item_weight_g==null?' no-weight':'')+'"><span>'+escapeHtml(it.product_name||it.sku||'?')+'</span><span class="qty">×'+it.quantity+'</span></div>';
+        }).join('');
+        box.innerHTML='<h4>Address</h4><div style="color:var(--text);margin-bottom:14px">'+escapeHtml(addr)+'</div>'+
+          (d.shipment.delivery_detail?'<h4>USPS status</h4><div style="margin-bottom:14px;color:var(--text)">'+escapeHtml(d.shipment.delivery_detail)+'</div>':'')+
+          '<h4>Items ('+d.items.length+')</h4><div class="items-grid">'+itemsHtml+'</div>';
+        detail.dataset.loaded='1';
       });
     });
   });
@@ -3934,34 +3956,48 @@ fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){
     var pctS=total?(100*(sh.shipped||0)/total):0;
     var pctC=total?(100*(sh.cancelled||0)/total):0;
     var pctPnd=total?(100*(sh.pending||0)/total):0;
+    var isWhatnot=(sh.platform==='whatnot' && (sh.platform_count||1)<=1);
     var platCls='platform-'+(sh.platform||'mixed');
     if(sh.platform_count>1)platCls='platform-mixed';
     var platName=sh.platform_count>1?'Mixed':(sh.platform||'?');
-    return '<a href="/admin/shipments?show='+encodeURIComponent(sh.name)+'" class="show-card">'+
+    // NEW = uploaded, nobody touched it yet; DONE = manually marked, or nothing pending.
+    var untouched=(packed===0 && total>0);
+    var isDone=sh.done||((sh.pending||0)===0 && total>0);
+    var badge='';
+    if(isDone) badge='<span style="font-size:10px;font-weight:800;letter-spacing:.5px;padding:3px 9px;border-radius:6px;background:rgba(52,211,153,.18);color:#34d399">✓ DONE</span>';
+    else if(untouched) badge='<span style="font-size:10px;font-weight:800;letter-spacing:.5px;padding:3px 9px;border-radius:6px;background:rgba(96,165,250,.22);color:#60a5fa">● NEW</span>';
+    return '<a href="/admin/shipments?show='+encodeURIComponent(sh.name)+'" class="show-card" style="'+(isDone?'opacity:.8':'')+'">'+
       '<div class="show-card-head">'+
         '<div class="show-card-name">'+escapeHtml(sh.name)+'</div>'+
-        '<span class="platform-pill '+platCls+'">'+platName+'</span>'+
+        '<div style="display:flex;gap:6px;align-items:center;flex-shrink:0">'+badge+'<span class="platform-pill '+platCls+'">'+platName+'</span></div>'+
       '</div>'+
       '<div class="show-totals"><span class="big">'+total+'</span><span class="small">shipments</span></div>'+
       '<div class="show-bar">'+
         (sh.shipped?'<div class="bar-shipped" style="width:'+pctS+'%"></div>':'')+
         (sh.packed?'<div class="bar-packed" style="width:'+pctP+'%"></div>':'')+
         (sh.pending?'<div class="bar-pending" style="width:'+pctPnd+'%"></div>':'')+
-        (sh.cancelled?'<div class="bar-cancelled" style="width:'+pctC+'%"></div>':'')+
+        ((!isWhatnot&&sh.cancelled)?'<div class="bar-cancelled" style="width:'+pctC+'%"></div>':'')+
       '</div>'+
       '<div class="show-progress">'+
         '<div class="sp pending"><div class="v">'+(sh.pending||0)+'</div><div class="l">Pending</div></div>'+
         '<div class="sp packed"><div class="v">'+(sh.packed||0)+'</div><div class="l">Packed</div></div>'+
         '<div class="sp shipped"><div class="v">'+(sh.shipped||0)+'</div><div class="l">Shipped</div></div>'+
-        '<div class="sp cancelled"><div class="v">'+(sh.cancelled||0)+'</div><div class="l">Cancelled</div></div>'+
+        (isWhatnot?'':'<div class="sp cancelled"><div class="v">'+(sh.cancelled||0)+'</div><div class="l">Cancelled</div></div>')+
       '</div>'+
       '<div class="show-footer">'+
-        '<div class="when">Last import <b>'+fmtDateShort(sh.last_import)+'</b></div>'+
-        '<div class="show-cta">View packages →</div>'+
+        '<div class="when">Last import <b>'+fmtDateShort(sh.last_import)+'</b>'+(sh.done&&sh.done_by?'<br><span style="color:#34d399">✓ done by '+escapeHtml(sh.done_by)+'</span>':'')+'</div>'+
+        '<button onclick="toggleDone(event,\\''+encodeURIComponent(sh.name)+'\\','+(sh.done?'false':'true')+')" style="background:'+(sh.done?'rgba(255,255,255,.08)':'rgba(52,211,153,.15)')+';color:'+(sh.done?'#9ba9c1':'#34d399')+';border:1px solid '+(sh.done?'rgba(255,255,255,.12)':'rgba(52,211,153,.35)')+';border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">'+(sh.done?'↩︎ Undo':'✓ Mark DONE')+'</button>'+
       '</div>'+
     '</a>';
   }).join('')+'</div>';
 });
+function toggleDone(ev,name,done){
+  ev.preventDefault();ev.stopPropagation();
+  fetch('/api/shows/done',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({label:decodeURIComponent(name),done:done})})
+   .then(function(r){return r.json()}).then(function(){location.reload()})
+   .catch(function(){location.reload()});
+}
 </script>
 </body></html>'''
 

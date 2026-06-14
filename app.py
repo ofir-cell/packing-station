@@ -506,6 +506,13 @@ def sdb_init():
     c.execute("CREATE INDEX IF NOT EXISTS idx_items_sku ON shipment_items(sku)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_items_order ON shipment_items(order_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_ship_batch ON shipments(import_batch)")
+    # Per-show manual state: lets a manager mark a show DONE after verifying pending.
+    c.execute("""CREATE TABLE IF NOT EXISTS show_state(
+        import_label TEXT PRIMARY KEY,
+        done INTEGER DEFAULT 0,
+        done_at TEXT,
+        done_by TEXT
+    )""")
     c.commit(); c.close()
 
 sdb_init()
@@ -2598,13 +2605,15 @@ def api_shipments_recent():
     if show:
         rows = c.execute("""SELECT shipment_id, tracking_code, buyer_username, buyer_name,
                                    total_items, expected_weight_g, actual_weight_g, weight_status,
-                                   status, missing_weights, show_date, imported_at, import_label, platform
+                                   status, missing_weights, show_date, imported_at, import_label, platform,
+                                   delivery_status, delivery_detail, delivered_at, tracked_at
                             FROM shipments WHERE import_label=?
                             ORDER BY imported_at DESC LIMIT ?""", (show, limit)).fetchall()
     else:
         rows = c.execute("""SELECT shipment_id, tracking_code, buyer_username, buyer_name,
                                    total_items, expected_weight_g, actual_weight_g, weight_status,
-                                   status, missing_weights, show_date, imported_at, import_label, platform
+                                   status, missing_weights, show_date, imported_at, import_label, platform,
+                                   delivery_status, delivery_detail, delivered_at, tracked_at
                             FROM shipments ORDER BY imported_at DESC LIMIT ?""", (limit,)).fetchall()
     c.close()
     return jsonify([dict(r) for r in rows])
@@ -3064,6 +3073,7 @@ def api_shows():
         GROUP BY import_label
         ORDER BY last_import DESC
     """, (cutoff_dt,)).fetchall()
+    done_map = {r["import_label"]: dict(r) for r in c.execute("SELECT * FROM show_state").fetchall()}
     c.close()
     # Attach cleanup status so the picker can warn / block on unclean shows.
     out = []
@@ -3076,8 +3086,30 @@ def api_shows():
             "groups_done": cp["groups_done"],
             "groups_pending": cp["groups_pending"],
         }
+        st = done_map.get(d["name"])
+        d["done"] = bool(st and st.get("done"))
+        d["done_by"] = st.get("done_by") if st else None
+        d["done_at"] = st.get("done_at") if st else None
         out.append(d)
     return jsonify(out)
+
+@app.route("/api/shows/done", methods=["POST"])
+@req_role("admin","cs")
+def api_show_done():
+    """Toggle a show's manual DONE flag (set after verifying pending)."""
+    d = request.get_json() or {}
+    label = (d.get("label") or "").strip()
+    if not label:
+        return jsonify({"ok": False, "error": "label required"})
+    done = 1 if d.get("done", True) else 0
+    c = sdb()
+    c.execute("""INSERT INTO show_state(import_label,done,done_at,done_by) VALUES(?,?,?,?)
+                 ON CONFLICT(import_label) DO UPDATE SET done=excluded.done,
+                    done_at=excluded.done_at, done_by=excluded.done_by""",
+              (label, done, datetime.now().isoformat(timespec='seconds') if done else None,
+               session.get("name","")[:60] if done else None))
+    c.commit(); c.close()
+    return jsonify({"ok": True, "done": bool(done)})
 
 @app.route("/api/shows/recent")
 @req_role("admin","cs","picker","worker")
