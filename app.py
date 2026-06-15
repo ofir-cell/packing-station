@@ -17,7 +17,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ME_HTML, LEADERBOARD_HTML, HOME_HTML, DOCUMENTS_HTML, WELCOME_HTML,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
-    ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML,
+    ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
 
 
@@ -512,6 +512,11 @@ def sdb_init():
         done INTEGER DEFAULT 0,
         done_at TEXT,
         done_by TEXT
+    )""")
+    # Key/value settings: manager PIN hash, permissions config, etc.
+    c.execute("""CREATE TABLE IF NOT EXISTS settings(
+        key TEXT PRIMARY KEY,
+        value TEXT
     )""")
     c.commit(); c.close()
 
@@ -3093,14 +3098,58 @@ def api_shows():
         out.append(d)
     return jsonify(out)
 
+# ── Settings / Manager PIN / Permissions ───────────────────────────
+_DEFAULT_PERMS={
+    "mark_show_done": {"roles":["admin","cs"], "require_pin": True},
+    "import_csv":     {"roles":["admin","cs"], "require_pin": False},
+    "manage_users":   {"roles":["admin"],      "require_pin": False},
+    "attach_giveaway":{"roles":["admin","cs"], "require_pin": False},
+}
+_PERM_LABELS={
+    "mark_show_done":"Mark a show DONE",
+    "import_csv":"Import orders CSV",
+    "manage_users":"Manage users & badges",
+    "attach_giveaway":"Attach a giveaway to an order",
+}
+def _get_setting(key, default=None):
+    c=sdb(); r=c.execute("SELECT value FROM settings WHERE key=?",(key,)).fetchone(); c.close()
+    return r["value"] if r else default
+def _set_setting(key, value):
+    c=sdb()
+    c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,str(value)))
+    c.commit(); c.close()
+def _get_perms():
+    raw=_get_setting("permissions")
+    out=dict(_DEFAULT_PERMS)
+    if raw:
+        try: out.update(json.loads(raw))
+        except Exception: pass
+    return out
+def _manager_pin_set():
+    return bool(_get_setting("manager_pin_hash"))
+def _verify_manager_pin(pin):
+    h=_get_setting("manager_pin_hash")
+    if not h: return False
+    try: return bcrypt.checkpw((pin or "").encode(), h.encode())
+    except Exception: return False
+
 @app.route("/api/shows/done", methods=["POST"])
 @req_role("admin","cs")
 def api_show_done():
-    """Toggle a show's manual DONE flag (set after verifying pending)."""
+    """Toggle a show's manual DONE flag (set after verifying pending).
+    Gated by the permissions config: allowed roles + (optionally) manager PIN."""
     d = request.get_json() or {}
     label = (d.get("label") or "").strip()
     if not label:
         return jsonify({"ok": False, "error": "label required"})
+    perm=_get_perms().get("mark_show_done",{})
+    if session.get("role") not in (perm.get("roles") or ["admin","cs"]):
+        return jsonify({"ok": False, "error": "Your role is not allowed to mark shows done."}), 403
+    if perm.get("require_pin"):
+        if not _manager_pin_set():
+            return jsonify({"ok": False, "error": "Manager PIN not set yet — set it in Permissions.", "need_pin_setup": True}), 400
+        if not _verify_manager_pin(d.get("pin","")):
+            return jsonify({"ok": False, "error": "Wrong manager PIN.", "pin_required": True}), 401
     done = 1 if d.get("done", True) else 0
     c = sdb()
     c.execute("""INSERT INTO show_state(import_label,done,done_at,done_by) VALUES(?,?,?,?)
@@ -3110,6 +3159,45 @@ def api_show_done():
                session.get("name","")[:60] if done else None))
     c.commit(); c.close()
     return jsonify({"ok": True, "done": bool(done)})
+
+@app.route("/admin/permissions")
+@req_role("admin")
+def permissions_page():
+    return PERMISSIONS_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("permissions")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/api/permissions")
+@req_role("admin")
+def api_permissions_get():
+    return jsonify({"ok":True,"permissions":_get_perms(),"labels":_PERM_LABELS,
+                    "pin_set":_manager_pin_set(),
+                    "actions":list(_DEFAULT_PERMS.keys()),
+                    "roles":["admin","cs","picker","worker"]})
+
+@app.route("/api/permissions",methods=["POST"])
+@req_role("admin")
+def api_permissions_save():
+    d=request.get_json() or {}
+    perms=d.get("permissions")
+    if not isinstance(perms,dict):
+        return jsonify({"ok":False,"error":"invalid permissions"})
+    valid_roles={"admin","cs","picker","worker"}
+    clean={}
+    for k,v in perms.items():
+        if k not in _DEFAULT_PERMS or not isinstance(v,dict): continue
+        roles=[r for r in (v.get("roles") or []) if r in valid_roles] or ["admin"]
+        clean[k]={"roles":roles,"require_pin":bool(v.get("require_pin"))}
+    _set_setting("permissions", json.dumps(clean))
+    return jsonify({"ok":True})
+
+@app.route("/api/permissions/pin",methods=["POST"])
+@req_role("admin")
+def api_permissions_pin():
+    d=request.get_json() or {}
+    pin=(d.get("pin") or "").strip()
+    if not pin.isdigit() or len(pin)<4:
+        return jsonify({"ok":False,"error":"PIN must be at least 4 digits"})
+    _set_setting("manager_pin_hash", bcrypt.hashpw(pin.encode(),bcrypt.gensalt()).decode())
+    return jsonify({"ok":True})
 
 @app.route("/api/shows/recent")
 @req_role("admin","cs","picker","worker")

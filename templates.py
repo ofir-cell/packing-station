@@ -55,6 +55,7 @@ def _navbar(active_page=""):
                 ("hires", "/admin/hires", "New Hires · Onboarding"),
                 ("users", "/users", "Users"),
                 ("badges", "/users/badges", "Badges"),
+                ("permissions", "/admin/permissions", "🔑 Permissions"),
             ],
         })
     elif role == "cs":
@@ -3963,13 +3964,21 @@ fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){
     // NEW = uploaded, nobody touched it yet; DONE = manually marked, or nothing pending.
     var untouched=(packed===0 && total>0);
     var isDone=sh.done||((sh.pending||0)===0 && total>0);
-    var badge='';
-    if(isDone) badge='<span style="font-size:10px;font-weight:800;letter-spacing:.5px;padding:3px 9px;border-radius:6px;background:rgba(52,211,153,.18);color:#34d399">✓ DONE</span>';
-    else if(untouched) badge='<span style="font-size:10px;font-weight:800;letter-spacing:.5px;padding:3px 9px;border-radius:6px;background:rgba(96,165,250,.22);color:#60a5fa">● NEW</span>';
-    return '<a href="/admin/shipments?show='+encodeURIComponent(sh.name)+'" class="show-card" style="'+(isDone?'opacity:.8':'')+'">'+
+    // Whole-card highlight: colored border + full-width banner so status is obvious.
+    var cardStyle='position:relative;';
+    var banner='';
+    if(isDone){
+      cardStyle+='border:2px solid rgba(52,211,153,.65);box-shadow:0 0 0 1px rgba(52,211,153,.25),0 0 24px rgba(52,211,153,.12);';
+      banner='<div style="background:linear-gradient(90deg,rgba(52,211,153,.25),rgba(52,211,153,.12));color:#34d399;font-weight:900;text-align:center;padding:8px;border-radius:10px;margin-bottom:12px;letter-spacing:2px;font-size:14px">✓ DONE</div>';
+    } else if(untouched){
+      cardStyle+='border:2px solid rgba(96,165,250,.65);box-shadow:0 0 0 1px rgba(96,165,250,.25),0 0 24px rgba(96,165,250,.12);';
+      banner='<div style="background:linear-gradient(90deg,rgba(96,165,250,.28),rgba(96,165,250,.12));color:#60a5fa;font-weight:900;text-align:center;padding:8px;border-radius:10px;margin-bottom:12px;letter-spacing:2px;font-size:14px">● NEW · not started</div>';
+    }
+    return '<a href="/admin/shipments?show='+encodeURIComponent(sh.name)+'" class="show-card" style="'+cardStyle+'">'+
+      banner+
       '<div class="show-card-head">'+
         '<div class="show-card-name">'+escapeHtml(sh.name)+'</div>'+
-        '<div style="display:flex;gap:6px;align-items:center;flex-shrink:0">'+badge+'<span class="platform-pill '+platCls+'">'+platName+'</span></div>'+
+        '<span class="platform-pill '+platCls+'">'+platName+'</span>'+
       '</div>'+
       '<div class="show-totals"><span class="big">'+total+'</span><span class="small">shipments</span></div>'+
       '<div class="show-bar">'+
@@ -3993,10 +4002,15 @@ fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){
 });
 function toggleDone(ev,name,done){
   ev.preventDefault();ev.stopPropagation();
+  var pin=prompt(done?'Enter Manager PIN to mark this show DONE:':'Enter Manager PIN to undo DONE:');
+  if(pin===null)return;
   fetch('/api/shows/done',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({label:decodeURIComponent(name),done:done})})
-   .then(function(r){return r.json()}).then(function(){location.reload()})
-   .catch(function(){location.reload()});
+    body:JSON.stringify({label:decodeURIComponent(name),done:done,pin:pin})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(d.ok){location.reload();return}
+     if(d.need_pin_setup){alert('No Manager PIN set yet. An admin must set it in Team → Permissions.');return}
+     alert(d.error||'Failed');
+   }).catch(function(){alert('Request failed')});
 }
 </script>
 </body></html>'''
@@ -6244,4 +6258,105 @@ document.getElementById('refresh').addEventListener('click',function(){
     }).catch(function(){btn.disabled=false;btn.textContent='↻ Refresh from USPS';toast('Refresh failed',true)});
 });
 load();
+</script></body></html>'''
+
+
+# ── PERMISSIONS — manager PIN + who-can-do-what ──
+PERMISSIONS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Permissions</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1000px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1000px;margin:0 auto;padding:8px 28px 40px}
+.card{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:22px 24px;margin-bottom:20px}
+.card h2{font-size:15px;font-weight:800;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
+.card .desc{font-size:13px;color:#9ba9c1;margin-bottom:16px}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+input[type=password],input[type=text]{background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:11px 14px;font-size:15px;color:#e4e8f1;font-family:inherit;outline:none;width:200px}
+input:focus{border-color:#4f46e5}
+.btn{border:none;border-radius:10px;padding:11px 20px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
+.pin-state{font-size:13px;font-weight:700;padding:4px 10px;border-radius:50px}
+.pin-on{background:rgba(52,211,153,.16);color:#34d399}.pin-off{background:rgba(251,191,36,.16);color:#fbbf24}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+th,td{padding:11px 10px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06);text-align:center}
+th{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px}
+td.act{text-align:left;font-weight:600}
+input[type=checkbox]{width:18px;height:18px;cursor:pointer;accent-color:#4f46e5}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}
+.toast.err{background:#f43f5e}
+.note{font-size:12px;color:#6b7a90;margin-top:10px}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🔑 Permissions <span>__NAME__</span></div></div>
+<div class="wrap">
+
+<div class="card">
+  <h2>Manager PIN</h2>
+  <div class="desc">A secret code required for sensitive actions (like marking a show DONE). Only senior managers who know it can perform those actions. <span id="pinState" class="pin-state pin-off">not set</span></div>
+  <div class="row">
+    <input type="password" id="pin" placeholder="New PIN (4+ digits)" inputmode="numeric">
+    <button class="btn btn-p" id="savePin">Save PIN</button>
+  </div>
+  <div class="note">Changing the PIN replaces the old one. Anyone who knew the old PIN will need the new one.</div>
+</div>
+
+<div class="card">
+  <h2>Who can do what</h2>
+  <div class="desc">Tick which roles may perform each sensitive action, and whether it also requires the Manager PIN.</div>
+  <div id="matrix"></div>
+  <div class="row" style="margin-top:16px"><button class="btn btn-p" id="savePerms">Save permissions</button></div>
+  <div class="note">Built-in roles: <b>admin</b> (full access), <b>cs</b> (customer service), <b>picker</b> &amp; <b>worker</b> (floor staff). These settings apply on top of each role's base access.</div>
+</div>
+
+</div>
+<div class="toast" id="t"></div>
+<script>
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
+var DATA=null;
+function render(){
+  document.getElementById('pinState').className='pin-state '+(DATA.pin_set?'pin-on':'pin-off');
+  document.getElementById('pinState').textContent=DATA.pin_set?'PIN is set ✓':'not set yet';
+  var roles=DATA.roles;
+  var h='<table><thead><tr><th class="act">Action</th>'+roles.map(function(r){return '<th>'+r+'</th>'}).join('')+'<th>Needs PIN</th></tr></thead><tbody>';
+  DATA.actions.forEach(function(a){
+    var p=DATA.permissions[a]||{roles:[],require_pin:false};
+    h+='<tr><td class="act">'+(DATA.labels[a]||a)+'</td>'+
+       roles.map(function(r){
+         var on=(p.roles||[]).indexOf(r)>=0;
+         return '<td><input type="checkbox" data-a="'+a+'" data-r="'+r+'"'+(on?' checked':'')+'></td>';
+       }).join('')+
+       '<td><input type="checkbox" data-a="'+a+'" data-pin="1"'+(p.require_pin?' checked':'')+'></td></tr>';
+  });
+  h+='</tbody></table>';
+  document.getElementById('matrix').innerHTML=h;
+}
+fetch('/api/permissions').then(function(r){return r.json()}).then(function(d){DATA=d;render()});
+document.getElementById('savePin').addEventListener('click',function(){
+  var pin=document.getElementById('pin').value.trim();
+  fetch('/api/permissions/pin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(d.ok){toast('Manager PIN saved ✓');document.getElementById('pin').value='';DATA.pin_set=true;render()}
+     else toast(d.error||'Failed',true);
+   });
+});
+document.getElementById('savePerms').addEventListener('click',function(){
+  var perms={};
+  DATA.actions.forEach(function(a){perms[a]={roles:[],require_pin:false}});
+  document.querySelectorAll('#matrix input[type=checkbox]').forEach(function(cb){
+    var a=cb.dataset.a;
+    if(cb.dataset.pin){perms[a].require_pin=cb.checked}
+    else if(cb.checked){perms[a].roles.push(cb.dataset.r)}
+  });
+  fetch('/api/permissions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({permissions:perms})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(d.ok){toast('Permissions saved ✓');DATA.permissions=perms}
+     else toast(d.error||'Failed',true);
+   });
+});
 </script></body></html>'''
