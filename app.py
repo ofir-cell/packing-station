@@ -629,8 +629,8 @@ def _usps_track_batch(tns):
                 out[tn]={"status":"UNKNOWN","detail":"No USPS record yet","delivered_at":None}
         return out
     except _urlerr.HTTPError as e:
-        if e.code in (404,405,415):     # endpoint/method/content not available → use legacy v3
-            print("USPS v3r2 unavailable (HTTP",e.code,") — switching to legacy v3 GET",flush=True)
+        if e.code in (403,404,405,415):  # endpoint/method/entitlement → try legacy v3 GET
+            print("USPS v3r2 returned HTTP",e.code,"— switching to legacy v3 GET",flush=True)
             _usps_mode["v"]="v3"
             return _usps_track_batch(tns)
         print("USPS track HTTP",e.code,flush=True); return out
