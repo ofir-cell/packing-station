@@ -542,10 +542,11 @@ def _usps_token():
     with _usps_lock:
         if _usps_tok["token"] and time.time()<_usps_tok["exp"]-120:
             return _usps_tok["token"]
-        body=_urlparse.urlencode({"grant_type":"client_credentials",
-            "client_id":USPS_CLIENT_ID,"client_secret":USPS_CLIENT_SECRET}).encode()
+        # USPS v3 token endpoint expects a JSON body (per USPS/api-examples), not form-encoded.
+        body=json.dumps({"client_id":USPS_CLIENT_ID,"client_secret":USPS_CLIENT_SECRET,
+                         "grant_type":"client_credentials"}).encode()
         req=_urlreq.Request(USPS_BASE+"/oauth2/v3/token",data=body,
-            headers={"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json"})
+            headers={"Content-Type":"application/json","Accept":"application/json"})
         with _urlreq.urlopen(req,timeout=20) as r:
             d=json.loads(r.read().decode())
         _usps_tok["token"]=d.get("access_token")
