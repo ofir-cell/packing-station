@@ -637,17 +637,34 @@ def _usps_track_batch(tns):
     except Exception as e:
         print("USPS track batch failed:",e,flush=True); return out
 
+def _is_usps_tracking(t):
+    """True only for plausible USPS tracking numbers, so we don't waste calls (and
+    trigger 400s) on Whatnot/other-platform IDs stored in the tracking field.
+    USPS domestic IMpb = 20-34 digits starting with 9 (or a 420+ZIP routing prefix);
+    international = 2 letters + 9 digits + 2 letters (e.g. EA123456789US)."""
+    t=(t or "").strip().upper()
+    if re.match(r'^[A-Z]{2}\d{9}[A-Z]{2}$', t): return True
+    if t.isdigit() and 20<=len(t)<=34 and (t[0]=='9' or t.startswith('420')): return True
+    return False
+
 def refresh_tracking_batch(limit=120):
-    """Poll USPS for not-yet-delivered shipments with a tracking code; update rows.
-    Batches 30 tracking numbers per request. Bounded per call and idempotent."""
+    """Poll USPS for not-yet-delivered shipments with a USPS tracking code; update rows.
+    Batches 30 tracking numbers per request. Bounded per call and idempotent.
+    Non-USPS tracking codes (Whatnot/other platforms) are skipped."""
     if not USPS_ENABLED: return {"checked":0,"updated":0,"note":"usps_disabled"}
     c=sdb()
     rows=c.execute("""SELECT shipment_id,tracking_code FROM shipments
                       WHERE tracking_code IS NOT NULL AND tracking_code!=''
+                        AND (tracking_code GLOB '9*' OR tracking_code GLOB '420*'
+                             OR tracking_code GLOB '[A-Z][A-Z]*')
                         AND COALESCE(delivery_status,'') NOT IN ('DELIVERED','RETURNED')
                       ORDER BY COALESCE(tracked_at,'') ASC LIMIT ?""",(limit,)).fetchall()
-    by_tn={}
-    for r in rows: by_tn.setdefault(r["tracking_code"], r["shipment_id"])
+    by_tn={}; skipped=0
+    for r in rows:
+        if _is_usps_tracking(r["tracking_code"]):
+            by_tn.setdefault(r["tracking_code"], r["shipment_id"])
+        else:
+            skipped+=1
     tns=list(by_tn.keys())
     checked=0;updated=0;now=datetime.now().isoformat(timespec='seconds')
     for i in range(0,len(tns),30):
@@ -662,7 +679,7 @@ def refresh_tracking_batch(limit=120):
             updated+=1
         c.commit(); time.sleep(0.4)
     c.close()
-    return {"checked":checked,"updated":updated}
+    return {"checked":checked,"updated":updated,"skipped_non_usps":skipped}
 
 def _tracking_loop():
     # Refresh a few times a day. A shared marker file on the Railway volume keeps
