@@ -760,7 +760,7 @@ function doSearch(){
         var h='';
         for(var i=0;i<d.videos.length;i++){
             var v=d.videos[i],p=d.photos[i]||null,l=d.log[i]||null;
-            h+='<div class="rc"><div class="rc-h"><span class="rc-t">'+d.tracking+'</span><div class="rc-m">';
+            h+='<div class="rc"><div class="rc-h"><span class="rc-t"><a href="https://tools.usps.com/go/TrackConfirmAction?tLabels='+encodeURIComponent(d.tracking)+'" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline" title="Track on USPS.com">'+d.tracking+' ↗</a></span><div class="rc-m">';
             if(l){h+='<span>'+l.date+'</span><span>'+l.duration_seconds+'s</span>'}
             if(l&&l.worker)h+='<span>👤 '+l.worker+'</span>';
             h+='<span class="tag tag-s">'+v.station+'</span><span class="tag tag-g">✓ Found</span>';
@@ -777,7 +777,7 @@ function loadRecent(){
         if(!d.length){document.getElementById('rl').innerHTML='<div class="empty"><div class="ei">📭</div><div class="et">No recordings yet</div></div>';return}
         var rows='';
         d.forEach(function(r){
-            rows+='<tr data-t="'+r.tracking_number+'"><td class="tc">'+r.tracking_number+'</td><td class="sn">'+(r.station||'-')+'</td><td class="wn">'+(r.worker||'-')+'</td><td>'+(r.date||'-')+'</td><td>'+(r.time||'-')+'</td><td>'+(r.duration_seconds||'-')+'s</td></tr>';
+            rows+='<tr data-t="'+r.tracking_number+'"><td class="tc">'+r.tracking_number+' <a href="https://tools.usps.com/go/TrackConfirmAction?tLabels='+encodeURIComponent(r.tracking_number)+'" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="text-decoration:underline" title="Track on USPS.com">↗</a></td><td class="sn">'+(r.station||'-')+'</td><td class="wn">'+(r.worker||'-')+'</td><td>'+(r.date||'-')+'</td><td>'+(r.time||'-')+'</td><td>'+(r.duration_seconds||'-')+'s</td></tr>';
         });
         document.getElementById('rl').innerHTML='<div class="tbl"><table><thead><tr><th>Tracking</th><th>Station</th><th>Worker</th><th>Date</th><th>Time</th><th>Duration</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
         document.querySelectorAll('tr[data-t]').forEach(function(row){
