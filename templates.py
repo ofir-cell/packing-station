@@ -3322,7 +3322,7 @@ function renderTable(){
   var DEL={DELIVERED:['#34d399','✅ Delivered'],IN_TRANSIT:['#60a5fa','✈️ In transit'],OUT_FOR_DELIVERY:['#22d3ee','📬 Out for delivery'],PRE_TRANSIT:['#fbbf24','🚚 Shipped'],EXCEPTION:['#f43f5e','⚠️ Exception'],RETURNED:['#fb923c','↩️ Returned'],UNKNOWN:['#94a3b8','—']};
   var html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Shipment</th><th>Buyer</th><th>Items</th><th>Tracking</th><th>Status</th><th>USPS</th><th>Show date</th></tr></thead><tbody>';
   view.forEach(function(s,i){
-    var trk=s.tracking_code?'<span class="col-tracking">'+escapeHtml(s.tracking_code)+'</span>':'<span class="col-id" style="opacity:.5">—</span>';
+    var trk=s.tracking_code?'<a href="https://tools.usps.com/go/TrackConfirmAction?tLabels='+encodeURIComponent(s.tracking_code)+'" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="col-tracking" style="text-decoration:underline" title="Track on USPS.com">'+escapeHtml(s.tracking_code)+' ↗</a>':'<span class="col-id" style="opacity:.5">—</span>';
     var dv=s.delivery_status?(DEL[s.delivery_status]||['#94a3b8',s.delivery_status]):null;
     var delCell=dv?'<span style="color:'+dv[0]+';font-weight:600;font-size:12px" title="'+escapeHtml(s.delivery_detail||'')+'">'+dv[1]+'</span>':'<span style="opacity:.4">—</span>';
     html+='<tr class="row" data-i="'+i+'">'+
@@ -6180,7 +6180,7 @@ th{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px}
 </style></head><body>
 __NAVBAR__
 <div class="page-hdr"><div class="page-title">🚚 Shipping Status <span>__NAME__</span></div>
-<button class="btn btn-p" id="refresh">↻ Refresh from USPS</button></div>
+<button class="btn btn-p" id="refresh">↻ Reload</button></div>
 <div class="wrap">
 <div id="notice"></div>
 <div class="filters">
@@ -6214,8 +6214,7 @@ function fillSelect(sel,opts,cur){
 }
 function load(){
     fetch('/api/tracking/summary'+qs()).then(function(r){return r.json()}).then(function(d){
-        if(!d.enabled){document.getElementById('notice').innerHTML='<div class="warn">⚠️ USPS API not configured yet — delivery statuses won\\'t update until you add <b>USPS_CLIENT_ID</b> and <b>USPS_CLIENT_SECRET</b> on Railway and redeploy. (Free account at developers.usps.com.) Pipeline statuses (pending/picked/packed) still work.</div>'}
-        else{document.getElementById('notice').innerHTML=''}
+        document.getElementById('notice').innerHTML='<div style="background:rgba(96,165,250,.1);border:1px solid rgba(96,165,250,.3);color:#93c5fd;padding:10px 14px;border-radius:10px;margin-bottom:18px;font-size:13px">📦 Delivery statuses come from your TikTok order imports (Shipped Time / Delivered Time). To refresh, export <b>All orders</b> from TikTok Seller Center and re-import the show.</div>';
         // Populate the show/date dropdowns once (preserve current selection)
         if(!fillsDone){
             var shOpts='<option value="">All shows</option>'+(d.shows||[]).map(function(s){return '<option value="'+esc(s.label)+'">'+esc(s.label)+(s.date?(' · '+esc(s.date)):'')+'</option>'}).join('');
@@ -6234,7 +6233,7 @@ function load(){
         document.getElementById('rows').innerHTML=rows.map(function(s){
             var st=s.unified||'UNKNOWN';
             return '<tr><td>'+esc(s.buyer_name||s.buyer_username||'—')+'</td>'+
-                '<td class="tn">'+esc(s.tracking_code||'—')+'</td>'+
+                '<td class="tn">'+(s.tracking_code?'<a href="https://tools.usps.com/go/TrackConfirmAction?tLabels='+encodeURIComponent(s.tracking_code)+'" target="_blank" rel="noopener" class="tn" style="text-decoration:underline" title="Track on USPS.com">'+esc(s.tracking_code)+' ↗</a>':'—')+'</td>'+
                 '<td><span class="pill p-'+st+'">'+st.replace(/_/g,' ')+'</span></td>'+
                 '<td>'+esc(s.delivery_detail||'')+'</td>'+
                 '<td>'+esc(s.import_label||'')+'</td>'+
@@ -6249,14 +6248,7 @@ document.getElementById('fDate').addEventListener('change',load);
 document.getElementById('fClear').addEventListener('click',function(){
     filter='';document.getElementById('fShow').value='';document.getElementById('fDate').value='';load();
 });
-document.getElementById('refresh').addEventListener('click',function(){
-    var btn=this;btn.disabled=true;btn.textContent='Refreshing…';
-    fetch('/api/tracking/refresh?limit=200',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
-        btn.disabled=false;btn.textContent='↻ Refresh from USPS';
-        if(!d.ok){toast(d.error||'Refresh failed',true);return}
-        toast('Checked '+d.checked+', updated '+d.updated);load();
-    }).catch(function(){btn.disabled=false;btn.textContent='↻ Refresh from USPS';toast('Refresh failed',true)});
-});
+document.getElementById('refresh').addEventListener('click',function(){load();toast('Reloaded')});
 load();
 </script></body></html>'''
 
