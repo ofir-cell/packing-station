@@ -404,25 +404,25 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 body.sw{background:linear-gradient(135deg,#0c0f16,#111827)}
 body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
 </style></head><body class="sr">
-<div class="top"><div class="brand-tag"><span class="brand-mark-mini">5&nbsp;SEC</span><span class="badge">__STATION__ — __NAME__</span></div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span>Camera</span></div><a href="/pick" class="role-switch">📋 Switch to Picking</a><a href="/home" class="portal-b">🏠 Portal</a><button class="out-b" id="endBtn">End Shift</button></div></div>
+<div class="top"><div class="brand-tag"><span class="brand-mark-mini">5&nbsp;SEC</span><span class="badge">__STATION__ — __NAME__</span></div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span data-i18n="camera">Camera</span></div><button class="role-switch" id="langBtn" onclick="toggleLang()" style="cursor:pointer">ES</button><a href="/pick" class="role-switch" data-i18n="switchpick">📋 Switch to Picking</a><a href="/home" class="portal-b" data-i18n="portal">🏠 Portal</a><button class="out-b" id="endBtn" data-i18n="endshift">End Shift</button></div></div>
 <div class="pv"><video id="pv" autoplay muted playsinline></video></div>
 
-<div class="x on" id="xw"><div class="w-icon">👋</div><div class="w-title">Welcome, __NAME__!</div><div class="w-sub">You are at <b>__STATION__</b></div><div class="w-msg">Have a great shift! Your camera is being set up...</div></div>
+<div class="x on" id="xw"><div class="w-icon">👋</div><div class="w-title"><span data-i18n="welcomeg">Welcome</span>, __NAME__!</div><div class="w-sub"><span data-i18n="youareat">You are at</span> <b>__STATION__</b></div><div class="w-msg" data-i18n="greatshift">Have a great shift! Your camera is being set up...</div></div>
 
-<div class="x" id="xr"><div class="r-icon">📦</div><div class="r-title">Scan Tracking Number</div><div class="r-sub">Scan the barcode to start recording</div><div class="inp-w"><input class="inp" id="mi" placeholder="Waiting for scan..." autocomplete="off"></div><div class="hint"><span class="pd"></span>Scanner ready</div><div class="ctr">Recorded: <b id="cn">0</b></div></div>
+<div class="x" id="xr"><div class="r-icon">📦</div><div class="r-title" data-i18n="scantracking">Scan Tracking Number</div><div class="r-sub" data-i18n="scantostart">Scan the barcode to start recording</div><div class="inp-w"><input class="inp" id="mi" placeholder="Waiting for scan..." data-i18n-ph="waitscan" autocomplete="off"></div><div class="hint"><span class="pd"></span><span data-i18n="scannerready">Scanner ready</span></div><div class="ctr"><span data-i18n="recorded">Recorded:</span> <b id="cn">0</b></div></div>
 
-<div class="x" id="xc"><div class="rp"><div class="rd"></div><div class="rl">RECORDING</div></div><div class="rk" id="rk"></div><div class="rm" id="rmm">00:00</div>
-<div class="steps" id="stepsLight"><div class="step ok"><div class="si">✓</div><span>Scan tracking number</span></div><div class="step now"><div class="si">2</div><span>Pack the order in front of the camera</span></div><div class="step"><div class="si">3</div><span>Scan again to finish</span></div></div><input class="hinp" id="ri" autocomplete="off"></div>
+<div class="x" id="xc"><div class="rp"><div class="rd"></div><div class="rl" data-i18n="recording">RECORDING</div></div><div class="rk" id="rk"></div><div class="rm" id="rmm">00:00</div>
+<div class="steps" id="stepsLight"><div class="step ok"><div class="si">✓</div><span data-i18n="step_scan">Scan tracking number</span></div><div class="step now"><div class="si">2</div><span data-i18n="step_pack">Pack the order in front of the camera</span></div><div class="step"><div class="si">3</div><span data-i18n="step_again">Scan again to finish</span></div></div><input class="hinp" id="ri" autocomplete="off"></div>
 
 <!-- Stage 1 (8s): big centered count overlay shown after every scan -->
 <div id="countOverlay">
   <div class="count-card">
     <div class="count-icon">📦</div>
-    <div class="count-buyer" id="countBuyer">Looking up order…</div>
+    <div class="count-buyer" id="countBuyer" data-i18n="lookingup">Looking up order…</div>
     <div class="count-big" id="countBig">—</div>
-    <div class="count-label" id="countLabel">items in package</div>
+    <div class="count-label" id="countLabel" data-i18n="itemsinpkg">items in package</div>
     <div class="count-items" id="countItems"></div>
-    <div class="count-foot" id="countFoot">If an item is missing — set the package aside</div>
+    <div class="count-foot" id="countFoot" data-i18n="ifmissing">If an item is missing — set the package aside</div>
   </div>
 </div>
 
@@ -440,11 +440,11 @@ body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
 <div id="cancelOverlay" style="display:none">
   <div class="cancel-box">
     <div class="cancel-icon">🚨</div>
-    <div class="cancel-title">DO NOT PACK</div>
-    <div class="cancel-sub">This order has been cancelled</div>
-    <div class="cancel-buyer-row">Buyer: <b id="cancelBuyer">—</b></div>
-    <div class="cancel-reason-row" id="cancelReasonRow">Reason: <b id="cancelReason">—</b></div>
-    <button class="cancel-ok" id="cancelOk">Got it — return to scan</button>
+    <div class="cancel-title" data-i18n="donotpack">DO NOT PACK</div>
+    <div class="cancel-sub" data-i18n="ordercancelled">This order has been cancelled</div>
+    <div class="cancel-buyer-row"><span data-i18n="buyer">Buyer:</span> <b id="cancelBuyer">—</b></div>
+    <div class="cancel-reason-row" id="cancelReasonRow"><span data-i18n="reason">Reason:</span> <b id="cancelReason">—</b></div>
+    <button class="cancel-ok" id="cancelOk" data-i18n="gotitreturn">Got it — return to scan</button>
   </div>
 </div>
 
@@ -452,18 +452,18 @@ body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
 <div id="giveawayOverlay" style="display:none;position:fixed;inset:0;z-index:60;background:rgba(6,12,9,.93);align-items:center;justify-content:center">
   <div class="cancel-box" style="border-color:rgba(52,211,153,.5)">
     <div class="cancel-icon">🎁</div>
-    <div class="cancel-title" style="color:#34d399">ADD GIVEAWAY</div>
-    <div class="cancel-sub">Go to the <b>manager</b> to get the prize, then add it to the box before sealing</div>
+    <div class="cancel-title" style="color:#34d399" data-i18n="addgiveaway">ADD GIVEAWAY</div>
+    <div class="cancel-sub" data-i18n="gotomanagerpack">Go to the <b>manager</b> to get the prize, then add it to the box before sealing</div>
     <div id="gvList" style="margin:16px 0;font-size:20px;font-weight:800;color:#e4e8f1"></div>
-    <button class="cancel-ok" id="gvOk" style="background:#10b981">✓ Added — continue</button>
+    <button class="cancel-ok" id="gvOk" style="background:#10b981" data-i18n="addedcontinue">✓ Added — continue</button>
   </div>
 </div>
 
-<div class="x" id="xu"><div class="us"></div><div class="ut">Saving recording...</div><div class="uu">Please wait</div></div>
+<div class="x" id="xu"><div class="us"></div><div class="ut" data-i18n="savingrec">Saving recording...</div><div class="uu" data-i18n="pleasewait">Please wait</div></div>
 
-<div class="x" id="xd"><div class="d-icon">✓</div><div class="dt">Saved!</div><div class="dk" id="dkk"></div><div class="dd" id="ddd"></div><div class="dn">Next order...</div></div>
+<div class="x" id="xd"><div class="d-icon">✓</div><div class="dt" data-i18n="saved">Saved!</div><div class="dk" id="dkk"></div><div class="dd" id="ddd"></div><div class="dn" data-i18n="nextorder">Next order...</div></div>
 
-<div class="x" id="xf"><div class="f-icon">🌟</div><div class="f-title">Great job today!</div><div class="f-sub">Thank you for your hard work, __NAME__</div><div class="f-msg">Have a wonderful day! See you next time 👋</div></div>
+<div class="x" id="xf"><div class="f-icon">🌟</div><div class="f-title" data-i18n="greatjob">Great job today!</div><div class="f-sub"><span data-i18n="thankyou">Thank you for your hard work</span>, __NAME__</div><div class="f-msg" data-i18n="wonderfulday">Have a wonderful day! See you next time 👋</div></div>
 
 <script>
 var st='w',ti=null,t0=0,n=0,mr=null,ch=[],sm=null,ct='';
@@ -1497,29 +1497,39 @@ input{position:absolute;opacity:0;pointer-events:none}
 .welcome-loading .sp{width:14px;height:14px;border:2px solid rgba(255,255,255,.15);border-top-color:#f3c9c4;border-radius:50%;animation:sp 1s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
 </style></head><body>
+<button id="langBtn" onclick="toggleLang()" style="position:fixed;top:14px;right:14px;z-index:200;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);color:#e4e8f1;border-radius:10px;padding:8px 14px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit">ES</button>
 <div class="box">
 <div class="brand-line"><span class="brand-mark-page">5&nbsp;SEC</span><span class="brand-sub-page">Employee Hub</span></div>
 <div class="logo">🎫</div>
-<h1>Welcome!</h1>
-<div class="sub">Scan your employee badge to begin</div>
+<h1 data-i18n="welcome">Welcome!</h1>
+<div class="sub" data-i18n="sub">Scan your employee badge to begin</div>
 <div class="scan-area focus" id="sa">
 <div class="scan-icon">📡</div>
-<div class="scan-text" id="st">Ready to scan</div>
-<div class="scan-hint">Hold your badge under the scanner</div>
+<div class="scan-text" id="st" data-i18n="ready">Ready to scan</div>
+<div class="scan-hint" data-i18n="hold">Hold your badge under the scanner</div>
 </div>
 <input type="text" id="tk" autofocus autocomplete="off" inputmode="none">
-<a href="/login" class="alt-link">⌨ Use username & password instead</a>
+<a href="/login" class="alt-link" data-i18n="altlink">⌨ Use username & password instead</a>
 </div>
 <div class="welcome-ov" id="welcomeOv">
   <div class="welcome-avatar" id="welcomeAvatar">?</div>
   <div class="welcome-eyebrow" id="welcomeEyebrow">Welcome back</div>
   <div class="welcome-name" id="welcomeName">—</div>
-  <div class="welcome-loading"><div class="sp"></div><span>Loading your workspace…</span></div>
+  <div class="welcome-loading"><div class="sp"></div><span data-i18n="loadws">Loading your workspace…</span></div>
 </div>
 <div class="toast" id="toast"></div>
 <script>
+var LANG=localStorage.getItem('lang')||'en';
+var T={
+ en:{welcome:'Welcome!',sub:'Scan your employee badge to begin',ready:'Ready to scan',hold:'Hold your badge under the scanner',altlink:'⌨ Use username & password instead',loadws:'Loading your workspace…',verifying:'Verifying...',reading:'Reading...',notrec:'Badge not recognized',connerr:'Connection error',tryagain:'Try again',gm:'Good morning',ga:'Good afternoon',ge:'Good evening',late:'Late night shift',workinglate:'Working late',hi:'Hi'},
+ es:{welcome:'¡Bienvenido!',sub:'Escanea tu credencial para comenzar',ready:'Listo para escanear',hold:'Coloca tu credencial bajo el escáner',altlink:'⌨ Usar usuario y contraseña',loadws:'Cargando tu espacio…',verifying:'Verificando...',reading:'Leyendo...',notrec:'Credencial no reconocida',connerr:'Error de conexión',tryagain:'Intenta de nuevo',gm:'Buenos días',ga:'Buenas tardes',ge:'Buenas noches',late:'Turno nocturno',workinglate:'Trabajando tarde',hi:'¡Hola'}
+};
+function t(k){return (T[LANG]&&T[LANG][k])||T.en[k]||k}
+function toggleLang(){LANG=(LANG==='en'?'es':'en');localStorage.setItem('lang',LANG);location.reload()}
+function applyLang(){document.querySelectorAll('[data-i18n]').forEach(function(e){e.textContent=t(e.dataset.i18n)});var lb=document.getElementById('langBtn');if(lb)lb.textContent=(LANG==='en'?'ES':'EN')}
 var inp=document.getElementById('tk'),sa=document.getElementById('sa'),st=document.getElementById('st');
 var buf="",lastKey=0,timer=null;
+applyLang();
 
 function showToast(m,err){
     var t=document.getElementById('toast');t.textContent=m;t.className=err?'toast err':'toast';t.style.display='block';
@@ -1527,7 +1537,7 @@ function showToast(m,err){
 }
 
 function tryLogin(token){
-    sa.className='scan-area';st.textContent='Verifying...';
+    sa.className='scan-area';st.textContent=t('verifying');
     fetch('/api/badge-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token})})
     .then(function(r){return r.json()}).then(function(d){
         if(d.ok){
@@ -1536,21 +1546,21 @@ function tryLogin(token){
             var initial=(nm.trim().charAt(0)||'?').toUpperCase();
             // Time-of-day eyebrow
             var hr=new Date().getHours();
-            var eb=hr<5?'Late night shift':hr<12?'Good morning':hr<17?'Good afternoon':hr<22?'Good evening':'Working late';
+            var eb=hr<5?t('late'):hr<12?t('gm'):hr<17?t('ga'):hr<22?t('ge'):t('workinglate');
             document.getElementById('welcomeAvatar').textContent=initial;
             document.getElementById('welcomeEyebrow').textContent=eb;
-            document.getElementById('welcomeName').textContent='Hi, '+nm+'!';
+            document.getElementById('welcomeName').textContent=t('hi')+', '+nm+'!';
             document.getElementById('welcomeOv').classList.add('on');
-            sa.className='scan-area success';st.textContent='Welcome, '+d.name+'!';
+            sa.className='scan-area success';st.textContent=t('hi')+', '+d.name+'!';
             setTimeout(function(){location.href='/'},1500);
         } else {
-            sa.className='scan-area error';st.textContent='Badge not recognized';
-            showToast(d.error||'Try again',true);
-            setTimeout(function(){sa.className='scan-area focus';st.textContent='Ready to scan';buf=""},1500);
+            sa.className='scan-area error';st.textContent=t('notrec');
+            showToast(d.error||t('tryagain'),true);
+            setTimeout(function(){sa.className='scan-area focus';st.textContent=t('ready');buf=""},1500);
         }
     }).catch(function(){
-        sa.className='scan-area error';st.textContent='Connection error';
-        setTimeout(function(){sa.className='scan-area focus';st.textContent='Ready to scan';buf=""},1500);
+        sa.className='scan-area error';st.textContent=t('connerr');
+        setTimeout(function(){sa.className='scan-area focus';st.textContent=t('ready');buf=""},1500);
     });
 }
 
@@ -1570,11 +1580,11 @@ document.addEventListener('keydown',function(e){
         e.preventDefault();
     } else if(e.key.length===1) {
         buf+=e.key;
-        if(buf.length===1){sa.className='scan-area';st.textContent='Reading...'}
+        if(buf.length===1){sa.className='scan-area';st.textContent=t('reading')}
         // Auto-reset display if user stops typing (didn't hit Enter)
         clearTimeout(timer);
         timer=setTimeout(function(){
-            if(buf.length>0&&Date.now()-lastKey>500){buf="";sa.className='scan-area focus';st.textContent='Ready to scan'}
+            if(buf.length>0&&Date.now()-lastKey>500){buf="";sa.className='scan-area focus';st.textContent=t('ready')}
         },1500);
     }
 });
@@ -4216,17 +4226,18 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   </div>
   <div class="top-show" id="topShow"></div>
   <span class="mode-badge" id="modeBadge" title="This iPad is set as a picking station">📋 PICK iPAD</span>
-  <a href="/?force=pack" class="role-switch-top" title="Switch to packing screen (stays logged in)">📦 Switch to Packing</a>
+  <a href="/?force=pack" class="role-switch-top" title="Switch to packing screen (stays logged in)" data-i18n="switchpack">📦 Switch to Packing</a>
+  <button class="theme-toggle" id="langBtn" onclick="toggleLang()" title="Language" style="width:auto;padding:0 12px;font-weight:800;font-size:13px">ES</button>
   <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">☀️</button>
-  <a href="/logout" class="top-logout">Logout</a>
+  <a href="/logout" class="top-logout" data-i18n="logout">Logout</a>
 </div>
 
 <div class="page">
   <!-- STATE A: Show picker -->
   <div id="showView">
-    <div class="show-prompt">Step 1</div>
-    <div class="show-h1">Which show are you picking?</div>
-    <div class="show-help">Pick the show you'll be collecting orders for. You can switch later if you change tables.</div>
+    <div class="show-prompt" data-i18n="step1">Step 1</div>
+    <div class="show-h1" data-i18n="whichshow">Which show are you picking?</div>
+    <div class="show-help" data-i18n="showhelp">Pick the show you'll be collecting orders for. You can switch later if you change tables.</div>
     <div class="show-list" id="showList"></div>
 
     <!-- Admin-only: configure this device as a permanent picking station -->
@@ -4244,28 +4255,28 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   <!-- STATE B: Scan ready -->
   <div id="scanView">
     <div class="scan-icon">📋</div>
-    <div class="scan-title">Ready to scan</div>
-    <div class="scan-sub">Aim the scanner at the barcode on the packing label.</div>
+    <div class="scan-title" data-i18n="readyscan">Ready to scan</div>
+    <div class="scan-sub" data-i18n="aimscan">Aim the scanner at the barcode on the packing label.</div>
     <div class="scan-input-wrap">
-      <input class="scan-input" id="scanInput" placeholder="Waiting for scan…" inputmode="none" autocomplete="off">
+      <input class="scan-input" id="scanInput" placeholder="Waiting for scan…" data-i18n-ph="waitscan" inputmode="none" autocomplete="off">
     </div>
-    <div class="scan-status"><span class="dot"></span><span>Scanner ready</span></div>
+    <div class="scan-status"><span class="dot"></span><span data-i18n="scannerready">Scanner ready</span></div>
     <div class="stats-row">
-      <div class="session-stat"><div class="num" id="sessionCount">0</div><div class="txt">this <b>session</b></div></div>
-      <div class="session-stat brand"><div class="num" id="todayCount">0</div><div class="txt">today total</div></div>
-      <div class="session-stat"><div class="num" id="weekCount">0</div><div class="txt">past 7 days</div></div>
+      <div class="session-stat"><div class="num" id="sessionCount">0</div><div class="txt" data-i18n="st_session">this session</div></div>
+      <div class="session-stat brand"><div class="num" id="todayCount">0</div><div class="txt" data-i18n="st_today">today total</div></div>
+      <div class="session-stat"><div class="num" id="weekCount">0</div><div class="txt" data-i18n="st_week">past 7 days</div></div>
     </div>
   </div>
 
   <!-- STATE C: Checklist -->
   <div id="listView">
     <div class="list-head">
-      <button class="back-btn" id="backBtn">← Cancel — back to scan</button>
+      <button class="back-btn" id="backBtn" data-i18n="backscan">← Cancel — back to scan</button>
       <div class="list-buyer" id="listBuyer">—</div>
       <div class="list-meta" id="listMeta"></div>
     </div>
     <div class="progress-row">
-      <div class="progress-text"><b id="pickedCount">0</b> of <span id="totalCount">0</span> picked</div>
+      <div class="progress-text"><b id="pickedCount">0</b> <span data-i18n="of">of</span> <span id="totalCount">0</span> <span data-i18n="pickedw">picked</span></div>
       <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
     </div>
     <div class="items-list" id="itemsList"></div>
@@ -4273,25 +4284,25 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 </div>
 
 <div class="done-bar" id="doneBar">
-  <button class="done-btn idle" id="doneBtn">Tap items above as you pick them</button>
-  <button class="issue-btn" id="issueBtn">🚧 Report a problem with this order</button>
+  <button class="done-btn idle" id="doneBtn" data-i18n="tapitems">Tap items above as you pick them</button>
+  <button class="issue-btn" id="issueBtn" data-i18n="reportproblem">🚧 Report a problem with this order</button>
 </div>
 
 <!-- Issue report modal -->
 <div class="issue-modal" id="issueModal" style="display:none">
   <div class="issue-card">
-    <h3>Problem with this order</h3>
-    <div class="issue-help">Tell the manager what's wrong so they can fix it. The order moves to the "Issues" queue and you can continue picking the next one.</div>
+    <h3 data-i18n="problemtitle">Problem with this order</h3>
+    <div class="issue-help" data-i18n="problemhelp">Tell the manager what's wrong so they can fix it. The order moves to the "Issues" queue and you can continue picking the next one.</div>
     <div class="issue-presets" id="issuePresets">
-      <button class="preset" data-r="Item missing — not on the table">Item missing</button>
-      <button class="preset" data-r="Item damaged">Damaged</button>
-      <button class="preset" data-r="Wrong SKU on the table">Wrong SKU</button>
-      <button class="preset" data-r="Can't find the table">Can't find</button>
+      <button class="preset" data-r="Item missing — not on the table" data-i18n="p_missing">Item missing</button>
+      <button class="preset" data-r="Item damaged" data-i18n="p_damaged">Damaged</button>
+      <button class="preset" data-r="Wrong SKU on the table" data-i18n="p_wrongsku">Wrong SKU</button>
+      <button class="preset" data-r="Can't find the table" data-i18n="p_cantfind">Can't find</button>
     </div>
-    <textarea id="issueReason" placeholder="Or describe the problem here…" rows="3"></textarea>
+    <textarea id="issueReason" placeholder="Or describe the problem here…" data-i18n-ph="describeproblem" rows="3"></textarea>
     <div class="issue-actions">
-      <button class="btn-cancel" id="issueCancel">Cancel</button>
-      <button class="btn-submit" id="issueSubmit">Report & skip</button>
+      <button class="btn-cancel" id="issueCancel" data-i18n="cancel">Cancel</button>
+      <button class="btn-submit" id="issueSubmit" data-i18n="reportskip">Report & skip</button>
     </div>
   </div>
 </div>
@@ -4299,14 +4310,54 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 <!-- Cancelled alert -->
 <div class="cancel-overlay" id="cancelOverlay">
   <div class="icn">🚨</div>
-  <div class="ttl">DO NOT PICK</div>
-  <div class="sub">This order has been cancelled by the customer.<br>Skip it and scan the next label.</div>
-  <button class="ok" id="cancelOk">Got it — back to scan</button>
+  <div class="ttl" data-i18n="donotpick">DO NOT PICK</div>
+  <div class="sub" data-i18n="cancelledsub">This order has been cancelled by the customer.<br>Skip it and scan the next label.</div>
+  <button class="ok" id="cancelOk" data-i18n="gotitscan">Got it — back to scan</button>
 </div>
 
 <div class="toast" id="toast">—</div>
 
 <script>
+var LANG=localStorage.getItem('lang')||'en';
+var T={en:{
+ switchpack:'📦 Switch to Packing',logout:'Logout',step1:'Step 1',whichshow:'Which show are you picking?',
+ showhelp:"Pick the show you'll be collecting orders for. You can switch later if you change tables.",
+ readyscan:'Ready to scan',aimscan:'Aim the scanner at the barcode on the packing label.',waitscan:'Waiting for scan…',
+ scannerready:'Scanner ready',st_session:'this session',st_today:'today total',st_week:'past 7 days',
+ backscan:'← Cancel — back to scan',of:'of',pickedw:'picked',tapitems:'Tap items above as you pick them',
+ reportproblem:'🚧 Report a problem with this order',problemtitle:'Problem with this order',
+ problemhelp:'Tell the manager what\\'s wrong so they can fix it. The order moves to the "Issues" queue and you can continue picking the next one.',
+ p_missing:'Item missing',p_damaged:'Damaged',p_wrongsku:'Wrong SKU',p_cantfind:"Can't find",
+ describeproblem:'Or describe the problem here…',cancel:'Cancel',reportskip:'Report & skip',
+ donotpick:'DO NOT PICK',cancelledsub:'This order has been cancelled by the customer.<br>Skip it and scan the next label.',
+ gotitscan:'Got it — back to scan',donebring:'✓ Done — bring to packer',moretopick:'more to pick',
+ combined:'⚠️ COMBINED ORDER',shows:'SHOWS',combinedsub:'Items come from different shows — pick each TABLE SET below in order',
+ tableset:'TABLE SET',giveaway:'GIVEAWAY',gotomanager:'GO TO MANAGER TO GET IT',alreadypicked:'Already picked by',
+ clearcancelled:'Clear cancelled items off the table first',noshipment:'No shipment for',lookupfailed:'Lookup failed'
+},es:{
+ switchpack:'📦 Cambiar a Empaque',logout:'Salir',step1:'Paso 1',whichshow:'¿Qué show estás recolectando?',
+ showhelp:'Elige el show del que recolectarás pedidos. Puedes cambiar después si cambias de mesa.',
+ readyscan:'Listo para escanear',aimscan:'Apunta el escáner al código de barras de la etiqueta de envío.',waitscan:'Esperando escaneo…',
+ scannerready:'Escáner listo',st_session:'esta sesión',st_today:'total de hoy',st_week:'últimos 7 días',
+ backscan:'← Cancelar — volver a escanear',of:'de',pickedw:'recolectados',tapitems:'Toca los artículos a medida que los recolectas',
+ reportproblem:'🚧 Reportar un problema con este pedido',problemtitle:'Problema con este pedido',
+ problemhelp:'Dile al gerente qué está mal para que lo arregle. El pedido pasa a la cola de "Problemas" y puedes seguir con el siguiente.',
+ p_missing:'Falta artículo',p_damaged:'Dañado',p_wrongsku:'SKU incorrecto',p_cantfind:'No lo encuentro',
+ describeproblem:'O describe el problema aquí…',cancel:'Cancelar',reportskip:'Reportar y saltar',
+ donotpick:'NO RECOLECTAR',cancelledsub:'Este pedido fue cancelado por el cliente.<br>Sáltalo y escanea la siguiente etiqueta.',
+ gotitscan:'Entendido — volver a escanear',donebring:'✓ Listo — llévalo al empacador',moretopick:'por recolectar',
+ combined:'⚠️ PEDIDO COMBINADO',shows:'SHOWS',combinedsub:'Los artículos son de shows distintos — recolecta cada SET DE MESAS abajo en orden',
+ tableset:'SET DE MESAS',giveaway:'REGALO',gotomanager:'VE AL GERENTE POR ESTE REGALO',alreadypicked:'Ya recolectado por',
+ clearcancelled:'Primero retira los artículos cancelados de la mesa',noshipment:'No hay envío para',lookupfailed:'Búsqueda fallida'
+}};
+function t(k){return (T[LANG]&&T[LANG][k])||T.en[k]||k}
+function toggleLang(){LANG=(LANG==='en'?'es':'en');localStorage.setItem('lang',LANG);location.reload()}
+function applyLang(){
+ document.querySelectorAll('[data-i18n]').forEach(function(e){e.innerHTML=t(e.dataset.i18n)});
+ document.querySelectorAll('[data-i18n-ph]').forEach(function(e){e.placeholder=t(e.dataset.i18nPh)});
+ var lb=document.getElementById('langBtn');if(lb)lb.textContent=(LANG==='en'?'ES':'EN');
+}
+applyLang();
 var currentShow=localStorage.getItem('pickShow')||'';
 var currentDetail=null,currentItems=[],sessionCount=0;
 var availableShows=[];
@@ -4486,7 +4537,7 @@ function lookupAndOpen(code){
         // Fall back to the generic shipment lookup which accepts either.
         if(!d.ok){
             return fetch('/api/shipment/'+encodeURIComponent(code)).then(function(r){return r.json()}).then(function(d2){
-                if(!d2.ok){sndError();showToast('No shipment for "'+code+'"');return}
+                if(!d2.ok){sndError();showToast(t('noshipment')+' "'+code+'"');return}
                 openDetail(d2.shipment.shipment_id);
             });
         }
@@ -4496,14 +4547,14 @@ function lookupAndOpen(code){
 
 function openDetail(sid){
     fetch('/api/pick/'+encodeURIComponent(sid)).then(function(r){return r.json()}).then(function(d){
-        if(!d.ok){showToast(d.error||'Lookup failed');return}
+        if(!d.ok){showToast(d.error||t('lookupfailed'));return}
         var s=d.shipment, items=d.items||[];
         // Hard cleanup gate — server tells us the show isn't clean yet.
         // Send the picker straight to the cleanup screen for that show.
         if(d.cleanup_blocked){
             sndError();
             var lbl=s.import_label||'';
-            showToast('Clear cancelled items off the table first',true);
+            showToast(t('clearcancelled'),true);
             setTimeout(function(){location.href='/admin/cleanup?show='+encodeURIComponent(lbl)},900);
             return;
         }
@@ -4514,7 +4565,7 @@ function openDetail(sid){
         }
         if(s.status==='picked'){
             sndError();
-            showToast('Already picked by '+(s.picked_by||'someone'),true);
+            showToast(t('alreadypicked')+' '+(s.picked_by||'someone'),true);
             return;
         }
         // Optional: warn if from a different show than the one currently selected
@@ -4527,7 +4578,7 @@ function openDetail(sid){
         var meta='<span class="pill pill-id">'+escapeHtml(s.shipment_id)+'</span>';
         if(s.tracking_code)meta+='<span class="pill pill-track">'+escapeHtml(s.tracking_code)+'</span>';
         if(d.giveaways&&d.giveaways.length){
-            meta+='<span class="pill" style="background:rgba(52,211,153,.2);color:#34d399;font-weight:800;display:block;width:100%;margin-top:8px;padding:10px 12px;font-size:14px">🎁 GIVEAWAY: '+d.giveaways.map(function(g){return escapeHtml(g.prize_name)+(g.winner_username?' (@'+escapeHtml(g.winner_username)+')':'')}).join(', ')+' — GO TO MANAGER TO GET IT</span>';
+            meta+='<span class="pill" style="background:rgba(52,211,153,.2);color:#34d399;font-weight:800;display:block;width:100%;margin-top:8px;padding:10px 12px;font-size:14px">🎁 '+t('giveaway')+': '+d.giveaways.map(function(g){return escapeHtml(g.prize_name)+(g.winner_username?' (@'+escapeHtml(g.winner_username)+')':'')}).join(', ')+' — '+t('gotomanager')+'</span>';
         }
         document.getElementById('listMeta').innerHTML=meta;
         renderItems();
@@ -4562,12 +4613,12 @@ function renderItems(){
     var shows=[];arr.forEach(function(x){if(shows.indexOf(x.base)<0)shows.push(x.base)});
     var multi=shows.length>1, lastBase=null, setIdx=0, html='';
     if(multi){
-        html+='<div style="margin-bottom:12px;padding:13px 14px;border-radius:12px;background:rgba(251,191,36,.18);border:2px solid rgba(251,191,36,.6);color:#fbbf24;font-weight:900;font-size:15px;text-align:center;letter-spacing:.3px">⚠️ COMBINED ORDER · '+shows.length+' SHOWS<div style="font-weight:600;font-size:12px;color:var(--text-muted);margin-top:4px">Items come from different shows — pick each TABLE SET below in order</div></div>';
+        html+='<div style="margin-bottom:12px;padding:13px 14px;border-radius:12px;background:rgba(251,191,36,.18);border:2px solid rgba(251,191,36,.6);color:#fbbf24;font-weight:900;font-size:15px;text-align:center;letter-spacing:.3px">'+t('combined')+' · '+shows.length+' '+t('shows')+'<div style="font-weight:600;font-size:12px;color:var(--text-muted);margin-top:4px">'+t('combinedsub')+'</div></div>';
     }
     arr.forEach(function(x){
         if(multi && x.base!==lastBase){
             setIdx++; lastBase=x.base;
-            html+='<div style="margin:16px 0 8px;padding:9px 13px;border-radius:10px;background:rgba(243,201,196,.16);border:1px solid rgba(243,201,196,.35);color:var(--brand);font-weight:800;font-size:14px;display:flex;justify-content:space-between;gap:8px"><span>📋 TABLE SET '+setIdx+'</span><span style="font-weight:600;color:var(--text-muted)">'+escapeHtml(x.base)+'</span></div>';
+            html+='<div style="margin:16px 0 8px;padding:9px 13px;border-radius:10px;background:rgba(243,201,196,.16);border:1px solid rgba(243,201,196,.35);color:var(--brand);font-weight:800;font-size:14px;display:flex;justify-content:space-between;gap:8px"><span>📋 '+t('tableset')+' '+setIdx+'</span><span style="font-weight:600;color:var(--text-muted)">'+escapeHtml(x.base)+'</span></div>';
         }
         var it=x.it, cls='pi'+(it.cancelled?' cancelled':(it.picked?' done':''));
         html+='<div class="'+cls+'" data-id="'+it.id+'">'+
@@ -4587,10 +4638,10 @@ function renderItems(){
     var btn=document.getElementById('doneBtn');
     if(pickedN===total && total>0){
         btn.classList.remove('idle');
-        btn.textContent='✓ Done — bring to packer';
+        btn.textContent=t('donebring');
     } else {
         btn.classList.add('idle');
-        btn.textContent=(total-pickedN)+' more to pick';
+        btn.textContent=(total-pickedN)+' '+t('moretopick');
     }
 }
 
