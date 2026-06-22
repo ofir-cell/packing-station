@@ -773,13 +773,15 @@ def _cleanup_groups(label):
             g["removed_at"] = st["removed_at"]
             g["removed_by"] = st["removed_by"]
         out.append(g)
-    # Sort numerically by SKU when SKU is numeric, alphabetically otherwise, then by Part
+    # Order to match the picking flow: Part ascending (1→2→3), then SKU ascending
+    # (numeric first, then non-numeric). Items with no Part sort last.
     def sort_key(g):
+        p = g["part"] if isinstance(g["part"], int) else 9999
         s = g["sku"]
         try:
-            return (0, int(s), g["part"])
+            return (p, 0, int(s))
         except (ValueError, TypeError):
-            return (1, s, g["part"])
+            return (p, 1, s)
     out.sort(key=sort_key)
     return out
 
@@ -2398,7 +2400,22 @@ def _norm_tiktok(row):
         "status":     s("Order Status"),
         "cancel_reason": s("Cancel Reason"),
         "created_at": s("Created Time")[:10],
+        "shipped_time":   s("Shipped Time"),
+        "delivered_time": s("Delivered Time"),
     }
+
+def _derive_delivery(n):
+    """From a TikTok order row, derive (delivery_status, detail, delivered_at).
+    TikTok's export carries Shipped Time / Delivered Time / Order Status — so we get
+    delivery status straight from the data, no carrier API needed."""
+    dt=(n.get("delivered_time") or "").strip()
+    st=(n.get("shipped_time") or "").strip()
+    os=(n.get("status") or "").lower()
+    if dt or "delivered" in os or "completed" in os:
+        return ("DELIVERED", ("Delivered "+dt).strip()+" · per TikTok", (dt or None))
+    if st or "shipped" in os or "in transit" in os or "transit" in os:
+        return ("IN_TRANSIT", ("Shipped "+st).strip()+" · per TikTok", None)
+    return (None, None, None)
 
 def _norm_whatnot(row):
     """Normalize a Whatnot row to the same dict shape."""
@@ -2495,26 +2512,35 @@ def api_shipments_import():
         for pkg_id, group in by_pkg.items():
             first = group[0]
             tracking = first["tracking"] or None
+            dvs, dvd, dva = _derive_delivery(first)
+            dtrk = datetime.now().isoformat(timespec='seconds') if dvs else None
             existing = c.execute("SELECT shipment_id FROM shipments WHERE shipment_id=?", (pkg_id,)).fetchone()
             if existing:
                 c.execute("""UPDATE shipments
                              SET tracking_code=COALESCE(?,tracking_code),
                                  buyer_username=?, buyer_name=?, address_full=?, postal_code=?,
                                  show_date=?, platform=?, import_batch=COALESCE(import_batch,?),
-                                 import_label=COALESCE(import_label,?)
+                                 import_label=COALESCE(import_label,?),
+                                 delivery_status=COALESCE(?,delivery_status),
+                                 delivery_detail=COALESCE(?,delivery_detail),
+                                 delivered_at=COALESCE(?,delivered_at),
+                                 tracked_at=COALESCE(?,tracked_at)
                              WHERE shipment_id=?""",
                           (tracking, first["buyer_username"], first["buyer_name"],
                            first["address"], first["postal"], first["created_at"],
-                           platform, import_batch, label, pkg_id))
+                           platform, import_batch, label,
+                           dvs, dvd, dva, dtrk, pkg_id))
                 updated += 1
             else:
                 c.execute("""INSERT INTO shipments
                     (shipment_id, tracking_code, buyer_username, buyer_name, address_full,
-                     postal_code, show_date, status, platform, import_batch, import_label)
-                    VALUES (?,?,?,?,?,?,?, 'pending', ?, ?, ?)""",
+                     postal_code, show_date, status, platform, import_batch, import_label,
+                     delivery_status, delivery_detail, delivered_at, tracked_at)
+                    VALUES (?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?,?,?,?)""",
                     (pkg_id, tracking, first["buyer_username"], first["buyer_name"],
                      first["address"], first["postal"], first["created_at"],
-                     platform, import_batch, label))
+                     platform, import_batch, label,
+                     dvs, dvd, dva, dtrk))
                 inserted += 1
             # Replace items for this shipment
             c.execute("DELETE FROM shipment_items WHERE shipment_id=?", (pkg_id,))
