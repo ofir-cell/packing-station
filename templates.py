@@ -4536,6 +4536,17 @@ function openDetail(sid){
     });
 }
 
+// Parse the show (date+name), Part number, and SKU number from an item so the
+// pick list follows the warehouse flow: show by date → Part 1→2→3 → SKU ascending.
+function _showOf(name){
+    name=name||'';
+    var base=name.replace(/\s*Part\s*\d+.*$/i,'').trim();
+    var dm=name.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+    var dnum=dm?(parseInt(dm[3].length===2?'20'+dm[3]:dm[3])*10000+parseInt(dm[1])*100+parseInt(dm[2])):99999999;
+    return {base:base||'Show', date:dnum};
+}
+function _partOf(name){var m=(name||'').match(/Part\s*(\d+)/i);return m?parseInt(m[1]):9999}
+function _skuNum(s){var m=(s||'').toString().match(/\d+/);return m?parseInt(m[0]):999999}
 function renderItems(){
     var active=currentItems.filter(function(i){return !i.cancelled});
     var pickedN=active.filter(function(i){return i.picked}).length;
@@ -4543,9 +4554,23 @@ function renderItems(){
     document.getElementById('pickedCount').textContent=pickedN;
     document.getElementById('totalCount').textContent=total;
     document.getElementById('progressFill').style.width=(total?100*pickedN/total:0)+'%';
-    document.getElementById('itemsList').innerHTML=currentItems.map(function(it){
-        var cls='pi'+(it.cancelled?' cancelled':(it.picked?' done':''));
-        return '<div class="'+cls+'" data-id="'+it.id+'">'+
+    var arr=currentItems.map(function(it){
+        var si=_showOf(it.product_name);
+        return {it:it,base:si.base,date:si.date,part:_partOf(it.product_name),sku:_skuNum(it.sku)};
+    });
+    arr.sort(function(a,b){return (a.date-b.date)||(a.part-b.part)||(a.sku-b.sku)||0});
+    var shows=[];arr.forEach(function(x){if(shows.indexOf(x.base)<0)shows.push(x.base)});
+    var multi=shows.length>1, lastBase=null, setIdx=0, html='';
+    if(multi){
+        html+='<div style="margin-bottom:12px;padding:13px 14px;border-radius:12px;background:rgba(251,191,36,.18);border:2px solid rgba(251,191,36,.6);color:#fbbf24;font-weight:900;font-size:15px;text-align:center;letter-spacing:.3px">⚠️ COMBINED ORDER · '+shows.length+' SHOWS<div style="font-weight:600;font-size:12px;color:var(--text-muted);margin-top:4px">Items come from different shows — pick each TABLE SET below in order</div></div>';
+    }
+    arr.forEach(function(x){
+        if(multi && x.base!==lastBase){
+            setIdx++; lastBase=x.base;
+            html+='<div style="margin:16px 0 8px;padding:9px 13px;border-radius:10px;background:rgba(243,201,196,.16);border:1px solid rgba(243,201,196,.35);color:var(--brand);font-weight:800;font-size:14px;display:flex;justify-content:space-between;gap:8px"><span>📋 TABLE SET '+setIdx+'</span><span style="font-weight:600;color:var(--text-muted)">'+escapeHtml(x.base)+'</span></div>';
+        }
+        var it=x.it, cls='pi'+(it.cancelled?' cancelled':(it.picked?' done':''));
+        html+='<div class="'+cls+'" data-id="'+it.id+'">'+
             '<div class="pi-box"></div>'+
             '<div class="pi-info">'+
                 '<div class="pi-sku">'+escapeHtml(it.sku||'?')+'</div>'+
@@ -4553,7 +4578,8 @@ function renderItems(){
             '</div>'+
             '<div class="pi-qty">×'+(it.quantity||1)+'</div>'+
         '</div>';
-    }).join('');
+    });
+    document.getElementById('itemsList').innerHTML=html;
     document.getElementById('itemsList').querySelectorAll('.pi').forEach(function(el){
         if(el.classList.contains('cancelled'))return;
         el.addEventListener('click',function(){toggleItem(parseInt(el.dataset.id))});
