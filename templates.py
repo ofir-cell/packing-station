@@ -469,6 +469,38 @@ body.sf{background:linear-gradient(135deg,#061a0f,#0c1a14)}
 var st='w',ti=null,t0=0,n=0,mr=null,ch=[],sm=null,ct='';
 var mi=document.getElementById('mi'),ri=document.getElementById('ri');
 var X={w:document.getElementById('xw'),r:document.getElementById('xr'),c:document.getElementById('xc'),u:document.getElementById('xu'),d:document.getElementById('xd'),f:document.getElementById('xf')};
+var LANG=localStorage.getItem('lang')||'en';
+var T={en:{
+ camera:'Camera',switchpick:'📋 Switch to Picking',portal:'🏠 Portal',endshift:'End Shift',welcomeg:'Welcome',youareat:'You are at',
+ greatshift:'Have a great shift! Your camera is being set up...',scantracking:'Scan Tracking Number',scantostart:'Scan the barcode to start recording',
+ waitscan:'Waiting for scan...',scannerready:'Scanner ready',recorded:'Recorded:',recording:'RECORDING',step_scan:'Scan tracking number',
+ step_pack:'Pack the order in front of the camera',step_again:'Scan again to finish',lookingup:'Looking up order…',itemsinpkg:'items in package',
+ iteminpkg:'item in package',ifmissing:'If an item is missing — set the package aside',donotpack:'DO NOT PACK',ordercancelled:'This order has been cancelled',
+ buyer:'Buyer:',reason:'Reason:',gotitreturn:'Got it — return to scan',addgiveaway:'ADD GIVEAWAY',
+ gotomanagerpack:'Go to the <b>manager</b> to get the prize, then add it to the box before sealing',addedcontinue:'✓ Added — continue',
+ savingrec:'Saving recording...',pleasewait:'Please wait',saved:'Saved!',nextorder:'Next order...',greatjob:'Great job today!',
+ thankyou:'Thank you for your hard work',wonderfulday:'Have a wonderful day! See you next time 👋',nocamera:'No camera',
+ countbox:'Count what you put in the box — if anything is missing, set the package aside',prepicked:'✓ Pre-picked by',justverify:'· just verify count and pack',ordernotfound:'Order not found in system'
+},es:{
+ camera:'Cámara',switchpick:'📋 Cambiar a Recolección',portal:'🏠 Portal',endshift:'Terminar Turno',welcomeg:'Bienvenido',youareat:'Estás en',
+ greatshift:'¡Que tengas un buen turno! Tu cámara se está configurando...',scantracking:'Escanea el Número de Rastreo',scantostart:'Escanea el código para empezar a grabar',
+ waitscan:'Esperando escaneo...',scannerready:'Escáner listo',recorded:'Grabados:',recording:'GRABANDO',step_scan:'Escanea el número de rastreo',
+ step_pack:'Empaca el pedido frente a la cámara',step_again:'Escanea de nuevo para terminar',lookingup:'Buscando pedido…',itemsinpkg:'artículos en el paquete',
+ iteminpkg:'artículo en el paquete',ifmissing:'Si falta un artículo — aparta el paquete',donotpack:'NO EMPACAR',ordercancelled:'Este pedido fue cancelado',
+ buyer:'Comprador:',reason:'Motivo:',gotitreturn:'Entendido — volver a escanear',addgiveaway:'AGREGAR REGALO',
+ gotomanagerpack:'Ve al <b>gerente</b> por el regalo, luego agrégalo a la caja antes de sellar',addedcontinue:'✓ Agregado — continuar',
+ savingrec:'Guardando grabación...',pleasewait:'Por favor espera',saved:'¡Guardado!',nextorder:'Siguiente pedido...',greatjob:'¡Buen trabajo hoy!',
+ thankyou:'Gracias por tu esfuerzo',wonderfulday:'¡Que tengas un buen día! Hasta la próxima 👋',nocamera:'Sin cámara',
+ countbox:'Cuenta lo que pones en la caja — si falta algo, aparta el paquete',prepicked:'✓ Pre-recolectado por',justverify:'· solo verifica y empaca',ordernotfound:'Pedido no encontrado en el sistema'
+}};
+function t(k){return (T[LANG]&&T[LANG][k])||T.en[k]||k}
+function toggleLang(){LANG=(LANG==='en'?'es':'en');localStorage.setItem('lang',LANG);location.reload()}
+function applyLang(){
+ document.querySelectorAll('[data-i18n]').forEach(function(e){e.innerHTML=t(e.dataset.i18n)});
+ document.querySelectorAll('[data-i18n-ph]').forEach(function(e){e.placeholder=t(e.dataset.i18nPh)});
+ var lb=document.getElementById('langBtn');if(lb)lb.textContent=(LANG==='en'?'ES':'EN');
+}
+applyLang();
 function go(s){st=s;document.body.className=s==='c'?'sc':s==='d'?'sd':s==='u'?'su':s==='w'?'sw':s==='f'?'sf':'sr';
 for(var k in X)X[k].classList.toggle('on',k===s);
 if(s==='r'){mi.value='';setTimeout(function(){mi.focus()},100)}
@@ -479,7 +511,7 @@ document.addEventListener('click',function(){if(st==='r')mi.focus();if(st==='c')
 setInterval(function(){if(st==='r'&&document.activeElement!==mi)mi.focus();if(st==='c'&&document.activeElement!==ri)ri.focus()},400);
 function initCam(){navigator.mediaDevices.getUserMedia({video:{width:{ideal:854},height:{ideal:480},frameRate:{ideal:15,max:24}},audio:false}).then(function(s){sm=s;document.getElementById('pv').srcObject=s;document.getElementById('cm').className='cam ok'}).catch(function(){document.getElementById('cm').className='cam err'})}
 initCam();
-function startRec(t){if(!sm){alert('No camera');return}ct=t;ch=[];mr=new MediaRecorder(sm,{mimeType:'video/webm;codecs=vp8',videoBitsPerSecond:500000});mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};mr.start(1000);t0=Date.now();startTmr();document.getElementById('rk').textContent=t;go('c');loadChecklist(t)}
+function startRec(trk){if(!sm){alert(t('nocamera'));return}ct=trk;ch=[];mr=new MediaRecorder(sm,{mimeType:'video/webm;codecs=vp8',videoBitsPerSecond:500000});mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};mr.start(1000);t0=Date.now();startTmr();document.getElementById('rk').textContent=trk;go('c');loadChecklist(trk)}
 
 // ─── Packer item-count reminder (NO touch / NO buttons) ───
 // After each scan we look up the shipment and:
@@ -522,7 +554,7 @@ function loadChecklist(tracking){
     fetch('/api/shipment/'+encodeURIComponent(tracking)).then(function(r){return r.json()}).then(function(d){
         if(!d.ok){
             // Order not in system — still show the overlay so the packer knows to verify manually
-            document.getElementById('countBuyer').textContent='Order not found in system';
+            document.getElementById('countBuyer').textContent=t('ordernotfound');
             document.getElementById('countBig').textContent='?';
             document.getElementById('countLabel').textContent='unknown — verify by hand';
             document.getElementById('countLabel').className='count-label warn';
@@ -554,7 +586,7 @@ function loadChecklist(tracking){
         // ── Stage 1: big overlay ─────────────────────────────
         document.getElementById('countBuyer').innerHTML='Buyer: <b>'+safeBuyer+'</b>';
         document.getElementById('countBig').textContent=totalQty;
-        document.getElementById('countLabel').textContent=(totalQty===1?'item in package':'items in package');
+        document.getElementById('countLabel').textContent=(totalQty===1?t('iteminpkg'):t('itemsinpkg'));
         document.getElementById('countLabel').className='count-label';
         document.getElementById('countItems').innerHTML=items.map(function(it){
             var cls='count-item'+(it.cancelled?' cancelled':'');
@@ -569,10 +601,10 @@ function loadChecklist(tracking){
             document.getElementById('countFoot').className='count-foot warn';
         } else if(s.status==='picked' && s.picked_by){
             var when=s.picked_at?' '+(s.picked_at.replace('T',' ').slice(0,16)):'';
-            document.getElementById('countFoot').textContent='✓ Pre-picked by '+s.picked_by+when+' · just verify count and pack';
+            document.getElementById('countFoot').textContent=t('prepicked')+' '+s.picked_by+when+' '+t('justverify');
             document.getElementById('countFoot').className='count-foot';
         } else {
-            document.getElementById('countFoot').textContent='Count what you put in the box — if anything is missing, set the package aside';
+            document.getElementById('countFoot').textContent=t('countbox');
             document.getElementById('countFoot').className='count-foot';
         }
 
