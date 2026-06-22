@@ -375,6 +375,7 @@ def sdb_init():
         "ALTER TABLE shipment_items ADD COLUMN cancel_reason TEXT",
         "ALTER TABLE shipment_items ADD COLUMN picked INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN picked_at TEXT",
+        "ALTER TABLE shipment_items ADD COLUMN revenue REAL DEFAULT 0",
         # Bilingual onboarding — Spanish translations live in *_es columns
         # alongside the English originals. NULL ES → frontend falls back to EN.
         "ALTER TABLE onboarding_steps ADD COLUMN title_es TEXT",
@@ -517,6 +518,50 @@ def sdb_init():
     c.execute("""CREATE TABLE IF NOT EXISTS settings(
         key TEXT PRIMARY KEY,
         value TEXT
+    )""")
+    # ── INVENTORY & COSTING ─────────────────────────────────
+    # Product catalog (keyed by SKU). avg_cost = weighted-average cost from receiving.
+    c.execute("""CREATE TABLE IF NOT EXISTS products(
+        sku TEXT PRIMARY KEY,
+        name TEXT,
+        barcode TEXT,
+        image_url TEXT,
+        category TEXT,
+        avg_cost REAL DEFAULT 0,
+        on_hand INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)")
+    c.execute("""CREATE TABLE IF NOT EXISTS purchase_orders(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        supplier TEXT,
+        status TEXT DEFAULT 'open',
+        notes TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        received_at TEXT,
+        created_by TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS po_items(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        po_id INTEGER NOT NULL,
+        sku TEXT,
+        product_name TEXT,
+        qty_ordered INTEGER DEFAULT 0,
+        qty_received INTEGER DEFAULT 0,
+        unit_cost REAL DEFAULT 0
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_poitems_po ON po_items(po_id)")
+    # Receiving ledger — every stock-in with cost, for audit + weighted average.
+    c.execute("""CREATE TABLE IF NOT EXISTS stock_moves(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sku TEXT,
+        qty INTEGER,
+        unit_cost REAL,
+        po_id INTEGER,
+        note TEXT,
+        moved_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        moved_by TEXT
     )""")
     c.commit(); c.close()
 
@@ -2385,6 +2430,8 @@ def _norm_tiktok(row):
     except: qty = 1
     try: weight_g = round(float(s("Weight(kg)") or "0") * 1000, 1)  # kg → grams
     except: weight_g = 0
+    try: revenue = float((s("SKU Subtotal After Discount") or "0").replace(",","").replace("$",""))
+    except: revenue = 0.0
     return {
         "order_id":   s("Order ID"),
         "package_id": s("Package ID"),
@@ -2402,6 +2449,7 @@ def _norm_tiktok(row):
         "created_at": s("Created Time")[:10],
         "shipped_time":   s("Shipped Time"),
         "delivered_time": s("Delivered Time"),
+        "revenue":        revenue,
     }
 
 def _derive_delivery(n):
@@ -2549,9 +2597,9 @@ def api_shipments_import():
                 # Prefer per-row weight from CSV (TikTok); fall back to sku_weights map
                 w = (n["weight_g"] / max(len(group), 1)) if n["weight_g"] > 0 else sku_map.get(sku)
                 c.execute("""INSERT INTO shipment_items
-                             (shipment_id, order_id, sku, product_name, quantity, item_weight_g)
-                             VALUES (?,?,?,?,?,?)""",
-                          (pkg_id, n["order_id"], sku, n["product_name"], n["quantity"], w))
+                             (shipment_id, order_id, sku, product_name, quantity, item_weight_g, revenue)
+                             VALUES (?,?,?,?,?,?,?)""",
+                          (pkg_id, n["order_id"], sku, n["product_name"], n["quantity"], w, n.get("revenue", 0) or 0))
                 items_inserted += 1
                 if sku: unique_skus.add(sku)
             _recompute_shipment_weight(c, pkg_id)
