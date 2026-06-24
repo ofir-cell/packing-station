@@ -18,7 +18,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
-    INVENTORY_HTML, PROFIT_HTML,
+    INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
 
 
@@ -554,6 +554,19 @@ def sdb_init():
         unit_cost REAL DEFAULT 0
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_poitems_po ON po_items(po_id)")
+    # Inbound shipments — labels bought for supplier → warehouse shipments.
+    c.execute("""CREATE TABLE IF NOT EXISTS inbound_shipments(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        supplier TEXT,
+        carrier TEXT,
+        service TEXT,
+        tracking TEXT,
+        cost REAL,
+        label_url TEXT,
+        po_id INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        created_by TEXT
+    )""")
     # Receiving ledger — every stock-in with cost, for audit + weighted average.
     c.execute("""CREATE TABLE IF NOT EXISTS stock_moves(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5181,6 +5194,97 @@ def api_giveaway_buy_label(gid):
               (label, label, tracking, cost, datetime.now().isoformat(timespec='seconds'), gid))
     c.commit(); c.close()
     return jsonify({"ok":True,"label_url":label,"tracking":tracking,"cost":cost})
+
+@app.route("/api/packages",methods=["GET","POST"])
+@req_role("admin","cs")
+def api_packages():
+    """Saved package presets (box sizes) reused when buying labels."""
+    if request.method=="POST":
+        pkgs=(request.get_json() or {}).get("packages")
+        if not isinstance(pkgs,list): return jsonify({"ok":False,"error":"invalid"})
+        clean=[]
+        for p in pkgs[:50]:
+            try:
+                clean.append({"name":(p.get("name") or "").strip()[:40] or "Box",
+                    "weight":float(p.get("weight") or 0),"length":float(p.get("length") or 0),
+                    "width":float(p.get("width") or 0),"height":float(p.get("height") or 0)})
+            except Exception: pass
+        _set_setting("packages", json.dumps(clean))
+        return jsonify({"ok":True})
+    raw=_get_setting("packages")
+    return jsonify({"ok":True,"packages": json.loads(raw) if raw else []})
+
+def _easypost_rates(to, frm, weight, dims):
+    parcel={"weight":weight}
+    for k in ("length","width","height"):
+        try:
+            if dims.get(k): parcel[k]=float(dims[k])
+        except Exception: pass
+    sh=_easypost("POST","/shipments",{"shipment":{"to_address":to,"from_address":frm,"parcel":parcel}})
+    rates=[{"id":r.get("id"),"carrier":r.get("carrier"),"service":r.get("service"),
+            "rate":r.get("rate"),"days":r.get("delivery_days")} for r in (sh.get("rates") or [])]
+    rates.sort(key=lambda x: float(x["rate"] or 9999))
+    return sh.get("id"), rates
+
+@app.route("/api/label/rates",methods=["POST"])
+@req_role("admin","cs")
+def api_label_rates():
+    if not EASYPOST_ENABLED: return jsonify({"ok":False,"error":"EasyPost not configured — set EASYPOST_API_KEY."})
+    d=request.get_json() or {}
+    to=d.get("to_address") or {}
+    frm=d.get("from_address") or _ship_from()
+    if not (to.get("street1") and to.get("city") and to.get("state") and to.get("zip")):
+        return jsonify({"ok":False,"error":"Destination address incomplete (street/city/state/ZIP)."})
+    if not (frm.get("street1") and frm.get("zip")):
+        return jsonify({"ok":False,"error":"From address incomplete."})
+    try: weight=float(d.get("weight_oz") or 0)
+    except Exception: weight=0
+    if weight<=0: return jsonify({"ok":False,"error":"Enter weight (oz)."})
+    try:
+        sid,rates=_easypost_rates(to, frm, weight, d)
+    except _urlerr.HTTPError as e:
+        try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
+        except Exception: msg="HTTP "+str(e.code)
+        return jsonify({"ok":False,"error":"EasyPost: "+str(msg)})
+    except Exception as e: return jsonify({"ok":False,"error":str(e)})
+    return jsonify({"ok":True,"shipment_id":sid,"rates":rates})
+
+@app.route("/api/label/buy",methods=["POST"])
+@req_role("admin","cs")
+def api_label_buy():
+    if not EASYPOST_ENABLED: return jsonify({"ok":False,"error":"EasyPost not configured."})
+    d=request.get_json() or {}
+    sid=(d.get("shipment_id") or "").strip(); rid=(d.get("rate_id") or "").strip()
+    if not sid or not rid: return jsonify({"ok":False,"error":"Missing shipment/rate"})
+    try:
+        sh=_easypost("POST","/shipments/"+sid+"/buy",{"rate":{"id":rid}})
+    except _urlerr.HTTPError as e:
+        try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
+        except Exception: msg="HTTP "+str(e.code)
+        return jsonify({"ok":False,"error":"EasyPost: "+str(msg)})
+    except Exception as e: return jsonify({"ok":False,"error":str(e)})
+    label=(sh.get("postage_label") or {}).get("label_url"); tracking=sh.get("tracking_code")
+    sr=sh.get("selected_rate") or {}
+    c=sdb()
+    c.execute("""INSERT INTO inbound_shipments(supplier,carrier,service,tracking,cost,label_url,po_id,created_by)
+                 VALUES(?,?,?,?,?,?,?,?)""",
+              (d.get("supplier"),sr.get("carrier"),sr.get("service"),tracking,float(sr.get("rate") or 0),
+               label,d.get("po_id"),session.get("name","")[:60]))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"label_url":label,"tracking":tracking,"cost":float(sr.get("rate") or 0)})
+
+@app.route("/api/inbound")
+@req_role("admin","cs")
+def api_inbound_list():
+    c=sdb()
+    rows=c.execute("SELECT * FROM inbound_shipments ORDER BY created_at DESC LIMIT 100").fetchall()
+    c.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/admin/inbound")
+@req_role("admin","cs")
+def inbound_page():
+    return INBOUND_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("inbound")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/giveaway/<int:gid>/notes",methods=["POST"])
 @req_role("admin","cs")

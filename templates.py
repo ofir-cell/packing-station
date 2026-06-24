@@ -43,6 +43,7 @@ def _navbar(active_page=""):
             ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation"),
             ("shipstatus", "/shipping-status", "🚚 Shipping Status"),
             ("inventory", "/admin/inventory", "📦 Inventory"),
+            ("inbound", "/admin/inbound", "📥 Inbound · Supplier labels"),
             ("profit", "/admin/profit", "💰 Profit"),
             ("giveaway", "/giveaway", "Giveaways"),
         ]
@@ -1375,7 +1376,9 @@ function render(){
             '<button class="btn btn-p" id="saveAddr" style="margin-top:10px">Update Address</button></details></div>';
         h+='<div class="section"><h3>📦 Ship It</h3>'+
             '<div class="tip">🏷️ Buy a label here (EasyPost) — pick the cheapest carrier. Or enter a tracking number manually below.</div>'+
+            '<div class="f"><label>Package preset</label><select id="pkgSel"><option value="">— custom —</option></select></div>'+
             '<div class="f"><label>Package weight (oz)</label><input id="wt" type="number" step="0.1" placeholder="e.g. 6"></div>'+
+            '<div style="display:flex;gap:8px"><div class="f" style="flex:1"><label>L (in)</label><input id="ln" type="number" step="0.1"></div><div class="f" style="flex:1"><label>W (in)</label><input id="wd" type="number" step="0.1"></div><div class="f" style="flex:1"><label>H (in)</label><input id="ht" type="number" step="0.1"></div></div>'+
             '<button class="btn btn-p" id="getRates">Get rates →</button>'+
             '<div id="ratesBox" style="margin-top:12px"></div>'+
             '<details style="margin-top:14px"><summary style="cursor:pointer;color:#a5b4fc;font-size:13px">✏️ Or enter a tracking number manually</summary>'+
@@ -1479,12 +1482,22 @@ function bindEvents(){
             if(d.ok){toast('Cancelled');setTimeout(function(){location.href='/giveaway'},1000)}else toast(d.error||'Failed',true);
         });
     });
+    var psel=document.getElementById('pkgSel');
+    if(psel){
+        fetch('/api/packages').then(function(r){return r.json()}).then(function(d){
+            var pk=d.packages||[];window._pk=pk;
+            psel.innerHTML='<option value="">— custom —</option>'+pk.map(function(p,i){return '<option value="'+i+'">'+esc(p.name)+' ('+(p.weight||0)+'oz)</option>'}).join('');
+        });
+        psel.addEventListener('change',function(){var i=this.value;if(i===''||!window._pk)return;var p=window._pk[+i];
+            document.getElementById('wt').value=p.weight||'';document.getElementById('ln').value=p.length||'';
+            document.getElementById('wd').value=p.width||'';document.getElementById('ht').value=p.height||'';});
+    }
     var gr=document.getElementById('getRates');
     if(gr)gr.addEventListener('click',function(){
         var wt=document.getElementById('wt').value;
         if(!wt||parseFloat(wt)<=0){toast('Enter weight (oz)',true);return}
         var box=document.getElementById('ratesBox');box.innerHTML='<div style="color:#6b7a90;font-size:13px">Getting rates…</div>';
-        fetch('/api/giveaway/'+GID+'/rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weight_oz:parseFloat(wt)})})
+        fetch('/api/giveaway/'+GID+'/rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weight_oz:parseFloat(wt),length:document.getElementById('ln').value,width:document.getElementById('wd').value,height:document.getElementById('ht').value})})
          .then(function(r){return r.json()}).then(function(d){
             if(!d.ok){box.innerHTML='<div style="color:#fb7185;font-size:13px">'+esc(d.error||'Failed')+'</div>';return}
             if(!d.rates.length){box.innerHTML='<div style="color:#fb7185;font-size:13px">No rates returned</div>';return}
@@ -6674,4 +6687,151 @@ function load(){
 }
 document.getElementById('showSel').addEventListener('change',load);
 load();
+</script></body></html>'''
+
+
+# ── INBOUND — buy labels for supplier → warehouse shipments + package presets ──
+INBOUND_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Inbound Shipments</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1100px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1100px;margin:0 auto;padding:8px 28px 40px}
+.card{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:20px 22px;margin-bottom:20px}
+.card h2{font-size:14px;font-weight:800;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
+.desc{font-size:13px;color:#9ba9c1;margin-bottom:14px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+input,select{background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:10px 13px;font-size:14px;color:#e4e8f1;font-family:inherit;outline:none;width:100%}
+input:focus,select:focus{border-color:#4f46e5}
+label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin:8px 0 4px;text-transform:uppercase;letter-spacing:.4px}
+.btn{border:none;border-radius:10px;padding:11px 20px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}.btn-s{background:rgba(255,255,255,.08);color:#e4e8f1;border:1px solid rgba(255,255,255,.12)}
+.btn-x{background:rgba(244,63,94,.14);color:#fb7185;border:1px solid rgba(244,63,94,.3);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer}
+table{width:100%;border-collapse:collapse}th,td{padding:9px 11px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06);text-align:left}
+th{font-size:11px;color:#6b7a90;text-transform:uppercase}
+.pkgrow{display:grid;grid-template-columns:1.6fr .8fr .8fr .8fr .8fr auto;gap:8px;margin-bottom:8px;align-items:center}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}.toast.err{background:#f43f5e}
+.muted{color:#6b7a90;font-size:13px}.warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);color:#fbbf24;padding:10px 14px;border-radius:10px;font-size:13px;margin-bottom:14px}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">📥 Inbound Shipments <span>__NAME__</span></div></div>
+<div class="wrap">
+<div id="notice"></div>
+
+<div class="card">
+  <h2>📦 Package presets</h2>
+  <div class="desc">Save your common box sizes once, then pick them when buying a label (weight in oz, dimensions in inches).</div>
+  <div id="pkgList"></div>
+  <button class="btn btn-s" id="addPkg" style="margin-top:6px">+ Add package</button>
+  <button class="btn btn-p" id="savePkgs" style="margin-top:6px;margin-left:8px">Save presets</button>
+</div>
+
+<div class="card">
+  <h2>🏷️ Buy a label (supplier → us)</h2>
+  <div class="desc">Ships from the supplier to your warehouse (your ship-from address). Set ship-from in Permissions.</div>
+  <label>Supplier name</label><input id="supName" placeholder="Acme Supplies">
+  <div class="grid2">
+    <div><label>Supplier street</label><input id="sStreet1" placeholder="Street"></div>
+    <div><label>Street 2</label><input id="sStreet2" placeholder="Suite / unit"></div>
+    <div><label>City</label><input id="sCity"></div>
+    <div><label>State</label><input id="sState" placeholder="FL"></div>
+    <div><label>ZIP</label><input id="sZip"></div>
+    <div><label>Phone</label><input id="sPhone"></div>
+  </div>
+  <div class="grid2" style="margin-top:6px">
+    <div><label>Package preset</label><select id="pkgSel"><option value="">— custom —</option></select></div>
+    <div><label>Weight (oz)</label><input id="wt" type="number" step="0.1"></div>
+    <div><label>Length (in)</label><input id="ln" type="number" step="0.1"></div>
+    <div><label>Width (in)</label><input id="wd" type="number" step="0.1"></div>
+    <div><label>Height (in)</label><input id="ht" type="number" step="0.1"></div>
+  </div>
+  <button class="btn btn-p" id="getRates" style="margin-top:14px">Get rates →</button>
+  <div id="ratesBox" style="margin-top:12px"></div>
+</div>
+
+<div class="card">
+  <h2>🧾 Recent inbound labels</h2>
+  <table><thead><tr><th>Supplier</th><th>Carrier</th><th>Tracking</th><th>Cost</th><th>When</th><th>Label</th></tr></thead>
+  <tbody id="inRows"><tr><td colspan="6" class="muted">None yet</td></tr></tbody></table>
+</div>
+</div>
+<div class="toast" id="t"></div>
+<script>
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+var PKGS=[];
+function renderPkgs(){
+  document.getElementById('pkgList').innerHTML=PKGS.map(function(p,i){
+    return '<div class="pkgrow"><input value="'+esc(p.name)+'" data-i="'+i+'" data-k="name" placeholder="Name">'+
+      '<input type="number" value="'+(p.weight||'')+'" data-i="'+i+'" data-k="weight" placeholder="oz">'+
+      '<input type="number" value="'+(p.length||'')+'" data-i="'+i+'" data-k="length" placeholder="L">'+
+      '<input type="number" value="'+(p.width||'')+'" data-i="'+i+'" data-k="width" placeholder="W">'+
+      '<input type="number" value="'+(p.height||'')+'" data-i="'+i+'" data-k="height" placeholder="H">'+
+      '<button class="btn-x" onclick="delPkg('+i+')">✕</button></div>';
+  }).join('');
+  document.getElementById('pkgList').querySelectorAll('input').forEach(function(el){
+    el.addEventListener('input',function(){PKGS[+el.dataset.i][el.dataset.k]=el.dataset.k==='name'?el.value:parseFloat(el.value||'0')});
+  });
+  var sel=document.getElementById('pkgSel');sel.innerHTML='<option value="">— custom —</option>'+PKGS.map(function(p,i){return '<option value="'+i+'">'+esc(p.name)+' ('+(p.weight||0)+'oz)</option>'}).join('');
+}
+function delPkg(i){PKGS.splice(i,1);renderPkgs()}
+document.getElementById('addPkg').addEventListener('click',function(){PKGS.push({name:'Box',weight:0,length:0,width:0,height:0});renderPkgs()});
+document.getElementById('savePkgs').addEventListener('click',function(){
+  fetch('/api/packages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({packages:PKGS})}).then(function(r){return r.json()}).then(function(d){toast(d.ok?'Presets saved ✓':'Failed',!d.ok)});
+});
+document.getElementById('pkgSel').addEventListener('change',function(){
+  var i=this.value;if(i==='')return;var p=PKGS[+i];
+  document.getElementById('wt').value=p.weight||'';document.getElementById('ln').value=p.length||'';
+  document.getElementById('wd').value=p.width||'';document.getElementById('ht').value=p.height||'';
+});
+fetch('/api/packages').then(function(r){return r.json()}).then(function(d){PKGS=d.packages||[];renderPkgs()});
+var WAREHOUSE={};
+fetch('/api/ship-from').then(function(r){return r.json()}).then(function(d){WAREHOUSE=d.address||{};
+  if(!WAREHOUSE.street1){document.getElementById('notice').innerHTML='<div class="warn">⚠️ Set your warehouse ship-from address in Team → Permissions first — it is the destination for inbound labels.</div>'}});
+document.getElementById('getRates').addEventListener('click',function(){
+  var wt=document.getElementById('wt').value;if(!wt||parseFloat(wt)<=0){toast('Enter weight (oz)',true);return}
+  var supplier={name:document.getElementById('supName').value.trim(),street1:document.getElementById('sStreet1').value.trim(),
+    street2:document.getElementById('sStreet2').value.trim(),city:document.getElementById('sCity').value.trim(),
+    state:document.getElementById('sState').value.trim().toUpperCase(),zip:document.getElementById('sZip').value.trim(),
+    phone:document.getElementById('sPhone').value.trim(),country:'US'};
+  if(!(supplier.street1&&supplier.city&&supplier.state&&supplier.zip)){toast('Fill supplier street/city/state/ZIP',true);return}
+  var box=document.getElementById('ratesBox');box.innerHTML='<div class="muted">Getting rates…</div>';
+  fetch('/api/label/rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    to_address:WAREHOUSE,from_address:supplier,weight_oz:parseFloat(wt),
+    length:document.getElementById('ln').value,width:document.getElementById('wd').value,height:document.getElementById('ht').value})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(!d.ok){box.innerHTML='<div style="color:#fb7185">'+esc(d.error||'Failed')+'</div>';return}
+     if(!d.rates.length){box.innerHTML='<div style="color:#fb7185">No rates</div>';return}
+     window._sid=d.shipment_id;window._sup=supplier.name;
+     box.innerHTML=d.rates.map(function(rt){
+       return '<div class="card" style="display:flex;justify-content:space-between;align-items:center;margin:0 0 8px;padding:12px 14px"><div><b>'+esc(rt.carrier)+'</b> '+esc(rt.service)+(rt.days?(' · '+rt.days+'d'):'')+'</div>'+
+         '<button class="btn btn-p" style="padding:6px 14px" onclick="buyL(\\''+rt.id+'\\',this)">$'+rt.rate+'</button></div>';
+     }).join('');
+   });
+});
+function buyL(rid,btn){
+  if(btn){btn.disabled=true;btn.textContent='Buying…'}
+  fetch('/api/label/buy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({shipment_id:window._sid,rate_id:rid,supplier:window._sup})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(!d.ok){toast(d.error||'Failed',true);if(btn){btn.disabled=false;btn.textContent='Retry'}return}
+     toast('Label bought! 🏷️');window.open(d.label_url,'_blank');loadInbound();
+   });
+}
+function loadInbound(){
+  fetch('/api/inbound').then(function(r){return r.json()}).then(function(rows){
+    if(!rows.length){document.getElementById('inRows').innerHTML='<tr><td colspan="6" class="muted">None yet</td></tr>';return}
+    document.getElementById('inRows').innerHTML=rows.map(function(r){
+      return '<tr><td>'+esc(r.supplier||'—')+'</td><td>'+esc((r.carrier||'')+' '+(r.service||''))+'</td>'+
+        '<td style="font-family:monospace">'+esc(r.tracking||'—')+'</td><td>$'+(r.cost||0)+'</td>'+
+        '<td class="muted">'+esc((r.created_at||'').slice(0,16).replace('T',' '))+'</td>'+
+        '<td>'+(r.label_url?'<a href="'+esc(r.label_url)+'" target="_blank" style="color:#a5b4fc;text-decoration:underline">PDF</a>':'—')+'</td></tr>';
+    }).join('');
+  });
+}
+loadInbound();
 </script></body></html>'''
