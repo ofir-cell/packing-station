@@ -293,6 +293,10 @@ def gdb_init():
         "attach_added_at":"TEXT",
         "attach_added_by":"TEXT",
         "attach_show":"TEXT",
+        # Standalone giveaways get packed+filmed on the normal record screen by
+        # scanning their own tracking; these capture that.
+        "filmed_at":"TEXT",
+        "filmed_by":"TEXT",
     }
     _have={r[1] for r in c.execute("PRAGMA table_info(giveaways)").fetchall()}
     for _col,_decl in _gv_cols.items():
@@ -1954,6 +1958,16 @@ def api_upload():
         # Don't fail the upload if the SQL update has a hiccup — the CSV log is the source of truth
         # for the recording itself, and we can backfill the shipments table later.
         print("packed-status update failed for", trk, ":", e, flush=True)
+    # If this tracking is a standalone giveaway, mark it filmed/packed too.
+    try:
+        gv=_giveaway_by_tracking(trk)
+        if gv:
+            g=gdb()
+            g.execute("UPDATE giveaways SET filmed_at=COALESCE(filmed_at,?), filmed_by=COALESCE(filmed_by,?) WHERE id=?",
+                      (now.strftime('%Y-%m-%dT%H:%M:%S'), wrk, gv["id"]))
+            g.commit(); g.close()
+    except Exception as e:
+        print("giveaway filmed-status update failed for", trk, ":", e, flush=True)
     return jsonify({"ok":True})
 
 @app.route("/api/backfill-packed-status", methods=["POST"])
@@ -2771,6 +2785,21 @@ def api_shipments_recent():
     return jsonify([dict(r) for r in rows])
 
 
+def _giveaway_by_tracking(code):
+    """Find a STANDALONE giveaway by its own tracking number (exact or substring),
+    for the pack/record screen. Piggyback giveaways ride an order and are excluded."""
+    code=(code or "").strip()
+    if not code: return None
+    g=gdb()
+    r=g.execute("""SELECT * FROM giveaways
+                   WHERE tracking_number IS NOT NULL AND tracking_number!=''
+                     AND COALESCE(attach_mode,'standalone')!='piggyback'
+                     AND (tracking_number=? OR ? LIKE '%'||tracking_number||'%'
+                          OR tracking_number LIKE '%'||?||'%')
+                   ORDER BY id DESC LIMIT 1""",(code,code,code)).fetchone()
+    g.close()
+    return dict(r) if r else None
+
 @app.route("/api/shipment/<code>")
 @req_login
 def api_shipment_lookup(code):
@@ -2800,6 +2829,18 @@ def api_shipment_lookup(code):
                            LIMIT 1""", (code,)).fetchone()
     if not row:
         c.close()
+        # Standalone giveaway with its own label? Make it packable/filmable by tracking.
+        gv=_giveaway_by_tracking(code)
+        if gv:
+            return jsonify({
+                "ok": True, "is_giveaway": True,
+                "shipment": {"shipment_id":"GA-"+str(gv["id"]),"tracking_code":gv.get("tracking_number") or code,
+                             "buyer_name":gv.get("address_name") or gv.get("winner_username") or "Giveaway",
+                             "status":"giveaway","is_giveaway":True,"giveaway_id":gv["id"]},
+                "items": [{"sku":"🎁 GIVEAWAY","product_name":(gv.get("prize_name") or "Giveaway prize")+
+                           (" — @"+gv["winner_username"] if gv.get("winner_username") else ""),"quantity":1,"item_weight_g":None}],
+                "config": {}, "giveaways": [],
+            })
         return jsonify({"ok": False, "error": "Shipment not found"})
     items = c.execute("""SELECT sku, product_name, quantity, item_weight_g
                          FROM shipment_items WHERE shipment_id=?""", (row["shipment_id"],)).fetchall()
@@ -5405,6 +5446,49 @@ def api_giveaway_buy_label(gid):
               (label, label, tracking, cost, datetime.now().isoformat(timespec='seconds'), gid))
     c.commit(); c.close()
     return jsonify({"ok":True,"label_url":label,"tracking":tracking,"cost":cost})
+
+def _label_print_page(url, title="Shipping label", subtitle=""):
+    """Wrap a carrier label (PNG/PDF) in a page locked to 4x6 inches with a Print
+    button, so it prints at true thermal-label size instead of being scaled to Letter."""
+    low=(url or "").split("?")[0].lower()
+    if low.endswith(".pdf"):
+        media='<iframe src="%s" title="label"></iframe>' % url
+    else:
+        media='<img src="%s" alt="label">' % url
+    sub=('<span class="trk">%s</span>' % subtitle) if subtitle else ""
+    return """<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>"""+title+"""</title>
+<style>
+@page { size: 4in 6in; margin: 0; }
+*{box-sizing:border-box}
+body{margin:0;background:#0c0f16;color:#e4e8f1;font-family:-apple-system,'Segoe UI',sans-serif}
+.bar{display:flex;gap:14px;align-items:center;justify-content:center;padding:16px;flex-wrap:wrap}
+.bar .ttl{font-weight:800}.trk{font-family:monospace;color:#a5b4fc}
+.btn{border:none;border-radius:10px;padding:12px 26px;font-size:16px;font-weight:800;cursor:pointer;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
+.sheet{width:4in;height:6in;margin:10px auto 30px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:4px}
+.sheet img{max-width:100%;max-height:100%;display:block}
+.sheet iframe{width:4in;height:6in;border:0}
+@media print{ .bar{display:none!important} body{background:#fff} .sheet{margin:0;border-radius:0} }
+</style></head><body>
+<div class="bar"><span class="ttl">🏷️ """+title+"""</span>"""+sub+"""<button class="btn" onclick="window.print()">🖨️ Print 4×6</button></div>
+<div class="sheet">"""+media+"""</div>
+</body></html>"""
+
+@app.route("/label/giveaway/<int:gid>")
+@req_role("admin","cs")
+def giveaway_label_print(gid):
+    c=gdb(); r=c.execute("SELECT shippo_label_url,tracking_number FROM giveaways WHERE id=?",(gid,)).fetchone(); c.close()
+    if not r or not r["shippo_label_url"]:
+        return ("No label for this giveaway yet.",404)
+    return _label_print_page(r["shippo_label_url"],"Giveaway label",r["tracking_number"] or "")
+
+@app.route("/label/inbound/<int:iid>")
+@req_role("admin","cs")
+def inbound_label_print(iid):
+    c=sdb(); r=c.execute("SELECT label_url,tracking,supplier FROM inbound_shipments WHERE id=?",(iid,)).fetchone(); c.close()
+    if not r or not r["label_url"]:
+        return ("No label for this shipment yet.",404)
+    return _label_print_page(r["label_url"],"Inbound · "+(r["supplier"] or ""),r["tracking"] or "")
 
 @app.route("/api/packages",methods=["GET","POST"])
 @req_role("admin","cs")

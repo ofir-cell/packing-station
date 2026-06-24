@@ -1396,6 +1396,8 @@ function render(){
         h+='<div class="section"><h3>✅ Shipment</h3>'+
             '<div class="addr-display"><b>Tracking:</b> <span class="tracking">'+esc(g.tracking_number||'-')+'</span><br>'+
             '<b>Shipped at:</b> '+fmt(g.shipped_at)+'</div>'+
+            (g.shippo_label_url?'<button class="btn btn-s" style="margin-top:8px" onclick="window.open(\\'/label/giveaway/\\'+GID,\\'_blank\\')">🖨️ Print label (4×6)</button>':'')+
+            (g.filmed_at?'<div class="tip" style="margin-top:8px">📹 Packing filmed by '+esc(g.filmed_by||'')+' · '+fmt(g.filmed_at)+'</div>':(g.shippo_label_url?'<div class="tip" style="margin-top:8px">📹 Scan this label\\'s tracking on the packing screen to film it.</div>':''))+
             (g.notes?'<div class="f"><label>Notes</label><textarea id="nt" readonly>'+esc(g.notes)+'</textarea></div>':'')+
             '<div class="tip">⚠️ Don\\'t forget to mark this as sent in TikTok/Whatnot too!</div></div>';
     } else if(g.status==='cancelled'){
@@ -1520,7 +1522,7 @@ function buyLabel(sid,rid,btn){
      .then(function(r){return r.json()}).then(function(d){
         if(!d.ok){toast(d.error||'Failed',true);if(btn){btn.disabled=false;btn.textContent='Retry'}return}
         toast('Label bought! 🏷️');
-        window.open(d.label_url,'_blank');
+        window.open('/label/giveaway/'+GID,'_blank');
         load();
     });
 }
@@ -7141,7 +7143,7 @@ function loadInbound(){
       return '<tr><td>'+esc(r.supplier||'—')+'</td><td>'+esc((r.carrier||'')+' '+(r.service||''))+'</td>'+
         '<td style="font-family:monospace">'+esc(r.tracking||'—')+'</td><td>$'+(r.cost||0)+'</td>'+
         '<td class="muted">'+esc((r.created_at||'').slice(0,16).replace('T',' '))+'</td>'+
-        '<td>'+(r.label_url?'<a href="'+esc(r.label_url)+'" target="_blank" style="color:#a5b4fc;text-decoration:underline">PDF</a>':'—')+'</td></tr>';
+        '<td>'+(r.label_url?'<a href="/label/inbound/'+r.id+'" target="_blank" style="color:#a5b4fc;text-decoration:underline">🖨️ Print</a>':'—')+'</td></tr>';
     }).join('');
   });
 }
