@@ -22,6 +22,9 @@ def _navbar(active_page=""):
     if role == "worker":
         # Workers get a fast link straight to packing alongside Personal
         entries.append(("pack", "/", "📦 Pack"))
+    if role in ("worker", "picker"):
+        # Matching sold stickers to real products is part of the warehouse workflow
+        entries.append(("preshow", "/admin/preshow", "🔗 Match Products"))
     entries.append({
         "key": "personal",
         "label": "👤 Personal",
@@ -42,12 +45,14 @@ def _navbar(active_page=""):
             ("customers", "/customers", "Customer Lookup"),
             ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation"),
             ("shipstatus", "/shipping-status", "🚚 Shipping Status"),
-            ("inventory", "/admin/inventory", "📦 Inventory"),
+            ("preshow", "/admin/preshow", "🔗 Match Products"),
             ("inbound", "/admin/inbound", "📥 Inbound · Supplier labels"),
-            ("profit", "/admin/profit", "💰 Profit"),
             ("giveaway", "/giveaway", "Giveaways"),
         ]
         if role == "admin":
+            # Cost & profit data is admin-only
+            ops_items.append(("inventory", "/admin/inventory", "📦 Inventory"))
+            ops_items.append(("profit", "/admin/profit", "💰 Profit"))
             ops_items.append(("analytics", "/analytics", "Analytics"))
         entries.append({"key": "operations", "label": "📦 Operations", "items": ops_items})
     if role == "admin":
@@ -6556,6 +6561,12 @@ th{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px}
 .sku{font-family:monospace;color:#a5b4fc;font-weight:700}
 .toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}.toast.err{background:#f43f5e}
 .muted{color:#6b7a90}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
+.modal.on{display:flex}
+.modal .box{background:#151921;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:24px;max-width:520px;width:100%}
+.modal h3{font-size:17px;font-weight:800;margin-bottom:16px}
+.modal .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.modal .grid .full{grid-column:1/3}
 </style></head><body>
 __NAVBAR__
 <div class="page-hdr"><div class="page-title">📦 Inventory <span>__NAME__</span></div></div>
@@ -6572,15 +6583,47 @@ __NAVBAR__
   <div class="muted" id="rResult" style="margin-top:10px;font-size:13px"></div>
 </div>
 <div class="card">
+  <h2>📄 Bulk import (CSV)</h2>
+  <div class="muted" style="font-size:13px;margin-bottom:12px">Load your whole catalog + stock at once. Columns (any order): <b>SKU, Name, Barcode, Category, Quantity, Unit Cost</b>. Leave SKU blank for an auto 4-digit number. <a href="/api/products/template.csv" style="color:#a5b4fc;text-decoration:underline">Download template</a></div>
+  <div class="row">
+    <div class="f" style="flex:1;min-width:220px"><label>CSV file</label><input id="csvFile" type="file" accept=".csv,text/csv" style="width:100%;padding:9px"></div>
+    <div class="f"><label>On-hand mode</label>
+      <select id="csvMode" style="background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:11px 14px;font-size:14px;color:#e4e8f1;font-family:inherit;outline:none">
+        <option value="add">Add to stock (receive)</option>
+        <option value="replace">Replace on-hand (set)</option>
+      </select></div>
+    <button class="btn btn-p" id="csvBtn">Import →</button>
+  </div>
+  <div class="muted" id="csvResult" style="margin-top:10px;font-size:13px"></div>
+</div>
+<div class="card">
   <h2>🗂️ Product catalog</h2>
   <div class="row" style="margin-bottom:14px">
     <div class="f" style="flex:1"><label>Search</label><input id="q" placeholder="SKU, name, or barcode" style="width:100%"></div>
-    <button class="btn btn-s" id="addBtn">+ Add product</button>
+    <button class="btn btn-s" id="addBtn">+ New product</button>
   </div>
   <table><thead><tr><th></th><th>SKU</th><th>Name</th><th>Barcode</th><th>On hand</th><th>Avg cost</th><th>Label</th></tr></thead>
   <tbody id="rows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody></table>
 </div>
 </div>
+
+<div class="modal" id="addModal"><div class="box">
+  <h3>+ New product</h3>
+  <div class="grid">
+    <div class="f full"><label>Name *</label><input id="aName" placeholder="Product name" style="width:100%"></div>
+    <div class="f"><label>SKU</label><input id="aSku" placeholder="Blank = auto 4-digit" style="width:100%"></div>
+    <div class="f"><label>Barcode</label><input id="aBarcode" placeholder="If it has one" style="width:100%"></div>
+    <div class="f"><label>Category</label><input id="aCat" placeholder="Optional" style="width:100%"></div>
+    <div class="f"><label>Initial qty</label><input id="aQty" type="number" placeholder="0" style="width:100%"></div>
+    <div class="f full"><label>Unit cost ($)</label><input id="aCost" type="number" step="0.01" placeholder="0.00" style="width:100%"></div>
+  </div>
+  <div class="muted" id="aResult" style="margin:14px 0;font-size:13px"></div>
+  <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
+    <button class="btn btn-s" onclick="closeAdd()">Close</button>
+    <button class="btn btn-p" id="aSave">Create</button>
+  </div>
+</div></div>
+
 <div class="toast" id="t"></div>
 <script>
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
@@ -6609,12 +6652,35 @@ document.getElementById('rBtn').addEventListener('click',function(){
     toast('Received ✓');load();
   });
 });
-document.getElementById('addBtn').addEventListener('click',function(){
-  var name=prompt('Product name:');if(name===null)return;
-  var sku=prompt('SKU (leave blank to auto-generate):')||'';
-  var barcode=prompt('Barcode (optional):')||'';
-  fetch('/api/products',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sku:sku.trim(),name:name.trim(),barcode:barcode.trim()})})
-   .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Added '+d.sku);load()}else toast(d.error||'Failed',true)});
+// ── CSV bulk import ──
+document.getElementById('csvBtn').addEventListener('click',function(){
+  var fi=document.getElementById('csvFile');
+  if(!fi.files||!fi.files[0]){toast('Choose a CSV file first',true);return}
+  var fd=new FormData();fd.append('file',fi.files[0]);fd.append('mode',document.getElementById('csvMode').value);
+  document.getElementById('csvResult').textContent='Importing…';
+  fetch('/api/products/import',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){document.getElementById('csvResult').innerHTML='<span style="color:#f43f5e">'+esc(d.error||'Failed')+'</span>';return}
+    document.getElementById('csvResult').innerHTML='✓ '+d.created+' new · '+d.updated+' updated · '+d.stocked+' stocked'+(d.skipped?(' · '+d.skipped+' skipped'):'');
+    toast('Imported ✓');fi.value='';load();
+  }).catch(function(){document.getElementById('csvResult').innerHTML='<span style="color:#f43f5e">Upload failed</span>'});
+});
+// ── New product modal ──
+function openAdd(){document.getElementById('addModal').classList.add('on');['aName','aSku','aBarcode','aCat','aQty','aCost'].forEach(function(id){document.getElementById(id).value=''});document.getElementById('aResult').innerHTML='';document.getElementById('aName').focus()}
+function closeAdd(){document.getElementById('addModal').classList.remove('on')}
+document.getElementById('addBtn').addEventListener('click',openAdd);
+document.getElementById('aSave').addEventListener('click',function(){
+  var name=document.getElementById('aName').value.trim();if(!name){toast('Name required',true);return}
+  var body={sku:document.getElementById('aSku').value.trim(),name:name,barcode:document.getElementById('aBarcode').value.trim(),category:document.getElementById('aCat').value.trim()};
+  fetch('/api/products',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){toast(d.error||'Failed',true);return}
+    var sku=d.sku;var qty=parseInt(document.getElementById('aQty').value||'0');var cost=parseFloat(document.getElementById('aCost').value||'0');
+    function done(){
+      document.getElementById('aResult').innerHTML='✓ Created SKU <b class="sku">'+esc(sku)+'</b> &nbsp; <a href="/api/product/'+encodeURIComponent(sku)+'/label.pdf" target="_blank" class="btn btn-s" style="text-decoration:none;padding:7px 14px">🏷️ Print label</a>';
+      toast('Created '+sku);load();
+    }
+    if(qty>0){fetch('/api/receive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sku:sku,qty:qty,unit_cost:cost})}).then(function(r){return r.json()}).then(done);}
+    else{done();}
+  });
 });
 document.getElementById('rSku').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('rBtn').click()});
 var dq=null;document.getElementById('q').addEventListener('input',function(){clearTimeout(dq);dq=setTimeout(load,200)});
@@ -6655,7 +6721,7 @@ __NAVBAR__
 <div class="wrap">
 <div id="notice"></div>
 <div class="cards" id="cards"></div>
-<table><thead><tr><th>SKU</th><th>Product</th><th>Qty sold</th><th>Revenue</th><th>Avg cost</th><th>COGS</th><th>Profit</th></tr></thead>
+<table><thead><tr><th>Product</th><th>Stickers</th><th>Qty sold</th><th>Revenue</th><th>Avg cost</th><th>COGS</th><th>Profit</th></tr></thead>
 <tbody id="rows"><tr><td colspan="7">Loading…</td></tr></tbody></table>
 </div>
 <script>
@@ -6668,7 +6734,7 @@ fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){
 function load(){
   var show=document.getElementById('showSel').value;
   fetch('/api/profit'+(show?('?show='+encodeURIComponent(show)):'')).then(function(r){return r.json()}).then(function(d){
-    document.getElementById('notice').innerHTML=d.missing_cost_skus?('<div class="warn">⚠️ '+d.missing_cost_skus+' SKUs have no cost set yet — their COGS counts as $0, so profit is overstated. Set costs in Inventory (receive stock).</div>'):'';
+    document.getElementById('notice').innerHTML=d.unmapped_lines?('<div class="warn">⚠️ '+d.unmapped_lines+' sold sticker groups are not yet linked to a real product — their cost is unknown, so profit is overstated. Link them on the 🔗 Pre-Show Scan screen for this show.</div>'):'';
     var profCls=d.profit<0?'profit neg':'profit';
     document.getElementById('cards').innerHTML=
       '<div class="kpi rev"><div class="l">Revenue</div><div class="v">'+money(d.revenue)+'</div></div>'+
@@ -6679,14 +6745,219 @@ function load(){
     if(!rows.length){document.getElementById('rows').innerHTML='<tr><td colspan="7">No sales for this show</td></tr>';return}
     document.getElementById('rows').innerHTML=rows.map(function(l){
       var pc=l.profit<0?'neg':'pos';
-      var cost=l.has_cost?money(l.avg_cost):'<span class="nocost">no cost</span>';
-      return '<tr><td class="sku">'+esc(l.sku||'—')+'</td><td>'+esc(l.name||'')+'</td><td>'+l.qty+'</td>'+
+      var cost=l.mapped?money(l.avg_cost):'<span class="nocost">not linked</span>';
+      var nm=l.mapped?(esc(l.name||'')+' <span class="sku">'+esc(l.product_sku||'')+'</span>'):'<span class="nocost">⚠ '+esc(l.name||'unlinked')+'</span>';
+      var st=(l.stickers||[]).join(', ');
+      return '<tr><td>'+nm+'</td><td class="sku">'+esc(st)+'</td><td>'+l.qty+'</td>'+
         '<td>'+money(l.revenue)+'</td><td>'+cost+'</td><td>'+money(l.cogs)+'</td><td class="'+pc+'">'+money(l.profit)+'</td></tr>';
     }).join('');
   });
 }
 document.getElementById('showSel').addEventListener('change',load);
 load();
+</script></body></html>'''
+
+
+# ── PRE-SHOW SCAN — bind generic stickers (sticker#, Part) to real products ──
+# Warehouse workflow: end of show, before import. Go Part by Part, sticker 1→N,
+# scan each product's real barcode (or pick from catalog) to give it an identity.
+PRESHOW_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Match Products</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.page-hdr{padding:20px 24px 6px;max-width:1100px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.langbtn{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);color:#e4e8f1;border-radius:8px;padding:7px 13px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
+.wrap{max-width:1100px;margin:0 auto;padding:8px 24px 40px}
+.card{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:18px 20px;margin-bottom:18px}
+.card h2{font-size:13px;font-weight:800;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px}
+.row{display:flex;gap:12px;align-items:end;flex-wrap:wrap}
+.f label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
+.f input,.f select{background:rgba(11,14,20,.85);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:12px 14px;font-size:16px;color:#e4e8f1;font-family:inherit;outline:none}
+.f input:focus,.f select:focus{border-color:#4f46e5}
+.big input{font-size:26px;font-weight:800;padding:14px 16px;letter-spacing:1px}
+.btn{border:none;border-radius:10px;padding:12px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}.btn-s{background:rgba(255,255,255,.08);color:#e4e8f1;border:1px solid rgba(255,255,255,.12)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.scanbox{display:flex;gap:14px;align-items:stretch;flex-wrap:wrap}
+.scanbox .cur{background:linear-gradient(135deg,rgba(79,70,229,.25),rgba(124,58,237,.18));border:2px solid #4f46e5;border-radius:14px;padding:12px 18px;text-align:center;min-width:150px}
+.scanbox .cur .lab{font-size:11px;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px;font-weight:700}
+.scanbox .cur .numin{width:120px;background:rgba(11,14,20,.6);border:2px solid rgba(124,58,237,.5);border-radius:10px;color:#fff;font-size:38px;font-weight:900;text-align:center;font-family:inherit;outline:none;padding:2px 0;margin:3px 0}
+.scanbox .cur .numin:focus{border-color:#7c3aed}
+.scanbox .cur .pt{font-size:13px;color:#c7d2fe;font-weight:700}
+.lane{background:rgba(96,165,250,.1);border:1px solid rgba(96,165,250,.3);color:#93c5fd;padding:9px 14px;border-radius:10px;margin-bottom:14px;font-size:13px}
+.scanbox .grow{flex:1;min-width:240px}
+.last{margin-top:14px;border-radius:12px;padding:14px 16px;display:none;align-items:center;gap:14px}
+.last.ok{display:flex;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35)}
+.last.err{display:flex;background:rgba(244,63,94,.12);border:1px solid rgba(244,63,94,.4)}
+.last .thumb{width:56px;height:56px;border-radius:10px;object-fit:cover;background:rgba(255,255,255,.06)}
+.last .nm{font-size:17px;font-weight:800}.last .sub{font-size:13px;color:#9aa6bd}
+.pill{display:inline-block;background:rgba(255,255,255,.1);border-radius:20px;padding:3px 11px;font-size:12px;font-weight:700;margin-left:8px}
+table{width:100%;border-collapse:collapse}th,td{padding:9px 11px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06);text-align:left}
+th{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px}
+.thumb-s{width:34px;height:34px;border-radius:7px;object-fit:cover;background:rgba(255,255,255,.05)}
+.sku{font-family:monospace;color:#a5b4fc;font-weight:700}
+.muted{color:#6b7a90}
+.del{color:#f43f5e;cursor:pointer;font-weight:700}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:700;z-index:100;display:none}.toast.err{background:#f43f5e}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
+.modal.on{display:flex}
+.modal .box{background:#151921;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:22px;max-width:560px;width:100%;max-height:80vh;overflow:auto}
+.modal h3{font-size:16px;font-weight:800;margin-bottom:12px}
+.pickrow{display:flex;align-items:center;gap:12px;padding:9px;border-radius:10px;cursor:pointer;border:1px solid transparent}
+.pickrow:hover{background:rgba(255,255,255,.05);border-color:rgba(79,70,229,.4)}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🔗 <span data-i18n="title">Match Sold Products</span> <span>__NAME__</span></div>
+<button class="langbtn" onclick="toggleLang()" id="langBtn">ES</button></div>
+<div class="wrap">
+
+<div class="card">
+  <h2 data-i18n="step1">1 · Pick the show & your Part (lane)</h2>
+  <div class="row">
+    <div class="f grow" style="flex:1;min-width:240px"><label data-i18n="show">Show</label>
+      <select id="showSel" style="width:100%"><option value="" data-i18n="pickshow">Pick a show…</option></select></div>
+    <div class="f"><label data-i18n="part">Part (your lane)</label>
+      <select id="partSel"><option value="1">Part 1</option><option value="2">Part 2</option><option value="3">Part 3</option><option value="4">Part 4</option><option value="5">Part 5</option><option value="0" data-i18n="nopart">No part</option></select></div>
+    <div class="f"><label data-i18n="startat">Start at sticker #</label><input id="startSku" type="number" value="1" style="width:120px"></div>
+  </div>
+  <div class="lane" data-i18n="lanehint">💡 Each Part is its own lane — several workers can run Part 1, Part 2, Part 3… at the same time on different iPads without clashing.</div>
+  <div class="muted" id="progress" style="font-size:13px"></div>
+</div>
+
+<div class="card" id="scanCard" style="opacity:.45;pointer-events:none">
+  <h2 data-i18n="step2">2 · For each product on the table: scan its real barcode</h2>
+  <div class="scanbox">
+    <div class="cur"><div class="lab" data-i18n="sticker">Sticker #</div><input class="numin" id="curNum" type="number" value="1"><div class="pt" id="curPart">Part 1</div></div>
+    <div class="grow f big"><label data-i18n="scanbarcode">Scan product barcode (or type SKU)</label>
+      <input id="code" placeholder="📷 …" style="width:100%" autocomplete="off"></div>
+    <div class="f"><label>&nbsp;</label><button class="btn btn-s" id="pickBtn" data-i18n="pickcat">🔍 Search catalog</button></div>
+  </div>
+  <div class="last" id="last"></div>
+  <div class="muted" style="margin-top:12px;font-size:12.5px" data-i18n="hint">After each scan the sticker # advances by 1. Type a different number anytime — handy since cancelled items were already pulled, so numbers may skip. If a barcode won\\'t scan, tap Search catalog and find it by name, a few barcode digits, or SKU.</div>
+</div>
+
+<div class="card">
+  <h2><span data-i18n="linked">Linked this show</span> <span class="pill" id="cnt">0</span></h2>
+  <table><thead><tr><th data-i18n="thpart">Part</th><th data-i18n="thsticker">Sticker</th><th></th><th data-i18n="thproduct">Product</th><th data-i18n="thby">By</th><th></th></tr></thead>
+  <tbody id="rows"><tr><td colspan="6" class="muted" data-i18n="none">Pick a show to begin.</td></tr></tbody></table>
+</div>
+</div>
+
+<div class="modal" id="pickModal"><div class="box">
+  <h3 data-i18n="pickttl">Pick product from catalog</h3>
+  <input id="pickQ" placeholder="Search name / SKU / barcode" style="width:100%;background:rgba(11,14,20,.85);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:11px 14px;font-size:15px;color:#e4e8f1;font-family:inherit;outline:none;margin-bottom:12px">
+  <div id="pickRows"></div>
+  <div style="margin-top:14px;display:flex;gap:10px;justify-content:space-between">
+    <button class="btn btn-s" id="newProdBtn" data-i18n="newprod">+ New product</button>
+    <button class="btn btn-s" onclick="closePick()" data-i18n="cancel">Cancel</button>
+  </div>
+</div></div>
+
+<div class="toast" id="t"></div>
+<script>
+var T={en:{title:"Match Sold Products",step1:"1 · Pick the show & your Part (lane)",show:"Show",pickshow:"Pick a show…",part:"Part (your lane)",nopart:"No part",startat:"Start at sticker #",step2:"2 · For each product on the table: scan its real barcode",sticker:"Sticker #",scanbarcode:"Scan product barcode (or type SKU)",pickcat:"🔍 Search catalog",lanehint:"💡 Each Part is its own lane — several workers can run Part 1, Part 2, Part 3… at the same time on different iPads without clashing.",hint:"After each scan the sticker # advances by 1. Type a different number anytime — handy since cancelled items were already pulled, so numbers may skip. If a barcode won't scan, tap Search catalog and find it by name, a few barcode digits, or SKU.",linked:"Matched this show",thpart:"Part",thsticker:"Sticker",thproduct:"Product",thby:"By",none:"Pick a show to begin.",pickttl:"Find product in catalog",newprod:"+ New product",cancel:"Cancel",notfound:"Not in catalog — search or add it",linkedok:"Matched ✓",removed:"Removed",chooseshow:"Choose a show first"},
+es:{title:"Vincular productos vendidos",step1:"1 · Elige el show y tu Parte (carril)",show:"Show",pickshow:"Elige un show…",part:"Parte (tu carril)",nopart:"Sin parte",startat:"Empezar en etiqueta #",step2:"2 · Por cada producto en la mesa: escanea su código real",sticker:"Etiqueta #",scanbarcode:"Escanea el código (o escribe SKU)",pickcat:"🔍 Buscar catálogo",lanehint:"💡 Cada Parte es su propio carril — varios trabajadores pueden hacer Parte 1, Parte 2, Parte 3… al mismo tiempo en distintos iPads sin chocar.",hint:"Tras cada escaneo el número avanza en 1. Escribe otro número cuando quieras — útil porque los cancelados ya se retiraron y los números pueden saltarse. Si un código no escanea, toca Buscar catálogo y encuéntralo por nombre, unos dígitos del código, o SKU.",linked:"Vinculados este show",thpart:"Parte",thsticker:"Etiqueta",thproduct:"Producto",thby:"Por",none:"Elige un show para empezar.",pickttl:"Buscar producto en el catálogo",newprod:"+ Nuevo producto",cancel:"Cancelar",notfound:"No está en el catálogo — búscalo o agrégalo",linkedok:"Vinculado ✓",removed:"Eliminado",chooseshow:"Elige un show primero"}};
+var lang=localStorage.getItem('lang')||'en';
+function t(k){return (T[lang]&&T[lang][k])||T.en[k]||k}
+function applyLang(){document.querySelectorAll('[data-i18n]').forEach(function(e){e.textContent=t(e.getAttribute('data-i18n'))});document.getElementById('langBtn').textContent=lang==='en'?'ES':'EN';document.documentElement.lang=lang}
+function toggleLang(){lang=lang==='en'?'es':'en';localStorage.setItem('lang',lang);applyLang()}
+function toast(m,e){var x=document.getElementById('t');x.textContent=m;x.className=e?'toast err':'toast';x.style.display='block';setTimeout(function(){x.style.display='none'},2500)}
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+
+function show(){return document.getElementById('showSel').value}
+function part(){return parseInt(document.getElementById('partSel').value||'0')}
+function partLabel(p){return p?('Part '+p):t('nopart')}
+function curVal(){return parseInt(document.getElementById('curNum').value||'1')}
+function setCur(n){document.getElementById('curNum').value=n;document.getElementById('curPart').textContent=partLabel(part())}
+
+fetch('/api/shows/recent').then(function(r){return r.json()}).then(function(shows){
+  var sel=document.getElementById('showSel');
+  (shows||[]).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=s;sel.appendChild(o)});
+});
+
+function enableScan(on){var c=document.getElementById('scanCard');c.style.opacity=on?'1':'.45';c.style.pointerEvents=on?'auto':'none';if(on){document.getElementById('code').focus()}}
+function onShowChange(){if(show()){enableScan(true);refresh();setCur(parseInt(document.getElementById('startSku').value||'1'))}else{enableScan(false)}}
+document.getElementById('showSel').addEventListener('change',onShowChange);
+document.getElementById('partSel').addEventListener('change',function(){setCur(parseInt(document.getElementById('startSku').value||'1'));refresh()});
+document.getElementById('startSku').addEventListener('change',function(){setCur(parseInt(document.getElementById('startSku').value||'1'))});
+
+function bind(payload){
+  payload.show=show();payload.part=part();payload.sticker=String(curVal());
+  return fetch('/api/preshow/map',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json()});
+}
+function showLast(ok,html){var l=document.getElementById('last');l.className='last '+(ok?'ok':'err');l.innerHTML=html}
+
+document.getElementById('code').addEventListener('keydown',function(e){
+  if(e.key!=='Enter')return;
+  var code=this.value.trim();if(!code){return}
+  if(!show()){toast(t('chooseshow'),true);return}
+  var self=this;
+  bind({code:code}).then(function(d){
+    if(d.ok){
+      var img=d.product.image_url?'<img class="thumb" src="'+esc(d.product.image_url)+'">':'<div class="thumb"></div>';
+      showLast(true,img+'<div><div class="nm">'+esc(d.product.name||d.product.sku)+'</div><div class="sub">'+t('linkedok')+' → '+t('sticker')+' '+esc(d.sticker)+' · '+esc(partLabel(d.part))+' · <span class="sku">'+esc(d.product.sku)+'</span></div></div>');
+      self.value='';setCur(curVal()+1);document.getElementById('startSku').value=curVal();refresh();self.focus();
+    } else if(d.not_found){
+      openPick(code);
+    } else { toast(d.error||'Failed',true) }
+  });
+});
+
+document.getElementById('pickBtn').addEventListener('click',function(){openPick('')});
+
+// ── catalog pick / add modal ──
+var pendingCode='';
+function openPick(code){pendingCode=code;document.getElementById('pickModal').classList.add('on');var q=document.getElementById('pickQ');q.value='';document.getElementById('pickRows').innerHTML='';q.focus();if(code){toast(t('notfound'),true)}}
+function closePick(){document.getElementById('pickModal').classList.remove('on');document.getElementById('code').focus()}
+var pq=null;
+document.getElementById('pickQ').addEventListener('input',function(){clearTimeout(pq);var v=this.value.trim();pq=setTimeout(function(){
+  fetch('/api/products'+(v?('?q='+encodeURIComponent(v)):'')).then(function(r){return r.json()}).then(function(rows){
+    document.getElementById('pickRows').innerHTML=(rows||[]).map(function(p){
+      var img=p.image_url?'<img class="thumb-s" src="'+esc(p.image_url)+'">':'<div class="thumb-s"></div>';
+      return '<div class="pickrow" onclick="pickProduct(\\''+esc(p.sku).replace(/'/g,"")+'\\')">'+img+'<div><div style="font-weight:700">'+esc(p.name||p.sku)+'</div><div class="sub muted"><span class="sku">'+esc(p.sku)+'</span> · '+esc(p.barcode||'no barcode')+'</div></div></div>';
+    }).join('')||'<div class="muted">No matches</div>';
+  });
+},200)});
+function pickProduct(sku){
+  bind({product_sku:sku}).then(function(d){
+    if(d.ok){closePick();var img=d.product.image_url?'<img class="thumb" src="'+esc(d.product.image_url)+'">':'<div class="thumb"></div>';
+      showLast(true,img+'<div><div class="nm">'+esc(d.product.name||d.product.sku)+'</div><div class="sub">'+t('linkedok')+' → '+t('sticker')+' '+esc(d.sticker)+'</div></div>');
+      setCur(curVal()+1);document.getElementById('startSku').value=curVal();refresh();
+    } else toast(d.error||'Failed',true);
+  });
+}
+document.getElementById('newProdBtn').addEventListener('click',function(){
+  var name=prompt('Product name:');if(!name)return;
+  fetch('/api/products',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name.trim(),barcode:pendingCode})})
+   .then(function(r){return r.json()}).then(function(d){if(d.ok){pickProduct(d.sku)}else toast(d.error||'Failed',true)});
+});
+
+function refresh(){
+  if(!show()){return}
+  fetch('/api/preshow/map?show='+encodeURIComponent(show())).then(function(r){return r.json()}).then(function(d){
+    document.getElementById('cnt').textContent=d.count||0;
+    document.getElementById('progress').textContent=(d.count||0)+' '+t('linked').toLowerCase();
+    var rows=d.maps||[];
+    if(!rows.length){document.getElementById('rows').innerHTML='<tr><td colspan="6" class="muted">'+t('none')+'</td></tr>';return}
+    document.getElementById('rows').innerHTML=rows.map(function(m){
+      var img=m.image_url?'<img class="thumb-s" src="'+esc(m.image_url)+'">':'<div class="thumb-s"></div>';
+      return '<tr><td>'+esc(partLabel(m.part))+'</td><td class="sku">'+esc(m.sticker)+'</td><td>'+img+'</td>'+
+        '<td>'+esc(m.name||m.product_sku)+' <span class="sku">'+esc(m.product_sku)+'</span></td>'+
+        '<td class="muted">'+esc(m.mapped_by||'')+'</td>'+
+        '<td><span class="del" onclick="unmap(\\''+esc(m.sticker)+'\\','+m.part+')">✕</span></td></tr>';
+    }).join('');
+  });
+}
+function unmap(sticker,p){
+  fetch('/api/preshow/map',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:show(),sticker:sticker,part:p})})
+   .then(function(r){return r.json()}).then(function(){toast(t('removed'));refresh()});
+}
+applyLang();
 </script></body></html>'''
 
 
@@ -6715,6 +6986,9 @@ label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin:8px 0 4p
 table{width:100%;border-collapse:collapse}th,td{padding:9px 11px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06);text-align:left}
 th{font-size:11px;color:#6b7a90;text-transform:uppercase}
 .pkgrow{display:grid;grid-template-columns:1.6fr .8fr .8fr .8fr .8fr auto;gap:8px;margin-bottom:8px;align-items:center}
+.boxrow{display:grid;grid-template-columns:1.4fr .9fr .7fr .7fr .7fr .6fr auto;gap:8px;margin-bottom:8px;align-items:center}
+.boxrow .bhead,.boxhdr>span{font-size:10px;color:#6b7a90;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.boxhdr{display:grid;grid-template-columns:1.4fr .9fr .7fr .7fr .7fr .6fr auto;gap:8px;margin-bottom:4px}
 .toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}.toast.err{background:#f43f5e}
 .muted{color:#6b7a90;font-size:13px}.warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);color:#fbbf24;padding:10px 14px;border-radius:10px;font-size:13px;margin-bottom:14px}
 </style></head><body>
@@ -6743,14 +7017,12 @@ __NAVBAR__
     <div><label>ZIP</label><input id="sZip"></div>
     <div><label>Phone</label><input id="sPhone"></div>
   </div>
-  <div class="grid2" style="margin-top:6px">
-    <div><label>Package preset</label><select id="pkgSel"><option value="">— custom —</option></select></div>
-    <div><label>Weight (oz)</label><input id="wt" type="number" step="0.1"></div>
-    <div><label>Length (in)</label><input id="ln" type="number" step="0.1"></div>
-    <div><label>Width (in)</label><input id="wd" type="number" step="0.1"></div>
-    <div><label>Height (in)</label><input id="ht" type="number" step="0.1"></div>
-  </div>
-  <button class="btn btn-p" id="getRates" style="margin-top:14px">Get rates →</button>
+  <label style="margin-top:10px">Boxes in this shipment</label>
+  <div class="desc" style="margin-bottom:8px">Supplier sending several packages? Add a row per box (or set <b>×copies</b> for identical boxes). One label is bought per box and the total is summed.</div>
+  <div class="boxhdr"><span>Preset</span><span>Weight (oz)</span><span>L (in)</span><span>W (in)</span><span>H (in)</span><span>×Copies</span><span></span></div>
+  <div id="boxList"></div>
+  <button class="btn btn-s" id="addBox" style="margin-top:8px">+ Add box</button>
+  <button class="btn btn-p" id="getRates" style="margin-top:14px;margin-left:8px">Get rates →</button>
   <div id="ratesBox" style="margin-top:12px"></div>
 </div>
 
@@ -6777,49 +7049,89 @@ function renderPkgs(){
   document.getElementById('pkgList').querySelectorAll('input').forEach(function(el){
     el.addEventListener('input',function(){PKGS[+el.dataset.i][el.dataset.k]=el.dataset.k==='name'?el.value:parseFloat(el.value||'0')});
   });
-  var sel=document.getElementById('pkgSel');sel.innerHTML='<option value="">— custom —</option>'+PKGS.map(function(p,i){return '<option value="'+i+'">'+esc(p.name)+' ('+(p.weight||0)+'oz)</option>'}).join('');
 }
 function delPkg(i){PKGS.splice(i,1);renderPkgs()}
 document.getElementById('addPkg').addEventListener('click',function(){PKGS.push({name:'Box',weight:0,length:0,width:0,height:0});renderPkgs()});
 document.getElementById('savePkgs').addEventListener('click',function(){
-  fetch('/api/packages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({packages:PKGS})}).then(function(r){return r.json()}).then(function(d){toast(d.ok?'Presets saved ✓':'Failed',!d.ok)});
+  fetch('/api/packages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({packages:PKGS})}).then(function(r){return r.json()}).then(function(d){toast(d.ok?'Presets saved ✓':'Failed',!d.ok);renderBoxes()});
 });
-document.getElementById('pkgSel').addEventListener('change',function(){
-  var i=this.value;if(i==='')return;var p=PKGS[+i];
-  document.getElementById('wt').value=p.weight||'';document.getElementById('ln').value=p.length||'';
-  document.getElementById('wd').value=p.width||'';document.getElementById('ht').value=p.height||'';
-});
-fetch('/api/packages').then(function(r){return r.json()}).then(function(d){PKGS=d.packages||[];renderPkgs()});
+
+// ── Multi-box shipment ──
+var BOXES=[];
+function renderBoxes(){
+  var presetOpts=function(sel){return '<option value="">— custom —</option>'+PKGS.map(function(p,j){return '<option value="'+j+'"'+(String(sel)===String(j)?' selected':'')+'>'+esc(p.name)+'</option>'}).join('')};
+  document.getElementById('boxList').innerHTML=BOXES.map(function(b,i){
+    return '<div class="boxrow"><select data-i="'+i+'" data-k="preset">'+presetOpts(b.preset)+'</select>'+
+      '<input type="number" step="0.1" value="'+(b.weight||'')+'" data-i="'+i+'" data-k="weight" placeholder="oz">'+
+      '<input type="number" step="0.1" value="'+(b.length||'')+'" data-i="'+i+'" data-k="length" placeholder="L">'+
+      '<input type="number" step="0.1" value="'+(b.width||'')+'" data-i="'+i+'" data-k="width" placeholder="W">'+
+      '<input type="number" step="0.1" value="'+(b.height||'')+'" data-i="'+i+'" data-k="height" placeholder="H">'+
+      '<input type="number" value="'+(b.copies||1)+'" data-i="'+i+'" data-k="copies" placeholder="×">'+
+      '<button class="btn-x" onclick="delBox('+i+')">✕</button></div>';
+  }).join('');
+  document.getElementById('boxList').querySelectorAll('input,select').forEach(function(el){
+    el.addEventListener('change',function(){
+      var k=el.dataset.k,i=+el.dataset.i;
+      if(k==='preset'){BOXES[i].preset=el.value;if(el.value!==''){var p=PKGS[+el.value];BOXES[i].weight=p.weight;BOXES[i].length=p.length;BOXES[i].width=p.width;BOXES[i].height=p.height;renderBoxes();}}
+      else{BOXES[i][k]=parseFloat(el.value||'0');}
+    });
+  });
+}
+function delBox(i){BOXES.splice(i,1);if(!BOXES.length)BOXES.push({preset:'',weight:0,length:0,width:0,height:0,copies:1});renderBoxes()}
+document.getElementById('addBox').addEventListener('click',function(){BOXES.push({preset:'',weight:0,length:0,width:0,height:0,copies:1});renderBoxes()});
+
+fetch('/api/packages').then(function(r){return r.json()}).then(function(d){PKGS=d.packages||[];renderPkgs();
+  BOXES=[{preset:'',weight:0,length:0,width:0,height:0,copies:1}];renderBoxes();});
 var WAREHOUSE={};
 fetch('/api/ship-from').then(function(r){return r.json()}).then(function(d){WAREHOUSE=d.address||{};
   if(!WAREHOUSE.street1){document.getElementById('notice').innerHTML='<div class="warn">⚠️ Set your warehouse ship-from address in Team → Permissions first — it is the destination for inbound labels.</div>'}});
+
 document.getElementById('getRates').addEventListener('click',function(){
-  var wt=document.getElementById('wt').value;if(!wt||parseFloat(wt)<=0){toast('Enter weight (oz)',true);return}
+  if(!BOXES.length){toast('Add at least one box',true);return}
+  var boxes=[];
+  for(var i=0;i<BOXES.length;i++){var b=BOXES[i];var w=parseFloat(b.weight||0);
+    if(w<=0){toast('Box '+(i+1)+': enter weight (oz)',true);return}
+    var n=parseInt(b.copies||1);if(!n||n<1)n=1;
+    for(var k=0;k<n;k++){boxes.push({weight_oz:w,length:b.length,width:b.width,height:b.height});}}
   var supplier={name:document.getElementById('supName').value.trim(),street1:document.getElementById('sStreet1').value.trim(),
     street2:document.getElementById('sStreet2').value.trim(),city:document.getElementById('sCity').value.trim(),
     state:document.getElementById('sState').value.trim().toUpperCase(),zip:document.getElementById('sZip').value.trim(),
     phone:document.getElementById('sPhone').value.trim(),country:'US'};
   if(!(supplier.street1&&supplier.city&&supplier.state&&supplier.zip)){toast('Fill supplier street/city/state/ZIP',true);return}
-  var box=document.getElementById('ratesBox');box.innerHTML='<div class="muted">Getting rates…</div>';
-  fetch('/api/label/rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-    to_address:WAREHOUSE,from_address:supplier,weight_oz:parseFloat(wt),
-    length:document.getElementById('ln').value,width:document.getElementById('wd').value,height:document.getElementById('ht').value})})
+  var box=document.getElementById('ratesBox');box.innerHTML='<div class="muted">Getting rates for '+boxes.length+' box(es)…</div>';
+  fetch('/api/label/rates-multi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    to_address:WAREHOUSE,from_address:supplier,boxes:boxes})})
    .then(function(r){return r.json()}).then(function(d){
      if(!d.ok){box.innerHTML='<div style="color:#fb7185">'+esc(d.error||'Failed')+'</div>';return}
-     if(!d.rates.length){box.innerHTML='<div style="color:#fb7185">No rates</div>';return}
-     window._sid=d.shipment_id;window._sup=supplier.name;
-     box.innerHTML=d.rates.map(function(rt){
-       return '<div class="card" style="display:flex;justify-content:space-between;align-items:center;margin:0 0 8px;padding:12px 14px"><div><b>'+esc(rt.carrier)+'</b> '+esc(rt.service)+(rt.days?(' · '+rt.days+'d'):'')+'</div>'+
-         '<button class="btn btn-p" style="padding:6px 14px" onclick="buyL(\\''+rt.id+'\\',this)">$'+rt.rate+'</button></div>';
+     window._sup=supplier.name;window._legsById={};
+     var html='<div class="muted" style="margin-bottom:8px">'+d.boxes+' box(es) — total price buys one label per box:</div>';
+     if(d.best_mix){
+       window._legsById['best']=d.best_mix.legs;
+       var mix=(d.best_mix.detail||[]).map(function(x,k){return 'box '+(k+1)+': '+esc(x.carrier)+' '+esc(x.service)+' $'+x.rate}).join(' · ');
+       html+='<div class="card" style="display:flex;justify-content:space-between;align-items:center;margin:0 0 10px;padding:12px 14px;border:1px solid rgba(52,211,153,.5);background:rgba(16,185,129,.1)"><div><b style="color:#34d399">💸 Cheapest per box (mixed carriers)</b> · <span class="muted">'+d.boxes+' labels</span><div class="muted" style="margin-top:3px;font-size:12px">'+mix+'</div></div>'+
+         '<button class="btn btn-p" style="padding:6px 14px" onclick="buyMulti(\\'best\\',this)">$'+d.best_mix.total+'</button></div>';
+     }
+     if(!d.rates.length&&!d.best_mix){box.innerHTML='<div style="color:#fb7185">No service is available for all '+d.boxes+' boxes. Try different dimensions.</div>';return}
+     if(d.rates.length)html+='<div class="muted" style="margin:10px 0 6px;font-size:12px">Or one carrier for all boxes:</div>';
+     html+=d.rates.map(function(rt,idx){
+       window._legsById[idx]=rt.legs;
+       return '<div class="card" style="display:flex;justify-content:space-between;align-items:center;margin:0 0 8px;padding:12px 14px"><div><b>'+esc(rt.carrier)+'</b> '+esc(rt.service)+(rt.days?(' · '+rt.days+'d'):'')+' · <span class="muted">'+d.boxes+' labels</span></div>'+
+         '<button class="btn btn-p" style="padding:6px 14px" onclick="buyMulti('+idx+',this)">$'+rt.total+'</button></div>';
      }).join('');
+     box.innerHTML=html;
    });
 });
-function buyL(rid,btn){
-  if(btn){btn.disabled=true;btn.textContent='Buying…'}
-  fetch('/api/label/buy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({shipment_id:window._sid,rate_id:rid,supplier:window._sup})})
+function buyMulti(idx,btn){
+  var legs=window._legsById[idx];if(!legs){toast('Pick rates again',true);return}
+  if(btn){btn.disabled=true;btn.textContent='Buying '+legs.length+'…'}
+  fetch('/api/label/buy-multi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({legs:legs,supplier:window._sup})})
    .then(function(r){return r.json()}).then(function(d){
-     if(!d.ok){toast(d.error||'Failed',true);if(btn){btn.disabled=false;btn.textContent='Retry'}return}
-     toast('Label bought! 🏷️');window.open(d.label_url,'_blank');loadInbound();
+     var bought=(d.labels||[]).length;
+     if(!bought){toast(d.error||'Failed',true);if(btn){btn.disabled=false;btn.textContent='Retry'}return}
+     toast(bought+' label(s) bought! Total $'+(d.total||0));
+     (d.labels||[]).forEach(function(l){if(l.label_url)window.open(l.label_url,'_blank')});
+     if(!d.ok&&d.error)toast('Some failed: '+d.error,true);
+     loadInbound();
    });
 }
 function loadInbound(){

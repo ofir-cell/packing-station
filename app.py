@@ -6,7 +6,7 @@ Production web app for packing video recording & lookup.
 import os,csv,json,hashlib,secrets,time,threading,re,sys,sqlite3
 from datetime import datetime,timedelta
 from functools import wraps
-from flask import Flask,request,jsonify,send_file,redirect,session
+from flask import Flask,request,jsonify,send_file,redirect,session,Response
 from werkzeug.utils import secure_filename
 import bcrypt
 # HTML templates and navbar helper live in templates.py for readability.
@@ -18,7 +18,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
-    INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML,
+    INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
 
 
@@ -378,6 +378,9 @@ def sdb_init():
         "ALTER TABLE shipment_items ADD COLUMN picked INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN picked_at TEXT",
         "ALTER TABLE shipment_items ADD COLUMN revenue REAL DEFAULT 0",
+        # Pre-import match: how many units we've already deducted for a binding,
+        # so re-binding / unmapping can restore on_hand correctly.
+        "ALTER TABLE show_product_map ADD COLUMN depleted_qty INTEGER DEFAULT 0",
         # Bilingual onboarding — Spanish translations live in *_es columns
         # alongside the English originals. NULL ES → frontend falls back to EN.
         "ALTER TABLE onboarding_steps ADD COLUMN title_es TEXT",
@@ -554,6 +557,18 @@ def sdb_init():
         unit_cost REAL DEFAULT 0
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_poitems_po ON po_items(po_id)")
+    # Pre-show mapping: per-show, links a generic sticker (sticker#, Part) to a real
+    # catalog product. Sticker numbers are reused each show, so this is show-scoped.
+    c.execute("""CREATE TABLE IF NOT EXISTS show_product_map(
+        import_label TEXT,
+        sticker_sku TEXT,
+        part INTEGER,
+        product_sku TEXT,
+        depleted_qty INTEGER DEFAULT 0,
+        mapped_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        mapped_by TEXT,
+        PRIMARY KEY (import_label, sticker_sku, part)
+    )""")
     # Inbound shipments — labels bought for supplier → warehouse shipments.
     c.execute("""CREATE TABLE IF NOT EXISTS inbound_shipments(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -802,6 +817,13 @@ def _extract_part(product_name):
         return ""
     m = _re_cleanup.search(r"Part\s*(\d+)", product_name, _re_cleanup.IGNORECASE)
     return f"Part {m.group(1)}" if m else ""
+
+def _part_num(product_name):
+    """Integer Part number from a product name, or 0 when there's no Part suffix."""
+    if not product_name:
+        return 0
+    m = _re_cleanup.search(r"Part\s*(\d+)", product_name, _re_cleanup.IGNORECASE)
+    return int(m.group(1)) if m else 0
 
 def _cleanup_groups(label):
     """Aggregate cancelled items for a show into (sku, part) groups.
@@ -3328,13 +3350,18 @@ def api_permissions_pin():
 # INVENTORY & COSTING — catalog, receiving (weighted-avg), profit
 # ══════════════════════════════════════════════════════════
 def _gen_sku():
+    """Auto internal SKU for products with no manufacturer barcode. Plain 4-digit
+    number (1000–9999) so it's easy to read/type; widens to 5–6 digits only if the
+    4-digit space fills up or we keep colliding."""
     c=sdb()
     try:
-        for _ in range(50):
-            sku="P"+secrets.token_hex(3).upper()
-            if not c.execute("SELECT 1 FROM products WHERE sku=?",(sku,)).fetchone():
-                return sku
-        return "P"+secrets.token_hex(5).upper()
+        import random
+        for lo,hi,tries in ((1000,9999,80),(10000,99999,80),(100000,999999,80)):
+            for _ in range(tries):
+                sku=str(random.randint(lo,hi))
+                if not c.execute("SELECT 1 FROM products WHERE sku=?",(sku,)).fetchone():
+                    return sku
+        return str(secrets.randbelow(900000)+100000)
     finally:
         c.close()
 
@@ -3358,15 +3385,10 @@ def _receive_stock(c, sku, qty, cost, po_id=None, note=None, name=None, barcode=
     return new_oh, round(new_avg,4)
 
 def _deplete_stock_for(c, shipment_id):
-    """Decrement on_hand for each sold item of a shipment — once per shipment."""
-    row=c.execute("SELECT COALESCE(stock_depleted,0) d FROM shipments WHERE shipment_id=?",(shipment_id,)).fetchone()
-    if not row or row["d"]: return
-    items=c.execute("SELECT sku, quantity FROM shipment_items WHERE shipment_id=? AND COALESCE(cancelled,0)=0",(shipment_id,)).fetchall()
-    for it in items:
-        sku=(it["sku"] or "").strip()
-        if not sku: continue
-        c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(it["quantity"] or 1, sku))
-    c.execute("UPDATE shipments SET stock_depleted=1 WHERE shipment_id=?",(shipment_id,))
+    """No-op. Stock depletion now happens at MATCH time (api_preshow_map), keyed to
+    the real catalog product — not the generic sticker number, which isn't a product
+    SKU and reuses across shows. Kept so existing pack-time call sites stay valid."""
+    return
 
 @app.route("/api/products")
 @req_role("admin","cs")
@@ -3380,7 +3402,10 @@ def api_products():
     else:
         rows=c.execute("SELECT * FROM products ORDER BY updated_at DESC, name LIMIT 500").fetchall()
     c.close()
-    return jsonify([dict(r) for r in rows])
+    out=[dict(r) for r in rows]
+    if session.get("role","")!="admin":   # cost is admin-only
+        for d in out: d.pop("avg_cost",None)
+    return jsonify(out)
 
 @app.route("/api/product/lookup/<code>")
 @req_role("admin","cs","worker","picker")
@@ -3389,7 +3414,9 @@ def api_product_lookup(code):
     c=sdb()
     r=c.execute("SELECT * FROM products WHERE sku=? OR barcode=?",(code,code)).fetchone()
     c.close()
-    return jsonify({"ok":bool(r),"product":dict(r) if r else None})
+    p=dict(r) if r else None
+    if p and session.get("role","")!="admin": p.pop("avg_cost",None)
+    return jsonify({"ok":bool(r),"product":p})
 
 @app.route("/api/products",methods=["POST"])
 @req_role("admin","cs")
@@ -3406,6 +3433,75 @@ def api_product_save():
                d.get("image_url"),d.get("category"),datetime.now().isoformat(timespec='seconds')))
     c.commit(); c.close()
     return jsonify({"ok":True,"sku":sku})
+
+@app.route("/api/products/template.csv")
+@req_role("admin")
+def api_products_template():
+    rows=("SKU,Name,Barcode,Category,Quantity,Unit Cost\r\n"
+          ",Matte Lipstick - Red,012345678905,Lips,24,3.50\r\n"
+          ",Velvet Blush,012345678912,Cheeks,12,2.10\r\n"
+          "1042,House Brush (no barcode),,Tools,40,1.25\r\n")
+    return Response(rows,mimetype="text/csv",
+                    headers={"Content-Disposition":"attachment;filename=product_import_template.csv"})
+
+@app.route("/api/products/import",methods=["POST"])
+@req_role("admin")
+def api_products_import():
+    """Bulk-load the catalog + stock from a CSV. Headers are matched loosely
+    (case-insensitive aliases). mode=add → receive qty at cost (weighted avg);
+    mode=replace → set on_hand (and avg_cost when a cost is given) outright.
+    Admin only (touches cost)."""
+    f=request.files.get("file")
+    if not f: return jsonify({"ok":False,"error":"No file uploaded"})
+    mode=(request.form.get("mode") or "add").lower()
+    import csv, io as _io
+    try:
+        text=f.read().decode("utf-8-sig",errors="replace")
+    except Exception as e:
+        return jsonify({"ok":False,"error":"Could not read file: "+str(e)})
+    rdr=csv.DictReader(_io.StringIO(text))
+    def pick(row,*keys):
+        for k in list(row.keys()):
+            if (k or "").strip().lower() in keys:
+                return (row[k] or "").strip()
+        return ""
+    created=0; updated=0; stocked=0; skipped=0
+    now=datetime.now().isoformat(timespec='seconds')
+    c=sdb()
+    for row in rdr:
+        name=pick(row,"name","product","product name","title","description")
+        sku=pick(row,"sku","id","code","item","item id")
+        barcode=pick(row,"barcode","upc","ean","gtin","bar code")
+        category=pick(row,"category","cat","type","department")
+        qs=pick(row,"qty","quantity","on hand","on_hand","onhand","stock","count")
+        cs=pick(row,"cost","unit cost","unit_cost","unitcost","price","avg cost","avg_cost")
+        if not (name or sku or barcode): skipped+=1; continue
+        try: qty=int(float(qs)) if qs else 0
+        except Exception: qty=0
+        try: cost=float(cs.replace("$","").replace(",","")) if cs else 0.0
+        except Exception: cost=0.0
+        existed=bool(c.execute("SELECT 1 FROM products WHERE sku=?",(sku,)).fetchone()) if sku else False
+        if not sku: sku=_gen_sku()
+        c.execute("""INSERT INTO products(sku,name,barcode,category,updated_at) VALUES(?,?,?,?,?)
+                     ON CONFLICT(sku) DO UPDATE SET name=excluded.name,
+                        barcode=COALESCE(NULLIF(excluded.barcode,''),products.barcode),
+                        category=COALESCE(NULLIF(excluded.category,''),products.category),
+                        updated_at=excluded.updated_at""",
+                  (sku,name or sku,barcode or None,category or None,now))
+        if mode=="replace":
+            if cs!="":
+                c.execute("UPDATE products SET on_hand=?,avg_cost=? WHERE sku=?",(qty,round(cost,4),sku))
+            else:
+                c.execute("UPDATE products SET on_hand=? WHERE sku=?",(qty,sku))
+            if qty: stocked+=1
+        else:
+            if qty>0:
+                _receive_stock(c,sku,qty,cost,note="CSV import",name=name,barcode=barcode); stocked+=1
+        updated+=1 if existed else 0
+        created+=0 if existed else 1
+    c.commit(); c.close()
+    return jsonify({"ok":True,"created":created,"updated":updated,"stocked":stocked,
+                    "skipped":skipped,"mode":mode})
 
 @app.route("/api/receive",methods=["POST"])
 @req_role("admin","cs")
@@ -3469,42 +3565,157 @@ def api_po_receive(poid):
     c.commit(); c.close()
     return jsonify({"ok":True,"received":received})
 
+@app.route("/api/preshow/map",methods=["POST"])
+@req_role("admin","cs","worker","picker")
+def api_preshow_map():
+    """Bind a generic sticker (sticker#, Part) for a show to a real catalog product.
+    Resolve the product by barcode or SKU. Sticker numbers reuse each show, so the
+    binding is scoped to import_label."""
+    d=request.get_json() or {}
+    show=(d.get("show") or "").strip()
+    sticker=(d.get("sticker") or "").strip()
+    try: part=int(d.get("part") or 0)
+    except Exception: part=0
+    code=(d.get("code") or "").strip()           # scanned barcode / SKU
+    product_sku=(d.get("product_sku") or "").strip()  # explicit pick from catalog
+    if not show or not sticker:
+        return jsonify({"ok":False,"error":"show and sticker required"})
+    c=sdb()
+    prod=None
+    if product_sku:
+        prod=c.execute("SELECT * FROM products WHERE sku=?",(product_sku,)).fetchone()
+    elif code:
+        prod=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
+    if not prod:
+        c.close()
+        return jsonify({"ok":False,"error":"Product not found in catalog","not_found":True,
+                        "code":code or product_sku})
+    # Units sold under this sticker this show (one product per sticker per show).
+    items=c.execute("""SELECT i.product_name, i.quantity FROM shipment_items i
+                       JOIN shipments s ON s.shipment_id=i.shipment_id
+                       WHERE s.import_label=? AND i.sku=? AND COALESCE(i.cancelled,0)=0""",(show,sticker)).fetchall()
+    sold_qty=sum((it["quantity"] or 1) for it in items if _part_num(it["product_name"] or "")==part)
+    # Restore any prior deduction (re-bind / corrected scan), then deduct from the real product.
+    ex=c.execute("SELECT product_sku,COALESCE(depleted_qty,0) dq FROM show_product_map WHERE import_label=? AND sticker_sku=? AND part=?",(show,sticker,part)).fetchone()
+    if ex and ex["product_sku"]:
+        c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(ex["dq"],ex["product_sku"]))
+    c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(sold_qty,prod["sku"]))
+    c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by)
+                 VALUES(?,?,?,?,?,?,?)
+                 ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET
+                    product_sku=excluded.product_sku,depleted_qty=excluded.depleted_qty,
+                    mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
+              (show,sticker,part,prod["sku"],sold_qty,datetime.now().isoformat(timespec='seconds'),
+               session.get("name","")[:60]))
+    c.commit()
+    newoh=c.execute("SELECT on_hand FROM products WHERE sku=?",(prod["sku"],)).fetchone()
+    c.close()
+    return jsonify({"ok":True,"sticker":sticker,"part":part,"sold_qty":sold_qty,
+                    "product":{"sku":prod["sku"],"name":prod["name"],"image_url":prod["image_url"],
+                               "on_hand":newoh["on_hand"] if newoh else None}})
+
+@app.route("/api/preshow/map")
+@req_role("admin","cs","worker","picker")
+def api_preshow_map_list():
+    """Existing bindings for a show, plus simple progress counts."""
+    show=(request.args.get("show") or "").strip()
+    if not show: return jsonify({"ok":False,"error":"show required"})
+    c=sdb()
+    rows=c.execute("""SELECT m.sticker_sku,m.part,m.product_sku,m.mapped_by,m.mapped_at,
+                             p.name pname,p.image_url,p.avg_cost,p.on_hand
+                      FROM show_product_map m LEFT JOIN products p ON p.sku=m.product_sku
+                      WHERE m.import_label=? ORDER BY m.part, CAST(m.sticker_sku AS INTEGER)""",(show,)).fetchall()
+    c.close()
+    role=session.get("role","")
+    out=[]
+    for r in rows:
+        d={"sticker":r["sticker_sku"],"part":r["part"],"product_sku":r["product_sku"],
+           "name":r["pname"],"image_url":r["image_url"],"on_hand":r["on_hand"],
+           "mapped_by":r["mapped_by"],"mapped_at":r["mapped_at"]}
+        if role=="admin": d["avg_cost"]=r["avg_cost"]   # cost only for admin
+        out.append(d)
+    return jsonify({"ok":True,"show":show,"count":len(out),"maps":out})
+
+@app.route("/api/preshow/map",methods=["DELETE"])
+@req_role("admin","cs","worker","picker")
+def api_preshow_unmap():
+    d=request.get_json() or {}
+    show=(d.get("show") or "").strip(); sticker=(d.get("sticker") or "").strip()
+    try: part=int(d.get("part") or 0)
+    except Exception: part=0
+    c=sdb()
+    ex=c.execute("SELECT product_sku,COALESCE(depleted_qty,0) dq FROM show_product_map WHERE import_label=? AND sticker_sku=? AND part=?",(show,sticker,part)).fetchone()
+    if ex and ex["product_sku"]:
+        c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(ex["dq"],ex["product_sku"]))
+    c.execute("DELETE FROM show_product_map WHERE import_label=? AND sticker_sku=? AND part=?",(show,sticker,part))
+    c.commit(); c.close()
+    return jsonify({"ok":True})
+
 @app.route("/api/profit")
-@req_role("admin","cs")
+@req_role("admin")
 def api_profit():
-    """Revenue (from import) − COGS (qty × current avg cost), per show or all."""
+    """Per real-product P&L. Sticker numbers are reused each show, so revenue is
+    attributed to the real catalog product via the per-show binding (show_product_map).
+    Revenue from import; COGS = qty × current avg cost. Admin only."""
     show=(request.args.get("show") or "").strip()
     c=sdb()
     where="WHERE COALESCE(i.cancelled,0)=0"; params=[]
     if show:
         where+=" AND s.import_label=?"; params.append(show)
-    rows=c.execute("""SELECT i.sku, SUM(i.quantity) qty, SUM(COALESCE(i.revenue,0)) revenue,
-                             MAX(p.avg_cost) avg_cost, MAX(COALESCE(p.name,i.product_name)) pname
+    rows=c.execute("""SELECT s.import_label, i.sku, i.product_name, i.quantity,
+                             COALESCE(i.revenue,0) revenue
                       FROM shipment_items i
-                      JOIN shipments s ON s.shipment_id=i.shipment_id
-                      LEFT JOIN products p ON p.sku=i.sku """+where+"""
-                      GROUP BY i.sku ORDER BY revenue DESC""",params).fetchall()
+                      JOIN shipments s ON s.shipment_id=i.shipment_id """+where,params).fetchall()
+    # all bindings (optionally scoped to one show)
+    if show:
+        mrows=c.execute("SELECT import_label,sticker_sku,part,product_sku FROM show_product_map WHERE import_label=?",(show,)).fetchall()
+    else:
+        mrows=c.execute("SELECT import_label,sticker_sku,part,product_sku FROM show_product_map").fetchall()
+    mp={(m["import_label"],(m["sticker_sku"] or "").strip(),m["part"]):m["product_sku"] for m in mrows}
+    prods={p["sku"]:p for p in c.execute("SELECT sku,name,avg_cost FROM products").fetchall()}
     c.close()
-    total_rev=0; total_cogs=0; missing=0; lines=[]
+    agg={}  # key -> line
+    total_rev=0; total_cogs=0; unmapped=0
     for r in rows:
-        qty=r["qty"] or 0; rev=r["revenue"] or 0; ac=r["avg_cost"]
-        cogs=(qty*ac) if ac is not None else 0
-        if ac is None and qty>0: missing+=1
-        total_rev+=rev; total_cogs+=cogs
-        lines.append({"sku":r["sku"],"name":r["pname"],"qty":qty,"revenue":round(rev,2),
-                      "avg_cost":ac,"cogs":round(cogs,2),"profit":round(rev-cogs,2),"has_cost":ac is not None})
+        sku=(r["sku"] or "").strip(); part=_part_num(r["product_name"] or "")
+        qty=r["quantity"] or 0; rev=r["revenue"] or 0
+        psku=mp.get((r["import_label"],sku,part))
+        if psku and psku in prods:
+            p=prods[psku]; key=psku; name=p["name"] or psku; ac=p["avg_cost"]; mapped=True
+        else:
+            key="?"+sku+"|"+str(part); name=(r["product_name"] or sku); ac=None; mapped=False
+            unmapped+=1
+        g=agg.setdefault(key,{"product_sku":psku if mapped else None,"name":name,"qty":0,
+                              "revenue":0,"avg_cost":ac,"mapped":mapped,"stickers":set()})
+        g["qty"]+=qty; g["revenue"]+=rev; g["stickers"].add(sku)
+        total_rev+=rev
+    lines=[]
+    for g in agg.values():
+        ac=g["avg_cost"]; cogs=(g["qty"]*ac) if ac is not None else 0
+        total_cogs+=cogs
+        lines.append({"product_sku":g["product_sku"],"name":g["name"],
+                      "stickers":sorted(g["stickers"]),"qty":g["qty"],
+                      "revenue":round(g["revenue"],2),"avg_cost":ac,
+                      "cogs":round(cogs,2),"profit":round(g["revenue"]-cogs,2),
+                      "mapped":g["mapped"]})
+    lines.sort(key=lambda x:x["revenue"],reverse=True)
     return jsonify({"ok":True,"show":show or "ALL","revenue":round(total_rev,2),
                     "cogs":round(total_cogs,2),"profit":round(total_rev-total_cogs,2),
                     "margin":round(100*(total_rev-total_cogs)/total_rev,1) if total_rev else 0,
-                    "missing_cost_skus":missing,"lines":lines})
+                    "unmapped_lines":unmapped,"lines":lines})
+
+@app.route("/admin/preshow")
+@req_role("admin","cs","worker","picker")
+def preshow_page():
+    return PRESHOW_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("preshow")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/admin/inventory")
-@req_role("admin","cs")
+@req_role("admin")
 def inventory_page():
     return INVENTORY_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("inventory")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/admin/profit")
-@req_role("admin","cs")
+@req_role("admin")
 def profit_page():
     return PROFIT_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("profit")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
@@ -5272,6 +5483,84 @@ def api_label_buy():
                label,d.get("po_id"),session.get("name","")[:60]))
     c.commit(); c.close()
     return jsonify({"ok":True,"label_url":label,"tracking":tracking,"cost":float(sr.get("rate") or 0)})
+
+@app.route("/api/label/rates-multi",methods=["POST"])
+@req_role("admin","cs")
+def api_label_rates_multi():
+    """Rates for a multi-box supplier shipment. One EasyPost shipment per box; we
+    return only services available on EVERY box, with the summed total."""
+    if not EASYPOST_ENABLED: return jsonify({"ok":False,"error":"EasyPost not configured — set EASYPOST_API_KEY."})
+    d=request.get_json() or {}
+    to=d.get("to_address") or {}
+    frm=d.get("from_address") or _ship_from()
+    boxes=d.get("boxes") or []
+    if not boxes: return jsonify({"ok":False,"error":"Add at least one box."})
+    if not (to.get("street1") and to.get("city") and to.get("state") and to.get("zip")):
+        return jsonify({"ok":False,"error":"Destination address incomplete (street/city/state/ZIP)."})
+    if not (frm.get("street1") and frm.get("zip")):
+        return jsonify({"ok":False,"error":"From address incomplete."})
+    legs=[]
+    try:
+        for i,b in enumerate(boxes,1):
+            try: w=float(b.get("weight_oz") or 0)
+            except Exception: w=0
+            if w<=0: return jsonify({"ok":False,"error":"Box "+str(i)+": enter weight (oz)."})
+            sid,rates=_easypost_rates(to,frm,w,b)
+            legs.append({"sid":sid,"rates":rates})
+    except _urlerr.HTTPError as e:
+        try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
+        except Exception: msg="HTTP "+str(e.code)
+        return jsonify({"ok":False,"error":"EasyPost: "+str(msg)})
+    except Exception as e: return jsonify({"ok":False,"error":str(e)})
+    nb=len(legs); combo={}
+    for leg in legs:
+        for r in leg["rates"]:
+            key=(r["carrier"],r["service"])
+            g=combo.setdefault(key,{"carrier":r["carrier"],"service":r["service"],"total":0.0,"days":r.get("days"),"legs":[]})
+            g["total"]+=float(r["rate"] or 0)
+            g["legs"].append({"shipment_id":leg["sid"],"rate_id":r["id"]})
+    out=[g for g in combo.values() if len(g["legs"])==nb]
+    for g in out: g["total"]=round(g["total"],2)
+    out.sort(key=lambda x:x["total"])
+    # Cheapest-per-box (carriers may differ between boxes) — usually the lowest total.
+    best=None
+    if all(leg["rates"] for leg in legs):
+        bl=[]; bt=0.0; det=[]
+        for leg in legs:
+            r0=leg["rates"][0]   # _easypost_rates already sorts ascending
+            bl.append({"shipment_id":leg["sid"],"rate_id":r0["id"]})
+            bt+=float(r0["rate"] or 0)
+            det.append({"carrier":r0["carrier"],"service":r0["service"],"rate":r0["rate"]})
+        best={"legs":bl,"total":round(bt,2),"detail":det}
+    return jsonify({"ok":True,"boxes":nb,"rates":out,"best_mix":best})
+
+@app.route("/api/label/buy-multi",methods=["POST"])
+@req_role("admin","cs")
+def api_label_buy_multi():
+    """Buy one label per box for the chosen service; record each + return all labels."""
+    if not EASYPOST_ENABLED: return jsonify({"ok":False,"error":"EasyPost not configured."})
+    d=request.get_json() or {}
+    legs=d.get("legs") or []
+    if not legs: return jsonify({"ok":False,"error":"No boxes selected"})
+    labels=[]; total=0.0; c=sdb(); err=None
+    try:
+        for leg in legs:
+            sid=(leg.get("shipment_id") or "").strip(); rid=(leg.get("rate_id") or "").strip()
+            if not sid or not rid: continue
+            sh=_easypost("POST","/shipments/"+sid+"/buy",{"rate":{"id":rid}})
+            label=(sh.get("postage_label") or {}).get("label_url"); tracking=sh.get("tracking_code")
+            sr=sh.get("selected_rate") or {}; cost=float(sr.get("rate") or 0); total+=cost
+            c.execute("""INSERT INTO inbound_shipments(supplier,carrier,service,tracking,cost,label_url,po_id,created_by)
+                         VALUES(?,?,?,?,?,?,?,?)""",
+                      (d.get("supplier"),sr.get("carrier"),sr.get("service"),tracking,cost,label,d.get("po_id"),session.get("name","")[:60]))
+            labels.append({"label_url":label,"tracking":tracking,"cost":cost,"carrier":sr.get("carrier"),"service":sr.get("service")})
+    except _urlerr.HTTPError as e:
+        try: err="EasyPost: "+str(json.loads(e.read().decode()).get("error",{}).get("message",str(e)))
+        except Exception: err="HTTP "+str(e.code)
+    except Exception as e: err=str(e)
+    c.commit(); c.close()
+    if err: return jsonify({"ok":False,"error":err,"labels":labels,"total":round(total,2)})
+    return jsonify({"ok":True,"labels":labels,"total":round(total,2),"count":len(labels)})
 
 @app.route("/api/inbound")
 @req_role("admin","cs")
