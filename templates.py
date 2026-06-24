@@ -42,6 +42,8 @@ def _navbar(active_page=""):
             ("customers", "/customers", "Customer Lookup"),
             ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation"),
             ("shipstatus", "/shipping-status", "🚚 Shipping Status"),
+            ("inventory", "/admin/inventory", "📦 Inventory"),
+            ("profit", "/admin/profit", "💰 Profit"),
             ("giveaway", "/giveaway", "Giveaways"),
         ]
         if role == "admin":
@@ -1372,11 +1374,15 @@ function render(){
             addressForm(g)+
             '<button class="btn btn-p" id="saveAddr" style="margin-top:10px">Update Address</button></details></div>';
         h+='<div class="section"><h3>📦 Ship It</h3>'+
-            '<div class="tip">⚙️ Phase A: Manual entry. Create the label in Shippo as usual, then enter the tracking number here. (One-click Shippo integration coming next.)</div>'+
-            '<div class="f"><label>Tracking Number</label><input id="trk" placeholder="e.g. 9400111202533112341234"></div>'+
+            '<div class="tip">🏷️ Buy a label here (EasyPost) — pick the cheapest carrier. Or enter a tracking number manually below.</div>'+
+            '<div class="f"><label>Package weight (oz)</label><input id="wt" type="number" step="0.1" placeholder="e.g. 6"></div>'+
+            '<button class="btn btn-p" id="getRates">Get rates →</button>'+
+            '<div id="ratesBox" style="margin-top:12px"></div>'+
+            '<details style="margin-top:14px"><summary style="cursor:pointer;color:#a5b4fc;font-size:13px">✏️ Or enter a tracking number manually</summary>'+
+            '<div class="f" style="margin-top:8px"><label>Tracking Number</label><input id="trk" placeholder="e.g. 9400111202533112341234"></div>'+
             '<div class="f"><label>Notes (optional)</label><textarea id="nt" placeholder="Any notes about this shipment..."></textarea></div>'+
-            '<div class="btn-row"><button class="btn btn-s" id="ship">Mark as Shipped</button>'+
-            '<button class="btn btn-d" id="cancel">Cancel Giveaway</button></div></div>';
+            '<button class="btn btn-s" id="ship">Mark as Shipped</button></details>'+
+            '<div class="btn-row" style="margin-top:12px"><button class="btn btn-d" id="cancel">Cancel Giveaway</button></div></div>';
     } else if(g.status==='shipped'){
         h+='<div class="section"><h3>📍 Shipped to</h3>'+addressDisplay(g)+'</div>';
         h+='<div class="section"><h3>✅ Shipment</h3>'+
@@ -1472,6 +1478,32 @@ function bindEvents(){
         fetch('/api/giveaway/'+GID+'/cancel',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
             if(d.ok){toast('Cancelled');setTimeout(function(){location.href='/giveaway'},1000)}else toast(d.error||'Failed',true);
         });
+    });
+    var gr=document.getElementById('getRates');
+    if(gr)gr.addEventListener('click',function(){
+        var wt=document.getElementById('wt').value;
+        if(!wt||parseFloat(wt)<=0){toast('Enter weight (oz)',true);return}
+        var box=document.getElementById('ratesBox');box.innerHTML='<div style="color:#6b7a90;font-size:13px">Getting rates…</div>';
+        fetch('/api/giveaway/'+GID+'/rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weight_oz:parseFloat(wt)})})
+         .then(function(r){return r.json()}).then(function(d){
+            if(!d.ok){box.innerHTML='<div style="color:#fb7185;font-size:13px">'+esc(d.error||'Failed')+'</div>';return}
+            if(!d.rates.length){box.innerHTML='<div style="color:#fb7185;font-size:13px">No rates returned</div>';return}
+            box.innerHTML=d.rates.map(function(rt){
+                return '<div class="addr-display" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'+
+                  '<div><b>'+esc(rt.carrier)+'</b> '+esc(rt.service)+(rt.days?(' · '+rt.days+'d'):'')+'</div>'+
+                  '<button class="btn btn-p" style="padding:6px 14px" onclick="buyLabel(\\''+d.shipment_id+'\\',\\''+rt.id+'\\',this)">$'+rt.rate+'</button></div>';
+            }).join('');
+        });
+    });
+}
+function buyLabel(sid,rid,btn){
+    if(btn){btn.disabled=true;btn.textContent='Buying…'}
+    fetch('/api/giveaway/'+GID+'/buy-label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({shipment_id:sid,rate_id:rid})})
+     .then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){toast(d.error||'Failed',true);if(btn){btn.disabled=false;btn.textContent='Retry'}return}
+        toast('Label bought! 🏷️');
+        window.open(d.label_url,'_blank');
+        load();
     });
 }
 function load(){
@@ -6415,10 +6447,32 @@ __NAVBAR__
   <div class="note">Built-in roles: <b>admin</b> (full access), <b>cs</b> (customer service), <b>picker</b> &amp; <b>worker</b> (floor staff). These settings apply on top of each role's base access.</div>
 </div>
 
+<div class="card">
+  <h2>🏷️ Ship-from address (for buying labels)</h2>
+  <div class="desc">Your warehouse address — used as the sender when buying shipping labels (giveaways, inbound).</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:640px">
+    <input type="text" id="sf_name" placeholder="Name"><input type="text" id="sf_company" placeholder="Company">
+    <input type="text" id="sf_street1" placeholder="Street 1"><input type="text" id="sf_street2" placeholder="Street 2">
+    <input type="text" id="sf_city" placeholder="City"><input type="text" id="sf_state" placeholder="State (e.g. FL)">
+    <input type="text" id="sf_zip" placeholder="ZIP"><input type="text" id="sf_phone" placeholder="Phone">
+  </div>
+  <div class="row" style="margin-top:14px"><button class="btn btn-p" id="saveShipFrom">Save ship-from</button></div>
+</div>
+
 </div>
 <div class="toast" id="t"></div>
 <script>
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
+fetch('/api/ship-from').then(function(r){return r.json()}).then(function(d){
+  var a=d.address||{};['name','company','street1','street2','city','state','zip','phone'].forEach(function(k){
+    var el=document.getElementById('sf_'+k);if(el)el.value=a[k]||'';});
+});
+document.getElementById('saveShipFrom').addEventListener('click',function(){
+  var a={};['name','company','street1','street2','city','state','zip','phone'].forEach(function(k){a[k]=(document.getElementById('sf_'+k).value||'').trim()});
+  a.country='US';
+  fetch('/api/ship-from',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(a)})
+   .then(function(r){return r.json()}).then(function(d){toast(d.ok?'Ship-from saved ✓':'Failed',!d.ok)});
+});
 var DATA=null;
 function render(){
   document.getElementById('pinState').className='pin-state '+(DATA.pin_set?'pin-on':'pin-off');
@@ -6460,4 +6514,164 @@ document.getElementById('savePerms').addEventListener('click',function(){
      else toast(d.error||'Failed',true);
    });
 });
+</script></body></html>'''
+
+
+# ── INVENTORY — product catalog + receiving (weighted-avg cost) ──
+INVENTORY_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Inventory</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1300px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1300px;margin:0 auto;padding:8px 28px 40px}
+.card{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:20px 22px;margin-bottom:20px}
+.card h2{font-size:14px;font-weight:800;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px;margin-bottom:14px}
+.row{display:flex;gap:12px;align-items:end;flex-wrap:wrap}
+.f label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
+.f input{background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:11px 14px;font-size:15px;color:#e4e8f1;font-family:inherit;outline:none}
+.f input:focus{border-color:#4f46e5}
+.btn{border:none;border-radius:10px;padding:11px 20px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}.btn-s{background:rgba(255,255,255,.08);color:#e4e8f1;border:1px solid rgba(255,255,255,.12)}
+table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06);text-align:left}
+th{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px}
+.thumb{width:42px;height:42px;border-radius:8px;object-fit:cover;background:rgba(255,255,255,.05)}
+.sku{font-family:monospace;color:#a5b4fc;font-weight:700}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}.toast.err{background:#f43f5e}
+.muted{color:#6b7a90}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">📦 Inventory <span>__NAME__</span></div></div>
+<div class="wrap">
+<div class="card">
+  <h2>📥 Receive stock</h2>
+  <div class="row">
+    <div class="f"><label>SKU / Barcode</label><input id="rSku" placeholder="Scan or type" autofocus></div>
+    <div class="f"><label>Qty</label><input id="rQty" type="number" style="width:90px" value="1"></div>
+    <div class="f"><label>Unit cost ($)</label><input id="rCost" type="number" step="0.01" style="width:120px" placeholder="0.00"></div>
+    <div class="f"><label>Name (if new)</label><input id="rName" placeholder="Product name"></div>
+    <button class="btn btn-p" id="rBtn">Receive →</button>
+  </div>
+  <div class="muted" id="rResult" style="margin-top:10px;font-size:13px"></div>
+</div>
+<div class="card">
+  <h2>🗂️ Product catalog</h2>
+  <div class="row" style="margin-bottom:14px">
+    <div class="f" style="flex:1"><label>Search</label><input id="q" placeholder="SKU, name, or barcode" style="width:100%"></div>
+    <button class="btn btn-s" id="addBtn">+ Add product</button>
+  </div>
+  <table><thead><tr><th></th><th>SKU</th><th>Name</th><th>Barcode</th><th>On hand</th><th>Avg cost</th><th>Label</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody></table>
+</div>
+</div>
+<div class="toast" id="t"></div>
+<script>
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+function money(v){return v==null?'—':'$'+Number(v).toFixed(2)}
+function load(){
+  fetch('/api/products'+(document.getElementById('q').value.trim()?('?q='+encodeURIComponent(document.getElementById('q').value.trim())):'')).then(function(r){return r.json()}).then(function(rows){
+    if(!rows.length){document.getElementById('rows').innerHTML='<tr><td colspan="7" class="muted">No products yet. Receive stock or add a product.</td></tr>';return}
+    document.getElementById('rows').innerHTML=rows.map(function(p){
+      var img=p.image_url?'<img class="thumb" src="'+esc(p.image_url)+'">':'<div class="thumb"></div>';
+      return '<tr><td>'+img+'</td><td class="sku">'+esc(p.sku)+'</td><td>'+esc(p.name||'')+'</td><td class="muted">'+esc(p.barcode||'—')+'</td>'+
+        '<td>'+(p.on_hand||0)+'</td><td>'+money(p.avg_cost)+'</td>'+
+        '<td><a href="/api/product/'+encodeURIComponent(p.sku)+'/label.pdf" target="_blank" style="color:#a5b4fc;text-decoration:underline">🏷️ Print</a></td></tr>';
+    }).join('');
+  });
+}
+document.getElementById('rBtn').addEventListener('click',function(){
+  var sku=document.getElementById('rSku').value.trim();
+  if(!sku){toast('SKU/barcode required',true);return}
+  fetch('/api/receive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    sku:sku,qty:parseInt(document.getElementById('rQty').value||'0'),unit_cost:parseFloat(document.getElementById('rCost').value||'0'),
+    name:document.getElementById('rName').value.trim()})}).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){toast(d.error||'Failed',true);return}
+    document.getElementById('rResult').innerHTML='✓ '+esc(d.sku)+' — on hand: <b>'+d.on_hand+'</b> · avg cost: <b>'+money(d.avg_cost)+'</b>';
+    document.getElementById('rSku').value='';document.getElementById('rCost').value='';document.getElementById('rName').value='';document.getElementById('rSku').focus();
+    toast('Received ✓');load();
+  });
+});
+document.getElementById('addBtn').addEventListener('click',function(){
+  var name=prompt('Product name:');if(name===null)return;
+  var sku=prompt('SKU (leave blank to auto-generate):')||'';
+  var barcode=prompt('Barcode (optional):')||'';
+  fetch('/api/products',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sku:sku.trim(),name:name.trim(),barcode:barcode.trim()})})
+   .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Added '+d.sku);load()}else toast(d.error||'Failed',true)});
+});
+document.getElementById('rSku').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('rBtn').click()});
+var dq=null;document.getElementById('q').addEventListener('input',function(){clearTimeout(dq);dq=setTimeout(load,200)});
+load();
+</script></body></html>'''
+
+
+# ── PROFIT — revenue minus COGS per show ──
+PROFIT_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Profit</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1300px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1300px;margin:0 auto;padding:8px 28px 40px}
+select{background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:10px 14px;font-size:14px;color:#e4e8f1;font-family:inherit;outline:none;min-width:240px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:18px 0}
+@media(max-width:760px){.cards{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:18px}
+.kpi .l{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px}
+.kpi .v{font-size:30px;font-weight:900}
+.kpi.rev .v{color:#60a5fa}.kpi.cogs .v{color:#fbbf24}.kpi.profit .v{color:#34d399}.kpi.profit.neg .v{color:#f43f5e}.kpi.margin .v{color:#a5b4fc}
+table{width:100%;border-collapse:collapse;background:rgba(21,25,33,.4);border-radius:12px;overflow:hidden}
+th,td{padding:11px 13px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06);text-align:right}
+th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
+th{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px}
+.sku{font-family:monospace;color:#a5b4fc;font-weight:700}.pos{color:#34d399}.neg{color:#f43f5e}
+.warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);color:#fbbf24;padding:10px 14px;border-radius:10px;margin-bottom:16px;font-size:13px}
+.nocost{color:#fbbf24}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">💰 Profit <span>__NAME__</span></div>
+<select id="showSel"><option value="">All shows</option></select></div>
+<div class="wrap">
+<div id="notice"></div>
+<div class="cards" id="cards"></div>
+<table><thead><tr><th>SKU</th><th>Product</th><th>Qty sold</th><th>Revenue</th><th>Avg cost</th><th>COGS</th><th>Profit</th></tr></thead>
+<tbody id="rows"><tr><td colspan="7">Loading…</td></tr></tbody></table>
+</div>
+<script>
+function money(v){return v==null?'—':'$'+Number(v).toFixed(2)}
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){
+  var sel=document.getElementById('showSel');
+  shows.forEach(function(s){var o=document.createElement('option');o.value=s.name;o.textContent=s.name;sel.appendChild(o)});
+});
+function load(){
+  var show=document.getElementById('showSel').value;
+  fetch('/api/profit'+(show?('?show='+encodeURIComponent(show)):'')).then(function(r){return r.json()}).then(function(d){
+    document.getElementById('notice').innerHTML=d.missing_cost_skus?('<div class="warn">⚠️ '+d.missing_cost_skus+' SKUs have no cost set yet — their COGS counts as $0, so profit is overstated. Set costs in Inventory (receive stock).</div>'):'';
+    var profCls=d.profit<0?'profit neg':'profit';
+    document.getElementById('cards').innerHTML=
+      '<div class="kpi rev"><div class="l">Revenue</div><div class="v">'+money(d.revenue)+'</div></div>'+
+      '<div class="kpi cogs"><div class="l">COGS (cost of goods)</div><div class="v">'+money(d.cogs)+'</div></div>'+
+      '<div class="kpi '+profCls+'"><div class="l">Profit</div><div class="v">'+money(d.profit)+'</div></div>'+
+      '<div class="kpi margin"><div class="l">Margin</div><div class="v">'+(d.margin||0)+'%</div></div>';
+    var rows=d.lines||[];
+    if(!rows.length){document.getElementById('rows').innerHTML='<tr><td colspan="7">No sales for this show</td></tr>';return}
+    document.getElementById('rows').innerHTML=rows.map(function(l){
+      var pc=l.profit<0?'neg':'pos';
+      var cost=l.has_cost?money(l.avg_cost):'<span class="nocost">no cost</span>';
+      return '<tr><td class="sku">'+esc(l.sku||'—')+'</td><td>'+esc(l.name||'')+'</td><td>'+l.qty+'</td>'+
+        '<td>'+money(l.revenue)+'</td><td>'+cost+'</td><td>'+money(l.cogs)+'</td><td class="'+pc+'">'+money(l.profit)+'</td></tr>';
+    }).join('');
+  });
+}
+document.getElementById('showSel').addEventListener('change',load);
+load();
 </script></body></html>'''

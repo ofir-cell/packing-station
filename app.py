@@ -18,6 +18,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
+    INVENTORY_HTML, PROFIT_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
 
 
@@ -370,6 +371,7 @@ def sdb_init():
         "ALTER TABLE shipments ADD COLUMN delivery_detail TEXT",
         "ALTER TABLE shipments ADD COLUMN delivered_at TEXT",
         "ALTER TABLE shipments ADD COLUMN tracked_at TEXT",
+        "ALTER TABLE shipments ADD COLUMN stock_depleted INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN order_id TEXT",
         "ALTER TABLE shipment_items ADD COLUMN cancelled INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN cancel_reason TEXT",
@@ -746,6 +748,21 @@ if USPS_ENABLED:
     print("USPS tracking enabled (base="+USPS_BASE+")",flush=True)
 else:
     print("USPS tracking not configured — set USPS_CLIENT_ID / USPS_CLIENT_SECRET to enable",flush=True)
+
+# ── EASYPOST — buy shipping labels (giveaways + inbound). Bring-your-own UPS. ──
+import base64 as _b64
+EASYPOST_API_KEY=os.environ.get("EASYPOST_API_KEY")
+EASYPOST_ENABLED=bool(EASYPOST_API_KEY)
+EASYPOST_BASE=os.environ.get("EASYPOST_BASE","https://api.easypost.com/v2")
+def _easypost(method, path, payload=None):
+    """Call the EasyPost API (API key as HTTP Basic username). Raises on HTTP error."""
+    data=json.dumps(payload).encode() if payload is not None else None
+    req=_urlreq.Request(EASYPOST_BASE+path, data=data, method=method,
+        headers={"Authorization":"Basic "+_b64.b64encode((EASYPOST_API_KEY+":").encode()).decode(),
+                 "Content-Type":"application/json","Accept":"application/json"})
+    with _urlreq.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode())
+print("EasyPost "+("enabled (test mode)" if (EASYPOST_API_KEY or "").startswith("EZTK") else ("enabled" if EASYPOST_ENABLED else "not configured — set EASYPOST_API_KEY")),flush=True)
 
 
 def _weight_config():
@@ -1893,6 +1910,9 @@ def api_upload():
             c.execute("""UPDATE shipments
                          SET status='packed', packed_at=CURRENT_TIMESTAMP, packed_by=?
                          WHERE tracking_code=?""", (wrk, trk))
+            # Deplete inventory for the items in this shipment (once per shipment).
+            try: _deplete_stock_for(c, row["shipment_id"])
+            except Exception as e: print("stock deplete failed for", trk, ":", e, flush=True)
             c.commit()
         c.close()
     except Exception as e:
@@ -3290,6 +3310,216 @@ def api_permissions_pin():
         return jsonify({"ok":False,"error":"PIN must be at least 4 digits"})
     _set_setting("manager_pin_hash", bcrypt.hashpw(pin.encode(),bcrypt.gensalt()).decode())
     return jsonify({"ok":True})
+
+# ══════════════════════════════════════════════════════════
+# INVENTORY & COSTING — catalog, receiving (weighted-avg), profit
+# ══════════════════════════════════════════════════════════
+def _gen_sku():
+    c=sdb()
+    try:
+        for _ in range(50):
+            sku="P"+secrets.token_hex(3).upper()
+            if not c.execute("SELECT 1 FROM products WHERE sku=?",(sku,)).fetchone():
+                return sku
+        return "P"+secrets.token_hex(5).upper()
+    finally:
+        c.close()
+
+def _receive_stock(c, sku, qty, cost, po_id=None, note=None, name=None, barcode=None):
+    """Add qty of sku to stock at unit `cost`; recompute weighted-average cost.
+    Returns (new_on_hand, new_avg_cost)."""
+    now=datetime.now().isoformat(timespec='seconds')
+    p=c.execute("SELECT on_hand,avg_cost FROM products WHERE sku=?",(sku,)).fetchone()
+    if not p:
+        c.execute("INSERT INTO products(sku,name,barcode,updated_at) VALUES(?,?,?,?)",
+                  (sku,(name or sku),(barcode or None),now))
+        oh,ac=0,0.0
+    else:
+        oh,ac=p["on_hand"] or 0, p["avg_cost"] or 0.0
+    new_oh=oh+qty
+    new_avg=((oh*ac)+(qty*cost))/new_oh if new_oh>0 else cost
+    c.execute("UPDATE products SET on_hand=?,avg_cost=?,updated_at=? WHERE sku=?",
+              (new_oh,round(new_avg,4),now,sku))
+    c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,po_id,note,moved_by) VALUES(?,?,?,?,?,?)",
+              (sku,qty,cost,po_id,note,session.get("name","")[:60]))
+    return new_oh, round(new_avg,4)
+
+def _deplete_stock_for(c, shipment_id):
+    """Decrement on_hand for each sold item of a shipment — once per shipment."""
+    row=c.execute("SELECT COALESCE(stock_depleted,0) d FROM shipments WHERE shipment_id=?",(shipment_id,)).fetchone()
+    if not row or row["d"]: return
+    items=c.execute("SELECT sku, quantity FROM shipment_items WHERE shipment_id=? AND COALESCE(cancelled,0)=0",(shipment_id,)).fetchall()
+    for it in items:
+        sku=(it["sku"] or "").strip()
+        if not sku: continue
+        c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(it["quantity"] or 1, sku))
+    c.execute("UPDATE shipments SET stock_depleted=1 WHERE shipment_id=?",(shipment_id,))
+
+@app.route("/api/products")
+@req_role("admin","cs")
+def api_products():
+    q=(request.args.get("q") or "").strip().lower()
+    c=sdb()
+    if q:
+        like='%'+q+'%'
+        rows=c.execute("""SELECT * FROM products WHERE LOWER(sku) LIKE ? OR LOWER(COALESCE(name,'')) LIKE ?
+                          OR COALESCE(barcode,'') LIKE ? ORDER BY name LIMIT 500""",(like,like,like)).fetchall()
+    else:
+        rows=c.execute("SELECT * FROM products ORDER BY updated_at DESC, name LIMIT 500").fetchall()
+    c.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/product/lookup/<code>")
+@req_role("admin","cs","worker","picker")
+def api_product_lookup(code):
+    code=(code or "").strip()
+    c=sdb()
+    r=c.execute("SELECT * FROM products WHERE sku=? OR barcode=?",(code,code)).fetchone()
+    c.close()
+    return jsonify({"ok":bool(r),"product":dict(r) if r else None})
+
+@app.route("/api/products",methods=["POST"])
+@req_role("admin","cs")
+def api_product_save():
+    d=request.get_json() or {}
+    sku=(d.get("sku") or "").strip() or _gen_sku()
+    c=sdb()
+    c.execute("""INSERT INTO products(sku,name,barcode,image_url,category,updated_at)
+                 VALUES(?,?,?,?,?,?)
+                 ON CONFLICT(sku) DO UPDATE SET name=excluded.name,barcode=excluded.barcode,
+                    image_url=COALESCE(excluded.image_url,products.image_url),
+                    category=excluded.category,updated_at=excluded.updated_at""",
+              (sku,(d.get("name") or "").strip(),(d.get("barcode") or "").strip() or None,
+               d.get("image_url"),d.get("category"),datetime.now().isoformat(timespec='seconds')))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"sku":sku})
+
+@app.route("/api/receive",methods=["POST"])
+@req_role("admin","cs")
+def api_receive():
+    d=request.get_json() or {}
+    sku=(d.get("sku") or "").strip()
+    if not sku: return jsonify({"ok":False,"error":"SKU required"})
+    try: qty=int(d.get("qty",0))
+    except Exception: qty=0
+    try: cost=float(d.get("unit_cost",0))
+    except Exception: cost=0.0
+    if qty<=0: return jsonify({"ok":False,"error":"Qty must be > 0"})
+    c=sdb()
+    oh,ac=_receive_stock(c, sku, qty, cost, po_id=d.get("po_id"), note=d.get("note"),
+                         name=d.get("name"), barcode=d.get("barcode"))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"sku":sku,"on_hand":oh,"avg_cost":ac})
+
+@app.route("/api/po",methods=["POST"])
+@req_role("admin","cs")
+def api_po_create():
+    d=request.get_json() or {}
+    c=sdb()
+    cur=c.execute("INSERT INTO purchase_orders(supplier,notes,created_by) VALUES(?,?,?)",
+                  (d.get("supplier"),d.get("notes"),session.get("name","")[:60]))
+    poid=cur.lastrowid
+    for it in (d.get("items") or []):
+        c.execute("INSERT INTO po_items(po_id,sku,product_name,qty_ordered,unit_cost) VALUES(?,?,?,?,?)",
+                  (poid,(it.get("sku") or "").strip(),it.get("name"),
+                   int(it.get("qty") or 0),float(it.get("unit_cost") or 0)))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"po_id":poid})
+
+@app.route("/api/po")
+@req_role("admin","cs")
+def api_po_list():
+    c=sdb()
+    rows=c.execute("SELECT * FROM purchase_orders ORDER BY created_at DESC LIMIT 200").fetchall()
+    out=[]
+    for r in rows:
+        d=dict(r); d["items"]=[dict(x) for x in c.execute("SELECT * FROM po_items WHERE po_id=?",(r["id"],)).fetchall()]
+        out.append(d)
+    c.close()
+    return jsonify(out)
+
+@app.route("/api/po/<int:poid>/receive",methods=["POST"])
+@req_role("admin","cs")
+def api_po_receive(poid):
+    c=sdb()
+    items=c.execute("SELECT * FROM po_items WHERE po_id=?",(poid,)).fetchall()
+    received=0
+    for it in items:
+        sku=(it["sku"] or "").strip()
+        qty=(it["qty_ordered"] or 0)-(it["qty_received"] or 0)
+        if not sku or qty<=0: continue
+        _receive_stock(c, sku, qty, it["unit_cost"] or 0, po_id=poid, note="PO receive", name=it["product_name"])
+        c.execute("UPDATE po_items SET qty_received=qty_ordered WHERE id=?",(it["id"],))
+        received+=qty
+    c.execute("UPDATE purchase_orders SET status='received',received_at=? WHERE id=?",
+              (datetime.now().isoformat(timespec='seconds'),poid))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"received":received})
+
+@app.route("/api/profit")
+@req_role("admin","cs")
+def api_profit():
+    """Revenue (from import) − COGS (qty × current avg cost), per show or all."""
+    show=(request.args.get("show") or "").strip()
+    c=sdb()
+    where="WHERE COALESCE(i.cancelled,0)=0"; params=[]
+    if show:
+        where+=" AND s.import_label=?"; params.append(show)
+    rows=c.execute("""SELECT i.sku, SUM(i.quantity) qty, SUM(COALESCE(i.revenue,0)) revenue,
+                             MAX(p.avg_cost) avg_cost, MAX(COALESCE(p.name,i.product_name)) pname
+                      FROM shipment_items i
+                      JOIN shipments s ON s.shipment_id=i.shipment_id
+                      LEFT JOIN products p ON p.sku=i.sku """+where+"""
+                      GROUP BY i.sku ORDER BY revenue DESC""",params).fetchall()
+    c.close()
+    total_rev=0; total_cogs=0; missing=0; lines=[]
+    for r in rows:
+        qty=r["qty"] or 0; rev=r["revenue"] or 0; ac=r["avg_cost"]
+        cogs=(qty*ac) if ac is not None else 0
+        if ac is None and qty>0: missing+=1
+        total_rev+=rev; total_cogs+=cogs
+        lines.append({"sku":r["sku"],"name":r["pname"],"qty":qty,"revenue":round(rev,2),
+                      "avg_cost":ac,"cogs":round(cogs,2),"profit":round(rev-cogs,2),"has_cost":ac is not None})
+    return jsonify({"ok":True,"show":show or "ALL","revenue":round(total_rev,2),
+                    "cogs":round(total_cogs,2),"profit":round(total_rev-total_cogs,2),
+                    "margin":round(100*(total_rev-total_cogs)/total_rev,1) if total_rev else 0,
+                    "missing_cost_skus":missing,"lines":lines})
+
+@app.route("/admin/inventory")
+@req_role("admin","cs")
+def inventory_page():
+    return INVENTORY_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("inventory")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/admin/profit")
+@req_role("admin","cs")
+def profit_page():
+    return PROFIT_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("profit")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/api/product/<sku>/label.pdf")
+@req_role("admin","cs")
+def api_product_label(sku):
+    """Printable Code128 barcode label for a SKU (for no-barcode products)."""
+    safe=secure_filename(sku) or sku
+    c=sdb(); p=c.execute("SELECT name FROM products WHERE sku=?",(safe,)).fetchone(); c.close()
+    name=(p["name"] if p else "") or ""
+    import io as _io
+    try:
+        import barcode
+        from barcode.writer import ImageWriter
+        bio=_io.BytesIO()
+        barcode.get('code128', safe, writer=ImageWriter()).write(bio, options={"module_height":12.0,"font_size":9,"text_distance":3,"quiet_zone":2})
+        bio.seek(0)
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.units import mm
+        from reportlab.lib.utils import ImageReader
+        out=_io.BytesIO(); W,H=60*mm,30*mm
+        cp=canvas.Canvas(out,pagesize=(W,H))
+        cp.drawImage(ImageReader(bio), 4*mm, 8*mm, width=52*mm, height=18*mm, preserveAspectRatio=True, anchor='sw')
+        cp.setFont("Helvetica-Bold",9); cp.drawString(4*mm, 2.5*mm, name[:34])
+        cp.showPage(); cp.save(); out.seek(0)
+        return send_file(out, mimetype="application/pdf", download_name="label_"+safe+".pdf", as_attachment=False)
+    except Exception as e:
+        return ("Label generation failed: "+str(e), 500)
 
 @app.route("/api/shows/recent")
 @req_role("admin","cs","picker","worker")
@@ -4869,6 +5099,88 @@ def api_tracking_summary():
 @req_role("admin","cs")
 def shipping_status_page():
     return SHIPPING_STATUS_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("shipstatus")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/api/ship-from",methods=["GET","POST"])
+@req_role("admin","cs")
+def api_ship_from():
+    """The warehouse/sender address used when buying labels."""
+    if request.method=="POST":
+        d=request.get_json() or {}
+        _set_setting("ship_from", json.dumps({k:(d.get(k) or "") for k in
+            ("name","company","street1","street2","city","state","zip","country","phone")}))
+        return jsonify({"ok":True})
+    raw=_get_setting("ship_from")
+    return jsonify({"ok":True,"address": json.loads(raw) if raw else {}})
+
+def _ship_from():
+    raw=_get_setting("ship_from")
+    return json.loads(raw) if raw else {}
+
+@app.route("/api/giveaway/<int:gid>/rates",methods=["POST"])
+@req_role("admin","cs")
+def api_giveaway_rates(gid):
+    """Get EasyPost rates for shipping this giveaway's prize."""
+    if not EASYPOST_ENABLED:
+        return jsonify({"ok":False,"error":"EasyPost not configured — set EASYPOST_API_KEY on Railway."})
+    d=request.get_json() or {}
+    c=gdb(); g=c.execute("SELECT * FROM giveaways WHERE id=?",(gid,)).fetchone(); c.close()
+    if not g: return jsonify({"ok":False,"error":"Giveaway not found"})
+    g=dict(g)
+    to={"name":g.get("address_name") or g.get("winner_username") or "Recipient",
+        "street1":g.get("address_street1") or "","street2":g.get("address_street2") or "",
+        "city":g.get("address_city") or "","state":g.get("address_state") or "",
+        "zip":g.get("address_zip") or "","country":g.get("address_country") or "US"}
+    if not (to["street1"] and to["city"] and to["state"] and to["zip"]):
+        return jsonify({"ok":False,"error":"Winner address incomplete — fill street/city/state/ZIP first."})
+    frm=_ship_from()
+    if not (frm.get("street1") and frm.get("zip")):
+        return jsonify({"ok":False,"error":"Set your warehouse 'ship-from' address first (Settings).","need_ship_from":True})
+    try: weight=float(d.get("weight_oz") or 0)
+    except Exception: weight=0
+    if weight<=0: return jsonify({"ok":False,"error":"Enter package weight (oz)."})
+    parcel={"weight":weight}
+    for k in ("length","width","height"):
+        try:
+            if d.get(k): parcel[k]=float(d[k])
+        except Exception: pass
+    try:
+        sh=_easypost("POST","/shipments",{"shipment":{"to_address":to,"from_address":frm,"parcel":parcel}})
+    except _urlerr.HTTPError as e:
+        try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
+        except Exception: msg="HTTP "+str(e.code)
+        return jsonify({"ok":False,"error":"EasyPost: "+str(msg)})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)})
+    rates=[{"id":r.get("id"),"carrier":r.get("carrier"),"service":r.get("service"),
+            "rate":r.get("rate"),"days":r.get("delivery_days")} for r in (sh.get("rates") or [])]
+    rates.sort(key=lambda x: float(x["rate"] or 9999))
+    return jsonify({"ok":True,"shipment_id":sh.get("id"),"rates":rates})
+
+@app.route("/api/giveaway/<int:gid>/buy-label",methods=["POST"])
+@req_role("admin","cs")
+def api_giveaway_buy_label(gid):
+    if not EASYPOST_ENABLED:
+        return jsonify({"ok":False,"error":"EasyPost not configured."})
+    d=request.get_json() or {}
+    sid=(d.get("shipment_id") or "").strip(); rate_id=(d.get("rate_id") or "").strip()
+    if not sid or not rate_id: return jsonify({"ok":False,"error":"Missing shipment/rate"})
+    try:
+        sh=_easypost("POST","/shipments/"+sid+"/buy",{"rate":{"id":rate_id}})
+    except _urlerr.HTTPError as e:
+        try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
+        except Exception: msg="HTTP "+str(e.code)
+        return jsonify({"ok":False,"error":"EasyPost: "+str(msg)})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)})
+    label=(sh.get("postage_label") or {}).get("label_url")
+    tracking=sh.get("tracking_code")
+    cost=float((sh.get("selected_rate") or {}).get("rate") or 0)
+    c=gdb()
+    c.execute("""UPDATE giveaways SET shippo_label_url=?, shippo_label_pdf=?, tracking_number=?,
+                    label_cost=?, status='shipped', shipped_at=? WHERE id=?""",
+              (label, label, tracking, cost, datetime.now().isoformat(timespec='seconds'), gid))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"label_url":label,"tracking":tracking,"cost":cost})
 
 @app.route("/api/giveaway/<int:gid>/notes",methods=["POST"])
 @req_role("admin","cs")
