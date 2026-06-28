@@ -1382,7 +1382,7 @@ function render(){
         h+='<div class="section"><h3>📦 Ship It</h3>'+
             '<div class="tip">🏷️ Buy a label here (EasyPost) — pick the cheapest carrier. Or enter a tracking number manually below.</div>'+
             '<div class="f"><label>Package preset</label><select id="pkgSel"><option value="">— custom —</option></select></div>'+
-            '<div class="f"><label>Package weight (oz)</label><input id="wt" type="number" step="0.1" placeholder="e.g. 6"></div>'+
+            '<div style="display:flex;gap:8px;align-items:flex-end"><div class="f" style="flex:1"><label>Package weight</label><input id="wt" type="number" step="0.01" placeholder="e.g. 6"></div><div class="f"><label>Unit</label><select id="wUnit"><option value="oz">oz</option><option value="lb">lb</option></select></div></div>'+
             '<div style="display:flex;gap:8px"><div class="f" style="flex:1"><label>L (in)</label><input id="ln" type="number" step="0.1"></div><div class="f" style="flex:1"><label>W (in)</label><input id="wd" type="number" step="0.1"></div><div class="f" style="flex:1"><label>H (in)</label><input id="ht" type="number" step="0.1"></div></div>'+
             '<button class="btn btn-p" id="getRates">Get rates →</button>'+
             '<div id="ratesBox" style="margin-top:12px"></div>'+
@@ -1489,6 +1489,16 @@ function bindEvents(){
             if(d.ok){toast('Cancelled');setTimeout(function(){location.href='/giveaway'},1000)}else toast(d.error||'Failed',true);
         });
     });
+    // Weight unit (oz/lb) — stored value is oz; selector only changes display/entry.
+    var gwUnit=document.getElementById('wUnit');
+    function gFromOz(oz){oz=parseFloat(oz||0);if(!oz)return '';return gwUnit.value==='lb'?Math.round(oz/16*1000)/1000:oz;}
+    function gToOz(v){v=parseFloat(v||0);return gwUnit.value==='lb'?v*16:v;}
+    if(gwUnit){
+        gwUnit.value=localStorage.getItem('wunit')||'oz';
+        gwUnit.addEventListener('change',function(){localStorage.setItem('wunit',this.value);
+            var w=parseFloat(document.getElementById('wt').value||0);
+            if(w)document.getElementById('wt').value=(this.value==='lb')?Math.round(w/16*1000)/1000:Math.round(w*16*100)/100;});
+    }
     var psel=document.getElementById('pkgSel');
     if(psel){
         fetch('/api/packages').then(function(r){return r.json()}).then(function(d){
@@ -1496,15 +1506,15 @@ function bindEvents(){
             psel.innerHTML='<option value="">— custom —</option>'+pk.map(function(p,i){return '<option value="'+i+'">'+esc(p.name)+' ('+(p.weight||0)+'oz)</option>'}).join('');
         });
         psel.addEventListener('change',function(){var i=this.value;if(i===''||!window._pk)return;var p=window._pk[+i];
-            document.getElementById('wt').value=p.weight||'';document.getElementById('ln').value=p.length||'';
+            document.getElementById('wt').value=gFromOz(p.weight);document.getElementById('ln').value=p.length||'';
             document.getElementById('wd').value=p.width||'';document.getElementById('ht').value=p.height||'';});
     }
     var gr=document.getElementById('getRates');
     if(gr)gr.addEventListener('click',function(){
         var wt=document.getElementById('wt').value;
-        if(!wt||parseFloat(wt)<=0){toast('Enter weight (oz)',true);return}
+        if(!wt||parseFloat(wt)<=0){toast('Enter weight',true);return}
         var box=document.getElementById('ratesBox');box.innerHTML='<div style="color:#6b7a90;font-size:13px">Getting rates…</div>';
-        fetch('/api/giveaway/'+GID+'/rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weight_oz:parseFloat(wt),length:document.getElementById('ln').value,width:document.getElementById('wd').value,height:document.getElementById('ht').value})})
+        fetch('/api/giveaway/'+GID+'/rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weight_oz:gToOz(wt),length:document.getElementById('ln').value,width:document.getElementById('wd').value,height:document.getElementById('ht').value})})
          .then(function(r){return r.json()}).then(function(d){
             if(!d.ok){box.innerHTML='<div style="color:#fb7185;font-size:13px">'+esc(d.error||'Failed')+'</div>';return}
             if(!d.rates.length){box.innerHTML='<div style="color:#fb7185;font-size:13px">No rates returned</div>';return}
@@ -7036,9 +7046,13 @@ __NAVBAR__
 
 <div class="card">
   <h2>🧾 Recent inbound shipments</h2>
-  <div class="desc">Each row is one shipment (one buy-click). Tap a row to see its labels; “Print all” reprints the whole batch.</div>
-  <table><thead><tr><th>Supplier</th><th>Labels</th><th>Total</th><th>When</th><th>Print</th></tr></thead>
-  <tbody id="inRows"><tr><td colspan="5" class="muted">None yet</td></tr></tbody></table>
+  <div class="desc">Each row is one shipment (one buy-click). Tap a row to see its labels. Tick rows and use “Print selected”, or “Print all” to reprint a whole batch.</div>
+  <div style="margin-bottom:10px;display:flex;align-items:center;gap:12px">
+    <button class="btn btn-p" id="printSel">🖨️ Print selected</button>
+    <span class="muted" id="selCount">0 selected</span>
+  </div>
+  <table><thead><tr><th style="width:34px"><input type="checkbox" id="selAll" style="width:auto"></th><th>Supplier</th><th>Labels</th><th>Total</th><th>When</th><th>Print</th></tr></thead>
+  <tbody id="inRows"><tr><td colspan="6" class="muted">None yet</td></tr></tbody></table>
 </div>
 </div>
 <div class="toast" id="t"></div>
@@ -7179,27 +7193,38 @@ function buyMulti(idx,btn){
    });
 }
 function toggleBatch(k){var el=document.getElementById('kids-'+k);if(el)el.style.display=(el.style.display==='none'?'table-row':'none')}
+function updateSel(){var n=0;document.querySelectorAll('.selbox').forEach(function(b){if(b.checked)n++});document.getElementById('selCount').textContent=n+' selected'}
 function loadInbound(){
   fetch('/api/inbound').then(function(r){return r.json()}).then(function(d){
     var groups=(d&&d.groups)||[];
-    if(!groups.length){document.getElementById('inRows').innerHTML='<tr><td colspan="5" class="muted">None yet</td></tr>';return}
+    if(!groups.length){document.getElementById('inRows').innerHTML='<tr><td colspan="6" class="muted">None yet</td></tr>';document.getElementById('selCount').textContent='0 selected';return}
     document.getElementById('inRows').innerHTML=groups.map(function(g,gi){
       var k=esc(g.key||('g'+gi));
+      var ids=g.shipments.map(function(s){return s.id}).join(',');
       var printAll=g.batch_id?'<a href="/label/inbound/batch/'+esc(g.batch_id)+'" target="_blank" style="color:#a5b4fc;text-decoration:underline">🖨️ Print all</a>':
                    (g.shipments[0]&&g.shipments[0].label_url?'<a href="/label/inbound/'+g.shipments[0].id+'" target="_blank" style="color:#a5b4fc;text-decoration:underline">🖨️ Print</a>':'—');
-      var head='<tr style="cursor:pointer" onclick="toggleBatch(\\''+k+'\\')"><td><b>'+esc(g.supplier||'—')+'</b> <span class="muted">▾</span></td>'+
+      var head='<tr><td><input type="checkbox" class="selbox" data-ids="'+ids+'" style="width:auto" onclick="updateSel()"></td>'+
+        '<td style="cursor:pointer" onclick="toggleBatch(\\''+k+'\\')"><b>'+esc(g.supplier||'—')+'</b> <span class="muted">▾</span></td>'+
         '<td>'+g.count+' label'+(g.count>1?'s':'')+' <span class="muted">'+esc(g.carrier||'')+'</span></td>'+
         '<td>$'+(g.total||0).toFixed(2)+'</td>'+
         '<td class="muted">'+esc((g.when||'').slice(0,16).replace('T',' '))+'</td>'+
-        '<td onclick="event.stopPropagation()">'+printAll+'</td></tr>';
-      var kids='<tr id="kids-'+k+'" style="display:none"><td colspan="5" style="padding:0"><table style="margin:0">'+
+        '<td>'+printAll+'</td></tr>';
+      var kids='<tr id="kids-'+k+'" style="display:none"><td colspan="6" style="padding:0"><table style="margin:0">'+
         g.shipments.map(function(s){return '<tr><td style="padding-left:24px;font-family:monospace">'+esc(s.tracking||'—')+'</td>'+
           '<td>'+esc((s.carrier||'')+' '+(s.service||''))+'</td><td>$'+(s.cost||0)+'</td><td class="muted">'+esc((s.created_at||'').slice(11,16))+'</td>'+
           '<td>'+(s.label_url?'<a href="/label/inbound/'+s.id+'" target="_blank" style="color:#a5b4fc;text-decoration:underline">🖨️ Print</a>':'—')+'</td></tr>';}).join('')+
         '</table></td></tr>';
       return head+kids;
     }).join('');
+    updateSel();
   });
 }
+document.getElementById('selAll').addEventListener('change',function(){var on=this.checked;document.querySelectorAll('.selbox').forEach(function(b){b.checked=on});updateSel()});
+document.getElementById('printSel').addEventListener('click',function(){
+  var ids=[];document.querySelectorAll('.selbox').forEach(function(b){if(b.checked&&b.dataset.ids)ids=ids.concat(b.dataset.ids.split(','))});
+  ids=ids.filter(function(x){return x});
+  if(!ids.length){toast('Tick at least one shipment',true);return}
+  window.open('/label/inbound/multi?ids='+ids.join(','),'_blank');
+});
 loadInbound();
 </script></body></html>'''

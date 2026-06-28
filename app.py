@@ -5730,6 +5730,20 @@ def inbound_batch_print(batch_id):
     sup=rows[0]["supplier"] if rows else ""
     return _multi_label_print_page(items,"Inbound · "+(sup or "")+" · "+str(len(items))+" labels")
 
+@app.route("/label/inbound/multi")
+@req_role("admin","cs")
+def inbound_multi_print():
+    """Combined 4x6 print page for an arbitrary set of inbound shipment ids."""
+    ids=[x for x in (request.args.get("ids") or "").split(",") if x.strip().isdigit()][:300]
+    if not ids: return ("No labels selected.",404)
+    c=sdb()
+    qm=",".join("?"*len(ids))
+    rows=c.execute("SELECT label_url,tracking FROM inbound_shipments WHERE id IN ("+qm+") ORDER BY id",ids).fetchall()
+    c.close()
+    items=[{"url":r["label_url"],"sub":r["tracking"] or ""} for r in rows if r["label_url"]]
+    if not items: return ("No printable labels in selection.",404)
+    return _multi_label_print_page(items,"Selected labels · "+str(len(items)))
+
 @app.route("/admin/inbound")
 @req_role("admin","cs")
 def inbound_page():
