@@ -7001,7 +7001,9 @@ __NAVBAR__
 
 <div class="card">
   <h2>📦 Package presets</h2>
-  <div class="desc">Save your common box sizes once, then pick them when buying a label (weight in oz, dimensions in inches).</div>
+  <div class="desc">Save your common box sizes once, then pick them when buying a label. Dimensions in inches.</div>
+  <div class="grid2" style="margin-bottom:12px"><div><label>Weight unit</label>
+    <select id="wUnit"><option value="oz">Ounces (oz)</option><option value="lb">Pounds (lb)</option></select></div></div>
   <div id="pkgList"></div>
   <button class="btn btn-s" id="addPkg" style="margin-top:6px">+ Add package</button>
   <button class="btn btn-p" id="savePkgs" style="margin-top:6px;margin-left:8px">Save presets</button>
@@ -7010,6 +7012,10 @@ __NAVBAR__
 <div class="card">
   <h2>🏷️ Buy a label (supplier → us)</h2>
   <div class="desc">Ships from the supplier to your warehouse (your ship-from address). Set ship-from in Permissions.</div>
+  <div class="grid2" style="margin-bottom:10px">
+    <div><label>Saved suppliers</label><select id="supSel"><option value="">— new supplier —</option></select></div>
+    <div style="display:flex;gap:8px;align-items:flex-end"><button class="btn btn-s" id="saveSup" type="button" style="flex:1">💾 Save supplier</button><button class="btn-x" id="delSup" type="button">Delete</button></div>
+  </div>
   <label>Supplier name</label><input id="supName" placeholder="Acme Supplies">
   <div class="grid2">
     <div><label>Supplier street</label><input id="sStreet1" placeholder="Street"></div>
@@ -7021,7 +7027,7 @@ __NAVBAR__
   </div>
   <label style="margin-top:10px">Boxes in this shipment</label>
   <div class="desc" style="margin-bottom:8px">Supplier sending several packages? Add a row per box (or set <b>×copies</b> for identical boxes). One label is bought per box and the total is summed.</div>
-  <div class="boxhdr"><span>Preset</span><span>Weight (oz)</span><span>L (in)</span><span>W (in)</span><span>H (in)</span><span>×Copies</span><span></span></div>
+  <div class="boxhdr"><span>Preset</span><span id="bhWeight">Weight (oz)</span><span>L (in)</span><span>W (in)</span><span>H (in)</span><span>×Copies</span><span></span></div>
   <div id="boxList"></div>
   <button class="btn btn-s" id="addBox" style="margin-top:8px">+ Add box</button>
   <button class="btn btn-p" id="getRates" style="margin-top:14px;margin-left:8px">Get rates →</button>
@@ -7029,29 +7035,39 @@ __NAVBAR__
 </div>
 
 <div class="card">
-  <h2>🧾 Recent inbound labels</h2>
-  <table><thead><tr><th>Supplier</th><th>Carrier</th><th>Tracking</th><th>Cost</th><th>When</th><th>Label</th></tr></thead>
-  <tbody id="inRows"><tr><td colspan="6" class="muted">None yet</td></tr></tbody></table>
+  <h2>🧾 Recent inbound shipments</h2>
+  <div class="desc">Each row is one shipment (one buy-click). Tap a row to see its labels; “Print all” reprints the whole batch.</div>
+  <table><thead><tr><th>Supplier</th><th>Labels</th><th>Total</th><th>When</th><th>Print</th></tr></thead>
+  <tbody id="inRows"><tr><td colspan="5" class="muted">None yet</td></tr></tbody></table>
 </div>
 </div>
 <div class="toast" id="t"></div>
 <script>
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+// Weights are always stored in OUNCES (what EasyPost needs); the unit toggle only
+// changes how they're shown/entered.
+var UNIT=localStorage.getItem('wunit')||'oz';
+function fromOz(oz){if(oz===''||oz==null||!oz)return (oz===0||oz==='0')?0:'';return UNIT==='lb'?Math.round((oz/16)*1000)/1000:oz;}
+function toOz(v){var n=parseFloat(v||0);return UNIT==='lb'?n*16:n;}
+function wLabel(){return UNIT==='lb'?'lb':'oz';}
 var PKGS=[];
 function renderPkgs(){
   document.getElementById('pkgList').innerHTML=PKGS.map(function(p,i){
     return '<div class="pkgrow"><input value="'+esc(p.name)+'" data-i="'+i+'" data-k="name" placeholder="Name">'+
-      '<input type="number" value="'+(p.weight||'')+'" data-i="'+i+'" data-k="weight" placeholder="oz">'+
+      '<input type="number" step="0.01" value="'+(fromOz(p.weight))+'" data-i="'+i+'" data-k="weight" placeholder="'+wLabel()+'">'+
       '<input type="number" value="'+(p.length||'')+'" data-i="'+i+'" data-k="length" placeholder="L">'+
       '<input type="number" value="'+(p.width||'')+'" data-i="'+i+'" data-k="width" placeholder="W">'+
       '<input type="number" value="'+(p.height||'')+'" data-i="'+i+'" data-k="height" placeholder="H">'+
       '<button class="btn-x" onclick="delPkg('+i+')">✕</button></div>';
   }).join('');
   document.getElementById('pkgList').querySelectorAll('input').forEach(function(el){
-    el.addEventListener('input',function(){PKGS[+el.dataset.i][el.dataset.k]=el.dataset.k==='name'?el.value:parseFloat(el.value||'0')});
+    el.addEventListener('input',function(){var k=el.dataset.k,i=+el.dataset.i;
+      PKGS[i][k]=(k==='name')?el.value:(k==='weight'?toOz(el.value):parseFloat(el.value||'0'));});
   });
 }
+function applyUnit(){document.getElementById('bhWeight').textContent='Weight ('+wLabel()+')';document.getElementById('wUnit').value=UNIT;renderPkgs();renderBoxes();}
+document.getElementById('wUnit').addEventListener('change',function(){UNIT=this.value;localStorage.setItem('wunit',UNIT);applyUnit();});
 function delPkg(i){PKGS.splice(i,1);renderPkgs()}
 document.getElementById('addPkg').addEventListener('click',function(){PKGS.push({name:'Box',weight:0,length:0,width:0,height:0});renderPkgs()});
 document.getElementById('savePkgs').addEventListener('click',function(){
@@ -7064,7 +7080,7 @@ function renderBoxes(){
   var presetOpts=function(sel){return '<option value="">— custom —</option>'+PKGS.map(function(p,j){return '<option value="'+j+'"'+(String(sel)===String(j)?' selected':'')+'>'+esc(p.name)+'</option>'}).join('')};
   document.getElementById('boxList').innerHTML=BOXES.map(function(b,i){
     return '<div class="boxrow"><select data-i="'+i+'" data-k="preset">'+presetOpts(b.preset)+'</select>'+
-      '<input type="number" step="0.1" value="'+(b.weight||'')+'" data-i="'+i+'" data-k="weight" placeholder="oz">'+
+      '<input type="number" step="0.01" value="'+(fromOz(b.weight))+'" data-i="'+i+'" data-k="weight" placeholder="'+wLabel()+'">'+
       '<input type="number" step="0.1" value="'+(b.length||'')+'" data-i="'+i+'" data-k="length" placeholder="L">'+
       '<input type="number" step="0.1" value="'+(b.width||'')+'" data-i="'+i+'" data-k="width" placeholder="W">'+
       '<input type="number" step="0.1" value="'+(b.height||'')+'" data-i="'+i+'" data-k="height" placeholder="H">'+
@@ -7075,18 +7091,44 @@ function renderBoxes(){
     el.addEventListener('change',function(){
       var k=el.dataset.k,i=+el.dataset.i;
       if(k==='preset'){BOXES[i].preset=el.value;if(el.value!==''){var p=PKGS[+el.value];BOXES[i].weight=p.weight;BOXES[i].length=p.length;BOXES[i].width=p.width;BOXES[i].height=p.height;renderBoxes();}}
-      else{BOXES[i][k]=parseFloat(el.value||'0');}
+      else{BOXES[i][k]=(k==='weight')?toOz(el.value):parseFloat(el.value||'0');}
     });
   });
 }
 function delBox(i){BOXES.splice(i,1);if(!BOXES.length)BOXES.push({preset:'',weight:0,length:0,width:0,height:0,copies:1});renderBoxes()}
 document.getElementById('addBox').addEventListener('click',function(){BOXES.push({preset:'',weight:0,length:0,width:0,height:0,copies:1});renderBoxes()});
 
-fetch('/api/packages').then(function(r){return r.json()}).then(function(d){PKGS=d.packages||[];renderPkgs();
-  BOXES=[{preset:'',weight:0,length:0,width:0,height:0,copies:1}];renderBoxes();});
+fetch('/api/packages').then(function(r){return r.json()}).then(function(d){PKGS=d.packages||[];
+  BOXES=[{preset:'',weight:0,length:0,width:0,height:0,copies:1}];applyUnit();});
 var WAREHOUSE={};
 fetch('/api/ship-from').then(function(r){return r.json()}).then(function(d){WAREHOUSE=d.address||{};
   if(!WAREHOUSE.street1){document.getElementById('notice').innerHTML='<div class="warn">⚠️ Set your warehouse ship-from address in Team → Permissions first — it is the destination for inbound labels.</div>'}});
+
+// ── Supplier address book ──
+var SUPPLIERS=[];
+function supFields(){return {name:document.getElementById('supName').value.trim(),street1:document.getElementById('sStreet1').value.trim(),
+  street2:document.getElementById('sStreet2').value.trim(),city:document.getElementById('sCity').value.trim(),
+  state:document.getElementById('sState').value.trim().toUpperCase(),zip:document.getElementById('sZip').value.trim(),
+  phone:document.getElementById('sPhone').value.trim()};}
+function fillSup(s){document.getElementById('supName').value=s.name||'';document.getElementById('sStreet1').value=s.street1||'';
+  document.getElementById('sStreet2').value=s.street2||'';document.getElementById('sCity').value=s.city||'';
+  document.getElementById('sState').value=s.state||'';document.getElementById('sZip').value=s.zip||'';document.getElementById('sPhone').value=s.phone||'';}
+function renderSuppliers(){var sel=document.getElementById('supSel');var cur=sel.value;
+  sel.innerHTML='<option value="">— new supplier —</option>'+SUPPLIERS.map(function(s,i){return '<option value="'+i+'">'+esc(s.name||('Supplier '+(i+1)))+'</option>'}).join('');
+  sel.value=cur;}
+function saveSuppliers(){return fetch('/api/suppliers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({suppliers:SUPPLIERS})}).then(function(r){return r.json()});}
+document.getElementById('supSel').addEventListener('change',function(){if(this.value!==''){fillSup(SUPPLIERS[+this.value])}});
+document.getElementById('saveSup').addEventListener('click',function(){
+  var f=supFields();if(!f.name&&!f.street1){toast('Enter supplier name/address first',true);return}
+  var i=SUPPLIERS.findIndex(function(s){return (s.name||'').toLowerCase()===f.name.toLowerCase()});
+  if(i>=0)SUPPLIERS[i]=f; else SUPPLIERS.push(f);
+  saveSuppliers().then(function(d){if(d.ok){renderSuppliers();toast('Supplier saved ✓')}else toast('Failed',true)});
+});
+document.getElementById('delSup').addEventListener('click',function(){
+  var v=document.getElementById('supSel').value;if(v===''){toast('Pick a saved supplier to delete',true);return}
+  SUPPLIERS.splice(+v,1);saveSuppliers().then(function(){renderSuppliers();document.getElementById('supSel').value='';toast('Removed')});
+});
+fetch('/api/suppliers').then(function(r){return r.json()}).then(function(d){SUPPLIERS=d.suppliers||[];renderSuppliers()});
 
 document.getElementById('getRates').addEventListener('click',function(){
   if(!BOXES.length){toast('Add at least one box',true);return}
@@ -7131,19 +7173,31 @@ function buyMulti(idx,btn){
      var bought=(d.labels||[]).length;
      if(!bought){toast(d.error||'Failed',true);if(btn){btn.disabled=false;btn.textContent='Retry'}return}
      toast(bought+' label(s) bought! Total $'+(d.total||0));
-     (d.labels||[]).forEach(function(l){if(l.label_url)window.open(l.label_url,'_blank')});
+     if(d.batch_id)window.open('/label/inbound/batch/'+d.batch_id,'_blank');  // bulk print page
      if(!d.ok&&d.error)toast('Some failed: '+d.error,true);
      loadInbound();
    });
 }
+function toggleBatch(k){var el=document.getElementById('kids-'+k);if(el)el.style.display=(el.style.display==='none'?'table-row':'none')}
 function loadInbound(){
-  fetch('/api/inbound').then(function(r){return r.json()}).then(function(rows){
-    if(!rows.length){document.getElementById('inRows').innerHTML='<tr><td colspan="6" class="muted">None yet</td></tr>';return}
-    document.getElementById('inRows').innerHTML=rows.map(function(r){
-      return '<tr><td>'+esc(r.supplier||'—')+'</td><td>'+esc((r.carrier||'')+' '+(r.service||''))+'</td>'+
-        '<td style="font-family:monospace">'+esc(r.tracking||'—')+'</td><td>$'+(r.cost||0)+'</td>'+
-        '<td class="muted">'+esc((r.created_at||'').slice(0,16).replace('T',' '))+'</td>'+
-        '<td>'+(r.label_url?'<a href="/label/inbound/'+r.id+'" target="_blank" style="color:#a5b4fc;text-decoration:underline">🖨️ Print</a>':'—')+'</td></tr>';
+  fetch('/api/inbound').then(function(r){return r.json()}).then(function(d){
+    var groups=(d&&d.groups)||[];
+    if(!groups.length){document.getElementById('inRows').innerHTML='<tr><td colspan="5" class="muted">None yet</td></tr>';return}
+    document.getElementById('inRows').innerHTML=groups.map(function(g,gi){
+      var k=esc(g.key||('g'+gi));
+      var printAll=g.batch_id?'<a href="/label/inbound/batch/'+esc(g.batch_id)+'" target="_blank" style="color:#a5b4fc;text-decoration:underline">🖨️ Print all</a>':
+                   (g.shipments[0]&&g.shipments[0].label_url?'<a href="/label/inbound/'+g.shipments[0].id+'" target="_blank" style="color:#a5b4fc;text-decoration:underline">🖨️ Print</a>':'—');
+      var head='<tr style="cursor:pointer" onclick="toggleBatch(\\''+k+'\\')"><td><b>'+esc(g.supplier||'—')+'</b> <span class="muted">▾</span></td>'+
+        '<td>'+g.count+' label'+(g.count>1?'s':'')+' <span class="muted">'+esc(g.carrier||'')+'</span></td>'+
+        '<td>$'+(g.total||0).toFixed(2)+'</td>'+
+        '<td class="muted">'+esc((g.when||'').slice(0,16).replace('T',' '))+'</td>'+
+        '<td onclick="event.stopPropagation()">'+printAll+'</td></tr>';
+      var kids='<tr id="kids-'+k+'" style="display:none"><td colspan="5" style="padding:0"><table style="margin:0">'+
+        g.shipments.map(function(s){return '<tr><td style="padding-left:24px;font-family:monospace">'+esc(s.tracking||'—')+'</td>'+
+          '<td>'+esc((s.carrier||'')+' '+(s.service||''))+'</td><td>$'+(s.cost||0)+'</td><td class="muted">'+esc((s.created_at||'').slice(11,16))+'</td>'+
+          '<td>'+(s.label_url?'<a href="/label/inbound/'+s.id+'" target="_blank" style="color:#a5b4fc;text-decoration:underline">🖨️ Print</a>':'—')+'</td></tr>';}).join('')+
+        '</table></td></tr>';
+      return head+kids;
     }).join('');
   });
 }

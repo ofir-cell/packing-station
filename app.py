@@ -385,6 +385,8 @@ def sdb_init():
         # Pre-import match: how many units we've already deducted for a binding,
         # so re-binding / unmapping can restore on_hand correctly.
         "ALTER TABLE show_product_map ADD COLUMN depleted_qty INTEGER DEFAULT 0",
+        # Inbound: group all labels bought in one click as a batch.
+        "ALTER TABLE inbound_shipments ADD COLUMN batch_id TEXT",
         # Bilingual onboarding — Spanish translations live in *_es columns
         # alongside the English originals. NULL ES → frontend falls back to EN.
         "ALTER TABLE onboarding_steps ADD COLUMN title_es TEXT",
@@ -584,7 +586,8 @@ def sdb_init():
         label_url TEXT,
         po_id INTEGER,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        created_by TEXT
+        created_by TEXT,
+        batch_id TEXT
     )""")
     # Receiving ledger — every stock-in with cost, for audit + weighted average.
     c.execute("""CREATE TABLE IF NOT EXISTS stock_moves(
@@ -5474,6 +5477,32 @@ body{margin:0;background:#0c0f16;color:#e4e8f1;font-family:-apple-system,'Segoe 
 <div class="sheet">"""+media+"""</div>
 </body></html>"""
 
+def _multi_label_print_page(items, title="Shipping labels"):
+    """Stack many labels, each on its own 4x6 page, with one Print button that
+    prints them all. items = [{url, sub}]."""
+    sheets=[]
+    for it in items:
+        url=it.get("url") or ""
+        low=url.split("?")[0].lower()
+        media=('<iframe src="%s" title="label"></iframe>' % url) if low.endswith(".pdf") else ('<img src="%s" alt="label">' % url)
+        sheets.append('<div class="sheet">%s</div>' % media)
+    return """<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>"""+title+"""</title>
+<style>
+@page { size: 4in 6in; margin: 0; }
+*{box-sizing:border-box}
+body{margin:0;background:#0c0f16;color:#e4e8f1;font-family:-apple-system,'Segoe UI',sans-serif}
+.bar{position:sticky;top:0;display:flex;gap:14px;align-items:center;justify-content:center;padding:16px;background:#0c0f16;border-bottom:1px solid rgba(255,255,255,.08)}
+.btn{border:none;border-radius:10px;padding:12px 26px;font-size:16px;font-weight:800;cursor:pointer;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
+.sheet{width:4in;height:6in;margin:14px auto;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:4px;page-break-after:always}
+.sheet img{max-width:100%;max-height:100%;display:block}
+.sheet iframe{width:4in;height:6in;border:0}
+@media print{ .bar{display:none!important} body{background:#fff} .sheet{margin:0;border-radius:0} }
+</style></head><body>
+<div class="bar"><span style="font-weight:800">🏷️ """+title+"""</span><button class="btn" onclick="window.print()">🖨️ Print all</button></div>
+"""+"".join(sheets)+"""
+</body></html>"""
+
 @app.route("/label/giveaway/<int:gid>")
 @req_role("admin","cs")
 def giveaway_label_print(gid):
@@ -5626,6 +5655,7 @@ def api_label_buy_multi():
     d=request.get_json() or {}
     legs=d.get("legs") or []
     if not legs: return jsonify({"ok":False,"error":"No boxes selected"})
+    batch=secrets.token_hex(6)
     labels=[]; total=0.0; c=sdb(); err=None
     try:
         for leg in legs:
@@ -5634,25 +5664,71 @@ def api_label_buy_multi():
             sh=_easypost("POST","/shipments/"+sid+"/buy",{"rate":{"id":rid}})
             label=(sh.get("postage_label") or {}).get("label_url"); tracking=sh.get("tracking_code")
             sr=sh.get("selected_rate") or {}; cost=float(sr.get("rate") or 0); total+=cost
-            c.execute("""INSERT INTO inbound_shipments(supplier,carrier,service,tracking,cost,label_url,po_id,created_by)
-                         VALUES(?,?,?,?,?,?,?,?)""",
-                      (d.get("supplier"),sr.get("carrier"),sr.get("service"),tracking,cost,label,d.get("po_id"),session.get("name","")[:60]))
+            c.execute("""INSERT INTO inbound_shipments(supplier,carrier,service,tracking,cost,label_url,po_id,created_by,batch_id)
+                         VALUES(?,?,?,?,?,?,?,?,?)""",
+                      (d.get("supplier"),sr.get("carrier"),sr.get("service"),tracking,cost,label,d.get("po_id"),session.get("name","")[:60],batch))
             labels.append({"label_url":label,"tracking":tracking,"cost":cost,"carrier":sr.get("carrier"),"service":sr.get("service")})
     except _urlerr.HTTPError as e:
         try: err="EasyPost: "+str(json.loads(e.read().decode()).get("error",{}).get("message",str(e)))
         except Exception: err="HTTP "+str(e.code)
     except Exception as e: err=str(e)
     c.commit(); c.close()
-    if err: return jsonify({"ok":False,"error":err,"labels":labels,"total":round(total,2)})
-    return jsonify({"ok":True,"labels":labels,"total":round(total,2),"count":len(labels)})
+    if err: return jsonify({"ok":False,"error":err,"labels":labels,"total":round(total,2),"batch_id":batch})
+    return jsonify({"ok":True,"labels":labels,"total":round(total,2),"count":len(labels),"batch_id":batch})
 
 @app.route("/api/inbound")
 @req_role("admin","cs")
 def api_inbound_list():
+    """Inbound labels grouped by batch (one buy-click). Each group collapses to a
+    single row (supplier + count + total) and expands to its individual labels."""
     c=sdb()
-    rows=c.execute("SELECT * FROM inbound_shipments ORDER BY created_at DESC LIMIT 100").fetchall()
+    rows=c.execute("SELECT * FROM inbound_shipments ORDER BY created_at DESC LIMIT 400").fetchall()
     c.close()
-    return jsonify([dict(r) for r in rows])
+    groups=[]; idx={}
+    for r in rows:
+        d=dict(r)
+        key=d.get("batch_id") or ("single-"+str(d["id"]))
+        if key not in idx:
+            idx[key]={"batch_id":d.get("batch_id"),"key":key,"supplier":d.get("supplier") or "—",
+                      "when":d.get("created_at"),"carrier":d.get("carrier"),"count":0,"total":0.0,
+                      "printable":bool(d.get("batch_id")),"shipments":[]}
+            groups.append(idx[key])
+        g=idx[key]
+        g["count"]+=1; g["total"]=round(g["total"]+float(d.get("cost") or 0),2)
+        g["shipments"].append({"id":d["id"],"tracking":d.get("tracking"),"carrier":d.get("carrier"),
+                               "service":d.get("service"),"cost":d.get("cost"),"label_url":d.get("label_url"),
+                               "created_at":d.get("created_at")})
+    return jsonify({"ok":True,"groups":groups})
+
+@app.route("/api/suppliers",methods=["GET","POST"])
+@req_role("admin","cs")
+def api_suppliers():
+    """Saved supplier address book — reused when buying inbound labels."""
+    if request.method=="POST":
+        sup=(request.get_json() or {}).get("suppliers")
+        if not isinstance(sup,list): return jsonify({"ok":False,"error":"invalid"})
+        clean=[]
+        for s in sup[:200]:
+            try:
+                e={k:((s.get(k) or "").strip()[:80]) for k in ("name","street1","street2","city","state","zip","phone")}
+                if e["name"] or e["street1"]: clean.append(e)
+            except Exception: pass
+        _set_setting("suppliers", json.dumps(clean))
+        return jsonify({"ok":True,"count":len(clean)})
+    raw=_get_setting("suppliers")
+    return jsonify({"ok":True,"suppliers": json.loads(raw) if raw else []})
+
+@app.route("/label/inbound/batch/<batch_id>")
+@req_role("admin","cs")
+def inbound_batch_print(batch_id):
+    """All labels in a batch on one page (4x6 each) — print the whole shipment at once."""
+    c=sdb()
+    rows=c.execute("SELECT label_url,tracking,supplier FROM inbound_shipments WHERE batch_id=? ORDER BY id",(batch_id,)).fetchall()
+    c.close()
+    items=[{"url":r["label_url"],"sub":r["tracking"] or ""} for r in rows if r["label_url"]]
+    if not items: return ("No labels in this batch.",404)
+    sup=rows[0]["supplier"] if rows else ""
+    return _multi_label_print_page(items,"Inbound · "+(sup or "")+" · "+str(len(items))+" labels")
 
 @app.route("/admin/inbound")
 @req_role("admin","cs")
