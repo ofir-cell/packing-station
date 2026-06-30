@@ -18,7 +18,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
-    INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML,
+    INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
 
 
@@ -3762,6 +3762,114 @@ def inventory_page():
 @req_role("admin")
 def profit_page():
     return PROFIT_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("profit")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+# ── HOST ANALYTICS — per-show seller performance + commissions (admin only) ──
+def _host_from_label(label):
+    """Pull the host's name out of a show label like '... w/ Tali Part 1'."""
+    if not label: return ""
+    m=re.search(r'w/\s*(.*)$', label, re.I) or re.search(r'\bwith\s+(.*)$', label, re.I)
+    if not m: return ""
+    rest=re.split(r'\bPart\s*\d+', m.group(1), flags=re.I)[0]
+    rest=re.split(r'[|/]', rest)[0]
+    return " ".join(rest.split()[:2]).strip()
+
+def _host_overrides():
+    raw=_get_setting("host_overrides")
+    try: return json.loads(raw) if raw else {}
+    except Exception: return {}
+
+def _get_commission_cfg():
+    raw=_get_setting("commission_config")
+    if raw:
+        try: return json.loads(raw)
+        except Exception: pass
+    return {"mode":"flat","flat_pct":10.0,"pct":10.0,"tiers":[{"min":0,"pct":8},{"min":2000,"pct":12}]}
+
+def _compute_commission(rev, cfg):
+    rev=rev or 0
+    mode=(cfg or {}).get("mode","flat")
+    if mode=="tiered":
+        pct=0
+        for t in sorted(cfg.get("tiers") or [], key=lambda x:x.get("min",0)):
+            if rev>=(t.get("min") or 0): pct=t.get("pct") or 0
+        return round(rev*pct/100.0,2)
+    if mode=="base_pct":   # hourly base needs live hours (not captured yet) → % only
+        return round(rev*(cfg.get("pct") or 0)/100.0,2)
+    return round(rev*(cfg.get("flat_pct") or 0)/100.0,2)
+
+@app.route("/api/host-analytics")
+@req_role("admin")
+def api_host_analytics():
+    c=sdb()
+    rows=c.execute("""SELECT s.import_label lbl, s.show_date sd, i.shipment_id sid,
+                             i.quantity qty, COALESCE(i.revenue,0) rev, COALESCE(i.cancelled,0) canc, i.sku
+                      FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                      WHERE s.import_label IS NOT NULL AND s.import_label!=''""").fetchall()
+    c.close()
+    ov=_host_overrides(); cfg=_get_commission_cfg()
+    shows={}
+    for r in rows:
+        g=shows.setdefault(r["lbl"],{"label":r["lbl"],"show_date":r["sd"],"revenue":0.0,"units":0,
+                                     "orders":set(),"canc_units":0,"skus":set()})
+        if not g["show_date"] and r["sd"]: g["show_date"]=r["sd"]
+        if r["canc"]:
+            g["canc_units"]+=r["qty"] or 0
+        else:
+            g["revenue"]+=r["rev"] or 0; g["units"]+=r["qty"] or 0; g["orders"].add(r["sid"])
+            if r["sku"]: g["skus"].add(r["sku"])
+    show_list=[]
+    for g in shows.values():
+        host=ov.get(g["label"]) or _host_from_label(g["label"]) or "Unknown"
+        orders=len(g["orders"]); rev=round(g["revenue"],2); tot=g["units"]+g["canc_units"]
+        show_list.append({"label":g["label"],"host":host,"show_date":g["show_date"],
+                          "revenue":rev,"units":g["units"],"orders":orders,
+                          "aov":round(rev/orders,2) if orders else 0,"products":len(g["skus"]),
+                          "cancel_rate":round(100.0*g["canc_units"]/tot,1) if tot else 0,
+                          "commission":_compute_commission(rev,cfg),
+                          "auto_host":_host_from_label(g["label"]) or ""})
+    show_list.sort(key=lambda x:((x["show_date"] or ""), x["label"]))
+    hosts={}
+    for s in show_list:
+        h=hosts.setdefault(s["host"],{"host":s["host"],"shows":0,"revenue":0.0,"units":0,"orders":0,"commission":0.0})
+        h["shows"]+=1; h["revenue"]+=s["revenue"]; h["units"]+=s["units"]; h["orders"]+=s["orders"]; h["commission"]+=s["commission"]
+    host_list=[]
+    for h in hosts.values():
+        h["revenue"]=round(h["revenue"],2); h["commission"]=round(h["commission"],2)
+        h["avg_per_show"]=round(h["revenue"]/h["shows"],2) if h["shows"] else 0
+        host_list.append(h)
+    host_list.sort(key=lambda x:x["revenue"],reverse=True)
+    return jsonify({"ok":True,"shows":show_list,"hosts":host_list,"config":cfg})
+
+@app.route("/api/commission-config",methods=["GET","POST"])
+@req_role("admin")
+def api_commission_config():
+    if request.method=="POST":
+        d=request.get_json() or {}
+        cfg={"mode":d.get("mode","flat"),
+             "flat_pct":float(d.get("flat_pct") or 0),
+             "pct":float(d.get("pct") or 0),
+             "tiers":[{"min":float(t.get("min") or 0),"pct":float(t.get("pct") or 0)}
+                      for t in (d.get("tiers") or [])][:8]}
+        _set_setting("commission_config", json.dumps(cfg))
+        return jsonify({"ok":True})
+    return jsonify({"ok":True,"config":_get_commission_cfg()})
+
+@app.route("/api/host-override",methods=["POST"])
+@req_role("admin")
+def api_host_override():
+    d=request.get_json() or {}
+    lbl=(d.get("label") or "").strip(); host=(d.get("host") or "").strip()
+    if not lbl: return jsonify({"ok":False,"error":"label required"})
+    ov=_host_overrides()
+    if host: ov[lbl]=host
+    else: ov.pop(lbl,None)
+    _set_setting("host_overrides", json.dumps(ov))
+    return jsonify({"ok":True})
+
+@app.route("/admin/hosts")
+@req_role("admin")
+def hosts_page():
+    return HOSTS_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("hosts")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/product/<sku>/label.pdf")
 @req_role("admin","cs")

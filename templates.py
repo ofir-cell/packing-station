@@ -53,6 +53,7 @@ def _navbar(active_page=""):
             # Cost & profit data is admin-only
             ops_items.append(("inventory", "/admin/inventory", "📦 Inventory"))
             ops_items.append(("profit", "/admin/profit", "💰 Profit"))
+            ops_items.append(("hosts", "/admin/hosts", "🎤 Host Analytics"))
             ops_items.append(("analytics", "/analytics", "Analytics"))
         entries.append({"key": "operations", "label": "📦 Operations", "items": ops_items})
     if role == "admin":
@@ -519,7 +520,15 @@ document.addEventListener('click',function(){if(st==='r')mi.focus();if(st==='c')
 setInterval(function(){if(st==='r'&&document.activeElement!==mi)mi.focus();if(st==='c'&&document.activeElement!==ri)ri.focus()},400);
 function initCam(){navigator.mediaDevices.getUserMedia({video:{width:{ideal:854},height:{ideal:480},frameRate:{ideal:15,max:24}},audio:false}).then(function(s){sm=s;document.getElementById('pv').srcObject=s;document.getElementById('cm').className='cam ok'}).catch(function(){document.getElementById('cm').className='cam err'})}
 initCam();
-function startRec(trk){if(!sm){alert(t('nocamera'));return}ct=trk;ch=[];mr=new MediaRecorder(sm,{mimeType:'video/webm;codecs=vp8',videoBitsPerSecond:500000});mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};mr.start(1000);t0=Date.now();startTmr();document.getElementById('rk').textContent=trk;go('c');loadChecklist(trk)}
+function pickMime(){var c=['video/webm;codecs=vp8','video/webm;codecs=vp9','video/webm','video/mp4'];
+  for(var i=0;i<c.length;i++){try{if(window.MediaRecorder&&MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(c[i]))return c[i]}catch(e){}}return '';}
+function startRec(trk){if(!sm){alert(t('nocamera'));return}ct=trk;ch=[];
+  // Bitrate must be high enough or VP8 inter-frames starve and the picture
+  // pixelates after a second with no keyframe to recover. 2.5 Mbps @ 480p is
+  // crisp and still only ~a few hundred KB for short clips.
+  var opts={videoBitsPerSecond:2500000};var mime=pickMime();if(mime)opts.mimeType=mime;
+  try{mr=new MediaRecorder(sm,opts)}catch(e){mr=new MediaRecorder(sm)}
+  mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};mr.start(1000);t0=Date.now();startTmr();document.getElementById('rk').textContent=trk;go('c');loadChecklist(trk)}
 
 // ─── Packer item-count reminder (NO touch / NO buttons) ───
 // After each scan we look up the shipment and:
@@ -804,7 +813,7 @@ function doSearch(){
             if(l){h+='<span>'+l.date+'</span><span>'+l.duration_seconds+'s</span>'}
             if(l&&l.worker)h+='<span>👤 '+l.worker+'</span>';
             h+='<span class="tag tag-s">'+v.station+'</span><span class="tag tag-g">✓ Found</span>';
-            h+='</div></div><div class="rc-b"><div class="mb"><video controls preload="metadata"><source src="'+v.url+'" type="video/webm"></video><div class="ml"><span>🎥 Video · '+v.size_mb+' MB</span><a href="'+v.url+'" download class="dl-btn">⬇ Download</a></div></div>';
+            h+='</div></div><div class="rc-b"><div class="mb"><video controls preload="metadata"><source src="'+v.url+'" type="video/webm"></video><div class="ml"><span>🎥 Video'+(v.size_mb?(' · '+v.size_mb+' MB'):'')+'</span><a href="'+v.url+'" download class="dl-btn">⬇ Download</a></div></div>';
             if(p)h+='<div class="mb"><img src="'+p.url+'"><div class="ml">📸 Photo</div></div>';
             h+='</div></div>';
         }
@@ -3576,6 +3585,14 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#0a0d14;color:var
 .result-stats{text-align:right;font-size:12px;color:var(--text-muted);font-weight:600;white-space:nowrap}
 .result-stats b{color:var(--brand);font-size:14px}
 
+/* Inline accordion detail under each result */
+.result-wrap{display:flex;flex-direction:column}
+.result-detail{display:none;background:rgba(255,255,255,.02);border:1px solid var(--border);border-top:none;border-radius:0 0 12px 12px;margin-top:-4px;padding:6px 18px 16px}
+.result-detail.open{display:block}
+.result.selected{border-radius:12px 12px 0 0}
+.rd-addr{font-size:12px;color:var(--text-muted);padding:10px 2px 6px;line-height:1.6}
+.rd-addr .addr-pill{display:inline-block;background:rgba(255,255,255,.04);padding:5px 10px;border-radius:8px;margin:0 6px 6px 0}
+
 /* Empty / loading */
 .empty{text-align:center;padding:80px 20px;color:var(--text-dim);background:var(--surface);border:1px dashed var(--border);border-radius:14px}
 .empty-icon{font-size:56px;margin-bottom:14px;opacity:.5}
@@ -3634,17 +3651,19 @@ __NAVBAR__
 
   <div id="info" class="results-info" style="display:none"></div>
   <div id="results" class="results"></div>
-  <div id="detail" class="detail"></div>
 </div>
 
 <script>
-var resultsEl=document.getElementById('results'),infoEl=document.getElementById('info'),detailEl=document.getElementById('detail');
+var resultsEl=document.getElementById('results'),infoEl=document.getElementById('info');
 var qEl=document.getElementById('q'),clearBtn=document.getElementById('clearBtn');
 var debounceTimer=null;
 
 function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function initial(s){return (s||'?').charAt(0).toUpperCase()}
 function fmtDate(s){if(!s)return '';try{return new Date(s).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}catch(e){return s.slice(0,10)}}
+function trackUrl(t){t=(t||'').trim();if(!t)return '';
+  if(/^1Z/i.test(t))return 'https://www.ups.com/track?loc=en_US&tracknum='+encodeURIComponent(t);
+  return 'https://tools.usps.com/go/TrackConfirmAction?tLabels='+encodeURIComponent(t);}
 
 function showEmpty(title,sub){
   resultsEl.innerHTML='<div class="empty"><div class="empty-icon">🔍</div><div class="empty-title">'+title+'</div><div class="empty-sub">'+sub+'</div></div>';
@@ -3652,7 +3671,7 @@ function showEmpty(title,sub){
 
 function search(q){
   if(q.length<2){
-    resultsEl.innerHTML='';infoEl.style.display='none';detailEl.classList.remove('show');
+    resultsEl.innerHTML='';infoEl.style.display='none';
     if(q.length===0)showEmpty('Start typing to search','Type a username or partial name above');
     return;
   }
@@ -3665,76 +3684,60 @@ function search(q){
     infoEl.textContent='Found '+rows.length+' '+(rows.length===1?'customer':'customers');
     infoEl.style.display='block';
     resultsEl.innerHTML=rows.map(function(r){
-      return '<div class="result" data-u="'+escapeHtml(r.buyer_username)+'">'+
-        '<div class="result-avatar">'+initial(r.buyer_name||r.buyer_username)+'</div>'+
-        '<div class="result-info">'+
-          '<div class="result-name">'+escapeHtml(r.buyer_name||'(no name)')+
-            ' <span class="result-username">@'+escapeHtml(r.buyer_username)+'</span></div>'+
-          '<div class="result-meta">'+
-            '<span>📍 '+escapeHtml((r.last_address||'').split(',').slice(1,3).join(',').trim()||'no address')+'</span>'+
-            (r.last_show?'<span>🕒 last '+fmtDate(r.last_show)+'</span>':'')+
+      return '<div class="result-wrap">'+
+        '<div class="result" data-u="'+escapeHtml(r.buyer_username)+'">'+
+          '<div class="result-avatar">'+initial(r.buyer_name||r.buyer_username)+'</div>'+
+          '<div class="result-info">'+
+            '<div class="result-name">'+escapeHtml(r.buyer_name||'(no name)')+
+              ' <span class="result-username">@'+escapeHtml(r.buyer_username)+'</span></div>'+
+            '<div class="result-meta">'+
+              '<span>📍 '+escapeHtml((r.last_address||'').split(',').slice(1,3).join(',').trim()||'no address')+'</span>'+
+              (r.last_show?'<span>🕒 last '+fmtDate(r.last_show)+'</span>':'')+
+            '</div>'+
           '</div>'+
+          '<div class="result-stats"><b>'+r.shipments+'</b> '+(r.shipments===1?'shipment':'shipments')+'<br>'+r.total_items+' items</div>'+
         '</div>'+
-        '<div class="result-stats"><b>'+r.shipments+'</b> '+(r.shipments===1?'shipment':'shipments')+'<br>'+r.total_items+' items</div>'+
+        '<div class="result-detail"></div>'+
       '</div>';
     }).join('');
     resultsEl.querySelectorAll('.result').forEach(function(el){
       el.addEventListener('click',function(){
+        var wrap=el.parentNode, panel=wrap.querySelector('.result-detail');
+        var wasOpen=panel.classList.contains('open');
         resultsEl.querySelectorAll('.result').forEach(function(x){x.classList.remove('selected')});
-        el.classList.add('selected');
-        loadDetail(el.dataset.u);
+        resultsEl.querySelectorAll('.result-detail').forEach(function(p){p.classList.remove('open')});
+        if(wasOpen)return;             // toggle closed
+        el.classList.add('selected');panel.classList.add('open');
+        if(!panel.dataset.loaded){panel.dataset.loaded='1';loadDetail(el.dataset.u,panel);}
       });
     });
-    // Auto-load detail if exactly one result
-    if(rows.length===1){
-      resultsEl.querySelector('.result').classList.add('selected');
-      loadDetail(rows[0].buyer_username);
-    }
+    if(rows.length===1){resultsEl.querySelector('.result').click();}
   });
 }
 
-function loadDetail(username){
-  detailEl.classList.add('show');
-  detailEl.innerHTML='<div class="loading">Loading customer profile…</div>';
+function loadDetail(username,panel){
+  panel.innerHTML='<div class="loading">Loading…</div>';
   fetch('/api/customers/'+encodeURIComponent(username)).then(function(r){return r.json()}).then(function(d){
-    if(!d.ok){detailEl.innerHTML='<div class="empty">Could not load customer: '+(d.error||'?')+'</div>';return}
-    var html=
-      '<div class="detail-head">'+
-        '<div class="detail-avatar">'+initial(d.buyer_name||d.username)+'</div>'+
-        '<div class="detail-meta">'+
-          '<div class="detail-name">'+escapeHtml(d.buyer_name||'(no name)')+'</div>'+
-          '<div class="detail-username">@'+escapeHtml(d.username)+'</div>'+
-          '<div class="detail-stats">'+
-            '<div class="dstat"><b>'+d.shipments_total+'</b>Shipments</div>'+
-            '<div class="dstat"><b>'+d.items_total+'</b>Items total</div>'+
-            '<div class="dstat"><b>'+d.shows_count+'</b>Shows attended</div>'+
-            '<div class="dstat"><b>'+d.recordings.length+'</b>Recordings</div>'+
-          '</div>'+
-        '</div>'+
-      '</div>';
+    if(!d.ok){panel.innerHTML='<div class="loading">Could not load: '+(d.error||'?')+'</div>';return}
+    var html='';
     if(d.addresses && d.addresses.length){
-      html+='<div class="section-title"><span class="dot"></span>Shipping addresses <span class="count">'+d.addresses.length+'</span></div>';
-      html+='<div class="addresses">'+d.addresses.map(function(a){return '<span class="addr-pill">📍 '+escapeHtml(a)+'</span>'}).join('')+'</div>';
+      html+='<div class="rd-addr">'+d.addresses.map(function(a){return '<span class="addr-pill">📍 '+escapeHtml(a)+'</span>'}).join('')+'</div>';
     }
-    html+='<div class="section-title"><span class="dot"></span>Shipments <span class="count">'+d.shipments.length+'</span></div><div class="ships">';
-    if(d.shipments.length===0){
-      html+='<div class="empty">No shipments yet</div>';
-    } else {
+    html+='<div class="ships" style="padding:4px 0 0">';
+    if(!d.shipments.length){html+='<div class="loading">No shipments yet</div>';}
+    else {
       html+=d.shipments.map(function(s){
-        var rec=d.recordings.filter(function(r){return r.tracking===s.shipment_id||r.tracking===s.tracking_code});
+        var recs=d.recordings.filter(function(r){return r.tracking===s.shipment_id||r.tracking===s.tracking_code});
         var itemsHtml=(s.items||[]).map(function(it){return '<span class="item">'+escapeHtml(it.product_name||it.sku||'?')+' ×'+it.quantity+'</span>'}).join('');
-        var recHtml='';
-        if(rec.length>0){
-          recHtml='<div class="ship-rec">🎥 Packed by <b style="color:var(--text-muted)">'+escapeHtml(rec[0].worker)+'</b> on '+rec[0].date+' '+rec[0].time+' · '+rec[0].duration+'s'+
-            (rec[0].video_file?' · <a href="/media/video/'+encodeURIComponent(rec[0].video_file)+'" target="_blank">Watch video</a>':'')+
-            (rec[0].photo_file?' · <a href="/media/photo/'+encodeURIComponent(rec[0].photo_file)+'" target="_blank">Photo</a>':'')+
-            '</div>';
-        }
+        var trk=s.tracking_code?('<a class="ship-tracking" href="'+trackUrl(s.tracking_code)+'" target="_blank" rel="noopener">'+escapeHtml(s.tracking_code)+' ↗</a>'):'';
+        var vids=recs.map(function(r){return r.video_file?'<a href="/media/video/'+encodeURIComponent(r.video_file)+'" target="_blank">🎥 Watch ('+(r.duration||'?')+'s)</a>':''}).filter(Boolean).join(' · ');
+        var photo=recs.map(function(r){return r.photo_file?'<a href="/media/photo/'+encodeURIComponent(r.photo_file)+'" target="_blank">📷 Photo</a>':''}).filter(Boolean).join(' · ');
+        var recHtml = recs.length
+          ? '<div class="ship-rec">📹 Packed by <b style="color:var(--text-muted)">'+escapeHtml(recs[0].worker||'?')+'</b> · '+escapeHtml(recs[0].date||'')+' '+escapeHtml(recs[0].time||'')+(vids?(' · '+vids):'')+(photo?(' · '+photo):'')+'</div>'
+          : '<div class="ship-rec" style="color:var(--text-dim)">📹 No packing video found for this package</div>';
         return '<div class="ship">'+
           '<div class="ship-head">'+
-            '<div><span class="ship-id">'+escapeHtml(s.shipment_id)+'</span>'+
-              (s.tracking_code?' · <span class="ship-tracking">'+escapeHtml(s.tracking_code)+'</span>':'')+
-            '</div>'+
+            '<div><span class="ship-id">'+escapeHtml(s.shipment_id)+'</span>'+(trk?(' · '+trk):'')+'</div>'+
             '<div><span class="ship-status st-'+s.status+'">'+s.status.replace('_',' ')+'</span> '+
               '<span class="ship-show-date">'+fmtDate(s.show_date)+'</span></div>'+
           '</div>'+
@@ -3744,7 +3747,7 @@ function loadDetail(username){
       }).join('');
     }
     html+='</div>';
-    detailEl.innerHTML=html;
+    panel.innerHTML=html;
   });
 }
 
@@ -6766,6 +6769,193 @@ function load(){
   });
 }
 document.getElementById('showSel').addEventListener('change',load);
+load();
+</script></body></html>'''
+
+
+# ── HOST ANALYTICS — seller performance per show + configurable commissions ──
+HOSTS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Host Analytics</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1300px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1300px;margin:0 auto;padding:8px 28px 40px}
+.card{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:18px 20px;margin-bottom:18px}
+.card h2{font-size:13px;font-weight:800;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px;margin-bottom:14px}
+select,input{background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:10px 13px;font-size:14px;color:#e4e8f1;font-family:inherit;outline:none}
+select:focus,input:focus{border-color:#4f46e5}
+label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
+.row{display:flex;gap:12px;align-items:end;flex-wrap:wrap}
+.btn{border:none;border-radius:10px;padding:11px 20px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}.btn-s{background:rgba(255,255,255,.08);color:#e4e8f1;border:1px solid rgba(255,255,255,.12)}
+.btn-x{background:rgba(244,63,94,.14);color:#fb7185;border:1px solid rgba(244,63,94,.3);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer}
+.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin:6px 0 4px}
+@media(max-width:860px){.cards{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:16px}
+.kpi .l{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px}
+.kpi .v{font-size:26px;font-weight:900}
+.kpi.rev .v{color:#60a5fa}.kpi.comm .v{color:#f59e0b}.kpi.units .v{color:#a5b4fc}.kpi.shows .v{color:#34d399}.kpi.aov .v{color:#e4e8f1}
+table{width:100%;border-collapse:collapse;background:rgba(21,25,33,.4);border-radius:12px;overflow:hidden}
+th,td{padding:10px 12px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06);text-align:right}
+th:first-child,td:first-child,th:nth-child(2),td:nth-child(2),th:nth-child(3),td:nth-child(3){text-align:left}
+th{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px}
+.host-in{width:120px;padding:6px 8px;font-size:13px}
+.comm{color:#f59e0b;font-weight:700}.rev{color:#60a5fa;font-weight:700}
+.chart-wrap{overflow-x:auto}
+.bar{fill:#4f46e5}.bar:hover{fill:#7c3aed}
+.axis{stroke:rgba(255,255,255,.12)}.axtx{fill:#6b7a90;font-size:10px}
+.tier-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.muted{color:#6b7a90;font-size:13px}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:700;z-index:100;display:none}.toast.err{background:#f43f5e}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🎤 Host Analytics <span>__NAME__</span></div>
+  <div class="row"><div><label>Host</label><select id="hostSel"><option value="">All hosts</option></select></div></div>
+</div>
+<div class="wrap">
+
+<div class="card">
+  <h2>💸 Commission rule</h2>
+  <div class="row">
+    <div><label>Model</label><select id="cMode">
+      <option value="flat">Flat % of net sales</option>
+      <option value="tiered">Tiered by sales volume</option>
+      <option value="base_pct">% only (hourly base later)</option>
+    </select></div>
+    <div id="flatBox"><label>Flat %</label><input id="cFlat" type="number" step="0.1" style="width:100px"></div>
+    <div id="pctBox" style="display:none"><label>%</label><input id="cPct" type="number" step="0.1" style="width:100px"></div>
+    <button class="btn btn-p" id="saveCfg">Save rule</button>
+  </div>
+  <div id="tierBox" style="display:none;margin-top:14px">
+    <label>Tiers — rate applies to whole show once its sales reach the threshold</label>
+    <div id="tiers"></div>
+    <button class="btn btn-s" id="addTier" style="margin-top:6px">+ Add tier</button>
+  </div>
+  <div class="muted" style="margin-top:10px">Commissions are computed on <b>net sales</b> (after cancellations), from the uploaded show CSVs.</div>
+</div>
+
+<div class="cards" id="kpis"></div>
+
+<div class="card">
+  <h2>📈 Revenue per show <span id="chartHost" class="muted"></span></h2>
+  <div class="chart-wrap"><div id="chart"></div></div>
+</div>
+
+<div class="card">
+  <h2>🗂️ Shows</h2>
+  <table><thead><tr><th>Date</th><th>Show</th><th>Host</th><th>Revenue</th><th>Orders</th><th>Units</th><th>AOV</th><th>Cancel%</th><th>Commission</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody></table>
+</div>
+</div>
+<div class="toast" id="t"></div>
+<script>
+function toast(m,e){var x=document.getElementById('t');x.textContent=m;x.className=e?'toast err':'toast';x.style.display='block';setTimeout(function(){x.style.display='none'},2500)}
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+function money(v){return '$'+Number(v||0).toLocaleString(undefined,{maximumFractionDigits:0})}
+function money2(v){return '$'+Number(v||0).toFixed(2)}
+var DATA={shows:[],hosts:[],config:{}};
+
+function curHost(){return document.getElementById('hostSel').value}
+function filteredShows(){var h=curHost();return DATA.shows.filter(function(s){return !h||s.host===h})}
+
+function renderConfig(){
+  var c=DATA.config||{};
+  document.getElementById('cMode').value=c.mode||'flat';
+  document.getElementById('cFlat').value=c.flat_pct!=null?c.flat_pct:10;
+  document.getElementById('cPct').value=c.pct!=null?c.pct:10;
+  renderTiers(c.tiers||[]);
+  applyModeUI();
+}
+function applyModeUI(){var m=document.getElementById('cMode').value;
+  document.getElementById('flatBox').style.display=(m==='flat')?'block':'none';
+  document.getElementById('pctBox').style.display=(m==='base_pct')?'block':'none';
+  document.getElementById('tierBox').style.display=(m==='tiered')?'block':'none';}
+var TIERS=[];
+function renderTiers(ts){TIERS=ts.length?ts.slice():[{min:0,pct:8}];
+  document.getElementById('tiers').innerHTML=TIERS.map(function(t,i){
+    return '<div class="tier-row"><span class="muted">from</span> $<input type="number" value="'+(t.min||0)+'" data-i="'+i+'" data-k="min" style="width:110px"> <span class="muted">→</span> <input type="number" step="0.1" value="'+(t.pct||0)+'" data-i="'+i+'" data-k="pct" style="width:80px">% <button class="btn-x" onclick="delTier('+i+')">✕</button></div>';
+  }).join('');
+  document.getElementById('tiers').querySelectorAll('input').forEach(function(el){el.addEventListener('input',function(){TIERS[+el.dataset.i][el.dataset.k]=parseFloat(el.value||'0')})});
+}
+function delTier(i){TIERS.splice(i,1);renderTiers(TIERS)}
+document.getElementById('addTier').addEventListener('click',function(){TIERS.push({min:0,pct:10});renderTiers(TIERS)});
+document.getElementById('cMode').addEventListener('change',applyModeUI);
+document.getElementById('saveCfg').addEventListener('click',function(){
+  var body={mode:document.getElementById('cMode').value,flat_pct:parseFloat(document.getElementById('cFlat').value||'0'),
+            pct:parseFloat(document.getElementById('cPct').value||'0'),tiers:TIERS};
+  fetch('/api/commission-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+   .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Rule saved ✓');load()}else toast('Failed',true)});
+});
+
+function renderKpis(){
+  var sh=filteredShows();
+  var rev=0,comm=0,units=0,orders=0;
+  sh.forEach(function(s){rev+=s.revenue;comm+=s.commission;units+=s.units;orders+=s.orders});
+  document.getElementById('kpis').innerHTML=
+    '<div class="kpi rev"><div class="l">Net sales</div><div class="v">'+money(rev)+'</div></div>'+
+    '<div class="kpi comm"><div class="l">Commission</div><div class="v">'+money(comm)+'</div></div>'+
+    '<div class="kpi shows"><div class="l">Shows</div><div class="v">'+sh.length+'</div></div>'+
+    '<div class="kpi units"><div class="l">Units sold</div><div class="v">'+units.toLocaleString()+'</div></div>'+
+    '<div class="kpi aov"><div class="l">Avg / show</div><div class="v">'+money(sh.length?rev/sh.length:0)+'</div></div>';
+}
+
+function renderChart(){
+  var sh=filteredShows();
+  document.getElementById('chartHost').textContent=curHost()?('· '+curHost()):'· all hosts';
+  if(!sh.length){document.getElementById('chart').innerHTML='<div class="muted">No data</div>';return}
+  var n=sh.length,bw=Math.max(26,Math.min(70,Math.floor(1100/n))),gap=10,W=n*(bw+gap)+50,H=240,top=14,bot=44;
+  var max=Math.max.apply(null,sh.map(function(s){return s.revenue}))||1;
+  var bars='',lbls='';
+  sh.forEach(function(s,i){
+    var bh=Math.round((H-top-bot)*(s.revenue/max));
+    var x=44+i*(bw+gap),y=H-bot-bh;
+    bars+='<rect class="bar" x="'+x+'" y="'+y+'" width="'+bw+'" height="'+Math.max(1,bh)+'" rx="3"><title>'+esc(s.host)+' — '+esc((s.show_date||'').slice(0,10))+': '+money(s.revenue)+' ('+money(s.commission)+' comm)</title></rect>';
+    lbls+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(H-bot+14)+'" text-anchor="middle">'+esc((s.show_date||'').slice(5,10))+'</text>';
+    if(bh>16)bars+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(y-4)+'" text-anchor="middle" style="fill:#9aa6bd">'+money(s.revenue)+'</text>';
+  });
+  var grid='';for(var g=0;g<=4;g++){var gy=top+(H-top-bot)*g/4;grid+='<line class="axis" x1="40" y1="'+gy+'" x2="'+W+'" y2="'+gy+'"/><text class="axtx" x="0" y="'+(gy+3)+'">'+money(max*(4-g)/4)+'</text>';}
+  document.getElementById('chart').innerHTML='<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+grid+bars+lbls+'</svg>';
+}
+
+function renderTable(){
+  var sh=filteredShows().slice().reverse();
+  if(!sh.length){document.getElementById('rows').innerHTML='<tr><td colspan="9" class="muted">No shows</td></tr>';return}
+  document.getElementById('rows').innerHTML=sh.map(function(s){
+    var gi=DATA.shows.indexOf(s);
+    return '<tr><td class="muted">'+esc((s.show_date||'').slice(0,10))+'</td>'+
+      '<td>'+esc(s.label)+'</td>'+
+      '<td><input class="host-in" value="'+esc(s.host)+'" data-gi="'+gi+'"></td>'+
+      '<td class="rev">'+money2(s.revenue)+'</td><td>'+s.orders+'</td><td>'+s.units+'</td>'+
+      '<td>'+money2(s.aov)+'</td><td>'+(s.cancel_rate||0)+'%</td>'+
+      '<td class="comm">'+money2(s.commission)+'</td></tr>';
+  }).join('');
+  document.getElementById('rows').querySelectorAll('.host-in').forEach(function(el){
+    el.addEventListener('change',function(){var s=DATA.shows[+el.dataset.gi];
+      fetch('/api/host-override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:s.label,host:el.value.trim()})})
+       .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Host updated ✓');load()}else toast('Failed',true)});
+    });
+  });
+}
+
+function renderHostFilter(){
+  var sel=document.getElementById('hostSel');var cur=sel.value;
+  sel.innerHTML='<option value="">All hosts</option>'+DATA.hosts.map(function(h){return '<option value="'+esc(h.host)+'">'+esc(h.host)+' ('+money(h.revenue)+')</option>'}).join('');
+  sel.value=cur;
+}
+function renderAll(){renderKpis();renderChart();renderTable()}
+document.getElementById('hostSel').addEventListener('change',renderAll);
+
+function load(){
+  fetch('/api/host-analytics').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){toast('Failed to load',true);return}
+    DATA=d;renderConfig();renderHostFilter();renderAll();
+  });
+}
 load();
 </script></body></html>'''
 
