@@ -18,7 +18,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
-    INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML,
+    INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
 
 
@@ -382,6 +382,10 @@ def sdb_init():
         "ALTER TABLE shipment_items ADD COLUMN picked INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN picked_at TEXT",
         "ALTER TABLE shipment_items ADD COLUMN revenue REAL DEFAULT 0",
+        # Full sale timestamp + geography for show/audience analytics.
+        "ALTER TABLE shipment_items ADD COLUMN created_time TEXT",
+        "ALTER TABLE shipment_items ADD COLUMN buyer_state TEXT",
+        "ALTER TABLE shipment_items ADD COLUMN buyer_city TEXT",
         # Pre-import match: how many units we've already deducted for a binding,
         # so re-binding / unmapping can restore on_hand correctly.
         "ALTER TABLE show_product_map ADD COLUMN depleted_qty INTEGER DEFAULT 0",
@@ -2519,6 +2523,9 @@ def _norm_tiktok(row):
         "status":     s("Order Status"),
         "cancel_reason": s("Cancel Reason"),
         "created_at": s("Created Time")[:10],
+        "created_time": s("Created Time") or s("Paid Time"),   # full timestamp
+        "state":      s("State"),
+        "city":       s("City"),
         "shipped_time":   s("Shipped Time"),
         "delivered_time": s("Delivered Time"),
         "revenue":        revenue,
@@ -2558,6 +2565,9 @@ def _norm_whatnot(row):
         "status":     "cancelled" if s("cancelled_or_failed") in ("cancelled","failed") else "to_ship",
         "cancel_reason": s("cancelled_or_failed") if s("cancelled_or_failed") else "",
         "created_at": s("placed_at")[:10],
+        "created_time": s("placed_at"),
+        "state":      "",
+        "city":       "",
     }
 
 @app.route("/api/shipments/import", methods=["POST"])
@@ -2669,9 +2679,11 @@ def api_shipments_import():
                 # Prefer per-row weight from CSV (TikTok); fall back to sku_weights map
                 w = (n["weight_g"] / max(len(group), 1)) if n["weight_g"] > 0 else sku_map.get(sku)
                 c.execute("""INSERT INTO shipment_items
-                             (shipment_id, order_id, sku, product_name, quantity, item_weight_g, revenue)
-                             VALUES (?,?,?,?,?,?,?)""",
-                          (pkg_id, n["order_id"], sku, n["product_name"], n["quantity"], w, n.get("revenue", 0) or 0))
+                             (shipment_id, order_id, sku, product_name, quantity, item_weight_g, revenue,
+                              created_time, buyer_state, buyer_city)
+                             VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                          (pkg_id, n["order_id"], sku, n["product_name"], n["quantity"], w, n.get("revenue", 0) or 0,
+                           n.get("created_time") or None, n.get("state") or None, n.get("city") or None))
                 items_inserted += 1
                 if sku: unique_skus.add(sku)
             _recompute_shipment_weight(c, pkg_id)
@@ -3870,6 +3882,134 @@ def api_host_override():
 @req_role("admin")
 def hosts_page():
     return HOSTS_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("hosts")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+# ── PACKER ANALYTICS — pack speed per worker from the recording log ──
+@app.route("/api/packer-analytics")
+@req_role("admin","cs")
+def api_packer_analytics():
+    worker=(request.args.get("worker") or "").strip()
+    station=(request.args.get("station") or "").strip()
+    frm=(request.args.get("from") or "").strip(); to=(request.args.get("to") or "").strip()
+    c=sdb()
+    tmap={}
+    for r in c.execute("SELECT tracking_code,shipment_id,total_items FROM shipments").fetchall():
+        ti=r["total_items"] or 0
+        if r["tracking_code"]: tmap[r["tracking_code"]]=ti
+        if r["shipment_id"]: tmap.setdefault(r["shipment_id"],ti)
+    c.close()
+    rows=[]; all_workers=set(); all_stations=set()
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE) as f:
+            for row in csv.DictReader(f):
+                d=row.get("date","") or ""
+                wk=(row.get("worker","") or "Unknown"); stn=row.get("station","") or ""
+                all_workers.add(wk);
+                if stn: all_stations.add(stn)
+                if frm and d<frm: continue
+                if to and d>to: continue
+                if worker and wk!=worker: continue
+                if station and stn!=station: continue
+                try: dur=float(row.get("duration_seconds","0") or 0)
+                except Exception: dur=0
+                if dur<=0 or dur>3600: continue   # ignore bogus durations
+                rows.append({"worker":wk,"date":d,"station":stn,"dur":dur,
+                             "items":tmap.get(row.get("tracking_number","") or "",0)})
+    def agg(items):
+        pk=len(items); sec=sum(x["dur"] for x in items); it=sum(x["items"] for x in items)
+        return {"packages":pk,"items":it,"avg_sec_pkg":round(sec/pk,1) if pk else 0,
+                "avg_sec_item":round(sec/it,1) if it else 0,
+                "pkgs_per_hr":round(3600.0/(sec/pk),1) if pk and sec else 0,
+                "active_hours":round(sec/3600,2)}
+    W={}
+    for r in rows: W.setdefault(r["worker"],[]).append(r)
+    workers=[dict({"worker":w},**agg(v)) for w,v in W.items()]
+    workers.sort(key=lambda x:x["packages"],reverse=True)
+    D={}
+    for r in rows: D.setdefault(r["date"],[]).append(r)
+    days=[dict({"date":d},**agg(v)) for d,v in sorted(D.items())]
+    return jsonify({"ok":True,"overall":agg(rows),"workers":workers,"days":days,
+                    "worker_list":sorted(all_workers),"station_list":sorted(all_stations)})
+
+@app.route("/admin/packer-analytics")
+@req_role("admin","cs")
+def packer_analytics_page():
+    return PACKER_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("packer")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+def _parse_sale_dt(x):
+    x=(x or "").strip().replace("T"," ")
+    if not x: return None
+    for fmt in ("%Y-%m-%d %H:%M:%S","%m/%d/%Y %H:%M:%S","%Y/%m/%d %H:%M:%S",
+                "%m/%d/%Y %H:%M","%Y-%m-%d %H:%M"):
+        try: return datetime.strptime(x[:19], fmt)
+        except Exception: pass
+    try: return datetime.fromisoformat(x[:19])
+    except Exception: return None
+
+@app.route("/api/show-detail")
+@req_role("admin")
+def api_show_detail():
+    """Deep-dive for one show: duration (from sale times), hourly sales, geography,
+    giveaways, cancellations, pack time, top products."""
+    label=(request.args.get("label") or "").strip()
+    if not label: return jsonify({"ok":False,"error":"label required"})
+    c=sdb()
+    rows=c.execute("""SELECT i.quantity qty, COALESCE(i.revenue,0) rev, COALESCE(i.cancelled,0) canc,
+                             i.created_time ct, i.buyer_state st, i.buyer_city ci, i.product_name pn, i.sku,
+                             s.tracking_code tc, s.shipment_id sid
+                      FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                      WHERE s.import_label=?""",(label,)).fetchall()
+    c.close()
+    hours={}; states={}; cities={}; prods={}; times=[]
+    revenue=0.0; units=0; canc_units=0; order_ids=set()
+    for r in rows:
+        if r["canc"]:
+            canc_units+=r["qty"] or 0; continue
+        revenue+=r["rev"] or 0; units+=r["qty"] or 0
+        if r["sid"]: order_ids.add(r["sid"])
+        dt=_parse_sale_dt(r["ct"])
+        if dt:
+            times.append(dt)
+            hh=hours.setdefault(dt.hour,{"hour":dt.hour,"revenue":0.0,"units":0})
+            hh["revenue"]+=r["rev"] or 0; hh["units"]+=r["qty"] or 0
+        st=(r["st"] or "").strip()
+        if st: states[st]=states.get(st,0)+(r["qty"] or 0)
+        ci=(r["ci"] or "").strip()
+        if ci: cities[ci]=cities.get(ci,0)+(r["qty"] or 0)
+        pn=(r["pn"] or r["sku"] or "?")
+        p=prods.setdefault(pn,{"name":pn,"units":0,"revenue":0.0}); p["units"]+=r["qty"] or 0; p["revenue"]+=r["rev"] or 0
+    dur_min=start=end=None
+    if times:
+        mn=min(times); mx=max(times); dur_min=round((mx-mn).total_seconds()/60,1)
+        start=mn.strftime("%Y-%m-%d %H:%M"); end=mx.strftime("%H:%M")
+    g=gdb()
+    try: gv=g.execute("SELECT COUNT(*) n FROM giveaways WHERE attach_show=?",(label,)).fetchone()["n"]
+    except Exception: gv=0
+    g.close()
+    tset=set()
+    for r in rows:
+        if r["tc"]: tset.add(r["tc"])
+        if r["sid"]: tset.add(r["sid"])
+    packsec=[]
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE) as f:
+            for row in csv.DictReader(f):
+                if (row.get("tracking_number","") or "") in tset:
+                    try: dd=float(row.get("duration_seconds","0") or 0)
+                    except Exception: dd=0
+                    if 0<dd<=3600: packsec.append(dd)
+    tot=units+canc_units
+    return jsonify({"ok":True,"label":label,"host":_host_overrides().get(label) or _host_from_label(label) or "Unknown",
+        "revenue":round(revenue,2),"units":units,"orders":len(order_ids),
+        "cancel_units":canc_units,"cancel_rate":round(100.0*canc_units/tot,1) if tot else 0,
+        "duration_min":dur_min,"start":start,"end":end,
+        "sales_per_hour_live":round(units/(dur_min/60.0),1) if dur_min else 0,
+        "rev_per_hour_live":round(revenue/(dur_min/60.0),2) if dur_min else 0,
+        "giveaways":gv,"avg_pack_sec":round(sum(packsec)/len(packsec),1) if packsec else 0,"packed":len(packsec),
+        "hours":[hours[k] for k in sorted(hours)],
+        "has_times":bool(times),
+        "top_states":sorted([{"k":k,"v":v} for k,v in states.items()],key=lambda x:-x["v"])[:8],
+        "top_cities":sorted([{"k":k,"v":v} for k,v in cities.items()],key=lambda x:-x["v"])[:6],
+        "top_products":sorted(prods.values(),key=lambda x:-x["revenue"])[:10]})
 
 @app.route("/api/product/<sku>/label.pdf")
 @req_role("admin","cs")

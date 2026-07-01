@@ -42,6 +42,7 @@ def _navbar(active_page=""):
             ("cleanup", "/admin/cleanup", "🧹 Table Cleanup"),
             ("issues", "/admin/issues", "🚧 Picking Issues"),
             ("dash", "/dashboard", "Search Recordings"),
+            ("packer", "/admin/packer-analytics", "⏱️ Packer Analytics"),
             ("customers", "/customers", "Customer Lookup"),
             ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation"),
             ("shipstatus", "/shipping-status", "🚚 Shipping Status"),
@@ -6814,6 +6815,18 @@ th{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px}
 .host-in{width:120px;padding:6px 8px;font-size:13px}
 .comm{color:#f59e0b;font-weight:700}.rev{color:#60a5fa;font-weight:700}
 .chart-wrap{overflow-x:auto}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:flex-start;justify-content:center;z-index:200;padding:30px 16px;overflow:auto}
+.modal.on{display:flex}
+.modal .box{background:#151921;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:22px;max-width:820px;width:100%}
+.modal h3{font-size:17px;font-weight:800;margin-bottom:4px}
+.mini{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}
+@media(max-width:680px){.mini{grid-template-columns:repeat(2,1fr)}}
+.mini .m{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:12px}
+.mini .m .l{font-size:10px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px;font-weight:700}
+.mini .m .v{font-size:19px;font-weight:800;margin-top:3px}
+.geo{display:flex;gap:20px;flex-wrap:wrap;margin-top:6px}
+.geo .col{flex:1;min-width:180px}
+.geo .b{display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05)}
 .bar{fill:#4f46e5}.bar:hover{fill:#7c3aed}
 .axis{stroke:rgba(255,255,255,.12)}.axtx{fill:#6b7a90;font-size:10px}
 .tier-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
@@ -6859,13 +6872,59 @@ __NAVBAR__
   <tbody id="rows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody></table>
 </div>
 </div>
+<div class="modal" id="showModal"><div class="box" id="showBox"></div></div>
 <div class="toast" id="t"></div>
 <script>
 function toast(m,e){var x=document.getElementById('t');x.textContent=m;x.className=e?'toast err':'toast';x.style.display='block';setTimeout(function(){x.style.display='none'},2500)}
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
 function money(v){return '$'+Number(v||0).toLocaleString(undefined,{maximumFractionDigits:0})}
 function money2(v){return '$'+Number(v||0).toFixed(2)}
+function secFmt(s){s=Number(s||0);if(!s)return '—';if(s<60)return s.toFixed(0)+'s';return Math.floor(s/60)+'m '+Math.round(s%60)+'s'}
 var DATA={shows:[],hosts:[],config:{}};
+
+function closeShow(){document.getElementById('showModal').classList.remove('on')}
+function openShow(gi){
+  var s=DATA.shows[gi];if(!s)return;
+  document.getElementById('showModal').classList.add('on');
+  document.getElementById('showBox').innerHTML='<div class="muted">Loading '+esc(s.label)+'…</div>';
+  fetch('/api/show-detail?label='+encodeURIComponent(s.label)).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){document.getElementById('showBox').innerHTML='<div class="muted">Failed</div>';return}
+    var dur=d.duration_min?( (d.duration_min/60).toFixed(1)+'h' ):'—';
+    var win=d.has_times?('🕒 '+esc(d.start||'')+' → '+esc(d.end||'')+' · '+dur):'🕒 no sale-time data (older import)';
+    var h='<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px"><div><h3>'+esc(d.label)+'</h3><div class="muted">🎤 '+esc(d.host)+' · '+win+'</div></div><button class="btn btn-s" onclick="closeShow()">Close</button></div>';
+    h+='<div class="mini">'+
+      '<div class="m"><div class="l">Net sales</div><div class="v rev">'+money(d.revenue)+'</div></div>'+
+      '<div class="m"><div class="l">Units</div><div class="v">'+d.units.toLocaleString()+'</div></div>'+
+      '<div class="m"><div class="l">Orders</div><div class="v">'+d.orders.toLocaleString()+'</div></div>'+
+      '<div class="m"><div class="l">Giveaways</div><div class="v">'+d.giveaways+'</div></div>'+
+      '<div class="m"><div class="l">Cancellations</div><div class="v">'+d.cancel_units+' ('+d.cancel_rate+'%)</div></div>'+
+      '<div class="m"><div class="l">Show length</div><div class="v">'+dur+'</div></div>'+
+      '<div class="m"><div class="l">Sales / live hr</div><div class="v">'+(d.rev_per_hour_live?money(d.rev_per_hour_live):'—')+'</div></div>'+
+      '<div class="m"><div class="l">Avg pack time</div><div class="v">'+secFmt(d.avg_pack_sec)+'</div></div>';
+    h+='</div>';
+    if(d.hours&&d.hours.length){h+='<div style="margin:8px 0 4px;font-size:12px;font-weight:700;color:#a5b4fc;text-transform:uppercase;letter-spacing:.5px">Sales by hour of day</div><div class="chart-wrap">'+hourChart(d.hours)+'</div>';}
+    h+='<div class="geo">';
+    h+='<div class="col"><div style="font-size:12px;font-weight:700;color:#a5b4fc;text-transform:uppercase;margin-bottom:4px">Top states</div>'+
+       (d.top_states.length?d.top_states.map(function(x){return '<div class="b"><span>'+esc(x.k)+'</span><span class="muted">'+x.v+' units</span></div>'}).join(''):'<div class="muted">No state data (older import)</div>')+'</div>';
+    h+='<div class="col"><div style="font-size:12px;font-weight:700;color:#a5b4fc;text-transform:uppercase;margin-bottom:4px">Top products</div>'+
+       d.top_products.slice(0,6).map(function(p){return '<div class="b"><span>'+esc(p.name)+'</span><span class="muted">'+money(p.revenue)+'</span></div>'}).join('')+'</div>';
+    h+='</div>';
+    document.getElementById('showBox').innerHTML=h;
+  });
+}
+function hourChart(hrs){
+  var byh={};hrs.forEach(function(x){byh[x.hour]=x});
+  var W=720,H=170,top=10,bot=26,n=24,bw=(W-30)/n;
+  var max=Math.max.apply(null,hrs.map(function(x){return x.revenue}))||1;
+  var bars='',lbls='';
+  for(var hh=0;hh<24;hh++){var v=byh[hh]?byh[hh].revenue:0;var bh=Math.round((H-top-bot)*(v/max));
+    var x=28+hh*bw,y=H-bot-bh;
+    bars+='<rect class="bar" x="'+(x+1)+'" y="'+y+'" width="'+(bw-2)+'" height="'+Math.max(1,bh)+'" rx="2"><title>'+hh+':00 — '+money(v)+' ('+(byh[hh]?byh[hh].units:0)+' units)</title></rect>';
+    if(hh%3===0)lbls+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(H-bot+13)+'" text-anchor="middle">'+hh+'h</text>';
+  }
+  return '<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'" style="min-width:600px">'+bars+lbls+'</svg>';
+}
+document.getElementById('showModal').addEventListener('click',function(e){if(e.target===this)closeShow()});
 
 function curHost(){return document.getElementById('hostSel').value}
 function filteredShows(){var h=curHost();return DATA.shows.filter(function(s){return !h||s.host===h})}
@@ -6935,7 +6994,7 @@ function renderTable(){
   document.getElementById('rows').innerHTML=sh.map(function(s){
     var gi=DATA.shows.indexOf(s);
     return '<tr><td class="muted">'+esc((s.show_date||'').slice(0,10))+'</td>'+
-      '<td>'+esc(s.label)+'</td>'+
+      '<td><a href="#" onclick="openShow('+gi+');return false" style="color:#a5b4fc;text-decoration:underline">'+esc(s.label)+'</a></td>'+
       '<td><input class="host-in" value="'+esc(s.host)+'" data-gi="'+gi+'"></td>'+
       '<td class="rev">'+money2(s.revenue)+'</td><td>'+s.orders+'</td><td>'+s.units+'</td>'+
       '<td>'+money2(s.aov)+'</td><td>'+(s.cancel_rate||0)+'%</td>'+
@@ -6963,6 +7022,111 @@ function load(){
     DATA=d;renderConfig();renderHostFilter();renderAll();
   });
 }
+load();
+</script></body></html>'''
+
+
+# ── PACKER ANALYTICS — pack-speed per worker ──
+PACKER_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Packer Analytics</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1300px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1300px;margin:0 auto;padding:8px 28px 40px}
+.card{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:18px 20px;margin-bottom:18px}
+.card h2{font-size:13px;font-weight:800;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px;margin-bottom:14px}
+select,input{background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:10px 13px;font-size:14px;color:#e4e8f1;font-family:inherit;outline:none}
+select:focus,input:focus{border-color:#4f46e5}
+label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
+.row{display:flex;gap:12px;align-items:end;flex-wrap:wrap}
+.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin:6px 0 18px}
+@media(max-width:860px){.cards{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:16px}
+.kpi .l{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px}
+.kpi .v{font-size:26px;font-weight:900}
+.kpi.pk .v{color:#34d399}.kpi.sp .v{color:#60a5fa}.kpi.it .v{color:#a5b4fc}.kpi.hr .v{color:#f59e0b}.kpi.act .v{color:#e4e8f1}
+table{width:100%;border-collapse:collapse;background:rgba(21,25,33,.4);border-radius:12px;overflow:hidden}
+th,td{padding:10px 12px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06);text-align:right}
+th:first-child,td:first-child{text-align:left}
+th{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px}
+.bar{fill:#4f46e5}.bar:hover{fill:#7c3aed}.axtx{fill:#6b7a90;font-size:10px}.axis{stroke:rgba(255,255,255,.1)}
+.muted{color:#6b7a90;font-size:13px}.chart-wrap{overflow-x:auto}
+.fast{color:#34d399;font-weight:700}.slow{color:#fbbf24;font-weight:700}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">⏱️ Packer Analytics <span>__NAME__</span></div></div>
+<div class="wrap">
+<div class="card">
+  <div class="row">
+    <div><label>Worker</label><select id="fWorker"><option value="">All workers</option></select></div>
+    <div><label>Station</label><select id="fStation"><option value="">All stations</option></select></div>
+    <div><label>From</label><input id="fFrom" type="date"></div>
+    <div><label>To</label><input id="fTo" type="date"></div>
+    <button class="btn" style="background:rgba(255,255,255,.08);color:#e4e8f1;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:11px 18px;font-weight:700;cursor:pointer;font-family:inherit" id="clr">Clear</button>
+  </div>
+</div>
+<div class="cards" id="kpis"></div>
+<div class="card">
+  <h2>👷 By worker</h2>
+  <table><thead><tr><th>Worker</th><th>Packages</th><th>Items</th><th>Avg / package</th><th>Avg / item</th><th>Pkgs / hr</th><th>Active hrs</th></tr></thead>
+  <tbody id="wrows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody></table>
+</div>
+<div class="card">
+  <h2>📅 Packages per day <span class="muted" id="dayNote"></span></h2>
+  <div class="chart-wrap"><div id="chart"></div></div>
+</div>
+</div>
+<div class="toast" id="t" style="position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:700;z-index:100;display:none"></div>
+<script>
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+function secFmt(s){s=Number(s||0);if(s<60)return s.toFixed(0)+'s';var m=Math.floor(s/60),r=Math.round(s%60);return m+'m '+r+'s'}
+var FILL=false;
+function qs(){var p=[];['fWorker','fStation','fFrom','fTo'].forEach(function(id){var v=document.getElementById(id).value;if(v){var k={fWorker:'worker',fStation:'station',fFrom:'from',fTo:'to'}[id];p.push(k+'='+encodeURIComponent(v))}});return p.length?('?'+p.join('&')):''}
+function load(){
+  fetch('/api/packer-analytics'+qs()).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;
+    if(!FILL){FILL=true;
+      var wsel=document.getElementById('fWorker');wsel.innerHTML='<option value="">All workers</option>'+d.worker_list.map(function(w){return '<option>'+esc(w)+'</option>'}).join('');
+      var ssel=document.getElementById('fStation');ssel.innerHTML='<option value="">All stations</option>'+d.station_list.map(function(s){return '<option>'+esc(s)+'</option>'}).join('');
+    }
+    var o=d.overall;
+    document.getElementById('kpis').innerHTML=
+      '<div class="kpi pk"><div class="l">Packages</div><div class="v">'+o.packages.toLocaleString()+'</div></div>'+
+      '<div class="kpi sp"><div class="l">Avg / package</div><div class="v">'+secFmt(o.avg_sec_pkg)+'</div></div>'+
+      '<div class="kpi it"><div class="l">Avg / item</div><div class="v">'+secFmt(o.avg_sec_item)+'</div></div>'+
+      '<div class="kpi hr"><div class="l">Packages / hour</div><div class="v">'+o.pkgs_per_hr+'</div></div>'+
+      '<div class="kpi act"><div class="l">Active hours</div><div class="v">'+o.active_hours+'</div></div>';
+    var avg=o.avg_sec_pkg||0;
+    document.getElementById('wrows').innerHTML=(d.workers.length?d.workers.map(function(w){
+      var cls=w.avg_sec_pkg<=avg?'fast':'slow';
+      return '<tr><td><b>'+esc(w.worker)+'</b></td><td>'+w.packages+'</td><td>'+w.items+'</td>'+
+        '<td class="'+cls+'">'+secFmt(w.avg_sec_pkg)+'</td><td>'+secFmt(w.avg_sec_item)+'</td>'+
+        '<td>'+w.pkgs_per_hr+'</td><td>'+w.active_hours+'</td></tr>';
+    }).join(''):'<tr><td colspan="7" class="muted">No packing records for this filter</td></tr>');
+    renderChart(d.days);
+  });
+}
+function renderChart(days){
+  if(!days||!days.length){document.getElementById('chart').innerHTML='<div class="muted">No data</div>';return}
+  var n=days.length,bw=Math.max(20,Math.min(60,Math.floor(1100/n))),gap=8,W=n*(bw+gap)+50,H=220,top=14,bot=42;
+  var max=Math.max.apply(null,days.map(function(d){return d.packages}))||1;
+  var bars='',lbls='';
+  days.forEach(function(d,i){
+    var bh=Math.round((H-top-bot)*(d.packages/max)),x=44+i*(bw+gap),y=H-bot-bh;
+    bars+='<rect class="bar" x="'+x+'" y="'+y+'" width="'+bw+'" height="'+Math.max(1,bh)+'" rx="3"><title>'+esc(d.date)+': '+d.packages+' pkgs · avg '+secFmt(d.avg_sec_pkg)+'</title></rect>';
+    lbls+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(H-bot+14)+'" text-anchor="middle">'+esc((d.date||'').slice(5))+'</text>';
+    if(bh>14)bars+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(y-4)+'" text-anchor="middle" style="fill:#9aa6bd">'+d.packages+'</text>';
+  });
+  var grid='';for(var g=0;g<=4;g++){var gy=top+(H-top-bot)*g/4;grid+='<line class="axis" x1="40" y1="'+gy+'" x2="'+W+'" y2="'+gy+'"/><text class="axtx" x="0" y="'+(gy+3)+'">'+Math.round(max*(4-g)/4)+'</text>';}
+  document.getElementById('chart').innerHTML='<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+grid+bars+lbls+'</svg>';
+}
+['fWorker','fStation','fFrom','fTo'].forEach(function(id){document.getElementById(id).addEventListener('change',load)});
+document.getElementById('clr').addEventListener('click',function(){['fWorker','fStation','fFrom','fTo'].forEach(function(id){document.getElementById(id).value=''});load()});
 load();
 </script></body></html>'''
 
