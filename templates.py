@@ -518,17 +518,24 @@ setTimeout(function(){go('r')},3000);
 document.getElementById('endBtn').addEventListener('click',function(){go('f');setTimeout(function(){location.href='/logout'},3500)});
 document.addEventListener('click',function(){if(st==='r')mi.focus();if(st==='c')ri.focus()});
 setInterval(function(){if(st==='r'&&document.activeElement!==mi)mi.focus();if(st==='c'&&document.activeElement!==ri)ri.focus()},400);
-function initCam(){navigator.mediaDevices.getUserMedia({video:{width:{ideal:854},height:{ideal:480},frameRate:{ideal:15,max:24}},audio:false}).then(function(s){sm=s;document.getElementById('pv').srcObject=s;document.getElementById('cm').className='cam ok'}).catch(function(){document.getElementById('cm').className='cam err'})}
+function initCam(){navigator.mediaDevices.getUserMedia({video:{width:{ideal:854,max:1280},height:{ideal:480,max:720},frameRate:{ideal:15,max:24}},audio:false}).then(function(s){sm=s;document.getElementById('pv').srcObject=s;document.getElementById('cm').className='cam ok'}).catch(function(){document.getElementById('cm').className='cam err'})}
 initCam();
 function pickMime(){var c=['video/webm;codecs=vp8','video/webm;codecs=vp9','video/webm','video/mp4'];
   for(var i=0;i<c.length;i++){try{if(window.MediaRecorder&&MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(c[i]))return c[i]}catch(e){}}return '';}
 function startRec(trk){if(!sm){alert(t('nocamera'));return}ct=trk;ch=[];
-  // Bitrate must be high enough or VP8 inter-frames starve and the picture
-  // pixelates after a second with no keyframe to recover. 2.5 Mbps @ 480p is
-  // crisp and still only ~a few hundred KB for short clips.
-  var opts={videoBitsPerSecond:2500000};var mime=pickMime();if(mime)opts.mimeType=mime;
-  try{mr=new MediaRecorder(sm,opts)}catch(e){mr=new MediaRecorder(sm)}
-  mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};mr.start(1000);t0=Date.now();startTmr();document.getElementById('rk').textContent=trk;go('c');loadChecklist(trk)}
+  // Match bitrate to the ACTUAL capture resolution — a fixed rate starves VP8 at
+  // 720p/1080p and the picture pixelates on motion with no keyframe to recover.
+  // Target ~0.15 bit/pixel, clamped 1.5–6 Mbps (short clips stay small).
+  var vt=sm.getVideoTracks?sm.getVideoTracks()[0]:null;
+  var vs=(vt&&vt.getSettings)?vt.getSettings():{};
+  var w=vs.width||854,h=vs.height||480,fps=vs.frameRate||15;
+  var br=Math.round(w*h*fps*0.15);br=Math.max(1500000,Math.min(br,6000000));
+  var opts={videoBitsPerSecond:br};var mime=pickMime();if(mime)opts.mimeType=mime;
+  try{mr=new MediaRecorder(sm,opts)}catch(e){try{mr=new MediaRecorder(sm,{videoBitsPerSecond:br})}catch(e2){mr=new MediaRecorder(sm)}}
+  try{console.log('[rec] '+w+'x'+h+'@'+fps+'fps '+Math.round(br/1000)+'kbps '+(mime||'default'))}catch(e){}
+  mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};
+  mr.start();  // no timeslice → one complete blob on stop (no chunk-join risk)
+  t0=Date.now();startTmr();document.getElementById('rk').textContent=trk;go('c');loadChecklist(trk)}
 
 // ─── Packer item-count reminder (NO touch / NO buttons) ───
 // After each scan we look up the shipment and:
