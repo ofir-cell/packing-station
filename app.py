@@ -18,7 +18,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
-    INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML,
+    INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
 
 
@@ -3934,6 +3934,11 @@ def api_packer_analytics():
 @req_role("admin","cs")
 def packer_analytics_page():
     return PACKER_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("packer")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/admin/settings")
+@req_role("admin")
+def settings_page():
+    return SETTINGS_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("settings")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 def _parse_sale_dt(x):
     x=(x or "").strip().replace("T"," ")

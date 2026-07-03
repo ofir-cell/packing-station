@@ -66,6 +66,7 @@ def _navbar(active_page=""):
                 ("users", "/users", "Users"),
                 ("badges", "/users/badges", "Badges"),
                 ("permissions", "/admin/permissions", "🔑 Permissions"),
+                ("settings", "/admin/settings", "⚙️ Settings"),
             ],
         })
     elif role == "cs":
@@ -7131,6 +7132,107 @@ load();
 </script></body></html>'''
 
 
+# ── SETTINGS — central hub for all app configuration ──
+SETTINGS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Settings</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1100px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1100px;margin:0 auto;padding:8px 28px 40px}
+.card{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:20px 22px;margin-bottom:20px}
+.card h2{font-size:14px;font-weight:800;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
+.desc{font-size:13px;color:#9ba9c1;margin-bottom:14px}
+.links{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.lnk{display:block;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:16px 18px;text-decoration:none;color:#e4e8f1;transition:all .12s}
+.lnk:hover{border-color:rgba(79,70,229,.5);background:rgba(79,70,229,.08)}
+.lnk .t{font-size:15px;font-weight:800}.lnk .s{font-size:12.5px;color:#9ba9c1;margin-top:3px}
+input,select{background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:10px 13px;font-size:14px;color:#e4e8f1;font-family:inherit;outline:none;width:100%}
+input:focus,select:focus{border-color:#4f46e5}
+label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin:8px 0 4px;text-transform:uppercase;letter-spacing:.4px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:420px}
+.btn{border:none;border-radius:10px;padding:11px 20px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}.btn-s{background:rgba(255,255,255,.08);color:#e4e8f1;border:1px solid rgba(255,255,255,.12)}
+.btn-x{background:rgba(244,63,94,.14);color:#fb7185;border:1px solid rgba(244,63,94,.3);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer}
+.pkgrow{display:grid;grid-template-columns:1.6fr .8fr .8fr .8fr .8fr auto;gap:8px;margin-bottom:8px;align-items:center}
+.pkghdr{display:grid;grid-template-columns:1.6fr .8fr .8fr .8fr .8fr auto;gap:8px;margin-bottom:4px}
+.pkghdr span{font-size:10px;color:#6b7a90;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:700;z-index:100;display:none}.toast.err{background:#f43f5e}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">⚙️ Settings <span>__NAME__</span></div></div>
+<div class="wrap">
+
+<div class="card">
+  <h2>👥 Team &amp; access</h2>
+  <div class="desc">Manage who can log in and what each role can do.</div>
+  <div class="links">
+    <a class="lnk" href="/users"><div class="t">Users</div><div class="s">Add / edit staff accounts &amp; roles</div></a>
+    <a class="lnk" href="/users/badges"><div class="t">Badges</div><div class="s">Printable scan-to-login badges</div></a>
+    <a class="lnk" href="/admin/permissions"><div class="t">Permissions &amp; Manager PIN</div><div class="s">Role matrix, ship-from address, PIN</div></a>
+  </div>
+</div>
+
+<div class="card">
+  <h2>📦 Package presets</h2>
+  <div class="desc">Common box sizes, reused when buying labels (Inbound / Giveaways). Dimensions in inches.</div>
+  <div class="grid2" style="margin-bottom:12px"><div><label>Weight unit</label>
+    <select id="wUnit"><option value="oz">Ounces (oz)</option><option value="lb">Pounds (lb)</option></select></div></div>
+  <div class="pkghdr"><span>Name</span><span id="hW">Weight (oz)</span><span>L (in)</span><span>W (in)</span><span>H (in)</span><span></span></div>
+  <div id="pkgList"></div>
+  <button class="btn btn-s" id="addPkg" style="margin-top:6px">+ Add package</button>
+  <button class="btn btn-p" id="savePkgs" style="margin-top:6px;margin-left:8px">Save presets</button>
+</div>
+
+<div class="card">
+  <h2>🔗 More configuration</h2>
+  <div class="desc">Other settings live on their own screens for now.</div>
+  <div class="links">
+    <a class="lnk" href="/admin/hosts"><div class="t">Commission rule</div><div class="s">Host commission model (in Host Analytics)</div></a>
+    <a class="lnk" href="/admin/inventory"><div class="t">Product catalog</div><div class="s">SKUs, barcodes, costs, CSV import</div></a>
+  </div>
+</div>
+
+</div>
+<div class="toast" id="t"></div>
+<script>
+function toast(m,e){var x=document.getElementById('t');x.textContent=m;x.className=e?'toast err':'toast';x.style.display='block';setTimeout(function(){x.style.display='none'},2500)}
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+var UNIT=localStorage.getItem('wunit')||'oz';
+function fromOz(oz){if(oz===''||oz==null||!oz)return (oz===0||oz==='0')?0:'';return UNIT==='lb'?Math.round((oz/16)*1000)/1000:oz;}
+function toOz(v){var n=parseFloat(v||0);return UNIT==='lb'?n*16:n;}
+function wLabel(){return UNIT==='lb'?'lb':'oz';}
+var PKGS=[];
+function renderPkgs(){
+  document.getElementById('hW').textContent='Weight ('+wLabel()+')';
+  document.getElementById('wUnit').value=UNIT;
+  document.getElementById('pkgList').innerHTML=PKGS.map(function(p,i){
+    return '<div class="pkgrow"><input value="'+esc(p.name)+'" data-i="'+i+'" data-k="name" placeholder="Name">'+
+      '<input type="number" step="0.01" value="'+(fromOz(p.weight))+'" data-i="'+i+'" data-k="weight" placeholder="'+wLabel()+'">'+
+      '<input type="number" value="'+(p.length||'')+'" data-i="'+i+'" data-k="length" placeholder="L">'+
+      '<input type="number" value="'+(p.width||'')+'" data-i="'+i+'" data-k="width" placeholder="W">'+
+      '<input type="number" value="'+(p.height||'')+'" data-i="'+i+'" data-k="height" placeholder="H">'+
+      '<button class="btn-x" onclick="delPkg('+i+')">✕</button></div>';
+  }).join('');
+  document.getElementById('pkgList').querySelectorAll('input').forEach(function(el){
+    el.addEventListener('input',function(){var k=el.dataset.k,i=+el.dataset.i;
+      PKGS[i][k]=(k==='name')?el.value:(k==='weight'?toOz(el.value):parseFloat(el.value||'0'));});
+  });
+}
+function delPkg(i){PKGS.splice(i,1);renderPkgs()}
+document.getElementById('addPkg').addEventListener('click',function(){PKGS.push({name:'Box',weight:0,length:0,width:0,height:0});renderPkgs()});
+document.getElementById('wUnit').addEventListener('change',function(){UNIT=this.value;localStorage.setItem('wunit',UNIT);renderPkgs();});
+document.getElementById('savePkgs').addEventListener('click',function(){
+  fetch('/api/packages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({packages:PKGS})}).then(function(r){return r.json()}).then(function(d){toast(d.ok?'Presets saved ✓':'Failed',!d.ok)});
+});
+fetch('/api/packages').then(function(r){return r.json()}).then(function(d){PKGS=d.packages||[];renderPkgs()});
+</script></body></html>'''
+
+
 # ── PRE-SHOW SCAN — bind generic stickers (sticker#, Part) to real products ──
 # Warehouse workflow: end of show, before import. Go Part by Part, sticker 1→N,
 # scan each product's real barcode (or pick from catalog) to give it an identity.
@@ -7371,16 +7473,6 @@ __NAVBAR__
 <div id="notice"></div>
 
 <div class="card">
-  <h2>📦 Package presets</h2>
-  <div class="desc">Save your common box sizes once, then pick them when buying a label. Dimensions in inches.</div>
-  <div class="grid2" style="margin-bottom:12px"><div><label>Weight unit</label>
-    <select id="wUnit"><option value="oz">Ounces (oz)</option><option value="lb">Pounds (lb)</option></select></div></div>
-  <div id="pkgList"></div>
-  <button class="btn btn-s" id="addPkg" style="margin-top:6px">+ Add package</button>
-  <button class="btn btn-p" id="savePkgs" style="margin-top:6px;margin-left:8px">Save presets</button>
-</div>
-
-<div class="card">
   <h2>🏷️ Buy a label (supplier → us)</h2>
   <div class="desc">Ships from the supplier to your warehouse (your ship-from address). Set ship-from in Permissions.</div>
   <div class="grid2" style="margin-bottom:10px">
@@ -7396,8 +7488,10 @@ __NAVBAR__
     <div><label>ZIP</label><input id="sZip"></div>
     <div><label>Phone</label><input id="sPhone"></div>
   </div>
-  <label style="margin-top:10px">Boxes in this shipment</label>
-  <div class="desc" style="margin-bottom:8px">Supplier sending several packages? Add a row per box (or set <b>×copies</b> for identical boxes). One label is bought per box and the total is summed.</div>
+  <div class="grid2" style="margin-top:10px;margin-bottom:8px"><div><label>Weight unit</label>
+    <select id="wUnit"><option value="oz">Ounces (oz)</option><option value="lb">Pounds (lb)</option></select></div></div>
+  <label>Boxes in this shipment</label>
+  <div class="desc" style="margin-bottom:8px">Supplier sending several packages? Add a row per box (or set <b>×copies</b> for identical boxes). One label is bought per box and the total is summed. Edit saved box presets in ⚙️ Settings.</div>
   <div class="boxhdr"><span>Preset</span><span id="bhWeight">Weight (oz)</span><span>L (in)</span><span>W (in)</span><span>H (in)</span><span>×Copies</span><span></span></div>
   <div id="boxList"></div>
   <button class="btn btn-s" id="addBox" style="margin-top:8px">+ Add box</button>
@@ -7426,28 +7520,9 @@ var UNIT=localStorage.getItem('wunit')||'oz';
 function fromOz(oz){if(oz===''||oz==null||!oz)return (oz===0||oz==='0')?0:'';return UNIT==='lb'?Math.round((oz/16)*1000)/1000:oz;}
 function toOz(v){var n=parseFloat(v||0);return UNIT==='lb'?n*16:n;}
 function wLabel(){return UNIT==='lb'?'lb':'oz';}
-var PKGS=[];
-function renderPkgs(){
-  document.getElementById('pkgList').innerHTML=PKGS.map(function(p,i){
-    return '<div class="pkgrow"><input value="'+esc(p.name)+'" data-i="'+i+'" data-k="name" placeholder="Name">'+
-      '<input type="number" step="0.01" value="'+(fromOz(p.weight))+'" data-i="'+i+'" data-k="weight" placeholder="'+wLabel()+'">'+
-      '<input type="number" value="'+(p.length||'')+'" data-i="'+i+'" data-k="length" placeholder="L">'+
-      '<input type="number" value="'+(p.width||'')+'" data-i="'+i+'" data-k="width" placeholder="W">'+
-      '<input type="number" value="'+(p.height||'')+'" data-i="'+i+'" data-k="height" placeholder="H">'+
-      '<button class="btn-x" onclick="delPkg('+i+')">✕</button></div>';
-  }).join('');
-  document.getElementById('pkgList').querySelectorAll('input').forEach(function(el){
-    el.addEventListener('input',function(){var k=el.dataset.k,i=+el.dataset.i;
-      PKGS[i][k]=(k==='name')?el.value:(k==='weight'?toOz(el.value):parseFloat(el.value||'0'));});
-  });
-}
-function applyUnit(){document.getElementById('bhWeight').textContent='Weight ('+wLabel()+')';document.getElementById('wUnit').value=UNIT;renderPkgs();renderBoxes();}
+var PKGS=[];  // box presets — read-only here; edited in ⚙️ Settings
+function applyUnit(){document.getElementById('bhWeight').textContent='Weight ('+wLabel()+')';document.getElementById('wUnit').value=UNIT;renderBoxes();}
 document.getElementById('wUnit').addEventListener('change',function(){UNIT=this.value;localStorage.setItem('wunit',UNIT);applyUnit();});
-function delPkg(i){PKGS.splice(i,1);renderPkgs()}
-document.getElementById('addPkg').addEventListener('click',function(){PKGS.push({name:'Box',weight:0,length:0,width:0,height:0});renderPkgs()});
-document.getElementById('savePkgs').addEventListener('click',function(){
-  fetch('/api/packages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({packages:PKGS})}).then(function(r){return r.json()}).then(function(d){toast(d.ok?'Presets saved ✓':'Failed',!d.ok);renderBoxes()});
-});
 
 // ── Multi-box shipment ──
 var BOXES=[];
