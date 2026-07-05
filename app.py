@@ -3,12 +3,26 @@
 5 Second Beauty — Packing Station
 Production web app for packing video recording & lookup.
 """
-import os,csv,json,hashlib,secrets,time,threading,re,sys,sqlite3
+import os,csv,json,hashlib,secrets,time,threading,re,sys,sqlite3,fcntl,io
 from datetime import datetime,timedelta
 from functools import wraps
+from contextlib import contextmanager
 from flask import Flask,request,jsonify,send_file,redirect,session,Response
 from werkzeug.utils import secure_filename
+from markupsafe import escape as _mescape
 import bcrypt
+
+def esc(s):
+    """HTML-escape any value for safe interpolation into templates (& < > \" ')."""
+    return str(_mescape("" if s is None else s))
+
+def _clean_name(s,maxlen=100):
+    """Sanitize a human name/display field: strip tag characters and control
+    chars (kills text-context XSS at the source) while keeping apostrophes,
+    ampersands and accents so real names like O'Brien survive intact."""
+    s=(s or "").strip()
+    s=re.sub(r'[<>\x00-\x1f\x7f]','',s)
+    return s[:maxlen]
 # HTML templates and navbar helper live in templates.py for readability.
 from templates import (_navbar, _NAVBAR_CSS, _FONT,
     LOGIN_HTML, STATION_HTML, WORKER_HTML, DASH_HTML, USERS_HTML,
@@ -19,13 +33,18 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
     INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML,
+    OPERATIONS_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
 
 
+# Default (founding) tenant id. Multi-tenancy: every user belongs to an org;
+# existing single-tenant data is treated as belonging to this org.
+DEFAULT_ORG=os.environ.get("DEFAULT_ORG","5sec")
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
 VIDEO_DIR=os.path.join(DATA_DIR,"videos")
 PHOTO_DIR=os.path.join(DATA_DIR,"photos")
 LOG_FILE=os.path.join(DATA_DIR,"packing_log.csv")
+LOG_FIELDS=["tracking_number","station","date","time","duration_seconds","video_file","photo_file","worker"]
 USERS_FILE=os.path.join(DATA_DIR,"users.json")
 STATIONS_FILE=os.path.join(DATA_DIR,"stations.json")
 DOCS_FILE=os.path.join(DATA_DIR,"documents.json")
@@ -124,30 +143,40 @@ def cleanup_old_files():
                         os.remove(fp)
                         deleted+=1;freed+=sz
                 except: pass
-    # Always clean old log entries
+    # Always clean old log entries. Serialize with the same lock the upload
+    # append uses, and rewrite atomically, so a concurrent append is never lost.
     if os.path.exists(LOG_FILE):
         cutoff_date=(datetime.now()-timedelta(days=RETENTION_DAYS)).strftime('%Y-%m-%d')
         try:
-            with open(LOG_FILE) as f: rows=list(csv.DictReader(f))
-            kept=[r for r in rows if r.get("date","")>=cutoff_date]
-            if len(kept)<len(rows):
-                with open(LOG_FILE,"w") as f:
-                    w=csv.DictWriter(f,fieldnames=["tracking_number","station","date","time","duration_seconds","video_file","photo_file","worker"])
+            with _flock("packing_log"):
+                with open(LOG_FILE) as f: rows=list(csv.DictReader(f))
+                kept=[r for r in rows if r.get("date","")>=cutoff_date]
+                if len(kept)<len(rows):
+                    buf=io.StringIO()
+                    w=csv.DictWriter(buf,fieldnames=LOG_FIELDS)
                     w.writeheader();w.writerows(kept)
-        except: pass
+                    _atomic_write(LOG_FILE,buf.getvalue())
+        except Exception as e: print("Log cleanup failed:",e,flush=True)
     if deleted>0: print("Cleanup: deleted",deleted,"files, freed",round(freed/(1024*1024),1),"MB")
     return {"deleted":deleted,"freed_mb":round(freed/(1024*1024),1)}
 
 def cleanup_loop():
+    # Only one worker should run the hourly cleanup. A non-blocking lock lets
+    # exactly one of the 4 gunicorn workers win; the rest skip harmlessly.
+    guard=open(os.path.join(DATA_DIR,".cleanup.guard"),"a+")
+    try:
+        fcntl.flock(guard.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except OSError:
+        return  # another worker owns the cleanup loop
     while True:
         time.sleep(3600)
         try: cleanup_old_files()
-        except: pass
+        except Exception as e: print("Cleanup loop error:",e,flush=True)
 
 cleanup_thread=threading.Thread(target=cleanup_loop,daemon=True)
 cleanup_thread.start()
 if not os.path.exists(LOG_FILE):
-    with open(LOG_FILE,"w") as f: f.write("tracking_number,station,date,time,duration_seconds,video_file,photo_file,worker\n")
+    with open(LOG_FILE,"w") as f: f.write(",".join(LOG_FIELDS)+"\n")
 
 def _h(pw):
     """Hash password with bcrypt (rounds=12)."""
@@ -167,6 +196,10 @@ def _verify(pw,stored):
         return secrets.compare_digest(stored,_legacy_sha256(pw))
     return False
 
+# Precomputed bcrypt hash used to equalize login timing on unknown usernames,
+# so an attacker can't tell "user exists" from response speed.
+_DUMMY_HASH=bcrypt.hashpw(b"dummy-timing-equalizer",bcrypt.gensalt(rounds=12))
+
 def _gen_pw():
     """Generate a strong random password."""
     return secrets.token_urlsafe(12)
@@ -179,44 +212,123 @@ def _gen_badge_token():
     return raw[:4]+"-"+raw[4:8]+"-"+raw[8:12]+"-"+raw[12:16]
 
 
+@contextmanager
+def _flock(name):
+    """Cross-process advisory lock via a lockfile in DATA_DIR.
+    All 4 gunicorn workers coordinate through the same file, so
+    read-modify-write cycles and file rewrites are serialized."""
+    lp=os.path.join(DATA_DIR,"."+name+".lock")
+    f=open(lp,"a+")
+    try:
+        fcntl.flock(f.fileno(),fcntl.LOCK_EX)
+        yield
+    finally:
+        try: fcntl.flock(f.fileno(),fcntl.LOCK_UN)
+        finally: f.close()
+
+def _atomic_write(path,text):
+    """Write text to path atomically: tmp file + fsync + os.replace.
+    A crash mid-write leaves the original file intact instead of truncated."""
+    tmp=path+".tmp."+str(os.getpid())
+    with open(tmp,"w") as f:
+        f.write(text);f.flush();os.fsync(f.fileno())
+    os.replace(tmp,path)
+
+def _lock_name(p):
+    return os.path.basename(p)
+
 def _init(path,default):
     if not os.path.exists(path):
-        with open(path,"w") as f: json.dump(default,f,indent=2)
+        _atomic_write(path,json.dumps(default,indent=2))
 def ldj(p):
     with open(p) as f: return json.load(f)
 def svj(p,d):
-    with open(p,"w") as f: json.dump(d,f,indent=2)
+    with _flock(_lock_name(p)):
+        _atomic_write(p,json.dumps(d,indent=2))
+
+@contextmanager
+def update_json(p,default=None):
+    """Locked read-modify-write of a JSON file. Holds the file's lock across
+    both the load and the save so concurrent workers don't lose each other's
+    updates. Usage: `with update_json(USERS_FILE) as users: users[...]=...`"""
+    with _flock(_lock_name(p)):
+        try:
+            with open(p) as f: data=json.load(f)
+        except (FileNotFoundError,json.JSONDecodeError):
+            data={} if default is None else default
+        yield data
+        _atomic_write(p,json.dumps(data,indent=2))
+
+# ── Login rate limiting (file-based so all 4 workers share the counter) ──
+_RATE_FILE=os.path.join(DATA_DIR,".login_attempts.json")
+LOGIN_MAX_FAILS=8       # failures allowed per (ip, username) ...
+LOGIN_WINDOW=300        # ... within this many seconds
+
+def _rate_load():
+    try:
+        with open(_RATE_FILE) as f: return json.load(f)
+    except (FileNotFoundError,json.JSONDecodeError): return {}
+
+def _rate_key(ip,user): return (ip or "?")+"|"+(user or "?")
+
+def _login_rate_check(ip,user):
+    """Return (ok, limited). limited=True means block this attempt."""
+    now=time.time();key=_rate_key(ip,user)
+    with _flock("login_attempts"):
+        rec=_rate_load().get(key)
+    limited=bool(rec and rec.get("count",0)>=LOGIN_MAX_FAILS and now-rec.get("first",0)<LOGIN_WINDOW)
+    return (not limited,limited)
+
+def _login_rate_fail(ip,user):
+    now=time.time();key=_rate_key(ip,user)
+    with _flock("login_attempts"):
+        data=_rate_load();rec=data.get(key)
+        if not rec or now-rec.get("first",0)>=LOGIN_WINDOW:
+            rec={"first":now,"count":0}
+        rec["count"]=rec.get("count",0)+1;data[key]=rec
+        data={k:v for k,v in data.items() if now-v.get("first",0)<LOGIN_WINDOW*4}  # prune
+        _atomic_write(_RATE_FILE,json.dumps(data))
+
+def _login_rate_clear(ip,user):
+    key=_rate_key(ip,user)
+    with _flock("login_attempts"):
+        data=_rate_load()
+        if key in data: del data[key];_atomic_write(_RATE_FILE,json.dumps(data))
 
 # On first run only: generate strong random passwords and print them once.
 # After this file exists, change passwords via the admin UI.
+# The lock + re-check inside guarantees exactly one of the 4 workers seeds,
+# so the printed passwords always match what was actually written.
 if not os.path.exists(USERS_FILE):
-    _initial_users={
-        "admin":{"role":"admin","name":"Admin"},
-        "cs1":{"role":"cs","name":"Customer Service"},
-        "worker1":{"role":"worker","name":"Worker 1"},
-        "worker2":{"role":"worker","name":"Worker 2"},
-        "worker3":{"role":"worker","name":"Worker 3"},
-        "worker4":{"role":"worker","name":"Worker 4"},
-        "worker5":{"role":"worker","name":"Worker 5"},
-        "worker6":{"role":"worker","name":"Worker 6"},
-    }
-    _generated={}
-    _data={}
-    for u,info in _initial_users.items():
-        pw=_gen_pw()
-        _generated[u]=pw
-        _data[u]={"password":_h(pw),"role":info["role"],"name":info["name"]}
-        # Workers get a badge token; admin/cs use password login
-        if info["role"]=="worker":
-            _data[u]["badge_token"]=_gen_badge_token()
-    with open(USERS_FILE,"w") as f: json.dump(_data,f,indent=2)
-    print("="*70,flush=True)
-    print("INITIAL PASSWORDS GENERATED - SAVE THESE NOW (shown only once):",flush=True)
-    print("="*70,flush=True)
-    for u,p in _generated.items(): print("  "+u.ljust(10)+" -> "+p,flush=True)
-    print("="*70,flush=True)
-    print("Change them after first login via Admin -> Users.",flush=True)
-    print("="*70,flush=True)
+    with _flock(_lock_name(USERS_FILE)):
+        if not os.path.exists(USERS_FILE):
+            _initial_users={
+                "admin":{"role":"admin","name":"Admin"},
+                "cs1":{"role":"cs","name":"Customer Service"},
+                "worker1":{"role":"worker","name":"Worker 1"},
+                "worker2":{"role":"worker","name":"Worker 2"},
+                "worker3":{"role":"worker","name":"Worker 3"},
+                "worker4":{"role":"worker","name":"Worker 4"},
+                "worker5":{"role":"worker","name":"Worker 5"},
+                "worker6":{"role":"worker","name":"Worker 6"},
+            }
+            _generated={}
+            _data={}
+            for u,info in _initial_users.items():
+                pw=_gen_pw()
+                _generated[u]=pw
+                _data[u]={"password":_h(pw),"role":info["role"],"name":info["name"]}
+                # Workers get a badge token; admin/cs use password login
+                if info["role"]=="worker":
+                    _data[u]["badge_token"]=_gen_badge_token()
+            _atomic_write(USERS_FILE,json.dumps(_data,indent=2))
+            print("="*70,flush=True)
+            print("INITIAL PASSWORDS GENERATED - SAVE THESE NOW (shown only once):",flush=True)
+            print("="*70,flush=True)
+            for u,p in _generated.items(): print("  "+u.ljust(10)+" -> "+p,flush=True)
+            print("="*70,flush=True)
+            print("Change them after first login via Admin -> Users.",flush=True)
+            print("="*70,flush=True)
 
 _init(STATIONS_FILE,{"S1":"Station 1","S2":"Station 2","S3":"Station 3","S4":"Station 4","S5":"Station 5","S6":"Station 6"})
 
@@ -604,9 +716,51 @@ def sdb_init():
         moved_at TEXT DEFAULT CURRENT_TIMESTAMP,
         moved_by TEXT
     )""")
+    # ── Multi-tenancy seam: one row per customer organization (SaaS tenant). ──
+    # Every other table will gain an org_id FK as data isolation is rolled out;
+    # for now this table backs per-tenant branding / white-labeling.
+    c.execute("""CREATE TABLE IF NOT EXISTS organizations(
+        org_id TEXT PRIMARY KEY,
+        company_name TEXT NOT NULL,
+        brand_mark TEXT NOT NULL DEFAULT '5 SEC',
+        brand_sub TEXT NOT NULL DEFAULT 'Employee Hub',
+        brand_color TEXT NOT NULL DEFAULT '#d9748f',
+        logo_url TEXT DEFAULT '',
+        plan TEXT DEFAULT 'standard',
+        active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    # Seed the founding tenant (5 Second Beauty) if the table is empty.
+    if not c.execute("SELECT 1 FROM organizations WHERE org_id=?", (DEFAULT_ORG,)).fetchone():
+        c.execute("""INSERT INTO organizations(org_id,company_name,brand_mark,brand_sub,brand_color)
+                     VALUES(?,?,?,?,?)""",
+                  (DEFAULT_ORG, "5 Second Beauty", "5 SEC", "Employee Hub", "#d9748f"))
+    # Migration: bump any org still on the old pale pink to the new darker rose.
+    c.execute("UPDATE organizations SET brand_color='#d9748f' WHERE brand_color='#f3c9c4'")
     c.commit(); c.close()
 
 sdb_init()
+
+# ── Organization / branding helpers (SaaS foundation) ──────────────
+def org_get(org_id):
+    """Return an org's config dict, or the default org's config as a fallback."""
+    c = sdb()
+    row = c.execute("SELECT * FROM organizations WHERE org_id=? AND active=1", (org_id or DEFAULT_ORG,)).fetchone()
+    if not row and org_id != DEFAULT_ORG:
+        row = c.execute("SELECT * FROM organizations WHERE org_id=?", (DEFAULT_ORG,)).fetchone()
+    c.close()
+    return dict(row) if row else {"org_id": DEFAULT_ORG, "company_name": "5 Second Beauty",
+        "brand_mark": "5 SEC", "brand_sub": "Employee Hub", "brand_color": "#d9748f", "logo_url": ""}
+
+def brand_for_session(org_id):
+    """Shape an org's branding for session['brand'] (consumed by templates._brand)."""
+    o = org_get(org_id)
+    return {"mark": o.get("brand_mark") or "5 SEC",
+            "sub": o.get("brand_sub") or "Employee Hub",
+            "color": o.get("brand_color") or "#d9748f",
+            "logo_url": o.get("logo_url") or "",
+            "company": o.get("company_name") or "5 Second Beauty",
+            "org_id": o.get("org_id") or DEFAULT_ORG}
 
 
 # ══════════════════════════════════════════════════════════
@@ -1491,6 +1645,27 @@ app.config["SESSION_COOKIE_SECURE"]=True
 app.config["SESSION_COOKIE_SAMESITE"]="Lax"
 app.config["PERMANENT_SESSION_LIFETIME"]=timedelta(days=7)
 
+@app.after_request
+def _security_headers(resp):
+    """Baseline security headers on every response. The CSP allows inline
+    script/style ('unsafe-inline') because the templates embed JS/CSS inline;
+    it still blocks injected external scripts and framing (clickjacking)."""
+    resp.headers.setdefault("X-Frame-Options","DENY")
+    resp.headers.setdefault("X-Content-Type-Options","nosniff")
+    resp.headers.setdefault("Referrer-Policy","same-origin")
+    resp.headers.setdefault("Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: blob: https:; "
+        "media-src 'self' blob: https:; "
+        "connect-src 'self' https:; "
+        "frame-src 'self' data: blob: https:; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'")
+    return resp
+
 def req_login(f):
     @wraps(f)
     def d(*a,**k):
@@ -1795,7 +1970,7 @@ def index():
             session["station"] = sid
             session["station_name"] = stations.get(sid, "Station 1")
         return (WORKER_HTML
-            .replace("__NAME__", session["name"])
+            .replace("__NAME__", esc(session["name"]))
             .replace("__STATION__", session.get("station_name",""))
             .replace("__SID__", session.get("station","S1")))
     return redirect("/home")
@@ -1804,8 +1979,10 @@ def index():
 @req_login
 def home_page():
     role = session.get("role", "")
+    brand = session.get("brand") or {}
     return (HOME_HTML
-        .replace("__ROLE__", role)
+        .replace("__ROLE__", esc(role))
+        .replace("__BRANDSUB__", esc(brand.get("sub", "Employee Hub")))
         .replace("__NAVBAR__", _navbar("home"))
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
@@ -1816,7 +1993,7 @@ def welcome_page():
     Non-workers don't pack, so we just send them straight to /home."""
     if session.get("role") != "worker":
         return redirect("/home")
-    return WELCOME_HTML.replace("__NAME__", session.get("name", "there"))
+    return WELCOME_HTML.replace("__NAME__", esc(session.get("name", "there")))
 
 @app.route("/pack-start")
 @req_role("worker")
@@ -1829,7 +2006,7 @@ def pack_start():
 @req_role("admin","cs")
 def dashboard():
     disp="flex" if session.get("role")=="admin" else "none"
-    return DASH_HTML.replace("__NAME__",session.get("name","")).replace("__ADMIN_VIS__",disp).replace("__NAVBAR__",_navbar("dash")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return DASH_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__ADMIN_VIS__",disp).replace("__NAVBAR__",_navbar("dash")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/users")
 @req_role("admin")
@@ -1848,14 +2025,29 @@ def logout(): session.clear(); return redirect("/")
 
 @app.route("/api/login",methods=["POST"])
 def api_login():
-    d=request.get_json();u=d.get("username","").strip().lower();p=d.get("password","")
-    users=ldj(USERS_FILE);user=users.get(u)
+    d=request.get_json(silent=True) or {}
+    u=(d.get("username") or "").strip().lower();p=d.get("password") or ""
+    ok,limited=_login_rate_check(request.remote_addr,u)
+    if limited:
+        return jsonify({"ok":False,"error":"Too many attempts, try again shortly"}),429
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    user=users.get(u)
     if user and _verify(p,user.get("password","")):
-        # Auto-upgrade legacy SHA256 hash to bcrypt on successful login
-        if user.get("password","").startswith("$2")==False:
-            users[u]["password"]=_h(p);svj(USERS_FILE,users)
+        _login_rate_clear(request.remote_addr,u)
+        # Auto-upgrade legacy SHA256 hash to bcrypt on successful login (locked)
+        if not user.get("password","").startswith("$2"):
+            with update_json(USERS_FILE) as uu:
+                if u in uu: uu[u]["password"]=_h(p)
+        session.clear()  # rotate session id to prevent fixation
         session["user"]=u;session["role"]=user["role"];session["name"]=user["name"]
+        session["org"]=user.get("org",DEFAULT_ORG)
+        session["brand"]=brand_for_session(session["org"])
         return jsonify({"ok":True,"role":user["role"]})
+    # Equalize timing on unknown username so it doesn't return faster (enumeration oracle)
+    if not user:
+        try: bcrypt.checkpw(b"x",_DUMMY_HASH)
+        except Exception: pass
+    _login_rate_fail(request.remote_addr,u)
     return jsonify({"ok":False,"error":"Invalid username or password"})
 
 @app.route("/api/select-station",methods=["POST"])
@@ -1899,7 +2091,9 @@ def _clean_webm(data):
 def api_upload():
     trk=_normalize_tracking(request.form.get("tracking",""))
     sta=request.form.get("station",session.get("station","S0"))
-    dur=request.form.get("duration","0")
+    # Validate duration as a number so it can't inject extra CSV rows/columns.
+    try: dur=round(float(request.form.get("duration","0") or 0),2)
+    except (TypeError,ValueError): dur=0
     wrk=session.get("name","Unknown")
     # FIX #4: Sanitize tracking number - allow only alphanumeric, dash, underscore
     if not trk or not re.match(r'^[A-Za-z0-9_\-]{1,64}$',trk):
@@ -1943,8 +2137,9 @@ def api_upload():
             pn=fn+".jpg";pp=os.path.join(PHOTO_DIR,pn)
             if os.path.exists(pp):pn=fn+"_"+now.strftime('%H%M%S')+".jpg";pp=os.path.join(PHOTO_DIR,pn)
             pf.save(pp)
-    with open(LOG_FILE,"a") as f:
-        f.write(trk+","+sta+","+now.strftime('%Y-%m-%d')+","+now.strftime('%H:%M:%S')+","+str(dur)+","+str(vn)+","+str(pn)+","+wrk+"\n")
+    with _flock("packing_log"):
+        with open(LOG_FILE,"a",newline="") as f:
+            csv.writer(f).writerow([trk,sta,now.strftime('%Y-%m-%d'),now.strftime('%H:%M:%S'),dur,vn,pn,wrk])
     # Mark the shipment row as packed in the SQL table — that's what the Shows /
     # Customers / SKU Reconciliation pages read from. Without this update, every
     # shipment looks 'pending' even after the recording is done.
@@ -2130,7 +2325,7 @@ def api_analytics():
 @req_role("admin","cs")
 def analytics_page():
     disp="flex" if session.get("role")=="admin" else "none"
-    return ANALYTICS_HTML.replace("__NAME__",session.get("name","")).replace("__ADMIN_VIS__",disp).replace("__NAVBAR__",_navbar("analytics")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return ANALYTICS_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__ADMIN_VIS__",disp).replace("__NAVBAR__",_navbar("analytics")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 
 # ══════════════════════════════════════════════════════════
@@ -2156,9 +2351,8 @@ def api_me_stats():
 @app.route("/leaderboard")
 @req_login
 def leaderboard_page():
-    name = session.get("name", "").replace("'", "&#39;")
     return (LEADERBOARD_HTML
-        .replace("__ME__", name)
+        .replace("__ME__", json.dumps(session.get("name", "")).replace("<", "\\u003c"))
         .replace("__NAVBAR__", _navbar("leaderboard"))
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
@@ -3034,7 +3228,7 @@ def api_customer_detail(username):
 def pick_page():
     return (PICK_HTML
         .replace("__ROLE__", session.get("role", ""))
-        .replace("__NAME__", session.get("name", ""))
+        .replace("__NAME__", esc(session.get("name", "")))
         .replace("__STATION__", session.get("station_name", "")))
 
 @app.route("/api/pick/queue")
@@ -3301,6 +3495,39 @@ def api_shows():
         out.append(d)
     return jsonify(out)
 
+@app.route("/api/home/fulfillment")
+@req_role("admin","cs")
+def api_home_fulfillment():
+    """Per-show breakdown of orders still to pick / pack, for the manager home
+    widget. 'to_pick' = still pending (not pulled); 'to_pack' = pending or
+    picked but not yet recorded/packed. Limited to the recent show window."""
+    cutoff_dt=(datetime.now()-timedelta(days=SHOW_WINDOW_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    c=sdb()
+    rows=c.execute("""
+        SELECT import_label AS name,
+               COUNT(*) AS total,
+               SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS to_pick,
+               SUM(CASE WHEN status IN ('pending','picked') THEN 1 ELSE 0 END) AS to_pack,
+               SUM(CASE WHEN status='packed' THEN 1 ELSE 0 END) AS packed,
+               SUM(CASE WHEN status='shipped' THEN 1 ELSE 0 END) AS shipped,
+               SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
+               MAX(imported_at) AS last_import
+        FROM shipments
+        WHERE import_label IS NOT NULL AND import_label != ''
+          AND imported_at >= ?
+        GROUP BY import_label
+        HAVING to_pack > 0
+        ORDER BY to_pack DESC, last_import DESC
+    """,(cutoff_dt,)).fetchall()
+    c.close()
+    shows=[dict(r) for r in rows]
+    return jsonify({
+        "total_to_pack": sum(s["to_pack"] for s in shows),
+        "total_to_pick": sum(s["to_pick"] for s in shows),
+        "shows_remaining": len(shows),
+        "shows": shows,
+    })
+
 # ── Settings / Manager PIN / Permissions ───────────────────────────
 _DEFAULT_PERMS={
     "mark_show_done": {"roles":["admin","cs"], "require_pin": True},
@@ -3366,7 +3593,7 @@ def api_show_done():
 @app.route("/admin/permissions")
 @req_role("admin")
 def permissions_page():
-    return PERMISSIONS_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("permissions")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return PERMISSIONS_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("permissions")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/permissions")
 @req_role("admin")
@@ -3763,17 +3990,17 @@ def api_profit():
 @app.route("/admin/preshow")
 @req_role("admin","cs","worker","picker")
 def preshow_page():
-    return PRESHOW_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("preshow")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return PRESHOW_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("preshow")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/admin/inventory")
 @req_role("admin")
 def inventory_page():
-    return INVENTORY_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("inventory")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return INVENTORY_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("inventory")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/admin/profit")
 @req_role("admin")
 def profit_page():
-    return PROFIT_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("profit")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return PROFIT_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("profit")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 # ── HOST ANALYTICS — per-show seller performance + commissions (admin only) ──
 def _host_from_label(label):
@@ -3881,7 +4108,7 @@ def api_host_override():
 @app.route("/admin/hosts")
 @req_role("admin")
 def hosts_page():
-    return HOSTS_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("hosts")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return HOSTS_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("hosts")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 # ── PACKER ANALYTICS — pack speed per worker from the recording log ──
 @app.route("/api/packer-analytics")
@@ -3933,12 +4160,104 @@ def api_packer_analytics():
 @app.route("/admin/packer-analytics")
 @req_role("admin","cs")
 def packer_analytics_page():
-    return PACKER_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("packer")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return PACKER_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("packer")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+# Operations hub: (tab_key, tab_label, [ (icon, title, sublabel, url, admin_only), ... ])
+OPS_GROUPS = [
+    ("shows", "🎬 Shows", [
+        ("🎬", "Shows", "Last 5 days · live rollup", "/admin/shows", False),
+        ("📥", "Import Shipments", "Upload To-Ship / cancel CSV", "/admin/shipments", False),
+        ("🔗", "Match Products", "Bind stickers to real SKUs", "/admin/preshow", False),
+        ("🧾", "SKU Reconciliation", "Verify packed vs sold", "/admin/sku-lookup", False),
+    ]),
+    ("warehouse", "🏭 Warehouse", [
+        ("🧹", "Table Cleanup", "Clear tables between shows", "/admin/cleanup", False),
+        ("🚧", "Picking Issues", "Flagged / unresolved picks", "/admin/issues", False),
+        ("🎥", "Search Recordings", "Find a packing video", "/dashboard", False),
+        ("🔎", "Customer Lookup", "Orders & history by buyer", "/customers", False),
+    ]),
+    ("shipping", "🚚 Shipping", [
+        ("🚚", "Shipping Status", "USPS tracking dashboard", "/shipping-status", False),
+        ("📦", "Inbound Labels", "Supplier inbound labels", "/admin/inbound", False),
+    ]),
+    ("giveaway", "🎁 Giveaways", [
+        ("🎁", "Giveaways", "Winners, addresses & label printing", "/giveaway", False),
+    ]),
+    ("insights", "📊 Insights & Money", [
+        ("⏱️", "Packer Analytics", "Speed & volume per packer", "/admin/packer-analytics", False),
+        ("🎤", "Host Analytics", "Sales & commission by host", "/admin/hosts", True),
+        ("📈", "Analytics", "Overall performance", "/analytics", True),
+        ("💰", "Profit", "Margins & cost of goods", "/admin/profit", True),
+        ("📦", "Inventory", "Catalog, stock, costs", "/admin/inventory", True),
+    ]),
+]
+
+def _render_operations(role):
+    """Build the tab bar + panels for the Operations hub, hiding admin-only
+    cards for non-admin (CS) users and dropping any group left empty."""
+    is_admin = (role == "admin")
+    tabs_html, panels_html, first = "", "", True
+    for key, label, cards in OPS_GROUPS:
+        visible = [c for c in cards if is_admin or not c[4]]
+        if not visible:
+            continue
+        tabs_html += ('<button class="tab%s" data-tab="%s">%s</button>'
+                      % (" active" if first else "", esc(key), esc(label)))
+        cards_html = ""
+        for icon, title, sub, url, _adm in visible:
+            cards_html += ('<a class="opcard" href="%s"><span class="ic">%s</span>'
+                           '<span class="t">%s</span><span class="s">%s</span></a>'
+                           % (esc(url), esc(icon), esc(title), esc(sub)))
+        panels_html += ('<div class="tab-panel%s" data-panel="%s"><div class="grid">%s</div></div>'
+                        % (" active" if first else "", esc(key), cards_html))
+        first = False
+    return tabs_html, panels_html
+
+@app.route("/operations")
+@req_role("admin", "cs")
+def operations_page():
+    tabs, panels = _render_operations(session.get("role", ""))
+    return (OPERATIONS_HTML
+        .replace("__NAME__", esc(session.get("name", "")))
+        .replace("__NAVBAR__", _navbar("operations"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS)
+        .replace("__OPS_TABS__", tabs)
+        .replace("__OPS_PANELS__", panels))
 
 @app.route("/admin/settings")
 @req_role("admin")
 def settings_page():
-    return SETTINGS_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("settings")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return SETTINGS_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("settings")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/api/org/branding")
+@req_role("admin")
+def api_org_branding_get():
+    """Current tenant's branding, for the Settings → Branding panel."""
+    return jsonify(org_get(session.get("org", DEFAULT_ORG)))
+
+@app.route("/api/org/branding", methods=["POST"])
+@req_role("admin")
+def api_org_branding_set():
+    """Update this tenant's white-label branding (company name, wordmark, colour, logo)."""
+    d = request.get_json(silent=True) or {}
+    org_id = session.get("org", DEFAULT_ORG)
+    company = _clean_name(d.get("company_name"), 80)
+    mark = _clean_name(d.get("brand_mark"), 24)
+    sub = _clean_name(d.get("brand_sub"), 40)
+    color = (d.get("brand_color") or "").strip()
+    logo = (d.get("logo_url") or "").strip()
+    if not re.match(r'^#[0-9a-fA-F]{6}$', color): color = "#d9748f"
+    # Only allow https logo URLs (or empty) to avoid mixed-content / javascript: URIs.
+    if logo and not re.match(r'^https://', logo): logo = ""
+    if len(logo) > 500: logo = logo[:500]
+    c = sdb()
+    c.execute("""UPDATE organizations SET company_name=?, brand_mark=?, brand_sub=?,
+                    brand_color=?, logo_url=? WHERE org_id=?""",
+              (company or "5 Second Beauty", mark or "5 SEC", sub or "Employee Hub", color, logo, org_id))
+    c.commit(); c.close()
+    # Refresh the live session so the navbar updates immediately for this admin.
+    session["brand"] = brand_for_session(org_id)
+    return jsonify({"ok": True, "brand": org_get(org_id)})
 
 def _parse_sale_dt(x):
     x=(x or "").strip().replace("T"," ")
@@ -4181,9 +4500,9 @@ def render_hire_file_page(h, steps, sigs, uploads, workflow_name):
     # Build the step sections
     step_html = []
     for s in steps:
-        title = (s["title"] or "").replace("<", "&lt;")
-        desc = (s["description"] or "").replace("<", "&lt;")
-        body = (s["body"] or "").replace("<", "&lt;").replace("\n", "<br>")
+        title = esc(s["title"])
+        desc = esc(s["description"])
+        body = esc(s["body"]).replace("\n", "<br>")
         section = f'<section class="step">'
         section += f'<div class="step-num">Step {s["step_order"]}</div>'
         section += f'<h2>{title}</h2>'
@@ -4207,17 +4526,17 @@ def render_hire_file_page(h, steps, sigs, uploads, workflow_name):
                 except: pass
                 label_lookup = {f.get("name"): f.get("label", f.get("name")) for f in cfg.get("fields", [])}
                 for k, v in responses.items():
-                    label = label_lookup.get(k, k).replace("<", "&lt;")
-                    val = str(v).replace("<", "&lt;") if v else "—"
+                    label = esc(label_lookup.get(k, k))
+                    val = esc(v) if v else "—"
                     section += f'<tr><td>{label}</td><td>{val}</td></tr>'
                 section += '</tbody></table>'
         # Signatures
         for sig in sigs_by_step.get(s["step_id"], []):
             section += '<div class="sig-block">'
-            section += f'<div class="sig-name"><span class="cursive">{(sig["signed_name"] or "").replace("<", "&lt;")}</span></div>'
+            section += f'<div class="sig-name"><span class="cursive">{esc(sig["signed_name"])}</span></div>'
             section += '<div class="sig-line"></div>'
             section += f'<div class="sig-audit">'
-            section += f'Signed by <b>{(sig["signed_name"] or "").replace("<", "&lt;")}</b> &middot; '
+            section += f'Signed by <b>{esc(sig["signed_name"])}</b> &middot; '
             section += f'{(sig.get("signed_at") or "")[:19].replace("T"," ")} UTC &middot; '
             section += f'IP {sig.get("ip_address") or "—"}'
             if sig.get("document_hash"):
@@ -4230,8 +4549,8 @@ def render_hire_file_page(h, steps, sigs, uploads, workflow_name):
             if ups:
                 section += '<div class="uploads-list">'
                 for u in ups:
-                    fn = (u["original_filename"] or "file").replace("<", "&lt;")
-                    field = (u["field_name"] or "").replace("<", "&lt;")
+                    fn = esc(u["original_filename"] or "file")
+                    field = esc(u["field_name"])
                     size_kb = (u["size_bytes"] or 0) / 1024
                     is_image = (u.get("mime_type") or "").startswith("image/")
                     section += f'<div class="upload-item">'
@@ -4247,15 +4566,15 @@ def render_hire_file_page(h, steps, sigs, uploads, workflow_name):
         section += '</section>'
         step_html.append(section)
     return (HIRE_FILE_HTML
-        .replace("__HIRE_NAME__", (h["full_name"] or "").replace("<", "&lt;"))
-        .replace("__HIRE_EMAIL__", (h.get("email") or "—").replace("<", "&lt;"))
-        .replace("__HIRE_PHONE__", (h.get("phone") or "—").replace("<", "&lt;"))
-        .replace("__HIRE_ROLE__", (h.get("role_target") or "—").replace("<", "&lt;"))
+        .replace("__HIRE_NAME__", esc(h["full_name"]))
+        .replace("__HIRE_EMAIL__", esc(h.get("email") or "—"))
+        .replace("__HIRE_PHONE__", esc(h.get("phone") or "—"))
+        .replace("__HIRE_ROLE__", esc(h.get("role_target") or "—"))
         .replace("__HIRE_STATUS__", (h.get("status") or "").upper().replace("_", " "))
         .replace("__HIRE_CREATED__", (h.get("created_at") or "")[:10])
         .replace("__HIRE_COMPLETED__", (h.get("completed_at") or "—")[:16].replace("T", " "))
         .replace("__HIRE_LANG__", (h.get("preferred_language") or "en").upper())
-        .replace("__WORKFLOW_NAME__", workflow_name.replace("<", "&lt;"))
+        .replace("__WORKFLOW_NAME__", esc(workflow_name))
         .replace("__STEPS_HTML__", "\n".join(step_html))
         .replace("__HIRE_ID__", str(h["id"]))
         .replace("__GENERATED_AT__", datetime.now().strftime("%Y-%m-%d %H:%M")))
@@ -4274,7 +4593,7 @@ def admin_hire_detail(hire_id):
         .replace("__USER__", session.get("username", ""))
         .replace("__ROLE__", session.get("role", ""))
         .replace("__HIRE_ID__", str(hire_id))
-        .replace("__HIRE_NAME__", h["full_name"])
+        .replace("__HIRE_NAME__", esc(h["full_name"]))
         .replace("__INVITE_URL__", request.url_root.rstrip("/") + "/hire/" + h["invite_token"])
         .replace("__NAVBAR__", _navbar("hires"))
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
@@ -4321,8 +4640,8 @@ def api_workflows_list():
 def api_hires_create():
     """Create a new hire + assign workflow + return the invite link."""
     d = request.get_json() or {}
-    full_name = (d.get("full_name") or "").strip()
-    if not full_name or len(full_name) > 200:
+    full_name = _clean_name(d.get("full_name"), 200)
+    if not full_name:
         return jsonify({"ok": False, "error": "Full name is required"}), 400
     email = (d.get("email") or "").strip() or None
     phone = (d.get("phone") or "").strip() or None
@@ -4407,7 +4726,7 @@ def public_hire_onboarding(token):
         return "<h1>Invite link not valid</h1><p>Please ask your manager to send a new link.</p>", 404
     return (HIRE_ONBOARDING_HTML
         .replace("__TOKEN__", token)
-        .replace("__HIRE_NAME__", h["full_name"])
+        .replace("__HIRE_NAME__", esc(h["full_name"]))
         .replace("__HIRE_ROLE__", h["role_target"] or ""))
 
 @app.route("/api/hire/<token>")
@@ -4444,6 +4763,14 @@ def api_public_hire_set_lang(token):
 # ─── File upload on an onboarding step ─────────────────────────────────
 HIRE_UPLOAD_MAX_BYTES = 15 * 1024 * 1024   # 15 MB
 HIRE_UPLOAD_ALLOWED_EXT = {"pdf", "png", "jpg", "jpeg", "gif", "webp", "heic"}
+# Map extension -> MIME server-side. NEVER trust the client's Content-Type:
+# a file uploaded as image/jpeg with Content-Type text/html would otherwise be
+# served back as HTML on our origin (stored XSS). This mapping is the source of truth.
+HIRE_UPLOAD_EXT_MIME = {
+    "pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg",
+    "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
+    "heic": "image/heic",
+}
 HIRE_LOCAL_UPLOAD_DIR = os.path.join(DATA_DIR, "hire_uploads")
 os.makedirs(HIRE_LOCAL_UPLOAD_DIR, exist_ok=True)
 
@@ -4486,7 +4813,8 @@ def api_public_hire_upload(token, step_id):
         c.close()
         return jsonify({"ok": False, "error": f"File too large (max {HIRE_UPLOAD_MAX_BYTES // (1024*1024)}MB)"}), 400
     key = _hire_upload_storage_key(h["id"], step_id, field_name, fn)
-    mime = f.mimetype or "application/octet-stream"
+    # Derive MIME from the (already whitelisted) extension, not from the client.
+    mime = HIRE_UPLOAD_EXT_MIME.get(ext, "application/octet-stream")
     if r2:
         try:
             r2.upload_fileobj(f.stream, R2_BUCKET, key,
@@ -4545,12 +4873,21 @@ def api_admin_hire_upload_view(hire_id, upload_id):
     key = row["storage_key"]
     fn = row["original_filename"] or "file"
     inline = request.args.get("inline") == "1"
-    disposition = "inline" if inline else f'attachment; filename="{fn}"'
+    # Re-derive MIME from the extension (don't trust the stored/old value) so an
+    # image row can never be served as text/html on our origin.
+    ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
+    safe_mime = HIRE_UPLOAD_EXT_MIME.get(ext, "application/octet-stream")
+    # Only images/PDF may be shown inline; anything else is forced to download.
+    inline = inline and (safe_mime.startswith("image/") or safe_mime == "application/pdf")
+    # Sanitize filename for the Content-Disposition header (strip quotes/CR/LF).
+    safe_fn = re.sub(r'["\r\n]', "", fn)
+    disposition = "inline" if inline else f'attachment; filename="{safe_fn}"'
     if r2:
         try:
             url = r2.generate_presigned_url("get_object",
                 Params={"Bucket": R2_BUCKET, "Key": key,
-                        "ResponseContentDisposition": disposition},
+                        "ResponseContentDisposition": disposition,
+                        "ResponseContentType": safe_mime},
                 ExpiresIn=R2_PRESIGN_TTL)
             return redirect(url)
         except Exception as e:
@@ -4559,8 +4896,10 @@ def api_admin_hire_upload_view(hire_id, upload_id):
     if not os.path.exists(local_path):
         return "File missing", 404
     from flask import send_file
-    return send_file(local_path, mimetype=row["mime_type"] or "application/octet-stream",
+    resp = send_file(local_path, mimetype=safe_mime,
                      as_attachment=not inline, download_name=fn)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
 
 
 @app.route("/api/hire/<token>/step/<int:step_id>/complete", methods=["POST"])
@@ -4791,28 +5130,28 @@ def api_users():
 @req_role("admin")
 def api_add():
     d=request.get_json();u=d.get("username","").strip().lower();p=d.get("password","")
-    n=d.get("name",u);role=d.get("role","worker")
+    n=_clean_name(d.get("name") or u);role=d.get("role","worker")
     if not u or not p: return jsonify({"ok":False,"error":"Required"})
     if not re.match(r'^[a-z0-9_\-]{2,32}$',u):
         return jsonify({"ok":False,"error":"Username: lowercase letters, digits, _ -, 2-32 chars"})
     if role not in ("admin","cs","worker"):
         return jsonify({"ok":False,"error":"Invalid role"})
-    users=ldj(USERS_FILE)
-    if u in users: return jsonify({"ok":False,"error":"Already exists"})
-    users[u]={"password":_h(p),"role":role,"name":n}
-    # Workers automatically get a badge token for scan-to-login
-    if role=="worker":
-        users[u]["badge_token"]=_gen_badge_token()
-    svj(USERS_FILE,users)
-    return jsonify({"ok":True,"badge_token":users[u].get("badge_token")})
+    with update_json(USERS_FILE) as users:
+        if u in users: return jsonify({"ok":False,"error":"Already exists"})
+        users[u]={"password":_h(p),"role":role,"name":n,"org":session.get("org",DEFAULT_ORG)}
+        # Workers automatically get a badge token for scan-to-login
+        if role=="worker":
+            users[u]["badge_token"]=_gen_badge_token()
+        badge=users[u].get("badge_token")
+    return jsonify({"ok":True,"badge_token":badge})
 
 @app.route("/api/users/delete",methods=["POST"])
 @req_role("admin")
 def api_del():
     d=request.get_json();u=d.get("username","")
     if u=="admin": return jsonify({"ok":False,"error":"Cannot delete admin"})
-    users=ldj(USERS_FILE)
-    if u in users: del users[u];svj(USERS_FILE,users)
+    with update_json(USERS_FILE) as users:
+        if u in users: del users[u]
     return jsonify({"ok":True})
 
 @app.route("/api/users/pw",methods=["POST"])
@@ -4820,9 +5159,9 @@ def api_del():
 def api_pw():
     d=request.get_json();u=d.get("username","");p=d.get("password","")
     if not p: return jsonify({"ok":False})
-    users=ldj(USERS_FILE)
-    if u not in users: return jsonify({"ok":False})
-    users[u]["password"]=_h(p);svj(USERS_FILE,users)
+    with update_json(USERS_FILE) as users:
+        if u not in users: return jsonify({"ok":False})
+        users[u]["password"]=_h(p)
     return jsonify({"ok":True})
 
 @app.route("/api/users/badge",methods=["POST"])
@@ -4831,23 +5170,22 @@ def api_badge_regen():
     """Regenerate (or generate first time) a badge token for a worker.
     Use cases: lost badge, leaked token, switching from password to badge auth."""
     d=request.get_json();u=d.get("username","")
-    users=ldj(USERS_FILE)
-    if u not in users: return jsonify({"ok":False,"error":"User not found"})
-    if users[u]["role"]!="worker":
-        return jsonify({"ok":False,"error":"Badges are for workers only"})
-    users[u]["badge_token"]=_gen_badge_token()
-    svj(USERS_FILE,users)
-    return jsonify({"ok":True,"badge_token":users[u]["badge_token"]})
+    with update_json(USERS_FILE) as users:
+        if u not in users: return jsonify({"ok":False,"error":"User not found"})
+        if users[u]["role"]!="worker":
+            return jsonify({"ok":False,"error":"Badges are for workers only"})
+        users[u]["badge_token"]=_gen_badge_token()
+        tok=users[u]["badge_token"]
+    return jsonify({"ok":True,"badge_token":tok})
 
 @app.route("/api/users/badge/revoke",methods=["POST"])
 @req_role("admin")
 def api_badge_revoke():
     """Remove a worker's badge token (e.g. employee left). They'll need a password to log in."""
     d=request.get_json();u=d.get("username","")
-    users=ldj(USERS_FILE)
-    if u not in users: return jsonify({"ok":False,"error":"User not found"})
-    if "badge_token" in users[u]: del users[u]["badge_token"]
-    svj(USERS_FILE,users)
+    with update_json(USERS_FILE) as users:
+        if u not in users: return jsonify({"ok":False,"error":"User not found"})
+        if "badge_token" in users[u]: del users[u]["badge_token"]
     return jsonify({"ok":True})
 
 @app.route("/api/badge-login",methods=["POST"])
@@ -4868,7 +5206,10 @@ def api_badge_login():
         time.sleep(0.5)
         return jsonify({"ok":False,"error":"Badge not recognized"})
     user=users[matched_u]
+    session.clear()  # rotate session id to prevent fixation
     session["user"]=matched_u;session["role"]=user["role"];session["name"]=user["name"]
+    session["org"]=user.get("org",DEFAULT_ORG)
+    session["brand"]=brand_for_session(session["org"])
     return jsonify({"ok":True,"role":user["role"],"name":user["name"]})
 
 @app.route("/badge-login")
@@ -4878,7 +5219,7 @@ def badge_login_page():
 @app.route("/users/badges")
 @req_role("admin")
 def users_badges_page():
-    return USERS_BADGES_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("badges")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return USERS_BADGES_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("badges")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/users/badge/pdf/<u>")
 @req_role("admin")
@@ -4966,7 +5307,7 @@ def api_badge_label4x6(u):
         c.roundRect(0.15*inch, 0.15*inch, page_w - 0.3*inch, 3*inch - 0.3*inch, 8, stroke=1, fill=0)
         # Top stripe — brand pink
         stripe_h = 0.6 * inch
-        c.setFillColorRGB(0.953, 0.788, 0.769)  # #f3c9c4 brand pink
+        c.setFillColorRGB(0.851, 0.455, 0.561)  # #d9748f brand rose
         c.roundRect(0.15*inch, 3*inch - 0.15*inch - stripe_h, page_w - 0.3*inch, stripe_h, 8, stroke=0, fill=1)
         # Stripe text
         c.setFillColorRGB(0.10, 0.06, 0.05)
@@ -5272,12 +5613,12 @@ def serve_p(fn):
 @app.route("/giveaway")
 @req_role("admin","cs")
 def giveaway_dashboard():
-    return GIVEAWAY_DASH_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("giveaway")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return GIVEAWAY_DASH_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("giveaway")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/giveaway/<int:gid>")
 @req_role("admin","cs")
 def giveaway_detail(gid):
-    return GIVEAWAY_DETAIL_HTML.replace("__GID__",str(gid)).replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("giveaway")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return GIVEAWAY_DETAIL_HTML.replace("__GID__",str(gid)).replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("giveaway")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/giveaway/list")
 @req_role("admin","cs")
@@ -5619,7 +5960,7 @@ def api_tracking_summary():
 @app.route("/shipping-status")
 @req_role("admin","cs")
 def shipping_status_page():
-    return SHIPPING_STATUS_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("shipstatus")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return SHIPPING_STATUS_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("shipstatus")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/ship-from",methods=["GET","POST"])
 @req_role("admin","cs")
@@ -5685,22 +6026,31 @@ def api_giveaway_buy_label(gid):
     d=request.get_json() or {}
     sid=(d.get("shipment_id") or "").strip(); rate_id=(d.get("rate_id") or "").strip()
     if not sid or not rate_id: return jsonify({"ok":False,"error":"Missing shipment/rate"})
-    try:
-        sh=_easypost("POST","/shipments/"+sid+"/buy",{"rate":{"id":rate_id}})
-    except _urlerr.HTTPError as e:
-        try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
-        except Exception: msg="HTTP "+str(e.code)
-        return jsonify({"ok":False,"error":"EasyPost: "+str(msg)})
-    except Exception as e:
-        return jsonify({"ok":False,"error":str(e)})
-    label=(sh.get("postage_label") or {}).get("label_url")
-    tracking=sh.get("tracking_code")
-    cost=float((sh.get("selected_rate") or {}).get("rate") or 0)
-    c=gdb()
-    c.execute("""UPDATE giveaways SET shippo_label_url=?, shippo_label_pdf=?, tracking_number=?,
-                    label_cost=?, status='shipped', shipped_at=? WHERE id=?""",
-              (label, label, tracking, cost, datetime.now().isoformat(timespec='seconds'), gid))
-    c.commit(); c.close()
+    # Serialize per-giveaway so a double-click can't buy two labels / double-charge.
+    with _flock("giveaway_buy_"+str(gid)):
+        c=gdb()
+        g=c.execute("SELECT status,shippo_label_url FROM giveaways WHERE id=?",(gid,)).fetchone()
+        if not g:
+            c.close(); return jsonify({"ok":False,"error":"Giveaway not found"})
+        if g["status"]=="shipped" or g["shippo_label_url"]:
+            c.close(); return jsonify({"ok":False,"error":"A label was already purchased for this giveaway"})
+        c.close()
+        try:
+            sh=_easypost("POST","/shipments/"+sid+"/buy",{"rate":{"id":rate_id}})
+        except _urlerr.HTTPError as e:
+            try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
+            except Exception: msg="HTTP "+str(e.code)
+            return jsonify({"ok":False,"error":"EasyPost: "+str(msg)})
+        except Exception as e:
+            return jsonify({"ok":False,"error":str(e)})
+        label=(sh.get("postage_label") or {}).get("label_url")
+        tracking=sh.get("tracking_code")
+        cost=float((sh.get("selected_rate") or {}).get("rate") or 0)
+        c=gdb()
+        c.execute("""UPDATE giveaways SET shippo_label_url=?, shippo_label_pdf=?, tracking_number=?,
+                        label_cost=?, status='shipped', shipped_at=? WHERE id=?""",
+                  (label, label, tracking, cost, datetime.now().isoformat(timespec='seconds'), gid))
+        c.commit(); c.close()
     return jsonify({"ok":True,"label_url":label,"tracking":tracking,"cost":cost})
 
 def _label_print_page(url, title="Shipping label", subtitle=""):
@@ -6000,7 +6350,7 @@ def inbound_multi_print():
 @app.route("/admin/inbound")
 @req_role("admin","cs")
 def inbound_page():
-    return INBOUND_HTML.replace("__NAME__",session.get("name","")).replace("__NAVBAR__",_navbar("inbound")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return INBOUND_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("inbound")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/giveaway/<int:gid>/notes",methods=["POST"])
 @req_role("admin","cs")
