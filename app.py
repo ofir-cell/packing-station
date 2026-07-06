@@ -2789,7 +2789,7 @@ def _norm_whatnot(row):
     }
 
 @app.route("/api/shipments/import", methods=["POST"])
-@req_role("admin")
+@req_role("admin", "cs")
 def api_shipments_import():
     """Accept a TikTok or Whatnot CSV upload and ingest into the shipments DB.
     Auto-detects format. Cancelled rows from a TO SHIP file are marked cancelled.
