@@ -1605,11 +1605,13 @@ def _sku_weight(sku):
     c.close()
     return row["weight_g"] if row else None
 
-def _recompute_shipment_weight(conn, shipment_id):
+def _recompute_shipment_weight(conn, shipment_id, overhead=None):
     """Sum item weights × qty + packaging overhead. Updates the shipment row in place.
-    Skips cancelled items. Caller passes an open connection."""
-    cfg = conn.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
-    overhead = cfg["packaging_overhead_g"] if cfg else 30
+    Skips cancelled items. Caller passes an open connection. `overhead` may be passed
+    in to avoid a per-shipment config query during bulk imports."""
+    if overhead is None:
+        cfg = conn.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
+        overhead = cfg["packaging_overhead_g"] if cfg else 30
     items = conn.execute("""SELECT quantity, item_weight_g, COALESCE(cancelled,0) AS cancelled
                             FROM shipment_items WHERE shipment_id=?""", (shipment_id,)).fetchall()
     total_g = 0.0
@@ -2852,7 +2854,12 @@ def api_shipments_import():
         return jsonify({"ok": False, "error": "No usable shipments found in CSV (all rows skipped or cancelled)"})
 
     c = sdb()
+    # Faster bulk writes on slow (network-volume) disks — safe for a re-runnable import.
+    try: c.execute("PRAGMA synchronous=NORMAL"); c.execute("PRAGMA temp_store=MEMORY")
+    except Exception: pass
     sku_map = {r["sku"]: r["weight_g"] for r in c.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
+    _cfgrow = c.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
+    _overhead = _cfgrow["packaging_overhead_g"] if _cfgrow else 30
 
     inserted = 0; updated = 0; items_inserted = 0
     unique_skus = set()
@@ -2904,7 +2911,7 @@ def api_shipments_import():
                            n.get("created_time") or None, n.get("state") or None, n.get("city") or None))
                 items_inserted += 1
                 if sku: unique_skus.add(sku)
-            _recompute_shipment_weight(c, pkg_id)
+            _recompute_shipment_weight(c, pkg_id, overhead=_overhead)
         c.commit()
     finally:
         c.close()

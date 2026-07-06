@@ -3635,7 +3635,10 @@ document.getElementById('doImport').addEventListener('click',function(){
   if(!f){res.className='modal-result err show';res.textContent='Pick a CSV file';return}
   var fd=new FormData();fd.append('file',f);fd.append('label',label);
   var btn=document.getElementById('doImport');btn.disabled=true;btn.textContent='Importing…';
-  fetch('/api/shipments/import',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+  res.className='modal-result show';res.textContent='Importing… large shows can take up to a minute, please wait.';
+  fetch('/api/shipments/import',{method:'POST',body:fd}).then(function(r){
+    if(!r.ok)throw new Error('HTTP '+r.status);return r.json();
+  }).then(function(d){
     btn.disabled=false;btn.textContent='Import';
     if(d.ok){
       res.className='modal-result show';
@@ -3648,6 +3651,11 @@ document.getElementById('doImport').addEventListener('click',function(){
       res.className='modal-result err show';
       res.innerHTML='<b>Import failed:</b> '+(d.error||'unknown error');
     }
+  }).catch(function(e){
+    btn.disabled=false;btn.textContent='Import';
+    res.className='modal-result err show';
+    res.innerHTML='<b>Import interrupted</b> ('+escapeHtml(String(e.message||e))+'). The file may be very large or the connection dropped — part of it may have imported. Refresh and check the list, or try again.';
+    loadShipments();
   });
 });
 
