@@ -2680,14 +2680,31 @@ def _parse_buyer_name(addr):
     return addr.split(",", 1)[0].strip()
 
 def _detect_csv_format(fieldnames):
-    """Return 'tiktok_ship' | 'tiktok_cancel' | 'whatnot' | None.
-    Cancellation files have the same TikTok columns; distinguish later by Order Status data."""
-    fn = set(fieldnames or [])
-    if {"Order ID", "Tracking ID", "Package ID", "Seller SKU"}.issubset(fn):
-        return "tiktok"  # tiktok_ship or tiktok_cancel — caller checks row data
+    """Return 'tiktok' | 'whatnot' | None. Matching is case/space-insensitive so
+    small header variations in the export don't break the upload."""
+    fn = { (x or "").strip().lower() for x in (fieldnames or []) }
+    if {"order id", "tracking id", "package id", "seller sku"}.issubset(fn):
+        return "tiktok"
+    # Whatnot: accept the canonical headers OR a looser signal (order + product + a
+    # shipment/tracking id), so renamed/variant exports still import.
     if {"order_id", "shipment_id", "product_name", "product_quantity"}.issubset(fn):
         return "whatnot"
+    has_order = ("order_id" in fn or "order id" in fn)
+    has_prod  = ("product_name" in fn or "product name" in fn or "item name" in fn or "product" in fn)
+    has_ship  = any(k in fn for k in ("shipment_id","shipment id","tracking_code","tracking code","order_number","order number"))
+    if has_order and has_prod and has_ship:
+        return "whatnot"
     return None
+
+def _row_get(row):
+    """Case/space-insensitive column accessor with alias support."""
+    m = { (k or "").strip().lower(): v for k, v in row.items() }
+    def g(*names):
+        for nm in names:
+            v = m.get(nm.strip().lower())
+            if v not in (None, ""): return str(v).strip()
+        return ""
+    return g
 
 def _norm_tiktok(row):
     """Normalize a TikTok row to common dict. TikTok appends a TAB to many ID fields
@@ -2739,29 +2756,34 @@ def _derive_delivery(n):
     return (None, None, None)
 
 def _norm_whatnot(row):
-    """Normalize a Whatnot row to the same dict shape."""
-    def s(k): return (row.get(k) or "").strip()
-    pname = s("product_name")
-    try: qty = int(float(s("product_quantity") or "1"))
-    except: qty = 1
+    """Normalize a Whatnot row to the same dict shape. Column lookups are
+    case-insensitive with aliases so export variants still work."""
+    s = _row_get(row)
+    pname = s("product_name", "product name", "item name", "product")
+    try: qty = int(float(s("product_quantity", "product quantity", "quantity", "qty") or "1"))
+    except Exception: qty = 1
+    pkg = s("shipment_id", "shipment id", "order_number", "order number", "order_id", "order id")
+    addr = s("shipping_address", "shipping address", "address")
+    placed = s("placed_at", "placed at", "created_at", "created at", "order_date", "date")
+    cancelled = s("cancelled_or_failed", "cancelled or failed", "status", "order_status")
     return {
-        "order_id":   s("order_id"),
-        "package_id": s("shipment_id"),
-        "tracking":   s("tracking_code"),
-        "sku":        s("sku") or pname,   # Whatnot live items have empty SKU
+        "order_id":   s("order_id", "order id", "order_number", "order number"),
+        "package_id": pkg,
+        "tracking":   s("tracking_code", "tracking code", "tracking", "tracking_number", "tracking number"),
+        "sku":        s("sku", "seller sku") or pname,   # Whatnot live items have empty SKU
         "product_name": pname,
         "quantity":   qty,
         "weight_g":   0,                    # Whatnot doesn't provide per-row weight
-        "buyer_username": s("buyer_username"),
-        "buyer_name": _parse_buyer_name(s("shipping_address")),
-        "address":    s("shipping_address"),
-        "postal":     s("postal_code"),
-        "status":     "cancelled" if s("cancelled_or_failed") in ("cancelled","failed") else "to_ship",
-        "cancel_reason": s("cancelled_or_failed") if s("cancelled_or_failed") else "",
-        "created_at": s("placed_at")[:10],
-        "created_time": s("placed_at"),
-        "state":      "",
-        "city":       "",
+        "buyer_username": s("buyer_username", "buyer username", "username", "buyer"),
+        "buyer_name": _parse_buyer_name(addr),
+        "address":    addr,
+        "postal":     s("postal_code", "postal code", "zip", "zipcode", "zip code"),
+        "status":     "cancelled" if cancelled.lower() in ("cancelled","failed","canceled") else "to_ship",
+        "cancel_reason": cancelled if cancelled.lower() in ("cancelled","failed","canceled") else "",
+        "created_at": placed[:10],
+        "created_time": placed,
+        "state":      s("state", "province"),
+        "city":       s("city", "town"),
     }
 
 @app.route("/api/shipments/import", methods=["POST"])
@@ -2788,7 +2810,9 @@ def api_shipments_import():
     reader = csv.DictReader(io.StringIO(raw))
     fmt = _detect_csv_format(reader.fieldnames)
     if not fmt:
-        return jsonify({"ok": False, "error": "Unrecognized CSV format — expected TikTok or Whatnot export"})
+        cols = ", ".join((reader.fieldnames or [])[:40]) or "(none)"
+        return jsonify({"ok": False, "error": "Unrecognized CSV format — expected TikTok or Whatnot export. "
+                        "Columns found in your file: " + cols})
 
     rows = list(reader)
     if not rows:
