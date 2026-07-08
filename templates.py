@@ -99,7 +99,7 @@ def _navbar(active_page=""):
     # Any Operations sub-page should light up the Operations link.
     ops_children = {"shows","shipments","cleanup","issues","dash","packer","customers",
                     "sku_lookup","shipstatus","inbound","giveaway","inventory","profit",
-                    "hosts","analytics"}
+                    "hosts","analytics","geo","pickeran","repeat"}
     nav_html += '<div class="topnav-links">'
     for e in entries:
         if isinstance(e, tuple):
@@ -7133,6 +7133,281 @@ function load(){
     DATA=d;renderConfig();renderHostFilter();renderAll();
   });
 }
+load();
+</script></body></html>'''
+
+
+# ── GEOGRAPHY ANALYTICS — where orders ship, by state ──
+GEO_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Geography</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1300px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1300px;margin:0 auto;padding:8px 28px 40px}
+.card{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:18px 20px;margin-bottom:18px}
+.card h2{font-size:13px;font-weight:800;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px;margin-bottom:14px}
+select,input{background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:10px 13px;font-size:14px;color:#e4e8f1;font-family:inherit;outline:none}
+select:focus,input:focus{border-color:#4f46e5}
+label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
+.row{display:flex;gap:12px;align-items:end;flex-wrap:wrap}
+.btn{border:none;border-radius:10px;padding:11px 18px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;background:rgba(255,255,255,.08);color:#e4e8f1;border:1px solid rgba(255,255,255,.12)}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:6px 0 18px}
+@media(max-width:760px){.cards{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:16px}
+.kpi .l{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px}
+.kpi .v{font-size:26px;font-weight:900}
+.kpi.a .v{color:#34d399}.kpi.b .v{color:#60a5fa}.kpi.c .v{color:#a5b4fc}.kpi.d .v{color:#f59e0b}
+.bars .brow{display:grid;grid-template-columns:44px 1fr 130px;gap:10px;align-items:center;margin-bottom:7px}
+.bars .st{font-weight:800;font-size:14px}
+.bars .track{background:rgba(255,255,255,.05);border-radius:6px;height:22px;overflow:hidden}
+.bars .fill{height:100%;background:linear-gradient(90deg,#4f46e5,#7c3aed);border-radius:6px}
+.bars .val{font-size:12.5px;color:#9aa6bd;text-align:right}
+table{width:100%;border-collapse:collapse}th,td{padding:9px 12px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06);text-align:right}
+th:first-child,td:first-child{text-align:left}
+th{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px}
+.two{display:grid;grid-template-columns:1.4fr 1fr;gap:18px}@media(max-width:820px){.two{grid-template-columns:1fr}}
+.muted{color:#6b7a90;font-size:13px}.rev{color:#60a5fa;font-weight:700}
+.warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);color:#fbbf24;padding:10px 14px;border-radius:10px;font-size:13px;margin-bottom:14px}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🗺️ Geography <span>__NAME__</span></div></div>
+<div class="wrap">
+<div class="card">
+  <div class="row">
+    <div style="flex:1;min-width:200px"><label>Show</label><select id="fShow" style="width:100%"><option value="">All shows</option></select></div>
+    <div><label>From (show date)</label><input id="fFrom" type="date"></div>
+    <div><label>To</label><input id="fTo" type="date"></div>
+    <button class="btn" id="clr">Clear</button>
+  </div>
+</div>
+<div id="notice"></div>
+<div class="cards" id="kpis"></div>
+<div class="two">
+  <div class="card"><h2>📊 Orders by state</h2><div class="bars" id="bars"></div>
+    <table style="margin-top:14px"><thead><tr><th>State</th><th>Orders</th><th>%</th><th>Units</th><th>Revenue</th></tr></thead>
+    <tbody id="rows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table>
+  </div>
+  <div class="card"><h2>🏙️ Top cities</h2><div id="cities"></div></div>
+</div>
+</div>
+<div class="toast" id="t" style="position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:700;z-index:100;display:none"></div>
+<script>
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+function money(v){return '$'+Number(v||0).toLocaleString(undefined,{maximumFractionDigits:0})}
+var FILL=false;
+fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){
+  var sel=document.getElementById('fShow');(shows||[]).forEach(function(s){var o=document.createElement('option');o.value=s.name;o.textContent=s.name;sel.appendChild(o)});
+});
+function qs(){var p=[];var sh=document.getElementById('fShow').value;var fr=document.getElementById('fFrom').value;var to=document.getElementById('fTo').value;
+  if(sh)p.push('show='+encodeURIComponent(sh));if(fr)p.push('from='+fr);if(to)p.push('to='+to);return p.length?('?'+p.join('&')):''}
+function load(){
+  fetch('/api/geo-analytics'+qs()).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;
+    document.getElementById('notice').innerHTML=d.unresolved?('<div class="warn">⚠️ '+d.unresolved+' of '+d.total_orders+' orders had no usable ZIP/state and are excluded.</div>'):'';
+    document.getElementById('kpis').innerHTML=
+      '<div class="kpi a"><div class="l">Orders mapped</div><div class="v">'+d.resolved.toLocaleString()+'</div></div>'+
+      '<div class="kpi b"><div class="l">States reached</div><div class="v">'+d.states_reached+'</div></div>'+
+      '<div class="kpi c"><div class="l">Top state</div><div class="v">'+(d.top_state||'—')+'</div></div>'+
+      '<div class="kpi d"><div class="l">Top state share</div><div class="v">'+(d.states.length?d.states[0].pct+'%':'—')+'</div></div>';
+    var mx=d.states.length?d.states[0].orders:1;
+    document.getElementById('bars').innerHTML=d.states.slice(0,12).map(function(s){
+      return '<div class="brow"><div class="st">'+esc(s.state)+'</div>'+
+        '<div class="track"><div class="fill" style="width:'+Math.max(2,Math.round(100*s.orders/mx))+'%"></div></div>'+
+        '<div class="val">'+s.orders+' · '+s.pct+'%</div></div>';
+    }).join('')||'<div class="muted">No data</div>';
+    document.getElementById('rows').innerHTML=(d.states.length?d.states.map(function(s){
+      return '<tr><td><b>'+esc(s.state)+'</b></td><td>'+s.orders+'</td><td>'+s.pct+'%</td><td>'+s.units+'</td><td class="rev">'+money(s.revenue)+'</td></tr>';
+    }).join(''):'<tr><td colspan="5" class="muted">No orders for this filter</td></tr>');
+    document.getElementById('cities').innerHTML=(d.cities.length?d.cities.map(function(c){
+      return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:13.5px"><span>'+esc(c.k)+'</span><span class="muted">'+c.v+' orders</span></div>';
+    }).join(''):'<div class="muted">No city data yet (newer imports capture city)</div>');
+  });
+}
+['fShow','fFrom','fTo'].forEach(function(id){document.getElementById(id).addEventListener('change',load)});
+document.getElementById('clr').addEventListener('click',function(){['fShow','fFrom','fTo'].forEach(function(id){document.getElementById(id).value=''});load()});
+load();
+</script></body></html>'''
+
+
+# ── PICKER ANALYTICS — pick speed/volume per picker ──
+PICKER_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Picker Analytics</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1300px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1300px;margin:0 auto;padding:8px 28px 40px}
+.card{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:18px 20px;margin-bottom:18px}
+.card h2{font-size:13px;font-weight:800;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px;margin-bottom:14px}
+select,input{background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:10px 13px;font-size:14px;color:#e4e8f1;font-family:inherit;outline:none}
+select:focus,input:focus{border-color:#4f46e5}
+label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
+.row{display:flex;gap:12px;align-items:end;flex-wrap:wrap}
+.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin:6px 0 18px}
+@media(max-width:860px){.cards{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:16px}
+.kpi .l{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px}
+.kpi .v{font-size:26px;font-weight:900}
+.kpi.pk .v{color:#34d399}.kpi.sp .v{color:#60a5fa}.kpi.it .v{color:#a5b4fc}.kpi.hr .v{color:#f59e0b}.kpi.act .v{color:#e4e8f1}
+table{width:100%;border-collapse:collapse;background:rgba(21,25,33,.4);border-radius:12px;overflow:hidden}
+th,td{padding:10px 12px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06);text-align:right}
+th:first-child,td:first-child{text-align:left}
+th{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px}
+.bar{fill:#4f46e5}.bar:hover{fill:#7c3aed}.axtx{fill:#6b7a90;font-size:10px}.axis{stroke:rgba(255,255,255,.1)}
+.muted{color:#6b7a90;font-size:13px}.chart-wrap{overflow-x:auto}
+.fast{color:#34d399;font-weight:700}.slow{color:#fbbf24;font-weight:700}
+.note{font-size:12px;color:#6b7a90;margin-top:8px}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🧺 Picker Analytics <span>__NAME__</span></div></div>
+<div class="wrap">
+<div class="card">
+  <div class="row">
+    <div><label>Picker</label><select id="fPicker"><option value="">All pickers</option></select></div>
+    <div style="min-width:180px"><label>Show</label><select id="fShow" style="width:100%"><option value="">All shows</option></select></div>
+    <div><label>From</label><input id="fFrom" type="date"></div>
+    <div><label>To</label><input id="fTo" type="date"></div>
+    <button class="btn" style="background:rgba(255,255,255,.08);color:#e4e8f1;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:11px 18px;font-weight:700;cursor:pointer;font-family:inherit" id="clr">Clear</button>
+  </div>
+</div>
+<div class="cards" id="kpis"></div>
+<div class="card">
+  <h2>🧑‍🌾 By picker</h2>
+  <table><thead><tr><th>Picker</th><th>Orders picked</th><th>Items</th><th>Avg / order</th><th>Orders / hr</th><th>Active hrs</th></tr></thead>
+  <tbody id="prows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody></table>
+  <div class="note">⏱️ Time-per-order is estimated from the gap between consecutive completed picks (gaps over 20 min are treated as breaks and excluded).</div>
+</div>
+<div class="card">
+  <h2>📅 Orders picked per day</h2>
+  <div class="chart-wrap"><div id="chart"></div></div>
+</div>
+</div>
+<div class="toast" id="t" style="position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:700;z-index:100;display:none"></div>
+<script>
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+function secFmt(s){s=Number(s||0);if(!s)return '—';if(s<60)return s.toFixed(0)+'s';return Math.floor(s/60)+'m '+Math.round(s%60)+'s'}
+var FILL=false;
+fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){var sel=document.getElementById('fShow');(shows||[]).forEach(function(s){var o=document.createElement('option');o.value=s.name;o.textContent=s.name;sel.appendChild(o)})});
+function qs(){var p=[];var m={fPicker:'picker',fShow:'show',fFrom:'from',fTo:'to'};['fPicker','fShow','fFrom','fTo'].forEach(function(id){var v=document.getElementById(id).value;if(v)p.push(m[id]+'='+encodeURIComponent(v))});return p.length?('?'+p.join('&')):''}
+function load(){
+  fetch('/api/picker-analytics'+qs()).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;
+    if(!FILL){FILL=true;var ps=document.getElementById('fPicker');ps.innerHTML='<option value="">All pickers</option>'+d.picker_list.map(function(w){return '<option>'+esc(w)+'</option>'}).join('')}
+    var o=d.overall;
+    document.getElementById('kpis').innerHTML=
+      '<div class="kpi pk"><div class="l">Orders picked</div><div class="v">'+o.orders.toLocaleString()+'</div></div>'+
+      '<div class="kpi sp"><div class="l">Avg / order</div><div class="v">'+secFmt(o.avg_sec_order)+'</div></div>'+
+      '<div class="kpi it"><div class="l">Items picked</div><div class="v">'+o.items.toLocaleString()+'</div></div>'+
+      '<div class="kpi hr"><div class="l">Orders / hour</div><div class="v">'+o.orders_per_hr+'</div></div>'+
+      '<div class="kpi act"><div class="l">Active hours</div><div class="v">'+o.active_hours+'</div></div>';
+    var avg=o.avg_sec_order||0;
+    document.getElementById('prows').innerHTML=(d.pickers.length?d.pickers.map(function(w){
+      var cls=w.avg_sec_order<=avg?'fast':'slow';
+      return '<tr><td><b>'+esc(w.picker)+'</b></td><td>'+w.orders+'</td><td>'+w.items+'</td>'+
+        '<td class="'+cls+'">'+secFmt(w.avg_sec_order)+'</td><td>'+w.orders_per_hr+'</td><td>'+w.active_hours+'</td></tr>';
+    }).join(''):'<tr><td colspan="6" class="muted">No picking records for this filter</td></tr>');
+    renderChart(d.days);
+  });
+}
+function renderChart(days){
+  if(!days||!days.length){document.getElementById('chart').innerHTML='<div class="muted">No data</div>';return}
+  var n=days.length,bw=Math.max(20,Math.min(60,Math.floor(1100/n))),gap=8,W=n*(bw+gap)+50,H=220,top=14,bot=42;
+  var max=Math.max.apply(null,days.map(function(d){return d.orders}))||1;var bars='',lbls='';
+  days.forEach(function(d,i){var bh=Math.round((H-top-bot)*(d.orders/max)),x=44+i*(bw+gap),y=H-bot-bh;
+    bars+='<rect class="bar" x="'+x+'" y="'+y+'" width="'+bw+'" height="'+Math.max(1,bh)+'" rx="3"><title>'+esc(d.date)+': '+d.orders+' orders · '+d.items+' items</title></rect>';
+    lbls+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(H-bot+14)+'" text-anchor="middle">'+esc((d.date||'').slice(5))+'</text>';
+    if(bh>14)bars+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(y-4)+'" text-anchor="middle" style="fill:#9aa6bd">'+d.orders+'</text>';});
+  var grid='';for(var g=0;g<=4;g++){var gy=top+(H-top-bot)*g/4;grid+='<line class="axis" x1="40" y1="'+gy+'" x2="'+W+'" y2="'+gy+'"/><text class="axtx" x="0" y="'+(gy+3)+'">'+Math.round(max*(4-g)/4)+'</text>';}
+  document.getElementById('chart').innerHTML='<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+grid+bars+lbls+'</svg>';
+}
+['fPicker','fShow','fFrom','fTo'].forEach(function(id){document.getElementById(id).addEventListener('change',load)});
+document.getElementById('clr').addEventListener('click',function(){['fPicker','fShow','fFrom','fTo'].forEach(function(id){document.getElementById(id).value=''});load()});
+load();
+</script></body></html>'''
+
+
+# ── REPEAT CUSTOMERS — returning buyers & loyalty ──
+REPEAT_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Repeat Customers</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#0c0f16;color:#e4e8f1;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1300px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#a5b4fc;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1300px;margin:0 auto;padding:8px 28px 40px}
+.card{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:18px 20px;margin-bottom:18px}
+.card h2{font-size:13px;font-weight:800;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px;margin-bottom:14px}
+select,input{background:rgba(11,14,20,.8);border:2px solid rgba(255,255,255,.08);border-radius:10px;padding:10px 13px;font-size:14px;color:#e4e8f1;font-family:inherit;outline:none}
+select:focus,input:focus{border-color:#4f46e5}
+label{display:block;font-size:11px;font-weight:700;color:#6b7a90;margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
+.row{display:flex;gap:12px;align-items:end;flex-wrap:wrap}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:6px 0 18px}
+@media(max-width:760px){.cards{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:rgba(21,25,33,.6);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:16px}
+.kpi .l{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:6px}
+.kpi .v{font-size:26px;font-weight:900}
+.kpi.a .v{color:#a5b4fc}.kpi.b .v{color:#34d399}.kpi.c .v{color:#f59e0b}.kpi.d .v{color:#60a5fa}
+table{width:100%;border-collapse:collapse;background:rgba(21,25,33,.4);border-radius:12px;overflow:hidden}
+th,td{padding:10px 12px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06);text-align:right}
+th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
+th{font-size:11px;color:#6b7a90;text-transform:uppercase;letter-spacing:.5px}
+.uname{font-family:monospace;color:#a5b4fc}.rev{color:#60a5fa;font-weight:700}.ord{font-weight:800}
+a.cust{color:#e4e8f1;text-decoration:none}a.cust:hover{color:#a5b4fc;text-decoration:underline}
+.muted{color:#6b7a90;font-size:13px}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🔁 Repeat Customers <span>__NAME__</span></div></div>
+<div class="wrap">
+<div class="card">
+  <div class="row">
+    <div><label>Show at least</label><select id="fMin"><option value="2">2+ orders (repeat)</option><option value="3">3+ orders</option><option value="5">5+ orders (VIP)</option><option value="1">1+ (all buyers)</option></select></div>
+    <div><label>From (show date)</label><input id="fFrom" type="date"></div>
+    <div><label>To</label><input id="fTo" type="date"></div>
+    <button class="btn" style="background:rgba(255,255,255,.08);color:#e4e8f1;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:11px 18px;font-weight:700;cursor:pointer;font-family:inherit" id="clr">Clear</button>
+  </div>
+</div>
+<div class="cards" id="kpis"></div>
+<div class="card">
+  <h2>🔁 Customers <span class="muted" id="cnt"></span></h2>
+  <table><thead><tr><th>Customer</th><th>Username</th><th>Orders</th><th>Shows</th><th>Total spent</th><th>First</th><th>Last</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody></table>
+</div>
+</div>
+<script>
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+function money(v){return '$'+Number(v||0).toLocaleString(undefined,{maximumFractionDigits:0})}
+function load(){
+  var p=[];var mn=document.getElementById('fMin').value;var fr=document.getElementById('fFrom').value;var to=document.getElementById('fTo').value;
+  p.push('min_orders='+mn);if(fr)p.push('from='+fr);if(to)p.push('to='+to);
+  fetch('/api/repeat-customers?'+p.join('&')).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;
+    document.getElementById('kpis').innerHTML=
+      '<div class="kpi a"><div class="l">Total customers</div><div class="v">'+d.total_customers.toLocaleString()+'</div></div>'+
+      '<div class="kpi b"><div class="l">Repeat (2+ orders)</div><div class="v">'+d.repeat_customers.toLocaleString()+'</div></div>'+
+      '<div class="kpi c"><div class="l">Repeat rate</div><div class="v">'+d.repeat_rate+'%</div></div>'+
+      '<div class="kpi d"><div class="l">Repeat revenue</div><div class="v">'+money(d.repeat_revenue)+'</div></div>';
+    document.getElementById('cnt').textContent='('+d.customers.length+' shown)';
+    document.getElementById('rows').innerHTML=(d.customers.length?d.customers.map(function(x){
+      return '<tr><td><a class="cust" href="/customers?u='+encodeURIComponent(x.username)+'">'+esc(x.name||'(no name)')+'</a></td>'+
+        '<td class="uname">@'+esc(x.username)+'</td><td class="ord">'+x.orders+'</td><td>'+x.shows+'</td>'+
+        '<td class="rev">'+money(x.revenue)+'</td><td class="muted">'+esc((x.first||'').slice(0,10))+'</td><td class="muted">'+esc((x.last||'').slice(0,10))+'</td></tr>';
+    }).join(''):'<tr><td colspan="7" class="muted">No customers match this filter</td></tr>');
+  });
+}
+['fMin','fFrom','fTo'].forEach(function(id){document.getElementById(id).addEventListener('change',load)});
+document.getElementById('clr').addEventListener('click',function(){document.getElementById('fMin').value='2';document.getElementById('fFrom').value='';document.getElementById('fTo').value='';load()});
 load();
 </script></body></html>'''
 

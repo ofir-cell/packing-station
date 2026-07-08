@@ -32,7 +32,8 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
-    INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML,
+    INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
+    PICKER_HTML, REPEAT_HTML,
     OPERATIONS_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
 
@@ -4216,6 +4217,9 @@ OPS_GROUPS = [
     ]),
     ("insights", "📊 Insights & Money", [
         ("⏱️", "Packer Analytics", "Speed & volume per packer", "/admin/packer-analytics", False),
+        ("🧺", "Picker Analytics", "Speed & volume per picker", "/admin/picker-analytics", False),
+        ("🗺️", "Geography", "Where orders ship, by state", "/admin/geo-analytics", False),
+        ("🔁", "Repeat Customers", "Returning buyers & loyalty", "/admin/repeat-customers", False),
         ("🎤", "Host Analytics", "Sales & commission by host", "/admin/hosts", True),
         ("📈", "Analytics", "Overall performance", "/analytics", True),
         ("💰", "Profit", "Margins & cost of goods", "/admin/profit", True),
@@ -4259,6 +4263,168 @@ def operations_page():
 @req_role("admin")
 def settings_page():
     return SETTINGS_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("settings")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+# ── GEOGRAPHY ANALYTICS — where orders ship, by state (audience map) ──
+_US_STATES={"AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
+ "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY",
+ "NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC","PR"}
+_ZIP_RANGES=[(5,5,"NY"),(10,27,"MA"),(28,29,"RI"),(30,38,"NH"),(39,49,"ME"),(50,59,"VT"),
+ (60,69,"CT"),(70,89,"NJ"),(100,149,"NY"),(150,196,"PA"),(197,199,"DE"),(200,205,"DC"),
+ (206,219,"MD"),(220,246,"VA"),(247,268,"WV"),(270,289,"NC"),(290,299,"SC"),(300,319,"GA"),
+ (320,349,"FL"),(350,369,"AL"),(370,385,"TN"),(386,397,"MS"),(398,399,"GA"),(400,427,"KY"),
+ (430,459,"OH"),(460,479,"IN"),(480,499,"MI"),(500,528,"IA"),(530,549,"WI"),(550,567,"MN"),
+ (570,577,"SD"),(580,588,"ND"),(590,599,"MT"),(600,629,"IL"),(630,658,"MO"),(660,679,"KS"),
+ (680,693,"NE"),(700,714,"LA"),(716,729,"AR"),(730,749,"OK"),(750,799,"TX"),(800,816,"CO"),
+ (820,831,"WY"),(832,838,"ID"),(840,847,"UT"),(850,865,"AZ"),(870,884,"NM"),(889,898,"NV"),
+ (900,961,"CA"),(967,968,"HI"),(970,979,"OR"),(980,994,"WA"),(995,999,"AK"),(6,9,"PR")]
+def _state_from_zip(z):
+    z=(z or "").strip()
+    if len(z)<3 or not z[:3].isdigit(): return ""
+    p=int(z[:3])
+    for lo,hi,st in _ZIP_RANGES:
+        if lo<=p<=hi: return st
+    return ""
+def _state_from_addr(a):
+    m=re.search(r'\b([A-Za-z]{2})\s+\d{5}', a or "")
+    if m and m.group(1).upper() in _US_STATES: return m.group(1).upper()
+    return ""
+def _resolve_state(postal, addr, bstate):
+    b=(bstate or "").strip().upper()
+    if len(b)==2 and b in _US_STATES: return b
+    return _state_from_zip(postal) or _state_from_addr(addr) or ""
+
+@app.route("/api/geo-analytics")
+@req_role("admin","cs")
+def api_geo_analytics():
+    frm=(request.args.get("from") or "").strip(); to=(request.args.get("to") or "").strip()
+    show=(request.args.get("show") or "").strip()
+    c=sdb()
+    where="WHERE COALESCE(s.status,'')!='cancelled'"; params=[]
+    if show: where+=" AND s.import_label=?"; params.append(show)
+    if frm: where+=" AND s.show_date>=?"; params.append(frm)
+    if to: where+=" AND s.show_date<=?"; params.append(to)
+    ships=c.execute("SELECT shipment_id,postal_code,address_full,show_date FROM shipments s "+where,params).fetchall()
+    itmap={}
+    for r in c.execute("""SELECT shipment_id, COALESCE(SUM(CASE WHEN COALESCE(cancelled,0)=0 THEN quantity ELSE 0 END),0) units,
+                                 COALESCE(SUM(CASE WHEN COALESCE(cancelled,0)=0 THEN revenue ELSE 0 END),0) rev,
+                                 MAX(buyer_state) bs, MAX(buyer_city) bc
+                          FROM shipment_items GROUP BY shipment_id""").fetchall():
+        itmap[r["shipment_id"]]={"units":r["units"] or 0,"rev":r["rev"] or 0,"bs":r["bs"],"bc":r["bc"]}
+    c.close()
+    states={}; cities={}; total_orders=0; unresolved=0
+    for s in ships:
+        it=itmap.get(s["shipment_id"],{})
+        st=_resolve_state(s["postal_code"], s["address_full"], it.get("bs"))
+        total_orders+=1
+        if not st: unresolved+=1; continue
+        g=states.setdefault(st,{"state":st,"orders":0,"units":0,"revenue":0.0})
+        g["orders"]+=1; g["units"]+=it.get("units",0); g["revenue"]+=it.get("rev",0)
+        city=(it.get("bc") or "").strip()
+        if city:
+            key=city+", "+st; cities[key]=cities.get(key,0)+1
+    slist=sorted(states.values(),key=lambda x:x["orders"],reverse=True)
+    resolved=total_orders-unresolved
+    for g in slist:
+        g["revenue"]=round(g["revenue"],2)
+        g["pct"]=round(100.0*g["orders"]/resolved,1) if resolved else 0
+    clist=sorted([{"k":k,"v":v} for k,v in cities.items()],key=lambda x:-x["v"])[:15]
+    return jsonify({"ok":True,"states":slist,"cities":clist,"total_orders":total_orders,
+                    "resolved":resolved,"unresolved":unresolved,"states_reached":len(slist),
+                    "top_state":slist[0]["state"] if slist else None})
+
+@app.route("/admin/geo-analytics")
+@req_role("admin","cs")
+def geo_analytics_page():
+    return GEO_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("geo")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+# ── PICKER ANALYTICS — pick speed/volume per picker (timing from completion gaps) ──
+@app.route("/api/picker-analytics")
+@req_role("admin","cs")
+def api_picker_analytics():
+    picker=(request.args.get("picker") or "").strip()
+    show=(request.args.get("show") or "").strip()
+    frm=(request.args.get("from") or "").strip(); to=(request.args.get("to") or "").strip()
+    c=sdb()
+    where="WHERE picked_by IS NOT NULL AND picked_by!='' AND picked_at IS NOT NULL"; params=[]
+    if show: where+=" AND import_label=?"; params.append(show)
+    if frm: where+=" AND substr(picked_at,1,10)>=?"; params.append(frm)
+    if to: where+=" AND substr(picked_at,1,10)<=?"; params.append(to)
+    ships=c.execute("SELECT shipment_id,picked_by,picked_at FROM shipments "+where+" ORDER BY picked_by, picked_at",params).fetchall()
+    itmap={}
+    for r in c.execute("SELECT shipment_id, COALESCE(SUM(CASE WHEN COALESCE(cancelled,0)=0 THEN quantity ELSE 0 END),0) u FROM shipment_items GROUP BY shipment_id").fetchall():
+        itmap[r["shipment_id"]]=r["u"] or 0
+    c.close()
+    CAP=1200  # gaps over 20 min are treated as breaks (excluded from active time)
+    all_pickers=set()
+    perp={}; perday={}
+    prev={}  # picker -> last picked_at datetime
+    for s in ships:
+        pk=s["picked_by"]; all_pickers.add(pk)
+        if picker and pk!=picker: continue
+        dt=_parse_sale_dt(s["picked_at"])
+        items=itmap.get(s["shipment_id"],0)
+        g=perp.setdefault(pk,{"picker":pk,"orders":0,"items":0,"active_sec":0.0,"timed":0})
+        g["orders"]+=1; g["items"]+=items
+        day=(s["picked_at"] or "")[:10]
+        d=perday.setdefault(day,{"date":day,"orders":0,"items":0})
+        d["orders"]+=1; d["items"]+=items
+        if dt and pk in prev and prev[pk] is not None:
+            gap=(dt-prev[pk]).total_seconds()
+            if 0<gap<=CAP: g["active_sec"]+=gap; g["timed"]+=1
+        prev[pk]=dt
+    def fin(g):
+        avg=(g["active_sec"]/g["timed"]) if g["timed"] else 0
+        return {"picker":g["picker"],"orders":g["orders"],"items":g["items"],
+                "avg_sec_order":round(avg,1),"orders_per_hr":round(3600.0/avg,1) if avg else 0,
+                "active_hours":round(g["active_sec"]/3600,2)}
+    pickers=sorted([fin(g) for g in perp.values()],key=lambda x:x["orders"],reverse=True)
+    tot={"orders":sum(g["orders"] for g in perp.values()),"items":sum(g["items"] for g in perp.values()),
+         "active_sec":sum(g["active_sec"] for g in perp.values()),"timed":sum(g["timed"] for g in perp.values())}
+    ov=fin({"picker":"","orders":tot["orders"],"items":tot["items"],"active_sec":tot["active_sec"],"timed":tot["timed"]})
+    days=[perday[k] for k in sorted(perday)]
+    return jsonify({"ok":True,"overall":ov,"pickers":pickers,"days":days,"picker_list":sorted(all_pickers)})
+
+@app.route("/admin/picker-analytics")
+@req_role("admin","cs")
+def picker_analytics_page():
+    return PICKER_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("pickeran")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+# ── REPEAT CUSTOMERS — buyers with more than one order ──
+@app.route("/api/repeat-customers")
+@req_role("admin","cs")
+def api_repeat_customers():
+    try: min_orders=int(request.args.get("min_orders") or 2)
+    except Exception: min_orders=2
+    frm=(request.args.get("from") or "").strip(); to=(request.args.get("to") or "").strip()
+    c=sdb()
+    where="WHERE buyer_username IS NOT NULL AND buyer_username!='' AND COALESCE(status,'')!='cancelled'"; params=[]
+    if frm: where+=" AND show_date>=?"; params.append(frm)
+    if to: where+=" AND show_date<=?"; params.append(to)
+    rows=c.execute("""SELECT s.buyer_username u, MAX(s.buyer_name) nm, COUNT(DISTINCT s.shipment_id) orders,
+                             COUNT(DISTINCT s.import_label) shows, MIN(s.show_date) first, MAX(s.show_date) last
+                      FROM shipments s """+where+" GROUP BY s.buyer_username",params).fetchall()
+    # revenue per buyer (non-cancelled items)
+    rev=c.execute("""SELECT s.buyer_username u, COALESCE(SUM(CASE WHEN COALESCE(i.cancelled,0)=0 THEN i.revenue ELSE 0 END),0) r
+                     FROM shipments s JOIN shipment_items i ON i.shipment_id=s.shipment_id
+                     WHERE s.buyer_username IS NOT NULL AND s.buyer_username!='' GROUP BY s.buyer_username""").fetchall()
+    c.close()
+    revmap={x["u"]:x["r"] or 0 for x in rev}
+    total_customers=len(rows)
+    cust=[]
+    for r in rows:
+        cust.append({"username":r["u"],"name":r["nm"],"orders":r["orders"],"shows":r["shows"],
+                     "first":r["first"],"last":r["last"],"revenue":round(revmap.get(r["u"],0),2)})
+    repeat=[x for x in cust if x["orders"]>=2]
+    filtered=sorted([x for x in cust if x["orders"]>=min_orders],key=lambda x:(-x["orders"],-x["revenue"]))
+    return jsonify({"ok":True,"total_customers":total_customers,"repeat_customers":len(repeat),
+        "repeat_rate":round(100.0*len(repeat)/total_customers,1) if total_customers else 0,
+        "repeat_revenue":round(sum(x["revenue"] for x in repeat),2),
+        "min_orders":min_orders,"customers":filtered[:500]})
+
+@app.route("/admin/repeat-customers")
+@req_role("admin","cs")
+def repeat_customers_page():
+    return REPEAT_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("repeat")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/org/branding")
 @req_role("admin")
