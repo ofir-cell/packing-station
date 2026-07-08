@@ -6460,6 +6460,7 @@ th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
 .p-PENDING{background:rgba(148,163,184,.16);color:#475569}.p-PICKED{background:rgba(129,140,248,.16);color:#4f46e5}
 .p-PACKED{background:rgba(167,139,250,.16);color:#7c3aed}.p-SHIPPED{background:rgba(45,212,191,.16);color:#0d9488}
 .p-CANCELLED{background:rgba(100,116,139,.18);color:#64748b}.p-ISSUE{background:rgba(244,63,94,.16);color:#f43f5e}
+.p-GIVEAWAY{background:rgba(236,72,153,.16);color:#db2777}
 .sc.pending .n{color:#475569}.sc.picked .n{color:#4f46e5}.sc.packed .n{color:#7c3aed}.sc.shipped .n{color:#0d9488}.sc.cancelled .n{color:#64748b}.sc.issue .n{color:#f43f5e}
 .filters{display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin:6px 0 4px}
 .filters .f label{display:block;font-size:11px;font-weight:700;color:#6b7280;margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
@@ -6491,7 +6492,7 @@ var BUCKETS=[['PENDING','Pending','pending'],['PICKED','Picked','picked'],['PACK
 ['SHIPPED','Shipped','shipped'],['PRE_TRANSIT','Pre-transit','pre'],['IN_TRANSIT','In transit','transit'],
 ['OUT_FOR_DELIVERY','Out for delivery','ofd'],['DELIVERED','Delivered','delivered'],
 ['EXCEPTION','Exception','exc'],['RETURNED','Returned','ret'],['CANCELLED','Cancelled','cancelled'],
-['ISSUE','Issue','issue'],['UNKNOWN','Unknown','unk']];
+['GIVEAWAY','Giveaway','giveaway'],['ISSUE','Issue','issue'],['UNKNOWN','Unknown','unk']];
 var filter='';var fillsDone=false;
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3500)}
 function esc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;')}

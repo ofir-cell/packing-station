@@ -2758,6 +2758,16 @@ def _derive_delivery(n):
         return ("IN_TRANSIT", ("Shipped "+st).strip()+" · per TikTok", None)
     return (None, None, None)
 
+_GV_KW = ("giveaway", "give away", "give-away", "freebie", "free item")
+_STAMP_KW = ("stamp", "envelope", "letter", "first class mail", "non-machinable", "non machinable")
+def _looks_giveaway(name, ship_method):
+    """A row looks like a giveaway if the product name says so, or it ships by a
+    non-scannable method (stamp / envelope)."""
+    n = (name or "").lower(); m = (ship_method or "").lower()
+    if any(k in n for k in _GV_KW): return True
+    if m and any(k in m for k in _STAMP_KW): return True
+    return False
+
 def _norm_whatnot(row):
     """Normalize a Whatnot row to the same dict shape. Column lookups are
     case-insensitive with aliases so export variants still work."""
@@ -2795,6 +2805,9 @@ def _norm_whatnot(row):
         "state":      s("state", "province"),
         "city":       s("city", "town"),
         "revenue":    revenue,
+        "ship_method": s("shipping_method", "shipping method", "ship method", "label_type",
+                         "label type", "shipping service", "mail class", "carrier service",
+                         "shipping option", "service"),
     }
 
 @app.route("/api/shipments/import", methods=["POST"])
@@ -2878,6 +2891,12 @@ def api_shipments_import():
             tracking = first["tracking"] or None
             dvs, dvd, dva = _derive_delivery(first)
             dtrk = datetime.now().isoformat(timespec='seconds') if dvs else None
+            # Giveaway orders ship free (stamp/envelope) with no scannable tracking —
+            # flag them so they don't sit forever in the "pending / to pack" pipeline.
+            group_rev = sum((n.get("revenue") or 0) for n in group)
+            is_gv = (platform == "whatnot" and group_rev == 0) or \
+                    any(_looks_giveaway(n.get("product_name"), n.get("ship_method")) for n in group)
+            new_status = "giveaway" if is_gv else "pending"
             existing = c.execute("SELECT shipment_id FROM shipments WHERE shipment_id=?", (pkg_id,)).fetchone()
             if existing:
                 c.execute("""UPDATE shipments
@@ -2894,15 +2913,17 @@ def api_shipments_import():
                            first["address"], first["postal"], first["created_at"],
                            platform, import_batch, label,
                            dvs, dvd, dva, dtrk, pkg_id))
+                if is_gv:   # move a still-pending giveaway out of the pipeline
+                    c.execute("UPDATE shipments SET status='giveaway' WHERE shipment_id=? AND status='pending'", (pkg_id,))
                 updated += 1
             else:
                 c.execute("""INSERT INTO shipments
                     (shipment_id, tracking_code, buyer_username, buyer_name, address_full,
                      postal_code, show_date, status, platform, import_batch, import_label,
                      delivery_status, delivery_detail, delivered_at, tracked_at)
-                    VALUES (?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?,?,?,?)""",
+                    VALUES (?,?,?,?,?,?,?, ?, ?, ?, ?, ?,?,?,?)""",
                     (pkg_id, tracking, first["buyer_username"], first["buyer_name"],
-                     first["address"], first["postal"], first["created_at"],
+                     first["address"], first["postal"], first["created_at"], new_status,
                      platform, import_batch, label,
                      dvs, dvd, dva, dtrk))
                 inserted += 1
@@ -6126,6 +6147,7 @@ _UNIFIED_CASE="""CASE
   WHEN status='packed'  THEN 'PACKED'
   WHEN status='shipped' THEN 'SHIPPED'
   WHEN status='cancelled' THEN 'CANCELLED'
+  WHEN status='giveaway' THEN 'GIVEAWAY'
   WHEN status='issue'   THEN 'ISSUE'
   ELSE 'UNKNOWN' END"""
 
