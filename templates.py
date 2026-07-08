@@ -6980,7 +6980,7 @@ __NAVBAR__
 
 <div class="card">
   <h2>🗂️ Shows</h2>
-  <table><thead><tr><th>Date</th><th>Show</th><th>Host</th><th>Revenue</th><th>Orders</th><th>Units</th><th>AOV</th><th>Cancel%</th><th>Commission</th></tr></thead>
+  <table><thead><tr><th>Date</th><th>Show</th><th>Host</th><th>Net sales</th><th>Shipping</th><th>Gross</th><th>Orders</th><th>Units</th><th>AOV</th><th>Cancel%</th><th>Commission</th></tr></thead>
   <tbody id="rows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody></table>
 </div>
 </div>
@@ -7005,7 +7005,8 @@ function openShow(gi){
     var win=d.has_times?('🕒 '+esc(d.start||'')+' → '+esc(d.end||'')+' · '+dur):'🕒 no sale-time data (older import)';
     var h='<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px"><div><h3>'+esc(d.label)+'</h3><div class="muted">🎤 '+esc(d.host)+' · '+win+'</div></div><button class="btn btn-s" onclick="closeShow()">Close</button></div>';
     h+='<div class="mini">'+
-      '<div class="m"><div class="l">Net sales</div><div class="v rev">'+money(d.revenue)+'</div></div>'+
+      '<div class="m"><div class="l">Net sales (products)</div><div class="v rev">'+money(d.revenue)+'</div></div>'+
+      '<div class="m"><div class="l">Shipping collected</div><div class="v" style="color:#b45309">'+money(d.shipping||0)+'</div></div>'+
       '<div class="m"><div class="l">Units</div><div class="v">'+d.units.toLocaleString()+'</div></div>'+
       '<div class="m"><div class="l">Orders</div><div class="v">'+d.orders.toLocaleString()+'</div></div>'+
       '<div class="m"><div class="l">Giveaways</div><div class="v">'+d.giveaways+'</div></div>'+
@@ -7072,12 +7073,12 @@ document.getElementById('saveCfg').addEventListener('click',function(){
 
 function renderKpis(){
   var sh=filteredShows();
-  var rev=0,comm=0,units=0,orders=0;
-  sh.forEach(function(s){rev+=s.revenue;comm+=s.commission;units+=s.units;orders+=s.orders});
+  var rev=0,comm=0,units=0,orders=0,ship=0;
+  sh.forEach(function(s){rev+=s.revenue;comm+=s.commission;units+=s.units;orders+=s.orders;ship+=(s.shipping||0)});
   document.getElementById('kpis').innerHTML=
-    '<div class="kpi rev"><div class="l">Net sales</div><div class="v">'+money(rev)+'</div></div>'+
+    '<div class="kpi rev"><div class="l">Net sales (products)</div><div class="v">'+money(rev)+'</div></div>'+
+    '<div class="kpi comm" style="border-color:rgba(180,83,9,.3)"><div class="l">Shipping collected</div><div class="v" style="color:#b45309">'+money(ship)+'</div></div>'+
     '<div class="kpi comm"><div class="l">Commission</div><div class="v">'+money(comm)+'</div></div>'+
-    '<div class="kpi shows"><div class="l">Shows</div><div class="v">'+sh.length+'</div></div>'+
     '<div class="kpi units"><div class="l">Units sold</div><div class="v">'+units.toLocaleString()+'</div></div>'+
     '<div class="kpi aov"><div class="l">Avg / show</div><div class="v">'+money(sh.length?rev/sh.length:0)+'</div></div>';
 }
@@ -7102,13 +7103,15 @@ function renderChart(){
 
 function renderTable(){
   var sh=filteredShows().slice().reverse();
-  if(!sh.length){document.getElementById('rows').innerHTML='<tr><td colspan="9" class="muted">No shows</td></tr>';return}
+  if(!sh.length){document.getElementById('rows').innerHTML='<tr><td colspan="11" class="muted">No shows</td></tr>';return}
   document.getElementById('rows').innerHTML=sh.map(function(s){
     var gi=DATA.shows.indexOf(s);
     return '<tr><td class="muted">'+esc((s.show_date||'').slice(0,10))+'</td>'+
       '<td><a href="#" onclick="openShow('+gi+');return false" style="color:#4f46e5;text-decoration:underline">'+esc(s.label)+'</a></td>'+
       '<td><input class="host-in" value="'+esc(s.host)+'" data-gi="'+gi+'"></td>'+
-      '<td class="rev">'+money2(s.revenue)+'</td><td>'+s.orders+'</td><td>'+s.units+'</td>'+
+      '<td class="rev">'+money2(s.revenue)+'</td>'+
+      '<td style="color:#b45309">'+money2(s.shipping||0)+'</td><td class="muted">'+money2(s.gross||s.revenue)+'</td>'+
+      '<td>'+s.orders+'</td><td>'+s.units+'</td>'+
       '<td>'+money2(s.aov)+'</td><td>'+(s.cancel_rate||0)+'%</td>'+
       '<td class="comm">'+money2(s.commission)+'</td></tr>';
   }).join('');

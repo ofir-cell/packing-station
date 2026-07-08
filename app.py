@@ -489,6 +489,8 @@ def sdb_init():
         "ALTER TABLE shipments ADD COLUMN delivered_at TEXT",
         "ALTER TABLE shipments ADD COLUMN tracked_at TEXT",
         "ALTER TABLE shipments ADD COLUMN stock_depleted INTEGER DEFAULT 0",
+        # TikTok: shipping fee the buyer paid (collected, then paid out to carrier).
+        "ALTER TABLE shipments ADD COLUMN shipping_fee REAL DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN order_id TEXT",
         "ALTER TABLE shipment_items ADD COLUMN cancelled INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN cancel_reason TEXT",
@@ -2722,8 +2724,17 @@ def _norm_tiktok(row):
     except: weight_g = 0
     try: revenue = float((s("SKU Subtotal After Discount") or "0").replace(",","").replace("$",""))
     except: revenue = 0.0
+    # Shipping fee the buyer paid — TikTok column names vary a bit; match loosely.
+    _g = _row_get(row)
+    _sf = _g("Shipping Fee After Discount", "shipping fee after discount",
+             "Buyer Paid Shipping Fee", "buyer paid shipping fee",
+             "Customer Paid Shipping Fee", "customer paid shipping fee",
+             "Shipping Fee", "shipping fee", "Original Shipping Fee", "original shipping fee")
+    try: ship_fee = float(str(_sf).replace(",", "").replace("$", "").strip()) if _sf else 0.0
+    except Exception: ship_fee = 0.0
     return {
         "order_id":   s("Order ID"),
+        "ship_fee":   ship_fee,
         "package_id": s("Package ID"),
         "tracking":   s("Tracking ID"),
         "sku":        s("Seller SKU"),
@@ -2897,6 +2908,14 @@ def api_shipments_import():
             is_gv = (platform == "whatnot" and group_rev == 0) or \
                     any(_looks_giveaway(n.get("product_name"), n.get("ship_method")) for n in group)
             new_status = "giveaway" if is_gv else "pending"
+            # Shipping fee is per order (repeated across a package's item rows) — count once per order.
+            _ord_ship = {}
+            for n in group:
+                sf = n.get("ship_fee") or 0
+                if sf:
+                    oid = n.get("order_id") or pkg_id
+                    _ord_ship[oid] = max(_ord_ship.get(oid, 0), sf)
+            ship_fee = round(sum(_ord_ship.values()), 2)
             existing = c.execute("SELECT shipment_id FROM shipments WHERE shipment_id=?", (pkg_id,)).fetchone()
             if existing:
                 c.execute("""UPDATE shipments
@@ -2904,6 +2923,7 @@ def api_shipments_import():
                                  buyer_username=?, buyer_name=?, address_full=?, postal_code=?,
                                  show_date=?, platform=?, import_batch=COALESCE(import_batch,?),
                                  import_label=COALESCE(import_label,?),
+                                 shipping_fee=?,
                                  delivery_status=COALESCE(?,delivery_status),
                                  delivery_detail=COALESCE(?,delivery_detail),
                                  delivered_at=COALESCE(?,delivered_at),
@@ -2911,7 +2931,7 @@ def api_shipments_import():
                              WHERE shipment_id=?""",
                           (tracking, first["buyer_username"], first["buyer_name"],
                            first["address"], first["postal"], first["created_at"],
-                           platform, import_batch, label,
+                           platform, import_batch, label, ship_fee,
                            dvs, dvd, dva, dtrk, pkg_id))
                 if is_gv:   # move a still-pending giveaway out of the pipeline
                     c.execute("UPDATE shipments SET status='giveaway' WHERE shipment_id=? AND status='pending'", (pkg_id,))
@@ -2919,12 +2939,12 @@ def api_shipments_import():
             else:
                 c.execute("""INSERT INTO shipments
                     (shipment_id, tracking_code, buyer_username, buyer_name, address_full,
-                     postal_code, show_date, status, platform, import_batch, import_label,
+                     postal_code, show_date, status, platform, import_batch, import_label, shipping_fee,
                      delivery_status, delivery_detail, delivered_at, tracked_at)
-                    VALUES (?,?,?,?,?,?,?, ?, ?, ?, ?, ?,?,?,?)""",
+                    VALUES (?,?,?,?,?,?,?, ?, ?, ?, ?, ?, ?,?,?,?)""",
                     (pkg_id, tracking, first["buyer_username"], first["buyer_name"],
                      first["address"], first["postal"], first["created_at"], new_status,
-                     platform, import_batch, label,
+                     platform, import_batch, label, ship_fee,
                      dvs, dvd, dva, dtrk))
                 inserted += 1
             # Replace items for this shipment
@@ -4105,6 +4125,10 @@ def api_host_analytics():
                              i.quantity qty, COALESCE(i.revenue,0) rev, COALESCE(i.cancelled,0) canc, i.sku
                       FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
                       WHERE s.import_label IS NOT NULL AND s.import_label!=''""").fetchall()
+    # Shipping collected per show (buyer-paid, pass-through) — excludes cancelled.
+    shipmap={r["lbl"]:(r["sf"] or 0) for r in c.execute("""SELECT import_label lbl, COALESCE(SUM(shipping_fee),0) sf
+                      FROM shipments WHERE import_label IS NOT NULL AND import_label!=''
+                        AND COALESCE(status,'')!='cancelled' GROUP BY import_label""").fetchall()}
     c.close()
     ov=_host_overrides(); cfg=_get_commission_cfg()
     shows={}
@@ -4121,8 +4145,10 @@ def api_host_analytics():
     for g in shows.values():
         host=ov.get(g["label"]) or _host_from_label(g["label"]) or "Unknown"
         orders=len(g["orders"]); rev=round(g["revenue"],2); tot=g["units"]+g["canc_units"]
+        ship=round(shipmap.get(g["label"],0),2)
         show_list.append({"label":g["label"],"host":host,"show_date":g["show_date"],
-                          "revenue":rev,"units":g["units"],"orders":orders,
+                          "revenue":rev,"shipping":ship,"gross":round(rev+ship,2),
+                          "units":g["units"],"orders":orders,
                           "aov":round(rev/orders,2) if orders else 0,"products":len(g["skus"]),
                           "cancel_rate":round(100.0*g["canc_units"]/tot,1) if tot else 0,
                           "commission":_compute_commission(rev,cfg),
@@ -4130,11 +4156,12 @@ def api_host_analytics():
     show_list.sort(key=lambda x:((x["show_date"] or ""), x["label"]))
     hosts={}
     for s in show_list:
-        h=hosts.setdefault(s["host"],{"host":s["host"],"shows":0,"revenue":0.0,"units":0,"orders":0,"commission":0.0})
-        h["shows"]+=1; h["revenue"]+=s["revenue"]; h["units"]+=s["units"]; h["orders"]+=s["orders"]; h["commission"]+=s["commission"]
+        h=hosts.setdefault(s["host"],{"host":s["host"],"shows":0,"revenue":0.0,"shipping":0.0,"gross":0.0,"units":0,"orders":0,"commission":0.0})
+        h["shows"]+=1; h["revenue"]+=s["revenue"]; h["shipping"]+=s["shipping"]; h["gross"]+=s["gross"]
+        h["units"]+=s["units"]; h["orders"]+=s["orders"]; h["commission"]+=s["commission"]
     host_list=[]
     for h in hosts.values():
-        h["revenue"]=round(h["revenue"],2); h["commission"]=round(h["commission"],2)
+        h["revenue"]=round(h["revenue"],2); h["shipping"]=round(h["shipping"],2); h["gross"]=round(h["gross"],2); h["commission"]=round(h["commission"],2)
         h["avg_per_show"]=round(h["revenue"]/h["shows"],2) if h["shows"] else 0
         host_list.append(h)
     host_list.sort(key=lambda x:x["revenue"],reverse=True)
@@ -4510,6 +4537,8 @@ def api_show_detail():
                              s.tracking_code tc, s.shipment_id sid
                       FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
                       WHERE s.import_label=?""",(label,)).fetchall()
+    _shrow=c.execute("SELECT COALESCE(SUM(shipping_fee),0) sf FROM shipments WHERE import_label=? AND COALESCE(status,'')!='cancelled'",(label,)).fetchone()
+    shipping=round((_shrow["sf"] if _shrow else 0) or 0,2)
     c.close()
     hours={}; states={}; cities={}; prods={}; times=[]
     revenue=0.0; units=0; canc_units=0; order_ids=set()
@@ -4551,7 +4580,8 @@ def api_show_detail():
                     if 0<dd<=3600: packsec.append(dd)
     tot=units+canc_units
     return jsonify({"ok":True,"label":label,"host":_host_overrides().get(label) or _host_from_label(label) or "Unknown",
-        "revenue":round(revenue,2),"units":units,"orders":len(order_ids),
+        "revenue":round(revenue,2),"shipping":shipping,"gross":round(revenue+shipping,2),
+        "units":units,"orders":len(order_ids),
         "cancel_units":canc_units,"cancel_rate":round(100.0*canc_units/tot,1) if tot else 0,
         "duration_min":dur_min,"start":start,"end":end,
         "sales_per_hour_live":round(units/(dur_min/60.0),1) if dur_min else 0,
