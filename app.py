@@ -2769,6 +2769,13 @@ def _norm_whatnot(row):
     addr = s("shipping_address", "shipping address", "address")
     placed = s("placed_at", "placed at", "created_at", "created at", "order_date", "date")
     cancelled = s("cancelled_or_failed", "cancelled or failed", "status", "order_status")
+    # Revenue — Whatnot exports vary; try many common price column names.
+    rev_raw = s("price", "sold_price", "sold price", "sale_price", "sale price", "sold_for", "sold for",
+                "amount", "item_price", "item price", "price_paid", "price paid", "buyer_paid",
+                "gross_sales", "gross sales", "gross", "total", "subtotal", "sale_amount",
+                "product_price", "product price", "line_total", "line total")
+    try: revenue = float(str(rev_raw).replace("$", "").replace(",", "").strip()) if rev_raw else 0.0
+    except Exception: revenue = 0.0
     return {
         "order_id":   s("order_id", "order id", "order_number", "order number"),
         "package_id": pkg,
@@ -2787,6 +2794,7 @@ def _norm_whatnot(row):
         "created_time": placed,
         "state":      s("state", "province"),
         "city":       s("city", "town"),
+        "revenue":    revenue,
     }
 
 @app.route("/api/shipments/import", methods=["POST"])
@@ -4395,6 +4403,7 @@ def picker_analytics_page():
 def api_repeat_customers():
     try: min_orders=int(request.args.get("min_orders") or 2)
     except Exception: min_orders=2
+    sort=(request.args.get("sort") or "orders").strip()
     frm=(request.args.get("from") or "").strip(); to=(request.args.get("to") or "").strip()
     c=sdb()
     where="WHERE buyer_username IS NOT NULL AND buyer_username!='' AND COALESCE(status,'')!='cancelled'"; params=[]
@@ -4415,7 +4424,8 @@ def api_repeat_customers():
         cust.append({"username":r["u"],"name":r["nm"],"orders":r["orders"],"shows":r["shows"],
                      "first":r["first"],"last":r["last"],"revenue":round(revmap.get(r["u"],0),2)})
     repeat=[x for x in cust if x["orders"]>=2]
-    filtered=sorted([x for x in cust if x["orders"]>=min_orders],key=lambda x:(-x["orders"],-x["revenue"]))
+    keyf=(lambda x:(-x["revenue"],-x["orders"])) if sort=="revenue" else (lambda x:(-x["orders"],-x["revenue"]))
+    filtered=sorted([x for x in cust if x["orders"]>=min_orders],key=keyf)
     return jsonify({"ok":True,"total_customers":total_customers,"repeat_customers":len(repeat),
         "repeat_rate":round(100.0*len(repeat)/total_customers,1) if total_customers else 0,
         "repeat_revenue":round(sum(x["revenue"] for x in repeat),2),
