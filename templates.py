@@ -74,9 +74,10 @@ def _navbar(active_page=""):
 
     # ── Top-row entries (operations / fast links only) ──
     if role == "superadmin":
-        # Platform owner: no tenant screens, just the Organizations + Support consoles.
+        # Platform owner: no tenant screens — the platform consoles only.
         entries = [("organizations", "/admin/organizations", "🏢 Organizations"),
-                   ("support", "/admin/support", "🛟 Support")]
+                   ("support", "/admin/support", "🛟 Support"),
+                   ("guides", "/admin/guides", "📚 Guides")]
     else:
         entries = [("home", "/home", "🏠 Home")]
         entries.append(("announcements", "/announcements", "📣 News"))
@@ -89,6 +90,7 @@ def _navbar(active_page=""):
             # (Giveaways is one of its tabs).
             entries.append(("operations", "/operations", "📦 Operations"))
             entries.append(("support", "/support", "🛟 Support"))
+            entries.append(("guides", "/guides", "📚 Guides"))
 
     # ── Avatar menu sections (personal + team/settings) ──
     # Each section: (title, [(key,url,label),...]). Titles of "" render with no header.
@@ -96,14 +98,15 @@ def _navbar(active_page=""):
         # Platform owner has no personal/tenant sections — only Logout.
         user_sections = []
     else:
-        user_sections = [
-            ("", [
-                ("me", "/me", "👤 My Profile"),
-                ("leaderboard", "/leaderboard", "🏆 Leaderboard"),
-                ("documents", "/documents", "📄 Documents"),
-                ("onboarding", "/onboarding", "✅ Onboarding"),
-            ]),
+        _common = [
+            ("me", "/me", "👤 My Profile"),
+            ("leaderboard", "/leaderboard", "🏆 Leaderboard"),
+            ("documents", "/documents", "📄 Documents"),
+            ("onboarding", "/onboarding", "✅ Onboarding"),
         ]
+        if role in ("worker", "picker"):
+            _common.append(("guides", "/guides", "📚 Guides"))
+        user_sections = [("", _common)]
         if role == "admin":
             # Users / Badges / Permissions live *inside* Settings now, so they're
             # not repeated here — Settings is the single entry point for org config.
@@ -8341,6 +8344,223 @@ document.getElementById('submitBtn').addEventListener('click',function(){
       else{toast(d.error||'Failed',1)}}).catch(function(){btn.disabled=false;toast('Network error',1)});
 });
 loadList();
+</script></body></html>'''
+
+
+_MD_JS = '''
+function mdEsc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return c=='&'?'&amp;':c=='<'?'&lt;':'&gt;'})}
+function mdInline(s){return s.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^) ]+)\\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>').replace(/\\*\\*([^*]+)\\*\\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>')}
+function mdImg(l){var m=l.match(/^!\\[([^\\]]*)\\]\\(([^)]+)\\)/);if(!m)return '';var u=m[2].replace(/["']/g,'');if(!/^(https?:\\/\\/|\\/)/.test(u))return '';var cap=m[1]?'<figcaption style="font-size:12px;color:#6b7280;margin-top:6px;text-align:center">'+m[1]+'</figcaption>':'';return '<figure style="margin:16px 0"><img src="'+u+'" alt="'+m[1]+'" style="max-width:100%;border-radius:12px;border:1px solid rgba(17,24,39,.1);display:block">'+cap+'</figure>'}
+function md(src){var L=mdEsc(src).split('\\n'),o=[],ul=false;function c(){if(ul){o.push('</ul>');ul=false}}
+for(var i=0;i<L.length;i++){var l=L[i];
+if(/^!\\[[^\\]]*\\]\\(([^)]+)\\)\\s*$/.test(l)){c();o.push(mdImg(l));continue}
+if(/^### /.test(l)){c();o.push('<h3>'+mdInline(l.slice(4))+'</h3>');continue}
+if(/^## /.test(l)){c();o.push('<h2>'+mdInline(l.slice(3))+'</h2>');continue}
+if(/^# /.test(l)){c();o.push('<h1>'+mdInline(l.slice(2))+'</h1>');continue}
+if(/^\\s*[-*] /.test(l)){if(!ul){o.push('<ul>');ul=true}o.push('<li>'+mdInline(l.replace(/^\\s*[-*] /,''))+'</li>');continue}
+if(/^\\s*$/.test(l)){c();continue}
+c();o.push('<p>'+mdInline(l)+'</p>')}
+c();return o.join('')}
+'''
+
+GUIDES_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Guides</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#fff;color:#1a2130;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:920px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#4f46e5;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:920px;margin:0 auto;padding:8px 28px 40px}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+.chip{border:1px solid rgba(17,24,39,0.12);background:#f6f7f9;border-radius:50px;padding:7px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
+.chip.on{background:#4f46e5;color:#fff;border-color:#4f46e5}
+.gcard{background:#fff;border:1px solid rgba(17,24,39,0.1);border-radius:14px;padding:16px 18px;margin-bottom:12px;cursor:pointer;display:flex;align-items:center;gap:12px}
+.gcard:hover{border-color:#c7d2fe;background:#fafaff}
+.gcard .t{flex:1}.gcard .ti{font-weight:700;font-size:15px}.gcard .ca{font-size:12px;color:#6b7280;margin-top:2px}
+.arw{color:#9ca3af;font-size:18px}
+.muted{color:#9ca3af;font-size:14px}.hide{display:none}
+.backlink{color:#4f46e5;font-weight:700;font-size:13px;cursor:pointer;display:inline-block;margin-bottom:12px}
+.article{background:#fff;border:1px solid rgba(17,24,39,0.096);border-radius:16px;padding:26px 28px}
+.article h1{font-size:26px;font-weight:800;margin:2px 0 14px}
+.article h2{font-size:19px;font-weight:800;margin:22px 0 8px}
+.article h3{font-size:16px;font-weight:800;margin:18px 0 6px;color:#374151}
+.article p{font-size:15px;line-height:1.65;margin-bottom:12px}
+.article ul{margin:0 0 14px 22px}.article li{font-size:15px;line-height:1.6;margin-bottom:6px}
+.article code{background:#f3f4f6;border-radius:5px;padding:1px 6px;font-size:13.5px}
+.article a{color:#4f46e5}
+.vid{display:inline-block;background:#4f46e5;color:#fff;border-radius:10px;padding:10px 18px;font-weight:700;text-decoration:none;margin-bottom:16px}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">📚 Guides <span>__NAME__</span></div></div>
+<div class="wrap">
+<div id="listView">
+  <div class="chips" id="chips"></div>
+  <div id="guideList"><div class="muted">Loading…</div></div>
+</div>
+<div id="detailView" class="hide">
+  <span class="backlink" onclick="showList()">← Back to guides</span>
+  <div class="article" id="article"></div>
+</div>
+</div>
+<script>''' + _MD_JS + '''
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+var GUIDES=[],CATS={},ORDER=[],FILTER='';
+function renderChips(){
+  var cats=ORDER.filter(function(k){return GUIDES.some(function(g){return g.category===k})});
+  var html='<button class="chip'+(FILTER===''?' on':'')+'" data-c="">All</button>';
+  html+=cats.map(function(k){return '<button class="chip'+(FILTER===k?' on':'')+'" data-c="'+esc(k)+'">'+esc(CATS[k]||k)+'</button>'}).join('');
+  document.getElementById('chips').innerHTML=html;
+  document.querySelectorAll('#chips .chip').forEach(function(b){b.addEventListener('click',function(){FILTER=b.getAttribute('data-c');renderChips();renderList()})});
+}
+function renderList(){
+  var el=document.getElementById('guideList');
+  var gs=GUIDES.filter(function(g){return !FILTER||g.category===FILTER});
+  if(!gs.length){el.innerHTML='<div class="muted">No guides here yet.</div>';return}
+  el.innerHTML=gs.map(function(g){return '<div class="gcard" onclick="openGuide('+g.id+')"><div class="t"><div class="ti">'+esc(g.title)+'</div><div class="ca">'+esc(CATS[g.category]||g.category)+(g.video_url?' · 🎬 video':'')+'</div></div><span class="arw">›</span></div>'}).join('');
+}
+function openGuide(id){
+  fetch('/api/guides/'+id).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){return}
+    var g=d.guide;
+    var vid=g.video_url?'<a class="vid" href="'+esc(g.video_url)+'" target="_blank" rel="noopener">🎬 Watch the video</a><br>':'';
+    document.getElementById('article').innerHTML='<h1>'+esc(g.title)+'</h1>'+vid+md(g.body||'');
+    document.getElementById('listView').classList.add('hide');
+    document.getElementById('detailView').classList.remove('hide');window.scrollTo(0,0);
+  });
+}
+function showList(){document.getElementById('detailView').classList.add('hide');document.getElementById('listView').classList.remove('hide')}
+fetch('/api/guides').then(function(r){return r.json()}).then(function(d){
+  if(!d.ok)return;GUIDES=d.guides;CATS=d.categories||{};ORDER=d.cat_order||[];renderChips();renderList();
+});
+</script></body></html>'''
+
+
+_GUIDE_CAT_OPTIONS = ('<option value="getting_started">Getting started</option>'
+'<option value="import">Importing orders</option><option value="packing">Packing &amp; recording</option>'
+'<option value="picking">Picking &amp; scanning</option><option value="shipping">Shipping &amp; tracking</option>'
+'<option value="giveaways">Giveaways</option><option value="inventory">Inventory &amp; SKUs</option>'
+'<option value="analytics">Analytics &amp; reports</option><option value="account">Account, users &amp; badges</option>'
+'<option value="troubleshooting">Troubleshooting</option>')
+
+GUIDES_ADMIN_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Guides · Platform</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#fff;color:#1a2130;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1100px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#4f46e5;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1100px;margin:0 auto;padding:8px 28px 40px;display:grid;grid-template-columns:340px 1fr;gap:20px;align-items:start}
+.card{background:#fff;border:1px solid rgba(17,24,39,0.096);border-radius:16px;padding:18px 20px}
+.card h2{font-size:14px;font-weight:800;color:#4f46e5;text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px}
+.grow{display:flex;flex-direction:column;gap:6px}
+.gitem{border:1px solid rgba(17,24,39,0.1);border-radius:10px;padding:10px 12px;cursor:pointer}
+.gitem:hover{background:#fafaff;border-color:#c7d2fe}.gitem.sel{border-color:#4f46e5;background:#eef2ff}
+.gitem .ti{font-weight:700;font-size:14px}.gitem .mt{font-size:11px;color:#6b7280;margin-top:3px;display:flex;gap:6px;align-items:center}
+.pill{font-size:10px;font-weight:700;padding:2px 8px;border-radius:50px}
+.pub{background:rgba(52,211,153,.16);color:#059669}.draft{background:rgba(148,163,184,.2);color:#475569}
+label{font-size:12px;font-weight:700;color:#6b7280;display:block;margin:12px 0 4px}
+input[type=text],select,textarea{background:#fff;border:2px solid rgba(17,24,39,0.128);border-radius:10px;padding:10px 13px;font-size:14px;color:#1a2130;font-family:inherit;outline:none;width:100%}
+textarea{min-height:220px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:13px;line-height:1.5}
+input:focus,select:focus,textarea:focus{border-color:#4f46e5}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.btn{border:none;border-radius:10px;padding:10px 18px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
+.btn-s{background:#f6f7f9;color:#1a2130;border:1px solid rgba(17,24,39,0.12)}
+.btn-d{background:rgba(244,63,94,.12);color:#e11d48}
+.preview{border:1px dashed rgba(17,24,39,0.18);border-radius:12px;padding:16px;margin-top:10px;max-height:340px;overflow:auto}
+.preview h1{font-size:22px;margin:0 0 10px}.preview h2{font-size:17px;margin:16px 0 6px}.preview h3{font-size:15px;margin:12px 0 5px;color:#374151}
+.preview p{font-size:14px;line-height:1.6;margin-bottom:10px}.preview ul{margin:0 0 10px 20px}.preview li{font-size:14px;margin-bottom:5px}
+.preview code{background:#f3f4f6;border-radius:5px;padding:1px 6px}.preview a{color:#4f46e5}
+.muted{color:#9ca3af;font-size:13px}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}
+.toast.err{background:#f43f5e}
+.hint{font-size:11px;color:#9ca3af;margin-top:4px}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">📚 Guides <span>__NAME__</span></div></div>
+<div class="wrap">
+  <div class="card">
+    <h2>Guides</h2>
+    <button class="btn btn-p" style="width:100%;margin-bottom:12px" onclick="newGuide()">+ New guide</button>
+    <div class="grow" id="glist"><div class="muted">Loading…</div></div>
+  </div>
+  <div class="card">
+    <h2 id="formTitle">New guide</h2>
+    <input type="hidden" id="gid">
+    <label>Title</label><input type="text" id="title" placeholder="e.g. How to import a TikTok order CSV">
+    <div class="row3">
+      <div><label>Category</label><select id="category">''' + _GUIDE_CAT_OPTIONS + '''</select></div>
+      <div><label>Audience</label><select id="audience"><option value="all">Everyone</option><option value="managers">Managers only (admin/CS)</option></select></div>
+      <div><label>Status</label><select id="status"><option value="draft">Draft</option><option value="published">Published</option></select></div>
+    </div>
+    <div class="row3">
+      <div style="grid-column:span 2"><label>Video URL (optional)</label><input type="text" id="video_url" placeholder="https://youtu.be/… or Loom link"></div>
+      <div><label>Sort order</label><input type="text" id="sort_order" placeholder="0"></div>
+    </div>
+    <label>Body (Markdown)</label>
+    <textarea id="body" placeholder="# Heading&#10;Some text with **bold**, `code`, and [a link](https://example.com).&#10;&#10;## Steps&#10;- First&#10;- Second"></textarea>
+    <div class="hint">Supports # / ## / ### headings, **bold**, *italic*, `code`, - bullet lists, and [text](https://url).</div>
+    <div style="margin:12px 0;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-p" onclick="saveGuide()">Save</button>
+      <button class="btn btn-s" onclick="newGuide()">Clear</button>
+      <button class="btn btn-d" id="delBtn" style="display:none" onclick="delGuide()">Delete</button>
+    </div>
+    <label>Live preview</label><div class="preview" id="preview"></div>
+  </div>
+</div>
+<div class="toast" id="t"></div>
+<script>''' + _MD_JS + '''
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function val(id){return (document.getElementById(id).value||'').trim()}
+var CATS={};
+function loadList(){
+  fetch('/api/admin/guides').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;CATS=d.categories||{};
+    var el=document.getElementById('glist');
+    if(!d.guides.length){el.innerHTML='<div class="muted">No guides yet. Create your first one.</div>';return}
+    el.innerHTML=d.guides.map(function(g){
+      var pill=g.status==='published'?'<span class="pill pub">published</span>':'<span class="pill draft">draft</span>';
+      return '<div class="gitem" data-id="'+g.id+'" onclick="editGuide('+g.id+')"><div class="ti">'+esc(g.title)+'</div>'+
+        '<div class="mt">'+esc(CATS[g.category]||g.category)+' · '+esc(g.audience)+' '+pill+'</div></div>';
+    }).join('');
+  });
+}
+function fill(g){
+  document.getElementById('gid').value=g.id||'';
+  document.getElementById('title').value=g.title||'';
+  document.getElementById('category').value=g.category||'getting_started';
+  document.getElementById('audience').value=g.audience||'all';
+  document.getElementById('status').value=g.status||'draft';
+  document.getElementById('video_url').value=g.video_url||'';
+  document.getElementById('sort_order').value=g.sort_order||0;
+  document.getElementById('body').value=g.body||'';
+  document.getElementById('formTitle').textContent=g.id?'Edit guide':'New guide';
+  document.getElementById('delBtn').style.display=g.id?'inline-block':'none';
+  renderPreview();
+}
+function newGuide(){fill({});window.scrollTo(0,0)}
+function editGuide(id){fetch('/api/guides/'+id).then(function(r){return r.json()}).then(function(d){if(d.ok){fill(d.guide);window.scrollTo(0,0)}})}
+function renderPreview(){document.getElementById('preview').innerHTML=md(val('body')||'*Nothing yet.*')}
+document.getElementById('body').addEventListener('input',renderPreview);
+function payload(){return {title:val('title'),category:val('category'),audience:val('audience'),status:val('status'),
+  video_url:val('video_url'),sort_order:val('sort_order'),body:document.getElementById('body').value}}
+function saveGuide(){
+  if(!val('title')){toast('Title is required',1);return}
+  var id=val('gid');var url=id?('/api/admin/guides/'+id):'/api/admin/guides';
+  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload())})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Saved');if(d.id)document.getElementById('gid').value=d.id;document.getElementById('formTitle').textContent='Edit guide';document.getElementById('delBtn').style.display='inline-block';loadList()}else{toast(d.error||'Failed',1)}});
+}
+function delGuide(){var id=val('gid');if(!id)return;if(!confirm('Delete this guide?'))return;
+  fetch('/api/admin/guides/'+id+'/delete',{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Deleted');newGuide();loadList()}});
+}
+loadList();newGuide();
 </script></body></html>'''
 
 

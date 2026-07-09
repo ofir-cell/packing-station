@@ -35,7 +35,9 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
     PICKER_HTML, REPEAT_HTML,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
+    GUIDES_HTML, GUIDES_ADMIN_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
+from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
 
 
 # Default (founding) tenant id. Multi-tenancy: every user belongs to an org;
@@ -269,6 +271,20 @@ def pdb_init():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_tmsg_ticket ON ticket_messages(ticket_id)")
+    # Help guides — authored by the platform owner, shown to all tenants.
+    c.execute("""CREATE TABLE IF NOT EXISTS guides(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT DEFAULT 'getting_started',
+        title TEXT NOT NULL,
+        body TEXT DEFAULT '',
+        video_url TEXT DEFAULT '',
+        audience TEXT DEFAULT 'all',
+        status TEXT DEFAULT 'draft',
+        sort_order INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_guides_status ON guides(status)")
     c.commit(); c.close()
 
 pdb_init()
@@ -1736,6 +1752,24 @@ def _seed_default_workflow_if_missing(org=None):
 for _org in list_org_ids():
     try: _seed_default_workflow_if_missing(_org)
     except Exception as e: print("workflow seed failed for", _org, ":", e, flush=True)
+
+def _seed_guides():
+    """Seed the starter help guides once, if none exist. Platform owner can edit."""
+    try:
+        c=pdb()
+        if c.execute("SELECT 1 FROM guides LIMIT 1").fetchone():
+            c.close(); return
+        for g in GUIDE_SEEDS:
+            c.execute("""INSERT INTO guides(category,title,body,video_url,audience,status,sort_order)
+                         VALUES(?,?,?,?,?,?,?)""",
+                      (g.get("category","getting_started"),g.get("title",""),g.get("body",""),
+                       g.get("video_url",""),g.get("audience","all"),g.get("status","published"),
+                       g.get("sort_order",0)))
+        c.commit(); c.close()
+        print("Seeded",len(GUIDE_SEEDS),"starter guides",flush=True)
+    except Exception as e:
+        print("guide seed error:",e,flush=True)
+_seed_guides()
 
 # ── Bootstrap the platform super-admin (you) from env ──────────────
 # The platform owner is a DEDICATED account, separate from every tenant (5sec
@@ -6137,6 +6171,127 @@ def support_page():
 def platform_support_page():
     return PLATFORM_SUPPORT_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
         "__NAVBAR__",_navbar("support")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+# ══════════════════════════════════════════════════════════
+# HELP GUIDES — authored by the platform owner, read by all tenants.
+# ══════════════════════════════════════════════════════════
+GUIDE_CATEGORIES=[
+    ("getting_started","Getting started"),
+    ("import","Importing orders"),
+    ("packing","Packing & recording"),
+    ("picking","Picking & scanning"),
+    ("shipping","Shipping & tracking"),
+    ("giveaways","Giveaways"),
+    ("inventory","Inventory & SKUs"),
+    ("analytics","Analytics & reports"),
+    ("account","Account, users & badges"),
+    ("troubleshooting","Troubleshooting"),
+]
+_GUIDE_CAT_KEYS={k for k,_ in GUIDE_CATEGORIES}
+GUIDE_AUDIENCES=["all","managers"]
+
+def _guide_visible_to_role(audience,role):
+    if audience=="managers": return role in ("admin","cs")
+    return True
+
+@app.route("/api/guides")
+@req_login
+def api_guides_list():
+    """Published guides visible to the caller's role (customer help center)."""
+    role=session.get("role")
+    c=pdb()
+    rows=[dict(r) for r in c.execute(
+        "SELECT id,category,title,audience,video_url,updated_at FROM guides WHERE status='published' ORDER BY sort_order,id").fetchall()]
+    c.close()
+    rows=[r for r in rows if _guide_visible_to_role(r.get("audience","all"),role)]
+    return jsonify({"ok":True,"guides":rows,"categories":dict(GUIDE_CATEGORIES),
+                    "cat_order":[k for k,_ in GUIDE_CATEGORIES]})
+
+@app.route("/api/guides/<int:gid>")
+@req_login
+def api_guide_get(gid):
+    c=pdb(); r=c.execute("SELECT * FROM guides WHERE id=?",(gid,)).fetchone(); c.close()
+    if not r: return jsonify({"ok":False,"error":"Not found"}),404
+    g=dict(r)
+    if not is_super():
+        if g.get("status")!="published" or not _guide_visible_to_role(g.get("audience","all"),session.get("role")):
+            return jsonify({"ok":False,"error":"Not found"}),404
+    return jsonify({"ok":True,"guide":g,"categories":dict(GUIDE_CATEGORIES)})
+
+@app.route("/api/admin/guides")
+@req_super
+def api_admin_guides_list():
+    c=pdb(); rows=[dict(r) for r in c.execute(
+        "SELECT id,category,title,audience,status,sort_order,updated_at FROM guides ORDER BY sort_order,id").fetchall()]; c.close()
+    return jsonify({"ok":True,"guides":rows,"categories":dict(GUIDE_CATEGORIES),
+                    "cat_list":GUIDE_CATEGORIES,"audiences":GUIDE_AUDIENCES})
+
+def _guide_payload(d):
+    cat=(d.get("category") or "getting_started").strip()
+    if cat not in _GUIDE_CAT_KEYS: cat="getting_started"
+    aud=(d.get("audience") or "all").strip()
+    if aud not in GUIDE_AUDIENCES: aud="all"
+    st=(d.get("status") or "draft").strip()
+    if st not in ("draft","published"): st="draft"
+    try: order=int(d.get("sort_order") or 0)
+    except Exception: order=0
+    return {"category":cat,"title":(d.get("title") or "").strip()[:200],
+            "body":(d.get("body") or ""),"video_url":(d.get("video_url") or "").strip()[:500],
+            "audience":aud,"status":st,"sort_order":order}
+
+@app.route("/api/admin/guides",methods=["POST"])
+@req_super
+def api_admin_guide_create():
+    p=_guide_payload(request.get_json() or {})
+    if not p["title"]: return jsonify({"ok":False,"error":"Title is required"})
+    c=pdb()
+    cur=c.execute("""INSERT INTO guides(category,title,body,video_url,audience,status,sort_order)
+                     VALUES(?,?,?,?,?,?,?)""",
+                  (p["category"],p["title"],p["body"],p["video_url"],p["audience"],p["status"],p["sort_order"]))
+    gid=cur.lastrowid; c.commit(); c.close()
+    return jsonify({"ok":True,"id":gid})
+
+@app.route("/api/admin/guides/<int:gid>",methods=["POST"])
+@req_super
+def api_admin_guide_update(gid):
+    p=_guide_payload(request.get_json() or {})
+    if not p["title"]: return jsonify({"ok":False,"error":"Title is required"})
+    now=datetime.now().isoformat(timespec="seconds")
+    c=pdb()
+    if not c.execute("SELECT 1 FROM guides WHERE id=?",(gid,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    c.execute("""UPDATE guides SET category=?,title=?,body=?,video_url=?,audience=?,status=?,sort_order=?,updated_at=?
+                 WHERE id=?""",
+              (p["category"],p["title"],p["body"],p["video_url"],p["audience"],p["status"],p["sort_order"],now,gid))
+    c.commit(); c.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/admin/guides/<int:gid>/delete",methods=["POST"])
+@req_super
+def api_admin_guide_delete(gid):
+    c=pdb(); c.execute("DELETE FROM guides WHERE id=?",(gid,)); c.commit(); c.close()
+    return jsonify({"ok":True})
+
+@app.route("/guides")
+@req_login
+def guides_page():
+    if session.get("role")=="superadmin": return redirect("/admin/guides")
+    return GUIDES_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
+        "__NAVBAR__",_navbar("guides")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/admin/guides")
+@req_super
+def admin_guides_page():
+    return GUIDES_ADMIN_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
+        "__NAVBAR__",_navbar("guides")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/guide-asset/<name>")
+@req_login
+def guide_asset(name):
+    """Serve an anonymized screen mockup used inside the help guides."""
+    svg=GUIDE_ASSETS.get((name or "").replace(".svg",""))
+    if not svg: return ("",404)
+    return Response(svg,mimetype="image/svg+xml")
 
 @app.route("/api/users/badge/pdf/<u>")
 @req_role("admin")
