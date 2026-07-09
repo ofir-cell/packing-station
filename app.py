@@ -1845,6 +1845,43 @@ app.config["SESSION_COOKIE_SECURE"]=True
 app.config["SESSION_COOKIE_SAMESITE"]="Lax"
 app.config["PERMANENT_SESSION_LIFETIME"]=timedelta(days=7)
 
+# Behind Railway's proxy: trust ONE hop of X-Forwarded-* so request.remote_addr
+# is the real client IP (correct HTTPS detection + accurate login rate-limiting).
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app=ProxyFix(app.wsgi_app,x_for=1,x_proto=1,x_host=1,x_port=1)
+
+# ── CSRF protection (double-submit cookie) ─────────────────────────
+# SameSite=Lax already blocks most cross-site POSTs; this adds an explicit
+# token check for all state-changing requests. A non-HttpOnly cookie holds a
+# random token; JS echoes it back in the X-CSRF-Token header (see the shim
+# injected below). The server requires header == cookie for mutating methods.
+CSRF_COOKIE="csrf_token"
+CSRF_HEADER="X-CSRF-Token"
+_CSRF_SAFE=("GET","HEAD","OPTIONS","TRACE")
+
+@app.before_request
+def _csrf_protect():
+    if request.method in _CSRF_SAFE:
+        return
+    ck=request.cookies.get(CSRF_COOKIE)
+    hd=request.headers.get(CSRF_HEADER) or (request.form.get("_csrf") if request.form else None)
+    if not ck or not hd or not secrets.compare_digest(str(ck),str(hd)):
+        return jsonify({"ok":False,"error":"CSRF validation failed — please refresh the page and try again."}),403
+
+# Injected into every HTML page so all fetch()/XHR mutating calls carry the token.
+_CSRF_SHIM=("<script>(function(){function t(){var m=document.cookie.match(/(?:^|;\\s*)"
+    +CSRF_COOKIE+"=([^;]+)/);return m?decodeURIComponent(m[1]):\"\";}"
+    "function same(u){try{if(typeof u!=='string')u=(u&&u.url)||'';if(!u)return true;"
+    "if(u[0]==='/')return true;var a=document.createElement('a');a.href=u;return a.host===location.host;}catch(e){return false;}}"
+    "var M=['POST','PUT','PATCH','DELETE'];var of=window.fetch;"
+    "window.fetch=function(i,init){init=init||{};var m=(init.method||(i&&i.method)||'GET').toUpperCase();"
+    "if(M.indexOf(m)>=0&&same(i)){var h=new Headers(init.headers||(i&&i.headers)||{});"
+    "if(!h.has('"+CSRF_HEADER+"'))h.set('"+CSRF_HEADER+"',t());init.headers=h;}return of.call(this,i,init);};"
+    "var oo=XMLHttpRequest.prototype.open,os=XMLHttpRequest.prototype.send;"
+    "XMLHttpRequest.prototype.open=function(m,u){this.__m=(m||'GET').toUpperCase();this.__s=same(u);return oo.apply(this,arguments);};"
+    "XMLHttpRequest.prototype.send=function(){if(M.indexOf(this.__m)>=0&&this.__s){try{this.setRequestHeader('"
+    +CSRF_HEADER+"',t());}catch(e){}}return os.apply(this,arguments);};})();</script>")
+
 @app.after_request
 def _security_headers(resp):
     """Baseline security headers on every response. The CSP allows inline
@@ -1853,6 +1890,7 @@ def _security_headers(resp):
     resp.headers.setdefault("X-Frame-Options","DENY")
     resp.headers.setdefault("X-Content-Type-Options","nosniff")
     resp.headers.setdefault("Referrer-Policy","same-origin")
+    resp.headers.setdefault("Strict-Transport-Security","max-age=31536000; includeSubDomains")
     resp.headers.setdefault("Content-Security-Policy",
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline'; "
@@ -1864,6 +1902,19 @@ def _security_headers(resp):
         "frame-src 'self' data: blob: https:; "
         "frame-ancestors 'none'; "
         "base-uri 'self'")
+    # Ensure the CSRF cookie exists (readable by JS; Secure; SameSite=Lax).
+    if not request.cookies.get(CSRF_COOKIE):
+        resp.set_cookie(CSRF_COOKIE,secrets.token_urlsafe(32),max_age=7*24*3600,
+                        secure=True,httponly=False,samesite="Lax")
+    # Inject the token-forwarding shim into HTML pages (not JSON/file responses).
+    try:
+        ct=resp.headers.get("Content-Type","")
+        if ct.startswith("text/html") and not resp.direct_passthrough:
+            body=resp.get_data(as_text=True)
+            if "</body>" in body and "__m=" not in body:
+                resp.set_data(body.replace("</body>",_CSRF_SHIM+"</body>",1))
+    except Exception:
+        pass
     return resp
 
 def req_login(f):
