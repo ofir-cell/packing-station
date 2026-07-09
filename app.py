@@ -32,7 +32,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
-    INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
+    INVENTORY_HTML, PURCHASING_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
     PICKER_HTML, REPEAT_HTML,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
@@ -689,6 +689,16 @@ def sdb_init(org):
         "ALTER TABLE onboarding_steps ADD COLUMN body_es TEXT",
         "ALTER TABLE onboarding_steps ADD COLUMN config_json_es TEXT",
         "ALTER TABLE new_hires ADD COLUMN preferred_language TEXT DEFAULT 'en'",
+        # Product page: target sell price + uploaded image storage key.
+        "ALTER TABLE products ADD COLUMN target_price REAL DEFAULT 0",
+        "ALTER TABLE products ADD COLUMN image_key TEXT",
+        "ALTER TABLE products ADD COLUMN supplier TEXT",
+        # Purchase orders: inbound tracking + attached invoice + ETA.
+        "ALTER TABLE purchase_orders ADD COLUMN tracking TEXT",
+        "ALTER TABLE purchase_orders ADD COLUMN carrier TEXT",
+        "ALTER TABLE purchase_orders ADD COLUMN expected_at TEXT",
+        "ALTER TABLE purchase_orders ADD COLUMN invoice_key TEXT",
+        "ALTER TABLE purchase_orders ADD COLUMN invoice_name TEXT",
     ):
         try: c.execute(stmt)
         except sqlite3.OperationalError: pass  # column already exists
@@ -832,8 +842,11 @@ def sdb_init(org):
         name TEXT,
         barcode TEXT,
         image_url TEXT,
+        image_key TEXT,
         category TEXT,
+        supplier TEXT,
         avg_cost REAL DEFAULT 0,
+        target_price REAL DEFAULT 0,
         on_hand INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT
@@ -844,6 +857,11 @@ def sdb_init(org):
         supplier TEXT,
         status TEXT DEFAULT 'open',
         notes TEXT,
+        tracking TEXT,
+        carrier TEXT,
+        expected_at TEXT,
+        invoice_key TEXT,
+        invoice_name TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         received_at TEXT,
         created_by TEXT
@@ -1754,19 +1772,23 @@ for _org in list_org_ids():
     except Exception as e: print("workflow seed failed for", _org, ":", e, flush=True)
 
 def _seed_guides():
-    """Seed the starter help guides once, if none exist. Platform owner can edit."""
+    """Seed starter help guides. Adds any seed whose title isn't present yet, so
+    new starter guides show up on deploy without duplicating existing ones. The
+    platform owner's edits to already-seeded guides are left untouched."""
     try:
         c=pdb()
-        if c.execute("SELECT 1 FROM guides LIMIT 1").fetchone():
-            c.close(); return
+        have={r["title"] for r in c.execute("SELECT title FROM guides").fetchall()}
+        added=0
         for g in GUIDE_SEEDS:
+            if g.get("title") in have: continue
             c.execute("""INSERT INTO guides(category,title,body,video_url,audience,status,sort_order)
                          VALUES(?,?,?,?,?,?,?)""",
                       (g.get("category","getting_started"),g.get("title",""),g.get("body",""),
                        g.get("video_url",""),g.get("audience","all"),g.get("status","published"),
                        g.get("sort_order",0)))
+            added+=1
         c.commit(); c.close()
-        print("Seeded",len(GUIDE_SEEDS),"starter guides",flush=True)
+        if added: print("Seeded",added,"starter guides",flush=True)
     except Exception as e:
         print("guide seed error:",e,flush=True)
 _seed_guides()
@@ -4173,21 +4195,121 @@ def api_product_lookup(code):
     if p and session.get("role","")!="admin": p.pop("avg_cost",None)
     return jsonify({"ok":bool(r),"product":p})
 
+@app.route("/api/product/<sku>")
+@req_role("admin","cs")
+def api_product_detail(sku):
+    c=sdb(); r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone(); c.close()
+    if not r: return jsonify({"ok":False,"error":"Not found"}),404
+    p=dict(r)
+    if session.get("role")!="admin":   # cost is admin-only
+        p.pop("avg_cost",None)
+    # margin helper for the UI
+    if p.get("target_price") and p.get("avg_cost") is not None:
+        p["margin"]=round((p.get("target_price") or 0)-(p.get("avg_cost") or 0),2)
+    return jsonify({"ok":True,"product":p})
+
+def _gen_barcode():
+    """A unique internal barcode value (12 digits, '20' prefix) for products that
+    don't have a manufacturer barcode. Printable as Code128 via the label route."""
+    import random
+    c=sdb()
+    try:
+        for _ in range(300):
+            code="20"+"".join(random.choice("0123456789") for _ in range(10))
+            if not c.execute("SELECT 1 FROM products WHERE barcode=?",(code,)).fetchone():
+                return code
+        return "20"+str(int(time.time()))[-10:]
+    finally: c.close()
+
 @app.route("/api/products",methods=["POST"])
 @req_role("admin","cs")
 def api_product_save():
     d=request.get_json() or {}
     sku=(d.get("sku") or "").strip() or _gen_sku()
+    is_admin=session.get("role")=="admin"
+    now=datetime.now().isoformat(timespec='seconds')
     c=sdb()
+    exists=c.execute("SELECT on_hand,avg_cost FROM products WHERE sku=?",(sku,)).fetchone()
     c.execute("""INSERT INTO products(sku,name,barcode,image_url,category,updated_at)
                  VALUES(?,?,?,?,?,?)
                  ON CONFLICT(sku) DO UPDATE SET name=excluded.name,barcode=excluded.barcode,
                     image_url=COALESCE(excluded.image_url,products.image_url),
                     category=excluded.category,updated_at=excluded.updated_at""",
               (sku,(d.get("name") or "").strip(),(d.get("barcode") or "").strip() or None,
-               d.get("image_url"),d.get("category"),datetime.now().isoformat(timespec='seconds')))
+               d.get("image_url"),d.get("category"),now))
+    # Target sell price + supplier are editable by admin/cs.
+    if "target_price" in d:
+        c.execute("UPDATE products SET target_price=? WHERE sku=?",(float(d.get("target_price") or 0),sku))
+    if "supplier" in d:
+        c.execute("UPDATE products SET supplier=? WHERE sku=?",((d.get("supplier") or "").strip() or None,sku))
+    # Cost + on-hand are admin-only. A manual on-hand change is logged as a stock move.
+    if is_admin and d.get("cost") not in (None,""):
+        c.execute("UPDATE products SET avg_cost=? WHERE sku=?",(round(float(d.get("cost")),4),sku))
+    if is_admin and d.get("on_hand") not in (None,""):
+        new_oh=int(float(d.get("on_hand")))
+        old_oh=(exists["on_hand"] if exists else 0) or 0
+        c.execute("UPDATE products SET on_hand=? WHERE sku=?",(new_oh,sku))
+        if new_oh!=old_oh:
+            c.execute("""INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_by)
+                         VALUES(?,?,?,?,?)""",
+                      (sku,new_oh-old_oh,round(float(exists["avg_cost"] if exists else 0) or 0,4),
+                       "manual adjustment",session.get("user")))
     c.commit(); c.close()
     return jsonify({"ok":True,"sku":sku})
+
+@app.route("/api/product/<sku>/gen-barcode",methods=["POST"])
+@req_role("admin","cs")
+def api_product_gen_barcode(sku):
+    code=_gen_barcode()
+    c=sdb()
+    if not c.execute("SELECT 1 FROM products WHERE sku=?",(sku,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"Save the product first"})
+    c.execute("UPDATE products SET barcode=?,updated_at=? WHERE sku=?",
+              (code,datetime.now().isoformat(timespec='seconds'),sku))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"barcode":code})
+
+_PROD_IMG_EXT={"jpg","jpeg","png","webp","gif"}
+
+@app.route("/api/product/<sku>/image",methods=["POST"])
+@req_role("admin","cs")
+def api_product_image_upload(sku):
+    c=sdb()
+    if not c.execute("SELECT 1 FROM products WHERE sku=?",(sku,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"Save the product first"})
+    c.close()
+    f=request.files.get("file")
+    if not f or not f.filename: return jsonify({"ok":False,"error":"Pick an image"})
+    ext=f.filename.rsplit(".",1)[-1].lower() if "." in f.filename else ""
+    if ext not in _PROD_IMG_EXT: return jsonify({"ok":False,"error":"Use JPG, PNG, WEBP or GIF"})
+    safe=secure_filename(sku) or "p"
+    org=current_org()
+    key=f"{org}/products/{safe}.{ext}"
+    if r2:
+        r2.upload_fileobj(f.stream,R2_BUCKET,key,ExtraArgs={"ContentType":f.mimetype or "image/"+ext})
+    else:
+        d=org_path(org,"products"); os.makedirs(d,exist_ok=True)
+        f.save(os.path.join(d,safe+"."+ext))
+        key=safe+"."+ext
+    url=f"/product-image/{safe}?v={int(time.time())}"
+    cc=sdb(); cc.execute("UPDATE products SET image_key=?,image_url=?,updated_at=? WHERE sku=?",
+                         (key,url,datetime.now().isoformat(timespec='seconds'),sku)); cc.commit(); cc.close()
+    return jsonify({"ok":True,"image_url":url})
+
+@app.route("/product-image/<sku>")
+@req_login
+def product_image(sku):
+    c=sdb(); r=c.execute("SELECT image_key FROM products WHERE sku=?",(sku,)).fetchone(); c.close()
+    key=r["image_key"] if r else None
+    if not key: return ("",404)
+    if r2 and "/" in key:
+        try:
+            url=r2.generate_presigned_url("get_object",Params={"Bucket":R2_BUCKET,"Key":key},ExpiresIn=R2_PRESIGN_TTL)
+            return redirect(url)
+        except Exception: return ("",404)
+    p=org_path(current_org(),"products",key)
+    if not os.path.exists(p): return ("",404)
+    return send_file(p)
 
 @app.route("/api/products/template.csv")
 @req_role("admin")
@@ -4275,20 +4397,108 @@ def api_receive():
     c.commit(); c.close()
     return jsonify({"ok":True,"sku":sku,"on_hand":oh,"avg_cost":ac})
 
+def _po_insert_items(c, poid, items):
+    now=datetime.now().isoformat(timespec='seconds')
+    for it in (items or []):
+        sku=(it.get("sku") or "").strip()
+        name=(it.get("name") or "").strip()
+        try: qty=int(float(it.get("qty") or 0))
+        except Exception: qty=0
+        try: cost=float(it.get("unit_cost") or 0)
+        except Exception: cost=0.0
+        if not name and not sku: continue
+        # Ensure a catalog product exists for this line so it's always receivable
+        # (new supplier products enter the catalog here — that's the intent).
+        if sku:
+            if not c.execute("SELECT 1 FROM products WHERE sku=?",(sku,)).fetchone():
+                c.execute("INSERT INTO products(sku,name,updated_at) VALUES(?,?,?)",(sku,name or sku,now))
+        else:
+            sku=_gen_sku()
+            c.execute("INSERT INTO products(sku,name,updated_at) VALUES(?,?,?)",(sku,name or sku,now))
+        c.execute("INSERT INTO po_items(po_id,sku,product_name,qty_ordered,unit_cost) VALUES(?,?,?,?,?)",
+                  (poid,sku,name,qty,cost))
+
 @app.route("/api/po",methods=["POST"])
 @req_role("admin","cs")
 def api_po_create():
     d=request.get_json() or {}
     c=sdb()
-    cur=c.execute("INSERT INTO purchase_orders(supplier,notes,created_by) VALUES(?,?,?)",
-                  (d.get("supplier"),d.get("notes"),session.get("name","")[:60]))
+    cur=c.execute("""INSERT INTO purchase_orders(supplier,notes,tracking,carrier,expected_at,status,created_by)
+                     VALUES(?,?,?,?,?,?,?)""",
+                  (d.get("supplier"),d.get("notes"),(d.get("tracking") or "").strip() or None,
+                   (d.get("carrier") or "").strip() or None,(d.get("expected_at") or "").strip() or None,
+                   d.get("status") or "open",session.get("name","")[:60]))
     poid=cur.lastrowid
-    for it in (d.get("items") or []):
-        c.execute("INSERT INTO po_items(po_id,sku,product_name,qty_ordered,unit_cost) VALUES(?,?,?,?,?)",
-                  (poid,(it.get("sku") or "").strip(),it.get("name"),
-                   int(it.get("qty") or 0),float(it.get("unit_cost") or 0)))
+    _po_insert_items(c,poid,d.get("items"))
     c.commit(); c.close()
     return jsonify({"ok":True,"po_id":poid})
+
+@app.route("/api/po/<int:poid>",methods=["POST"])
+@req_role("admin","cs")
+def api_po_update(poid):
+    """Update a PO header and (optionally) replace its unreceived line items."""
+    d=request.get_json() or {}
+    c=sdb()
+    if not c.execute("SELECT 1 FROM purchase_orders WHERE id=?",(poid,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    c.execute("""UPDATE purchase_orders SET supplier=?,notes=?,tracking=?,carrier=?,expected_at=?,status=COALESCE(?,status)
+                 WHERE id=?""",
+              (d.get("supplier"),d.get("notes"),(d.get("tracking") or "").strip() or None,
+               (d.get("carrier") or "").strip() or None,(d.get("expected_at") or "").strip() or None,
+               d.get("status"),poid))
+    if "items" in d:
+        # Replace lines only if nothing has been received yet (avoid clobbering receipts).
+        got=c.execute("SELECT COALESCE(SUM(qty_received),0) n FROM po_items WHERE po_id=?",(poid,)).fetchone()["n"]
+        if got==0:
+            c.execute("DELETE FROM po_items WHERE po_id=?",(poid,))
+            _po_insert_items(c,poid,d.get("items"))
+    c.commit(); c.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/po/<int:poid>/detail")
+@req_role("admin","cs")
+def api_po_detail(poid):
+    c=sdb()
+    r=c.execute("SELECT * FROM purchase_orders WHERE id=?",(poid,)).fetchone()
+    if not r: c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    po=dict(r)
+    po["items"]=[dict(x) for x in c.execute("SELECT * FROM po_items WHERE po_id=? ORDER BY id",(poid,)).fetchall()]
+    # attach current product image for the receive screen
+    for it in po["items"]:
+        pr=c.execute("SELECT image_url,on_hand FROM products WHERE sku=?",(it.get("sku"),)).fetchone()
+        it["image_url"]=pr["image_url"] if pr else None
+        it["on_hand"]=pr["on_hand"] if pr else None
+    c.close()
+    if session.get("role")!="admin":
+        for it in po["items"]: it.pop("unit_cost",None)
+    return jsonify({"ok":True,"po":po})
+
+@app.route("/api/po/<int:poid>/item/<int:item_id>/receive",methods=["POST"])
+@req_role("admin","cs")
+def api_po_item_receive(poid,item_id):
+    """Receive some/all of one line — updates stock + weighted-avg cost. iPad checkoff."""
+    d=request.get_json() or {}
+    c=sdb()
+    it=c.execute("SELECT * FROM po_items WHERE id=? AND po_id=?",(item_id,poid)).fetchone()
+    if not it: c.close(); return jsonify({"ok":False,"error":"Line not found"}),404
+    remaining=(it["qty_ordered"] or 0)-(it["qty_received"] or 0)
+    try: qty=int(float(d.get("qty"))) if d.get("qty") not in (None,"") else remaining
+    except Exception: qty=remaining
+    qty=max(0,min(qty,remaining))
+    sku=(it["sku"] or "").strip()
+    if qty<=0 or not sku:
+        c.close(); return jsonify({"ok":False,"error":"Nothing to receive"})
+    oh,ac=_receive_stock(c,sku,qty,it["unit_cost"] or 0,po_id=poid,note="PO receive",name=it["product_name"])
+    c.execute("UPDATE po_items SET qty_received=qty_received+? WHERE id=?",(qty,item_id))
+    # auto-complete PO when every line is fully received
+    left=c.execute("SELECT COALESCE(SUM(qty_ordered-qty_received),0) n FROM po_items WHERE po_id=?",(poid,)).fetchone()["n"]
+    if left<=0:
+        c.execute("UPDATE purchase_orders SET status='received',received_at=? WHERE id=?",
+                  (datetime.now().isoformat(timespec='seconds'),poid))
+    else:
+        c.execute("UPDATE purchase_orders SET status='receiving' WHERE id=? AND status IN ('open','ordered','in_transit')",(poid,))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"sku":sku,"on_hand":oh,"avg_cost":ac,"received_now":qty,"po_done":left<=0})
 
 @app.route("/api/po")
 @req_role("admin","cs")
@@ -4319,6 +4529,117 @@ def api_po_receive(poid):
               (datetime.now().isoformat(timespec='seconds'),poid))
     c.commit(); c.close()
     return jsonify({"ok":True,"received":received})
+
+_PO_INVOICE_EXT={"pdf","jpg","jpeg","png","webp"}
+
+@app.route("/api/po/<int:poid>/invoice",methods=["POST"])
+@req_role("admin","cs")
+def api_po_invoice_upload(poid):
+    c=sdb()
+    if not c.execute("SELECT 1 FROM purchase_orders WHERE id=?",(poid,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"PO not found"}),404
+    c.close()
+    f=request.files.get("file")
+    if not f or not f.filename: return jsonify({"ok":False,"error":"Pick a file"})
+    ext=f.filename.rsplit(".",1)[-1].lower() if "." in f.filename else ""
+    if ext not in _PO_INVOICE_EXT: return jsonify({"ok":False,"error":"Use PDF or an image"})
+    org=current_org(); data=f.read()
+    key=f"{org}/invoices/po{poid}.{ext}"
+    if r2:
+        r2.put_object(Bucket=R2_BUCKET,Key=key,Body=data,ContentType=f.mimetype or "application/octet-stream")
+    else:
+        d=org_path(org,"invoices"); os.makedirs(d,exist_ok=True)
+        with open(os.path.join(d,f"po{poid}.{ext}"),"wb") as fh: fh.write(data)
+        key=f"po{poid}.{ext}"
+    cc=sdb(); cc.execute("UPDATE purchase_orders SET invoice_key=?,invoice_name=? WHERE id=?",
+                         (key,f.filename[:120],poid)); cc.commit(); cc.close()
+    return jsonify({"ok":True,"invoice_name":f.filename})
+
+@app.route("/api/po/<int:poid>/invoice-file")
+@req_role("admin","cs")
+def api_po_invoice_file(poid):
+    c=sdb(); r=c.execute("SELECT invoice_key FROM purchase_orders WHERE id=?",(poid,)).fetchone(); c.close()
+    key=r["invoice_key"] if r else None
+    if not key: return ("",404)
+    if r2 and "/" in key:
+        try:
+            url=r2.generate_presigned_url("get_object",Params={"Bucket":R2_BUCKET,"Key":key},ExpiresIn=R2_PRESIGN_TTL)
+            return redirect(url)
+        except Exception: return ("",404)
+    p=org_path(current_org(),"invoices",key)
+    if not os.path.exists(p): return ("",404)
+    return send_file(p)
+
+@app.route("/api/po/extract-invoice",methods=["POST"])
+@req_role("admin","cs")
+def api_po_extract_invoice():
+    """Best-effort: read a supplier invoice IMAGE and suggest line items to review.
+    Requires Anthropic to be configured; the user always reviews before saving."""
+    if not anthropic_client:
+        return jsonify({"ok":False,"error":"Auto-extract isn't set up — add the lines manually."})
+    f=request.files.get("file")
+    if not f or not f.filename: return jsonify({"ok":False,"error":"Pick an invoice image"})
+    ext=f.filename.rsplit(".",1)[-1].lower() if "." in f.filename else ""
+    if ext not in ("jpg","jpeg","png","webp"):
+        return jsonify({"ok":False,"error":"Auto-extract works on images (JPG/PNG). For PDFs, add lines manually."})
+    import base64
+    media="image/png" if ext=="png" else ("image/webp" if ext=="webp" else "image/jpeg")
+    b64=base64.standard_b64encode(f.read()).decode()
+    prompt=("Extract the purchased line items from this supplier invoice. Return ONLY a JSON array; "
+            "each element: {\"name\": product name, \"sku\": supplier SKU or code if shown else \"\", "
+            "\"qty\": integer quantity, \"unit_cost\": number}. No prose, no code fences.")
+    try:
+        msg=anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=2000,
+            messages=[{"role":"user","content":[
+                {"type":"image","source":{"type":"base64","media_type":media,"data":b64}},
+                {"type":"text","text":prompt}]}])
+        txt="".join(b.text for b in msg.content if getattr(b,"type","")=="text").strip()
+        if txt.startswith("```"): txt=txt.strip("`").split("\n",1)[-1]
+        import json as _j
+        items=_j.loads(txt)
+        clean=[]
+        for it in (items if isinstance(items,list) else []):
+            clean.append({"name":str(it.get("name",""))[:120],"sku":str(it.get("sku",""))[:40],
+                          "qty":int(float(it.get("qty") or 0)),"unit_cost":float(it.get("unit_cost") or 0)})
+        return jsonify({"ok":True,"items":clean})
+    except Exception as e:
+        print("invoice extract error:",e,flush=True)
+        return jsonify({"ok":False,"error":"Couldn't read the invoice automatically — add the lines manually."})
+
+@app.route("/api/po/<int:poid>/slip.pdf")
+@req_role("admin","cs")
+def api_po_slip(poid):
+    """Warehouse receiving slip — quantities only, NO costs."""
+    c=sdb()
+    po=c.execute("SELECT * FROM purchase_orders WHERE id=?",(poid,)).fetchone()
+    if not po: c.close(); return ("",404)
+    items=c.execute("SELECT * FROM po_items WHERE po_id=? ORDER BY id",(poid,)).fetchall()
+    c.close()
+    from io import BytesIO
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.units import mm
+    out=BytesIO(); cv=canvas.Canvas(out,pagesize=letter); W,H=letter
+    y=H-24*mm
+    cv.setFont("Helvetica-Bold",18); cv.drawString(20*mm,y,f"Receiving slip — PO #{poid}")
+    y-=8*mm; cv.setFont("Helvetica",11)
+    cv.drawString(20*mm,y,f"Supplier: {po['supplier'] or '-'}    Tracking: {po['tracking'] or '-'}")
+    y-=6*mm; cv.drawString(20*mm,y,f"Printed: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    y-=12*mm
+    cv.setFont("Helvetica-Bold",10)
+    cv.drawString(20*mm,y,"✓"); cv.drawString(30*mm,y,"SKU"); cv.drawString(60*mm,y,"Product")
+    cv.drawString(150*mm,y,"Qty"); cv.line(20*mm,y-2*mm,195*mm,y-2*mm); y-=8*mm
+    cv.setFont("Helvetica",10)
+    for it in items:
+        if y<24*mm: cv.showPage(); y=H-24*mm; cv.setFont("Helvetica",10)
+        cv.rect(20*mm,y-1*mm,4*mm,4*mm)  # checkbox
+        cv.drawString(30*mm,y,str(it["sku"] or "-"))
+        cv.drawString(60*mm,y,str(it["product_name"] or "")[:52])
+        cv.drawRightString(165*mm,y,str(it["qty_ordered"] or 0))
+        y-=8*mm
+    cv.showPage(); cv.save(); out.seek(0)
+    return send_file(out,mimetype="application/pdf",download_name=f"PO{poid}_slip.pdf")
 
 @app.route("/api/preshow/map",methods=["POST"])
 @req_role("admin","cs","worker","picker")
@@ -4467,7 +4788,12 @@ def preshow_page():
 @app.route("/admin/inventory")
 @req_role("admin")
 def inventory_page():
-    return INVENTORY_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("inventory")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return INVENTORY_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__ROLE__",esc(session.get("role",""))).replace("__NAVBAR__",_navbar("inventory")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/admin/purchasing")
+@req_role("admin","cs")
+def purchasing_page():
+    return PURCHASING_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__ROLE__",esc(session.get("role",""))).replace("__NAVBAR__",_navbar("purchasing")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/admin/profit")
 @req_role("admin")
@@ -4671,6 +4997,7 @@ OPS_GROUPS = [
         ("📈", "Analytics", "Overall performance", "/analytics", True),
         ("💰", "Profit", "Margins & cost of goods", "/admin/profit", True),
         ("📦", "Inventory", "Catalog, stock, costs", "/admin/inventory", True),
+        ("📥", "Purchasing", "Supplier orders & receiving", "/admin/purchasing", False),
     ]),
 ]
 

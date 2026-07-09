@@ -160,6 +160,64 @@ _SUPPORT = _frame("Support", (
     '<text x="60" y="463" font-size="12.5" fill="#9a3412">so you don\'t have to explain your setup — just tell us what went wrong.</text>'
 ), h=520)
 
+def _urow(y, name, role, method, color):
+    return (f'<rect x="40" y="{y}" width="500" height="52" rx="12" fill="#fff" stroke="#e4e7ec"/>'
+            f'<circle cx="70" cy="{y+26}" r="16" fill="#eef2ff"/>'
+            f'<text x="70" y="{y+31}" font-size="13" font-weight="800" fill="#4f46e5" text-anchor="middle">{name[0]}</text>'
+            f'<text x="98" y="{y+32}" font-size="14" font-weight="700" fill="#1a2130">{name}</text>'
+            f'<rect x="300" y="{y+15}" width="92" height="22" rx="11" fill="{color}"/>'
+            f'<text x="346" y="{y+30}" font-size="11" font-weight="800" fill="#fff" text-anchor="middle">{role}</text>'
+            f'<text x="410" y="{y+32}" font-size="12" fill="#6b7280">{method}</text>')
+
+_USERS = _frame("Settings · Users", (
+    '<text x="40" y="88" font-size="22" font-weight="800" fill="#1a2130">Your team</text>'
+    '<text x="40" y="110" font-size="13" fill="#6b7280">Each person gets a role that decides what they can see.</text>'
+    '<rect x="660" y="72" width="160" height="44" rx="10" fill="#4f46e5"/>'
+    '<text x="740" y="99" font-size="14" font-weight="800" fill="#fff" text-anchor="middle">+ Add user</text>'
+    + _num(848, 94, 1)
+    + _urow(140, "Alex M.", "ADMIN", "password", "#4f46e5")
+    + _urow(202, "Sam R.", "CS", "password", "#0ea5e9")
+    + _urow(264, "Jordan P.", "PACKER", "🎫 badge scan", "#10b981")
+    + _urow(326, "Riley T.", "PICKER", "🎫 badge scan", "#ec4899")
+    # add-user panel
+    + '<rect x="560" y="140" width="260" height="238" rx="14" fill="#f9fafb" stroke="#e4e7ec"/>'
+    '<text x="580" y="170" font-size="14" font-weight="800" fill="#1a2130">Add a user</text>'
+    '<rect x="580" y="184" width="220" height="34" rx="8" fill="#fff" stroke="#cbd5e1"/><text x="594" y="206" font-size="12.5" fill="#9ca3af">Username</text>'
+    '<rect x="580" y="226" width="220" height="34" rx="8" fill="#fff" stroke="#cbd5e1"/><text x="594" y="248" font-size="12.5" fill="#9ca3af">Password</text>'
+    '<rect x="580" y="268" width="220" height="34" rx="8" fill="#fff" stroke="#c7d2fe" stroke-width="2"/><text x="594" y="290" font-size="12.5" fill="#1a2130">Role: Packer ▾</text>'
+    '<rect x="580" y="320" width="220" height="40" rx="9" fill="#4f46e5"/><text x="690" y="345" font-size="13.5" font-weight="800" fill="#fff" text-anchor="middle">Create user</text>'
+    + _num(538, 289, 2)
+    + '<rect x="40" y="400" width="500" height="84" rx="14" fill="#eef2ff" stroke="#c7d2fe"/>'
+    '<text x="60" y="432" font-size="13.5" font-weight="800" fill="#4338ca">🎫 Workers log in by scanning a badge</text>'
+    '<text x="60" y="456" font-size="12.5" fill="#4338ca">Pickers &amp; packers get a badge barcode automatically — no password or keyboard at the station.</text>'
+), h=520)
+
+def _trow(y, order, buyer, track, status, color, upd):
+    return (f'<rect x="40" y="{y}" width="780" height="50" rx="12" fill="#fff" stroke="#e4e7ec"/>'
+            f'<text x="60" y="{y+22}" font-size="13.5" font-weight="800" fill="#1a2130">{order}</text>'
+            f'<text x="60" y="{y+40}" font-size="12" fill="#6b7280">{buyer}</text>'
+            f'<text x="230" y="{y+31}" font-size="13" font-family="monospace" fill="#475569">{track}</text>'
+            f'<rect x="470" y="{y+13}" width="150" height="24" rx="12" fill="{color}"/>'
+            f'<text x="545" y="{y+29}" font-size="11.5" font-weight="800" fill="#fff" text-anchor="middle">{status}</text>'
+            f'<text x="800" y="{y+31}" font-size="12" fill="#9ca3af" text-anchor="end">{upd}</text>')
+
+_TRACKING = _frame("Shipping status", (
+    '<text x="40" y="88" font-size="22" font-weight="800" fill="#1a2130">Packages in transit</text>'
+    '<text x="40" y="110" font-size="13" fill="#6b7280">Delivery status updates automatically from USPS — no manual checking.</text>'
+    '<rect x="40" y="126" width="120" height="34" rx="17" fill="#4f46e5"/><text x="100" y="148" font-size="12.5" font-weight="800" fill="#fff" text-anchor="middle">All</text>'
+    '<rect x="170" y="126" width="120" height="34" rx="17" fill="#f1f5f9"/><text x="230" y="148" font-size="12.5" font-weight="700" fill="#475569" text-anchor="middle">In transit</text>'
+    '<rect x="300" y="126" width="120" height="34" rx="17" fill="#f1f5f9"/><text x="360" y="148" font-size="12.5" font-weight="700" fill="#475569" text-anchor="middle">Delivered</text>'
+    + _num(150, 143, 1)
+    + _trow(180, "#1042", "Buyer A", "9400 **** 1234", "OUT FOR DELIVERY", "#0ea5e9", "12m ago")
+    + _trow(240, "#1039", "Buyer B", "9400 **** 8876", "IN TRANSIT", "#6366f1", "1h ago")
+    + _trow(300, "#1035", "Buyer C", "9400 **** 4521", "DELIVERED", "#10b981", "Today 9:14a")
+    + _trow(360, "#1031", "Buyer D", "9400 **** 0090", "RETURNED", "#f43f5e", "Yesterday")
+    + _num(628, 205, 2)
+    + '<rect x="40" y="430" width="780" height="66" rx="14" fill="#eef2ff" stroke="#c7d2fe"/>'
+    '<text x="60" y="460" font-size="13.5" font-weight="800" fill="#4338ca">💡 Every packed box is searchable by tracking</text>'
+    '<text x="60" y="482" font-size="12.5" fill="#4338ca">Open Customer Search to see a buyer\'s orders, live status, and the packing video.</text>'
+), h=520)
+
 GUIDE_ASSETS = {
     "dashboard": _DASHBOARD,
     "import": _IMPORT,
@@ -167,6 +225,8 @@ GUIDE_ASSETS = {
     "pack": _PACK,
     "analytics": _ANALYTICS,
     "support": _SUPPORT,
+    "users": _USERS,
+    "tracking": _TRACKING,
 }
 
 # ── Seed guides (Markdown; images point at /guide-asset/<name>) ─────
@@ -264,6 +324,13 @@ Product revenue and buyer-paid shipping are shown **separately**, so a show's sa
  "title":"Adding staff & badge logins","video_url":"","body":
 """Add your team under **Settings → Users**. Each person gets a role that decides what they can see.
 
+![The Users screen](/guide-asset/users)
+
+## How to add a user
+- **1. Click "Add user"** (top right of the Users screen).
+- Enter a **username** and **password**, then **2. pick a role** — Admin, CS, Picker, or Packer.
+- Click **Create user**. That's it — they can log in right away.
+
 ## Roles
 - **Admin** — full access, including settings and analytics.
 - **CS** — customer service: imports, customer lookup, support.
@@ -273,6 +340,25 @@ Product revenue and buyer-paid shipping are shown **separately**, so a show's sa
 Workers get a **badge token** automatically — print it as a barcode from Users → Badges. On a warehouse station they just **scan the badge to log in**, no password or keyboard needed.
 
 Lost a badge? Regenerate it (the old one stops working instantly).
+"""},
+
+{"category":"shipping","audience":"all","status":"published","sort_order":1,
+ "title":"Tracking packages in transit","video_url":"","body":
+"""Once a box ships, its delivery status updates **automatically from USPS** — you don't have to check tracking by hand.
+
+![Live delivery status](/guide-asset/tracking)
+
+## Where to look
+- Open the **Shipping status** view to see every package and where it is.
+- **1. Filter** by All / In transit / Delivered to focus on what matters.
+- Statuses move on their own: **In transit → Out for delivery → Delivered** (or **Returned**).
+
+## Find one buyer fast
+- **2.** Every packed box is searchable by tracking number.
+- Open **Customer Search** to pull up a buyer's orders, their live delivery status, and the **packing video** for proof of what shipped.
+
+## Good to know
+- Only real USPS tracking numbers update automatically. Giveaways sent by stamp won't have scannable tracking — that's expected.
 """},
 
 {"category":"troubleshooting","audience":"all","status":"published","sort_order":1,

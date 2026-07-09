@@ -129,7 +129,7 @@ def _navbar(active_page=""):
                  '</span><span class="brand-sub">' + str(_e(brand["sub"])) + '</span></span></a>')
     # Any Operations sub-page should light up the Operations link.
     ops_children = {"shows","shipments","cleanup","issues","dash","packer","customers",
-                    "sku_lookup","shipstatus","inbound","giveaway","inventory","profit",
+                    "sku_lookup","shipstatus","inbound","giveaway","inventory","profit","purchasing",
                     "hosts","analytics","geo","pickeran","repeat"}
     nav_html += '<div class="topnav-links">'
     for e in entries:
@@ -6766,27 +6766,48 @@ __NAVBAR__
   <h2>🗂️ Product catalog</h2>
   <div class="row" style="margin-bottom:14px">
     <div class="f" style="flex:1"><label>Search</label><input id="q" placeholder="SKU, name, or barcode" style="width:100%"></div>
+    <a class="btn btn-s" href="/admin/purchasing" style="text-decoration:none">📥 Purchasing</a>
     <button class="btn btn-s" id="addBtn">+ New product</button>
   </div>
-  <table><thead><tr><th></th><th>SKU</th><th>Name</th><th>Barcode</th><th>On hand</th><th>Avg cost</th><th>Label</th></tr></thead>
-  <tbody id="rows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody></table>
+  <table><thead><tr><th></th><th>SKU</th><th>Name</th><th>Barcode</th><th>On hand</th><th>Avg cost</th><th>Target</th><th>Label</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody></table>
 </div>
 </div>
 
-<div class="modal" id="addModal"><div class="box">
-  <h3>+ New product</h3>
-  <div class="grid">
-    <div class="f full"><label>Name *</label><input id="aName" placeholder="Product name" style="width:100%"></div>
-    <div class="f"><label>SKU</label><input id="aSku" placeholder="Blank = auto 4-digit" style="width:100%"></div>
-    <div class="f"><label>Barcode</label><input id="aBarcode" placeholder="If it has one" style="width:100%"></div>
-    <div class="f"><label>Category</label><input id="aCat" placeholder="Optional" style="width:100%"></div>
-    <div class="f"><label>Initial qty</label><input id="aQty" type="number" placeholder="0" style="width:100%"></div>
-    <div class="f full"><label>Unit cost ($)</label><input id="aCost" type="number" step="0.01" placeholder="0.00" style="width:100%"></div>
+<div class="modal" id="pModal"><div class="box" style="max-width:660px">
+  <h3 id="pTitle">Product</h3>
+  <div style="display:flex;gap:18px;align-items:flex-start">
+    <div style="flex:0 0 140px;text-align:center">
+      <img id="pImg" alt="" style="width:140px;height:140px;object-fit:cover;border-radius:12px;background:#eef0f4;border:1px solid #e4e7ec;display:block">
+      <input type="file" id="pFile" accept="image/*" style="display:none">
+      <button class="btn btn-s" style="margin-top:8px;width:100%;font-size:12px" id="pPhotoBtn">📷 Upload photo</button>
+    </div>
+    <div style="flex:1">
+      <div class="grid">
+        <div class="f full"><label>Name *</label><input id="pName" placeholder="Product name" style="width:100%"></div>
+        <div class="f"><label>SKU</label><input id="pSku" placeholder="Blank = auto 4-digit" style="width:100%"></div>
+        <div class="f"><label>Category</label><input id="pCat" placeholder="Optional" style="width:100%"></div>
+        <div class="f full"><label>Barcode</label>
+          <div style="display:flex;gap:6px">
+            <input id="pBarcode" placeholder="Manufacturer barcode — or generate one" style="flex:1">
+            <button class="btn btn-s" id="pGenBc" style="white-space:nowrap">Generate</button>
+          </div>
+        </div>
+        <div class="f adminOnly"><label>Cost price ($)</label><input id="pCost" type="number" step="0.01" placeholder="0.00" style="width:100%"></div>
+        <div class="f"><label>Target sell price ($)</label><input id="pTarget" type="number" step="0.01" placeholder="0.00" style="width:100%"></div>
+        <div class="f adminOnly"><label>Quantity on hand</label><input id="pQty" type="number" placeholder="0" style="width:100%"></div>
+        <div class="f"><label>Supplier</label><input id="pSupplier" placeholder="Optional" style="width:100%"></div>
+      </div>
+      <div class="muted" id="pMargin" style="margin-top:10px;font-size:13px"></div>
+    </div>
   </div>
-  <div class="muted" id="aResult" style="margin:14px 0;font-size:13px"></div>
-  <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px">
-    <button class="btn btn-s" onclick="closeAdd()">Close</button>
-    <button class="btn btn-p" id="aSave">Create</button>
+  <div class="muted" id="pResult" style="margin:12px 0;font-size:13px"></div>
+  <div style="display:flex;gap:10px;justify-content:space-between;align-items:center;margin-top:6px">
+    <a id="pLabel" href="#" target="_blank" class="btn btn-s" style="text-decoration:none;visibility:hidden">🏷️ Print label</a>
+    <div style="display:flex;gap:10px">
+      <button class="btn btn-s" onclick="closeP()">Close</button>
+      <button class="btn btn-p" id="pSave">Save</button>
+    </div>
   </div>
 </div></div>
 
@@ -6797,12 +6818,13 @@ function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':St
 function money(v){return v==null?'—':'$'+Number(v).toFixed(2)}
 function load(){
   fetch('/api/products'+(document.getElementById('q').value.trim()?('?q='+encodeURIComponent(document.getElementById('q').value.trim())):'')).then(function(r){return r.json()}).then(function(rows){
-    if(!rows.length){document.getElementById('rows').innerHTML='<tr><td colspan="7" class="muted">No products yet. Receive stock or add a product.</td></tr>';return}
+    if(!rows.length){document.getElementById('rows').innerHTML='<tr><td colspan="8" class="muted">No products yet. Receive stock or add a product.</td></tr>';return}
     document.getElementById('rows').innerHTML=rows.map(function(p){
       var img=p.image_url?'<img class="thumb" src="'+esc(p.image_url)+'">':'<div class="thumb"></div>';
-      return '<tr><td>'+img+'</td><td class="sku">'+esc(p.sku)+'</td><td>'+esc(p.name||'')+'</td><td class="muted">'+esc(p.barcode||'—')+'</td>'+
-        '<td>'+(p.on_hand||0)+'</td><td>'+money(p.avg_cost)+'</td>'+
-        '<td><a href="/api/product/'+encodeURIComponent(p.sku)+'/label.pdf" target="_blank" style="color:#4f46e5;text-decoration:underline">🏷️ Print</a></td></tr>';
+      var low=(p.on_hand||0)<=0?' style="color:#e11d48;font-weight:700"':'';
+      return '<tr style="cursor:pointer" onclick="openP(\\''+esc(p.sku)+'\\')"><td>'+img+'</td><td class="sku">'+esc(p.sku)+'</td><td>'+esc(p.name||'')+'</td><td class="muted">'+esc(p.barcode||'—')+'</td>'+
+        '<td'+low+'>'+(p.on_hand||0)+'</td><td>'+money(p.avg_cost)+'</td><td>'+money(p.target_price)+'</td>'+
+        '<td><a href="/api/product/'+encodeURIComponent(p.sku)+'/label.pdf" target="_blank" onclick="event.stopPropagation()" style="color:#4f46e5;text-decoration:underline">🏷️ Print</a></td></tr>';
     }).join('');
   });
 }
@@ -6830,23 +6852,69 @@ document.getElementById('csvBtn').addEventListener('click',function(){
     toast('Imported ✓');fi.value='';load();
   }).catch(function(){document.getElementById('csvResult').innerHTML='<span style="color:#f43f5e">Upload failed</span>'});
 });
-// ── New product modal ──
-function openAdd(){document.getElementById('addModal').classList.add('on');['aName','aSku','aBarcode','aCat','aQty','aCost'].forEach(function(id){document.getElementById(id).value=''});document.getElementById('aResult').innerHTML='';document.getElementById('aName').focus()}
-function closeAdd(){document.getElementById('addModal').classList.remove('on')}
-document.getElementById('addBtn').addEventListener('click',openAdd);
-document.getElementById('aSave').addEventListener('click',function(){
-  var name=document.getElementById('aName').value.trim();if(!name){toast('Name required',true);return}
-  var body={sku:document.getElementById('aSku').value.trim(),name:name,barcode:document.getElementById('aBarcode').value.trim(),category:document.getElementById('aCat').value.trim()};
-  fetch('/api/products',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json()}).then(function(d){
-    if(!d.ok){toast(d.error||'Failed',true);return}
-    var sku=d.sku;var qty=parseInt(document.getElementById('aQty').value||'0');var cost=parseFloat(document.getElementById('aCost').value||'0');
-    function done(){
-      document.getElementById('aResult').innerHTML='✓ Created SKU <b class="sku">'+esc(sku)+'</b> &nbsp; <a href="/api/product/'+encodeURIComponent(sku)+'/label.pdf" target="_blank" class="btn btn-s" style="text-decoration:none;padding:7px 14px">🏷️ Print label</a>';
-      toast('Created '+sku);load();
-    }
-    if(qty>0){fetch('/api/receive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sku:sku,qty:qty,unit_cost:cost})}).then(function(r){return r.json()}).then(done);}
-    else{done();}
-  });
+// ── Product editor (full product page) ──
+var ROLE='__ROLE__';var curSku='';
+if(ROLE!=='admin'){document.querySelectorAll('.adminOnly').forEach(function(e){e.style.display='none'})}
+function gv(id){return (document.getElementById(id).value||'').trim()}
+var PLACEHOLDER='data:image/svg+xml;utf8,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="140" height="140"><rect width="140" height="140" fill="#eef0f4"/><text x="70" y="76" font-size="34" text-anchor="middle" fill="#c3c9d4">📦</text></svg>');
+function calcMargin(){
+  var cost=parseFloat(gv('pCost')||'0'),tgt=parseFloat(gv('pTarget')||'0');
+  var el=document.getElementById('pMargin');
+  if(tgt>0&&cost>0){var m=tgt-cost,pct=Math.round(m/tgt*100);el.innerHTML='Margin: <b>'+money(m)+'</b> ('+pct+'%)';}
+  else el.innerHTML='';
+}
+function fillP(p){
+  curSku=p.sku||'';
+  document.getElementById('pTitle').textContent=p.sku?('Product · '+p.sku):'New product';
+  document.getElementById('pName').value=p.name||'';
+  document.getElementById('pSku').value=p.sku||'';
+  document.getElementById('pCat').value=p.category||'';
+  document.getElementById('pBarcode').value=p.barcode||'';
+  document.getElementById('pCost').value=(p.avg_cost!=null?p.avg_cost:'');
+  document.getElementById('pTarget').value=(p.target_price||'');
+  document.getElementById('pQty').value=(p.on_hand!=null?p.on_hand:'');
+  document.getElementById('pSupplier').value=p.supplier||'';
+  document.getElementById('pImg').src=p.image_url||PLACEHOLDER;
+  var lbl=document.getElementById('pLabel');
+  if(p.sku){lbl.href='/api/product/'+encodeURIComponent(p.sku)+'/label.pdf';lbl.style.visibility='visible'}else{lbl.style.visibility='hidden'}
+  document.getElementById('pResult').innerHTML='';calcMargin();
+}
+function openP(sku){
+  document.getElementById('pModal').classList.add('on');
+  if(sku){fetch('/api/product/'+encodeURIComponent(sku)).then(function(r){return r.json()}).then(function(d){if(d.ok)fillP(d.product);else toast('Not found',true)});}
+  else{fillP({});document.getElementById('pName').focus();}
+}
+function closeP(){document.getElementById('pModal').classList.remove('on')}
+document.getElementById('addBtn').addEventListener('click',function(){openP(null)});
+document.getElementById('pCost').addEventListener('input',calcMargin);
+document.getElementById('pTarget').addEventListener('input',calcMargin);
+function saveP(cb){
+  var name=gv('pName');if(!name){toast('Name required',true);return}
+  var body={name:name,sku:gv('pSku')||curSku,barcode:gv('pBarcode'),category:gv('pCat'),
+    target_price:gv('pTarget')||0,supplier:gv('pSupplier')};
+  if(ROLE==='admin'){if(gv('pCost')!=='')body.cost=gv('pCost');if(gv('pQty')!=='')body.on_hand=gv('pQty');}
+  fetch('/api/products',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json()}).then(function(d){
+      if(!d.ok){toast(d.error||'Failed',true);return}
+      curSku=d.sku;document.getElementById('pSku').value=d.sku;
+      var lbl=document.getElementById('pLabel');lbl.href='/api/product/'+encodeURIComponent(d.sku)+'/label.pdf';lbl.style.visibility='visible';
+      document.getElementById('pTitle').textContent='Product · '+d.sku;
+      load();if(cb)cb(d.sku);else{toast('Saved ✓');document.getElementById('pResult').innerHTML='✓ Saved.';}
+    });
+}
+document.getElementById('pSave').addEventListener('click',function(){saveP()});
+document.getElementById('pGenBc').addEventListener('click',function(){
+  function gen(sku){fetch('/api/product/'+encodeURIComponent(sku)+'/gen-barcode',{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d.ok){document.getElementById('pBarcode').value=d.barcode;toast('Barcode generated')}else toast(d.error||'Failed',true)})}
+  if(curSku)gen(curSku);else saveP(gen);
+});
+document.getElementById('pPhotoBtn').addEventListener('click',function(){document.getElementById('pFile').click()});
+document.getElementById('pFile').addEventListener('change',function(){
+  var f=this.files&&this.files[0];if(!f)return;
+  function up(sku){var fd=new FormData();fd.append('file',f);
+    document.getElementById('pResult').textContent='Uploading photo…';
+    fetch('/api/product/'+encodeURIComponent(sku)+'/image',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+      if(d.ok){document.getElementById('pImg').src=d.image_url;document.getElementById('pResult').innerHTML='✓ Photo updated.';load()}else{toast(d.error||'Upload failed',true);document.getElementById('pResult').innerHTML=''}}).catch(function(){toast('Upload failed',true)});}
+  if(curSku)up(curSku);else saveP(up);
 });
 document.getElementById('rSku').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('rBtn').click()});
 var dq=null;document.getElementById('q').addEventListener('input',function(){clearTimeout(dq);dq=setTimeout(load,200)});
@@ -6855,6 +6923,246 @@ load();
 
 
 # ── PROFIT — revenue minus COGS per show ──
+PURCHASING_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Purchasing</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#fff;color:#1a2130;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1040px;margin:0 auto;display:flex;justify-content:space-between;align-items:center}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#4f46e5;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1040px;margin:0 auto;padding:8px 28px 60px}
+.card{background:#fff;border:1px solid rgba(17,24,39,0.096);border-radius:16px;padding:20px 22px;margin-bottom:18px}
+.card h2{font-size:15px;font-weight:800;color:#4f46e5;text-transform:uppercase;letter-spacing:.6px;margin-bottom:14px}
+label{font-size:12px;font-weight:700;color:#6b7280;display:block;margin:10px 0 4px}
+input[type=text],input[type=number],input[type=date],select{background:#fff;border:2px solid rgba(17,24,39,0.128);border-radius:10px;padding:10px 13px;font-size:14px;color:#1a2130;font-family:inherit;outline:none;width:100%}
+input:focus,select:focus{border-color:#4f46e5}
+.row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.btn{border:none;border-radius:10px;padding:11px 18px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
+.btn-s{background:#f6f7f9;color:#1a2130;border:1px solid rgba(17,24,39,0.12)}
+.btn-g{background:rgba(52,211,153,.16);color:#059669}
+.btn-d{background:rgba(244,63,94,.12);color:#e11d48}
+table{width:100%;border-collapse:collapse}
+th,td{padding:11px 8px;font-size:13px;border-bottom:1px solid rgba(17,24,39,0.08);text-align:left}
+th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
+tr.click{cursor:pointer}tr.click:hover td{background:#f9fafb}
+.pill{font-size:11px;font-weight:700;padding:3px 10px;border-radius:50px;white-space:nowrap}
+.s-open{background:rgba(148,163,184,.2);color:#475569}.s-ordered{background:rgba(79,70,229,.14);color:#4338ca}
+.s-in_transit{background:rgba(14,165,233,.16);color:#0369a1}.s-receiving{background:rgba(251,191,36,.18);color:#b45309}
+.s-received{background:rgba(52,211,153,.16);color:#059669}
+.linerow{display:grid;grid-template-columns:1fr 120px 90px 110px 34px;gap:8px;align-items:center;margin-bottom:8px}
+.linerow.nocost{grid-template-columns:1fr 120px 90px 34px}
+.muted{color:#9ca3af;font-size:13px}.hide{display:none}
+.backlink{color:#4f46e5;font-weight:700;font-size:13px;cursor:pointer;display:inline-block;margin-bottom:12px}
+.rcv{display:flex;align-items:center;gap:14px;padding:14px 10px;border-bottom:1px solid rgba(17,24,39,0.08)}
+.rcv img,.rcv .noimg{width:52px;height:52px;border-radius:10px;object-fit:cover;background:#eef0f4;flex:0 0 52px}
+.rcv .info{flex:1}.rcv .nm{font-weight:700;font-size:15px}.rcv .sub{font-size:12px;color:#6b7280;margin-top:2px}
+.rcv .qbox{display:flex;align-items:center;gap:8px}
+.rcv input{width:70px;text-align:center}
+.done{background:#ecfdf5}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}
+.toast.err{background:#f43f5e}
+.filebtn{display:inline-block}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">📥 Purchasing <span>__NAME__</span></div>
+  <button class="btn btn-p" id="newBtn">+ New order</button></div>
+<div class="wrap">
+<datalist id="prodList"></datalist>
+
+<div id="listView">
+  <div class="card">
+    <h2>Purchase orders</h2>
+    <table><thead><tr><th>PO</th><th>Supplier</th><th>Items</th><th>Tracking</th><th>Status</th><th>Created</th></tr></thead>
+    <tbody id="poRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody></table>
+  </div>
+</div>
+
+<div id="editView" class="hide">
+  <span class="backlink" onclick="showList()">← Back to orders</span>
+  <div class="card">
+    <h2 id="editTitle">New purchase order</h2>
+    <input type="hidden" id="poId">
+    <div class="row">
+      <div><label>Supplier</label><input type="text" id="supplier" placeholder="e.g. GlowCo"></div>
+      <div><label>Tracking number (if you have it)</label><input type="text" id="tracking" placeholder="Enter, or generate a label below"></div>
+      <div><label>Carrier</label><input type="text" id="carrier" placeholder="UPS / USPS / DHL"></div>
+    </div>
+    <div class="row">
+      <div><label>Expected date</label><input type="date" id="expected_at"></div>
+      <div style="grid-column:span 2"><label>Notes</label><input type="text" id="notes" placeholder="Optional"></div>
+    </div>
+
+    <label style="margin-top:18px">Invoice (optional)</label>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <input type="file" id="invFile" accept="image/*,.pdf" style="display:none">
+      <button class="btn btn-s" id="invBtn">📎 Attach invoice</button>
+      <button class="btn btn-s" id="extractBtn">✨ Extract items from photo</button>
+      <span class="muted" id="invName"></span>
+    </div>
+    <div class="muted" style="font-size:12px;margin-top:4px">Photo of an invoice → we suggest the line items for you to review. PDFs attach for reference.</div>
+
+    <h2 style="margin-top:22px">Items to receive</h2>
+    <div class="linerow" id="lineHead"><div class="muted">Product</div><div class="muted">SKU</div><div class="muted">Qty</div><div class="muted costcol">Unit cost</div><div></div></div>
+    <div id="lines"></div>
+    <button class="btn btn-s" id="addLine" style="margin-top:6px">+ Add item</button>
+
+    <div style="margin-top:20px;display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-p" id="saveBtn">Save order</button>
+      <button class="btn btn-g" id="genLabelBtn">🏷️ Generate inbound label</button>
+      <span class="muted" id="editResult"></span>
+    </div>
+  </div>
+</div>
+
+<div id="recvView" class="hide">
+  <span class="backlink" onclick="showList()">← Back to orders</span>
+  <div class="card" id="recvCard"></div>
+</div>
+
+</div>
+<div class="toast" id="t"></div>
+<script>
+var ROLE='__ROLE__';var isAdmin=ROLE==='admin';
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3200)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function gv(id){return (document.getElementById(id).value||'').trim()}
+function money(v){return v==null?'—':'$'+Number(v).toFixed(2)}
+function stpill(s){return '<span class="pill s-'+esc(s)+'">'+esc(s).replace('_',' ')+'</span>'}
+if(!isAdmin){document.querySelectorAll('.costcol').forEach(function(e){e.style.display='none'})}
+// product autocomplete
+fetch('/api/products').then(function(r){return r.json()}).then(function(rows){
+  document.getElementById('prodList').innerHTML=(rows||[]).map(function(p){return '<option value="'+esc(p.name||'')+'" data-sku="'+esc(p.sku)+'">'}).join('');
+});
+function show(v){['listView','editView','recvView'].forEach(function(x){document.getElementById(x).classList.add('hide')});document.getElementById(v).classList.remove('hide');window.scrollTo(0,0)}
+function showList(){show('listView');loadPOs()}
+function loadPOs(){
+  fetch('/api/po').then(function(r){return r.json()}).then(function(rows){
+    var el=document.getElementById('poRows');
+    if(!rows.length){el.innerHTML='<tr><td colspan="6" class="muted">No orders yet. Create one to start.</td></tr>';return}
+    el.innerHTML=rows.map(function(p){
+      var items=(p.items||[]).length;
+      return '<tr class="click" onclick="openPO('+p.id+',\\''+esc(p.status)+'\\')"><td><b>#'+p.id+'</b></td><td>'+esc(p.supplier||'—')+'</td>'+
+        '<td>'+items+'</td><td class="muted">'+esc(p.tracking||'—')+'</td><td>'+stpill(p.status)+'</td>'+
+        '<td class="muted">'+esc((p.created_at||'').replace('T',' ').slice(0,16))+'</td></tr>';
+    }).join('');
+  });
+}
+function openPO(id,status){
+  // received / receiving -> go to receive screen; otherwise edit
+  if(status==='received'||status==='receiving')openReceive(id);else editPO(id);
+}
+// ── line rows ──
+function lineRow(it){
+  it=it||{};
+  var cost=isAdmin?'<input type="number" step="0.01" class="l-cost" placeholder="0.00" value="'+(it.unit_cost!=null?it.unit_cost:'')+'">':'';
+  var div=document.createElement('div');div.className='linerow'+(isAdmin?'':' nocost');
+  div.innerHTML='<input type="text" class="l-name" list="prodList" placeholder="Product name" value="'+esc(it.product_name||it.name||'')+'" oninput="skuFromName(this)">'+
+    '<input type="text" class="l-sku" placeholder="auto" value="'+esc(it.sku||'')+'">'+
+    '<input type="number" class="l-qty" placeholder="0" value="'+(it.qty_ordered!=null?it.qty_ordered:(it.qty!=null?it.qty:''))+'">'+
+    cost+'<button class="btn btn-d" style="padding:6px 10px" onclick="this.parentNode.remove()">✕</button>';
+  return div;
+}
+function skuFromName(inp){
+  var opt=document.querySelector('#prodList option[value="'+inp.value.replace(/"/g,'')+'"]');
+  if(opt){var sku=opt.getAttribute('data-sku');var row=inp.parentNode.querySelector('.l-sku');if(row&&!row.value)row.value=sku}
+}
+function addLine(it){document.getElementById('lines').appendChild(lineRow(it))}
+function collectLines(){
+  return Array.prototype.map.call(document.querySelectorAll('#lines .linerow'),function(r){
+    return {name:(r.querySelector('.l-name').value||'').trim(),sku:(r.querySelector('.l-sku').value||'').trim(),
+      qty:parseInt(r.querySelector('.l-qty').value||'0'),unit_cost:isAdmin?parseFloat((r.querySelector('.l-cost').value||'0')):0};
+  }).filter(function(l){return l.name||l.sku});
+}
+function newPO(){
+  document.getElementById('poId').value='';document.getElementById('editTitle').textContent='New purchase order';
+  ['supplier','tracking','carrier','expected_at','notes'].forEach(function(id){document.getElementById(id).value=''});
+  document.getElementById('invName').textContent='';document.getElementById('editResult').textContent='';
+  document.getElementById('lines').innerHTML='';addLine();addLine();show('editView');
+}
+function editPO(id){
+  fetch('/api/po/'+id+'/detail').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;var p=d.po;
+    document.getElementById('poId').value=p.id;document.getElementById('editTitle').textContent='Edit PO #'+p.id;
+    document.getElementById('supplier').value=p.supplier||'';document.getElementById('tracking').value=p.tracking||'';
+    document.getElementById('carrier').value=p.carrier||'';document.getElementById('expected_at').value=(p.expected_at||'').slice(0,10);
+    document.getElementById('notes').value=p.notes||'';document.getElementById('invName').textContent=p.invoice_name||'';
+    document.getElementById('lines').innerHTML='';(p.items||[]).forEach(addLine);if(!p.items||!p.items.length){addLine()}
+    document.getElementById('editResult').textContent='';show('editView');
+  });
+}
+function savePO(cb){
+  var body={supplier:gv('supplier'),tracking:gv('tracking'),carrier:gv('carrier'),expected_at:gv('expected_at'),
+    notes:gv('notes'),items:collectLines()};
+  var id=gv('poId');var url=id?('/api/po/'+id):'/api/po';
+  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json()}).then(function(d){
+      if(!d.ok){toast(d.error||'Failed',true);return}
+      var pid=d.po_id||id;document.getElementById('poId').value=pid;
+      toast('Saved ✓');if(cb)cb(pid);else{document.getElementById('editResult').textContent='Saved PO #'+pid;}
+    });
+}
+document.getElementById('newBtn').addEventListener('click',newPO);
+document.getElementById('addLine').addEventListener('click',function(){addLine()});
+document.getElementById('saveBtn').addEventListener('click',function(){savePO()});
+// invoice attach (needs a saved PO)
+document.getElementById('invBtn').addEventListener('click',function(){document.getElementById('invFile').click()});
+document.getElementById('invFile').addEventListener('change',function(){
+  var f=this.files&&this.files[0];if(!f)return;var self=this;
+  function up(pid){var fd=new FormData();fd.append('file',f);
+    fetch('/api/po/'+pid+'/invoice',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+      if(d.ok){document.getElementById('invName').textContent='📎 '+d.invoice_name;toast('Invoice attached')}else toast(d.error||'Failed',true)});}
+  if(gv('poId'))up(gv('poId'));else savePO(up);
+});
+// extract items from an invoice photo
+document.getElementById('extractBtn').addEventListener('click',function(){
+  var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+  inp.onchange=function(){var f=inp.files[0];if(!f)return;var fd=new FormData();fd.append('file',f);
+    document.getElementById('editResult').textContent='Reading invoice…';
+    fetch('/api/po/extract-invoice',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+      if(!d.ok){document.getElementById('editResult').textContent='';toast(d.error||'Failed',true);return}
+      document.getElementById('lines').innerHTML='';(d.items||[]).forEach(addLine);if(!d.items.length)addLine();
+      document.getElementById('editResult').textContent='✨ Added '+(d.items||[]).length+' items — review before saving.';toast('Extracted ✓')});};
+  inp.click();
+});
+document.getElementById('genLabelBtn').addEventListener('click',function(){
+  savePO(function(pid){window.location.href='/admin/inbound';});
+});
+// ── receive view ──
+function openReceive(id){
+  fetch('/api/po/'+id+'/detail').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;var p=d.po;
+    var rows=(p.items||[]).map(function(it){
+      var remaining=(it.qty_ordered||0)-(it.qty_received||0);
+      var img=it.image_url?'<img src="'+esc(it.image_url)+'">':'<div class="noimg"></div>';
+      var doneCls=remaining<=0?' done':'';
+      var ctrl=remaining<=0?'<span class="pill s-received">✓ received</span>':
+        '<div class="qbox"><input type="number" id="q'+it.id+'" value="'+remaining+'" min="1" max="'+remaining+'"><button class="btn btn-g" onclick="recvLine('+p.id+','+it.id+')">Receive</button></div>';
+      return '<div class="rcv'+doneCls+'">'+img+'<div class="info"><div class="nm">'+esc(it.product_name||it.sku)+'</div>'+
+        '<div class="sub">SKU '+esc(it.sku)+' · ordered '+(it.qty_ordered||0)+' · received '+(it.qty_received||0)+' · on hand '+(it.on_hand!=null?it.on_hand:'—')+
+        ' &nbsp;<a href="/admin/inventory" style="color:#4f46e5">edit product ›</a></div></div>'+ctrl+'</div>';
+    }).join('');
+    document.getElementById('recvCard').innerHTML='<h2>Receive PO #'+p.id+' '+stpill(p.status)+'</h2>'+
+      '<div class="muted" style="margin-bottom:12px">'+esc(p.supplier||'')+(p.tracking?(' · '+esc(p.tracking)):'')+'</div>'+
+      '<div style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap">'+
+      '<a class="btn btn-s" href="/api/po/'+p.id+'/slip.pdf" target="_blank" style="text-decoration:none">🖨️ Print receiving slip</a>'+
+      (p.invoice_name?('<a class="btn btn-s" href="/api/po/'+p.id+'/invoice-file" target="_blank" style="text-decoration:none">📎 Invoice</a>'):'')+'</div>'+
+      rows;
+    show('recvView');
+  });
+}
+function recvLine(poid,itemId){
+  var q=parseInt((document.getElementById('q'+itemId)||{}).value||'0');
+  fetch('/api/po/'+poid+'/item/'+itemId+'/receive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qty:q})})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Received ✓');openReceive(poid)}else toast(d.error||'Failed',true)});
+}
+loadPOs();
+</script></body></html>'''
+
+
 PROFIT_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
