@@ -233,9 +233,26 @@ def pdb_init():
                      VALUES(?,?,?,?,?)""",
                   (DEFAULT_ORG, "5 Second Beauty", "5 SEC", "Employee Hub", "#d9748f"))
     c.execute("UPDATE organizations SET brand_color='#d9748f' WHERE brand_color='#f3c9c4'")
+    # Platform audit trail (super-admin actions: impersonation, org create/suspend).
+    c.execute("""CREATE TABLE IF NOT EXISTS platform_audit(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT DEFAULT CURRENT_TIMESTAMP,
+        actor TEXT,
+        action TEXT,
+        org_id TEXT,
+        detail TEXT
+    )""")
     c.commit(); c.close()
 
 pdb_init()
+
+def plog(actor,action,org_id="",detail=""):
+    """Append a row to the platform audit trail. Best-effort (never raises)."""
+    try:
+        c=pdb(); c.execute("INSERT INTO platform_audit(actor,action,org_id,detail) VALUES(?,?,?,?)",
+                           (actor,action,org_id,detail)); c.commit(); c.close()
+    except Exception as e:
+        print("plog error:",e,flush=True)
 
 def cleanup_old_files(org):
     """Delete one tenant's video/photo files older than RETENTION_DAYS.
@@ -5858,6 +5875,7 @@ def api_orgs_create():
     with update_json(USERS_FILE) as uu:
         uu[admin_user]={"password":_h(admin_pw),"role":"admin",
                         "name":_clean_name(d.get("admin_name") or "Admin"),"org":org_id}
+    plog(session.get("user"),"org_create",org_id,"company="+company+" admin="+admin_user)
     return jsonify({"ok":True,"org_id":org_id,"admin_username":admin_user,"admin_password":admin_pw})
 
 @app.route("/api/orgs/toggle",methods=["POST"])
@@ -5873,6 +5891,7 @@ def api_orgs_toggle():
     if not c.execute("SELECT 1 FROM organizations WHERE org_id=?",(org_id,)).fetchone():
         c.close(); return jsonify({"ok":False,"error":"Org not found"})
     c.execute("UPDATE organizations SET active=? WHERE org_id=?",(active,org_id)); c.commit(); c.close()
+    plog(session.get("user"),"org_"+("activate" if active else "suspend"),org_id,"")
     return jsonify({"ok":True,"org_id":org_id,"active":bool(active)})
 
 @app.route("/admin/organizations")
@@ -5880,6 +5899,44 @@ def api_orgs_toggle():
 def organizations_page():
     return ORGANIZATIONS_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
         "__NAVBAR__",_navbar("organizations")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/api/impersonate",methods=["POST"])
+@req_super
+def api_impersonate():
+    """Enter a tenant as a support admin. Keeps a marker so the UI shows a banner
+    and the session can be restored to the platform owner on exit."""
+    d=request.get_json() or {}
+    org_id=(d.get("org_id") or "").strip().lower()
+    if org_id in ("",PLATFORM_ORG):
+        return jsonify({"ok":False,"error":"Pick a tenant"})
+    o=org_get(org_id)
+    if not o or o.get("org_id")!=org_id:
+        return jsonify({"ok":False,"error":"Org not found"})
+    owner=session.get("user")
+    plog(owner,"impersonate_enter",org_id,"support session started")
+    # Act as that tenant's admin, remembering who we really are.
+    session["impersonator"]=owner
+    session["role"]="admin"
+    session["org"]=org_id
+    session["name"]="Support · "+(o.get("company_name") or org_id)
+    session["brand"]=brand_for_session(org_id)
+    return jsonify({"ok":True,"redirect":"/home"})
+
+@app.route("/api/impersonate/exit",methods=["POST"])
+@req_login
+def api_impersonate_exit():
+    """Leave support mode and restore the platform-owner session."""
+    owner=session.get("impersonator")
+    if not owner:
+        return jsonify({"ok":False,"error":"Not in support mode"})
+    plog(owner,"impersonate_exit",session.get("org",""),"support session ended")
+    session.pop("impersonator",None)
+    session["user"]=owner
+    session["role"]="superadmin"
+    session["org"]=PLATFORM_ORG
+    session["name"]="Platform Owner"
+    session["brand"]=brand_for_session(PLATFORM_ORG)
+    return jsonify({"ok":True,"redirect":"/admin/organizations"})
 
 @app.route("/api/users/badge/pdf/<u>")
 @req_role("admin")

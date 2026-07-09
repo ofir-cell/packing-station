@@ -55,6 +55,23 @@ def _navbar(active_page=""):
     brand=_brand()
     initials=str(_e(_initials(raw_name)))
 
+    # ── Support-mode banner (super-admin impersonating a tenant) ──
+    imp = session.get("impersonator")
+    imp_banner = ""
+    if imp:
+        _co = str(_e(brand.get("company", "this tenant")))
+        imp_banner = (
+            '<div style="position:sticky;top:0;z-index:1000;background:#b45309;color:#fff;'
+            'padding:8px 16px;font-size:13px;font-weight:700;display:flex;align-items:center;'
+            "justify-content:center;gap:14px;font-family:'DM Sans',sans-serif\">"
+            '🛟 Support mode — viewing <b style="margin:0 2px">' + _co + '</b>'
+            '<button onclick="impExit()" style="background:#fff;color:#b45309;border:none;'
+            'border-radius:6px;padding:5px 12px;font-weight:800;cursor:pointer;font-family:inherit">'
+            'Exit to platform</button></div>'
+            '<script>function impExit(){fetch("/api/impersonate/exit",{method:"POST"})'
+            '.then(function(r){return r.json()}).then(function(d){'
+            'location.href=(d&&d.redirect)||"/admin/organizations"})}</script>')
+
     # ── Top-row entries (operations / fast links only) ──
     if role == "superadmin":
         # Platform owner: no tenant screens, just the Organizations console.
@@ -99,7 +116,7 @@ def _navbar(active_page=""):
 
     # ── Render row ──
     logo = ('<img src="' + str(_e(brand["logo_url"])) + '" alt="" class="brand-logo">') if brand["logo_url"] else ""
-    nav_html = _brand_style()
+    nav_html = _brand_style() + imp_banner
     nav_html += '<nav class="topnav"><div class="topnav-inner">'
     _home_url = "/admin/organizations" if role == "superadmin" else "/home"
     nav_html += ('<a href="' + _home_url + '" class="topnav-brand">' + logo +
@@ -8257,15 +8274,25 @@ function load(){
     if(!d.ok){document.getElementById('orgRows').innerHTML='<tr><td colspan=7 class=muted>Failed to load</td></tr>';return}
     var rows=d.orgs.map(function(o){
       var status=o.active?'<span class="pill on">active</span>':'<span class="pill off">suspended</span>';
-      var act=o.is_default?'<span class="muted">founding</span>':(o.active
+      var enter=o.active?'<button class="btn btn-s" data-enter="'+esc(o.org_id)+'">🛟 Enter</button> ':'';
+      var toggle=o.is_default?'<span class="muted">founding</span>':(o.active
         ?'<button class="btn btn-warn" data-o="'+esc(o.org_id)+'" data-a="0">Suspend</button>'
         :'<button class="btn btn-ok" data-o="'+esc(o.org_id)+'" data-a="1">Reactivate</button>');
       return '<tr><td><b>'+esc(o.company_name)+'</b></td><td><code>'+esc(o.org_id)+'</code></td>'+
         '<td><span class="swatch" style="background:'+esc(o.brand_color||'#ccc')+'"></span>'+esc(o.brand_mark||'')+'</td>'+
-        '<td>'+esc(o.plan||'')+'</td><td>'+o.user_count+'</td><td>'+status+'</td><td>'+act+'</td></tr>';
+        '<td>'+esc(o.plan||'')+'</td><td>'+o.user_count+'</td><td>'+status+'</td><td>'+enter+toggle+'</td></tr>';
     }).join('');
     document.getElementById('orgRows').innerHTML=rows||'<tr><td colspan=7 class=muted>No organizations</td></tr>';
-    document.querySelectorAll('#orgRows button').forEach(function(b){
+    document.querySelectorAll('#orgRows button[data-enter]').forEach(function(b){
+      b.addEventListener('click',function(){
+        var org=b.getAttribute('data-enter');
+        fetch('/api/impersonate',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({org_id:org})})
+          .then(function(r){return r.json()}).then(function(d){
+            if(d.ok){location.href=d.redirect||'/home'}else{toast(d.error||'Failed',1)}});
+      });
+    });
+    document.querySelectorAll('#orgRows button[data-o]').forEach(function(b){
       b.addEventListener('click',function(){
         var active=b.getAttribute('data-a')==='1';
         if(!active && !confirm('Suspend this tenant? Their users will not be able to log in.'))return;
