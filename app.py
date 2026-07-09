@@ -34,7 +34,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
     INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
     PICKER_HTML, REPEAT_HTML,
-    OPERATIONS_HTML, ORGANIZATIONS_HTML,
+    OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
 
 
@@ -242,6 +242,33 @@ def pdb_init():
         org_id TEXT,
         detail TEXT
     )""")
+    # Support tickets (cross-tenant: customers open them, platform owner answers).
+    c.execute("""CREATE TABLE IF NOT EXISTS tickets(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        org_id TEXT NOT NULL,
+        created_by TEXT,
+        created_by_name TEXT,
+        category TEXT,
+        subject TEXT NOT NULL,
+        priority TEXT DEFAULT 'normal',
+        status TEXT NOT NULL DEFAULT 'open',
+        context TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        last_actor TEXT
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tickets_org ON tickets(org_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status)")
+    c.execute("""CREATE TABLE IF NOT EXISTS ticket_messages(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket_id INTEGER NOT NULL,
+        author TEXT,
+        author_name TEXT,
+        author_side TEXT,
+        body TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tmsg_ticket ON ticket_messages(ticket_id)")
     c.commit(); c.close()
 
 pdb_init()
@@ -5937,6 +5964,179 @@ def api_impersonate_exit():
     session["name"]="Platform Owner"
     session["brand"]=brand_for_session(PLATFORM_ORG)
     return jsonify({"ok":True,"redirect":"/admin/organizations"})
+
+# ══════════════════════════════════════════════════════════
+# SUPPORT TICKETS — customers open them, the platform owner answers.
+# Stored in platform.db (cross-tenant), strictly scoped by org for customers.
+# ══════════════════════════════════════════════════════════
+TICKET_CATEGORIES=[
+    ("import","Importing orders (TikTok / Whatnot CSV)"),
+    ("packing","Packing / video recording"),
+    ("picking","Picking / barcode scanning"),
+    ("shipping","Shipping labels & tracking"),
+    ("giveaways","Giveaways"),
+    ("inventory","Inventory / SKUs / catalog"),
+    ("analytics","Analytics / reports"),
+    ("access","Login / users / badges / permissions"),
+    ("billing","Billing / account"),
+    ("other","Something else"),
+]
+_TICKET_CAT_KEYS={k for k,_ in TICKET_CATEGORIES}
+TICKET_PRIORITIES=["low","normal","high","urgent"]
+TICKET_STATUSES=["open","pending","resolved","closed"]
+
+def _is_support_session():
+    """True when the caller is the platform owner acting as support (not
+    impersonating a tenant)."""
+    return session.get("role")=="superadmin" and not session.get("impersonator")
+
+def _ticket_get(tid):
+    c=pdb(); r=c.execute("SELECT * FROM tickets WHERE id=?",(tid,)).fetchone(); c.close()
+    return dict(r) if r else None
+
+def _ticket_visible(t):
+    """Support sees all; a customer only sees tickets in their own org."""
+    if not t: return False
+    if _is_support_session(): return True
+    return t.get("org_id")==session.get("org")
+
+@app.route("/api/support/tickets",methods=["POST"])
+@req_login
+def api_ticket_create():
+    d=request.get_json() or {}
+    org=session.get("org")
+    if not org or org==PLATFORM_ORG:
+        return jsonify({"ok":False,"error":"Open a tenant first"})
+    subject=(d.get("subject") or "").strip()[:200]
+    body=(d.get("body") or "").strip()
+    if not subject or not body:
+        return jsonify({"ok":False,"error":"Please add a subject and describe the issue"})
+    cat=(d.get("category") or "other").strip()
+    if cat not in _TICKET_CAT_KEYS: cat="other"
+    prio=(d.get("priority") or "normal").strip()
+    if prio not in TICKET_PRIORITIES: prio="normal"
+    # Capture diagnostic context automatically + the structured intake fields.
+    ctx={
+        "steps":(d.get("steps") or "").strip()[:2000],
+        "when":(d.get("when") or "").strip()[:300],
+        "url":(d.get("url") or "").strip()[:500],
+        "user_agent":(request.headers.get("User-Agent") or "")[:400],
+        "role":session.get("role"),
+        "reported_by_role":session.get("role"),
+    }
+    who=session.get("user"); who_name=session.get("name") or who
+    c=pdb()
+    cur=c.execute("""INSERT INTO tickets(org_id,created_by,created_by_name,category,subject,priority,status,context,last_actor)
+                     VALUES(?,?,?,?,?,?, 'open', ?, ?)""",
+                  (org,who,who_name,cat,subject,prio,json.dumps(ctx),who))
+    tid=cur.lastrowid
+    c.execute("""INSERT INTO ticket_messages(ticket_id,author,author_name,author_side,body)
+                 VALUES(?,?,?,'customer',?)""",(tid,who,who_name,body))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"id":tid})
+
+@app.route("/api/support/tickets")
+@req_login
+def api_tickets_list():
+    c=pdb()
+    if _is_support_session():
+        st=(request.args.get("status") or "").strip()
+        org=(request.args.get("org") or "").strip()
+        q="SELECT * FROM tickets"; where=[]; args=[]
+        if st in TICKET_STATUSES: where.append("status=?"); args.append(st)
+        if org: where.append("org_id=?"); args.append(org)
+        if where: q+=" WHERE "+" AND ".join(where)
+        q+=" ORDER BY (status IN ('resolved','closed')), updated_at DESC"
+        rows=[dict(r) for r in c.execute(q,tuple(args)).fetchall()]
+    else:
+        org=session.get("org")
+        rows=[dict(r) for r in c.execute(
+            "SELECT * FROM tickets WHERE org_id=? ORDER BY (status IN ('resolved','closed')), updated_at DESC",(org,)).fetchall()]
+    # attach company names for the support view
+    comp={}
+    if _is_support_session():
+        for o in c.execute("SELECT org_id,company_name FROM organizations").fetchall():
+            comp[o["org_id"]]=o["company_name"]
+    c.close()
+    for r in rows:
+        r["company"]=comp.get(r["org_id"],r["org_id"])
+    return jsonify({"ok":True,"tickets":rows,"is_support":_is_support_session(),
+                    "categories":dict(TICKET_CATEGORIES)})
+
+@app.route("/api/support/tickets/<int:tid>")
+@req_login
+def api_ticket_get(tid):
+    t=_ticket_get(tid)
+    if not _ticket_visible(t): return jsonify({"ok":False,"error":"Not found"}),404
+    c=pdb()
+    msgs=[dict(m) for m in c.execute(
+        "SELECT * FROM ticket_messages WHERE ticket_id=? ORDER BY id",(tid,)).fetchall()]
+    o=c.execute("SELECT company_name FROM organizations WHERE org_id=?",(t["org_id"],)).fetchone()
+    c.close()
+    t["company"]=o["company_name"] if o else t["org_id"]
+    try: t["context"]=json.loads(t.get("context") or "{}")
+    except Exception: t["context"]={}
+    return jsonify({"ok":True,"ticket":t,"messages":msgs,"is_support":_is_support_session(),
+                    "categories":dict(TICKET_CATEGORIES)})
+
+@app.route("/api/support/tickets/<int:tid>/reply",methods=["POST"])
+@req_login
+def api_ticket_reply(tid):
+    t=_ticket_get(tid)
+    if not _ticket_visible(t): return jsonify({"ok":False,"error":"Not found"}),404
+    body=((request.get_json() or {}).get("body") or "").strip()
+    if not body: return jsonify({"ok":False,"error":"Write a message"})
+    support=_is_support_session()
+    who=session.get("user"); who_name=("Support" if support else (session.get("name") or who))
+    new_status="pending" if support else "open"
+    now=datetime.now().isoformat(timespec="seconds")
+    c=pdb()
+    c.execute("""INSERT INTO ticket_messages(ticket_id,author,author_name,author_side,body)
+                 VALUES(?,?,?,?,?)""",(tid,who,who_name,"support" if support else "customer",body))
+    # Don't resurrect a closed ticket unless the customer reopens by replying.
+    if t["status"]=="closed" and support:
+        new_status="closed"
+    c.execute("UPDATE tickets SET status=?,updated_at=?,last_actor=? WHERE id=?",(new_status,now,who,tid))
+    c.commit(); c.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/support/tickets/<int:tid>/status",methods=["POST"])
+@req_login
+def api_ticket_status(tid):
+    t=_ticket_get(tid)
+    if not _ticket_visible(t): return jsonify({"ok":False,"error":"Not found"}),404
+    st=((request.get_json() or {}).get("status") or "").strip()
+    if st not in TICKET_STATUSES: return jsonify({"ok":False,"error":"Bad status"})
+    # Customers may only close/reopen their own tickets; support can set any status.
+    if not _is_support_session() and st not in ("closed","open"):
+        return jsonify({"ok":False,"error":"Not allowed"}),403
+    now=datetime.now().isoformat(timespec="seconds")
+    c=pdb(); c.execute("UPDATE tickets SET status=?,updated_at=? WHERE id=?",(st,now,tid)); c.commit(); c.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/support/open-count")
+@req_login
+def api_ticket_open_count():
+    c=pdb()
+    if _is_support_session():
+        n=c.execute("SELECT COUNT(*) n FROM tickets WHERE status IN ('open','pending')").fetchone()["n"]
+    else:
+        org=session.get("org")
+        n=c.execute("SELECT COUNT(*) n FROM tickets WHERE org_id=? AND status IN ('open','pending')",(org,)).fetchone()["n"]
+    c.close()
+    return jsonify({"ok":True,"count":n})
+
+@app.route("/support")
+@req_role("admin","cs")
+def support_page():
+    return SUPPORT_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
+        "__NAVBAR__",_navbar("support")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/admin/support")
+@req_super
+def platform_support_page():
+    return PLATFORM_SUPPORT_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
+        "__NAVBAR__",_navbar("support")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/users/badge/pdf/<u>")
 @req_role("admin")

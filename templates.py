@@ -74,8 +74,9 @@ def _navbar(active_page=""):
 
     # ── Top-row entries (operations / fast links only) ──
     if role == "superadmin":
-        # Platform owner: no tenant screens, just the Organizations console.
-        entries = [("organizations", "/admin/organizations", "🏢 Organizations")]
+        # Platform owner: no tenant screens, just the Organizations + Support consoles.
+        entries = [("organizations", "/admin/organizations", "🏢 Organizations"),
+                   ("support", "/admin/support", "🛟 Support")]
     else:
         entries = [("home", "/home", "🏠 Home")]
         entries.append(("announcements", "/announcements", "📣 News"))
@@ -87,6 +88,7 @@ def _navbar(active_page=""):
             # Operations is now a dedicated hub page (/operations) with tabbed cards
             # (Giveaways is one of its tabs).
             entries.append(("operations", "/operations", "📦 Operations"))
+            entries.append(("support", "/support", "🛟 Support"))
 
     # ── Avatar menu sections (personal + team/settings) ──
     # Each section: (title, [(key,url,label),...]). Titles of "" render with no header.
@@ -8194,6 +8196,270 @@ document.getElementById('printSel').addEventListener('click',function(){
   window.open('/label/inbound/multi?ids='+ids.join(','),'_blank');
 });
 loadInbound();
+</script></body></html>'''
+
+
+_TICKET_CAT_OPTIONS = ('<option value="import">Importing orders (TikTok / Whatnot CSV)</option>'
+'<option value="packing">Packing / video recording</option>'
+'<option value="picking">Picking / barcode scanning</option>'
+'<option value="shipping">Shipping labels &amp; tracking</option>'
+'<option value="giveaways">Giveaways</option>'
+'<option value="inventory">Inventory / SKUs / catalog</option>'
+'<option value="analytics">Analytics / reports</option>'
+'<option value="access">Login / users / badges / permissions</option>'
+'<option value="billing">Billing / account</option>'
+'<option value="other" selected>Something else</option>')
+
+SUPPORT_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Support</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#ffffff;color:#1a2130;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:920px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#4f46e5;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:920px;margin:0 auto;padding:8px 28px 40px}
+.card{background:#fff;border:1px solid rgba(17,24,39,0.096);border-radius:16px;padding:22px 24px;margin-bottom:20px}
+.card h2{font-size:15px;font-weight:800;color:#4f46e5;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
+.card .desc{font-size:13px;color:#586274;margin-bottom:16px}
+label{font-size:12px;font-weight:700;color:#6b7280;display:block;margin:12px 0 4px}
+input[type=text],select,textarea{background:#fff;border:2px solid rgba(17,24,39,0.128);border-radius:10px;padding:11px 14px;font-size:15px;color:#1a2130;font-family:inherit;outline:none;width:100%}
+textarea{min-height:90px;resize:vertical}
+input:focus,select:focus,textarea:focus{border-color:#4f46e5}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.btn{border:none;border-radius:10px;padding:11px 20px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
+.btn-s{background:#f6f7f9;color:#1a2130;border:1px solid rgba(17,24,39,0.12)}
+.tick{display:flex;align-items:center;gap:12px;padding:14px 12px;border-bottom:1px solid rgba(17,24,39,0.08);cursor:pointer}
+.tick:hover{background:#f9fafb}
+.tick .s{flex:1}.tick .subj{font-weight:700;font-size:14px}.tick .meta{font-size:12px;color:#6b7280;margin-top:2px}
+.pill{font-size:11px;font-weight:700;padding:3px 10px;border-radius:50px;white-space:nowrap}
+.st-open{background:rgba(79,70,229,.14);color:#4338ca}.st-pending{background:rgba(251,191,36,.18);color:#b45309}
+.st-resolved{background:rgba(52,211,153,.16);color:#059669}.st-closed{background:rgba(148,163,184,.18);color:#475569}
+.pr-urgent{background:rgba(244,63,94,.14);color:#e11d48}.pr-high{background:rgba(251,146,60,.16);color:#c2410c}
+.msg{padding:12px 14px;border-radius:12px;margin-bottom:10px;font-size:14px;line-height:1.5;white-space:pre-wrap}
+.msg.customer{background:#f3f4f6}.msg.support{background:#eef2ff;border:1px solid #c7d2fe}
+.msg .who{font-size:11px;font-weight:700;color:#6b7280;margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px}
+.muted{color:#9ca3af;font-size:13px}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}
+.toast.err{background:#f43f5e}
+.hide{display:none}
+.backlink{color:#4f46e5;font-weight:700;font-size:13px;cursor:pointer;display:inline-block;margin-bottom:12px}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🛟 Support <span>__NAME__</span></div></div>
+<div class="wrap">
+
+<div id="listView">
+  <div class="card">
+    <h2>Open a request</h2>
+    <div class="desc">Tell us what went wrong. The more detail you give, the faster we can help.</div>
+    <div class="grid2">
+      <div><label>What area?</label><select id="category">''' + _TICKET_CAT_OPTIONS + '''</select></div>
+      <div><label>Priority</label><select id="priority"><option value="low">Low</option><option value="normal" selected>Normal</option><option value="high">High</option><option value="urgent">Urgent — I'm blocked</option></select></div>
+    </div>
+    <label>Subject</label><input type="text" id="subject" placeholder="Short summary, e.g. 'CSV import stuck on spinner'">
+    <label>What happened? *</label><textarea id="body" placeholder="Describe the problem and any error message you saw."></textarea>
+    <label>What were you trying to do? (steps)</label><textarea id="steps" placeholder="1) I clicked Import  2) chose the file  3) it froze…"></textarea>
+    <div class="grid2">
+      <div><label>When did it start / how often?</label><input type="text" id="when" placeholder="e.g. since this morning, every time"></div>
+      <div><label>Which page/URL? (optional)</label><input type="text" id="url" placeholder="e.g. /operations shipments"></div>
+    </div>
+    <div style="margin-top:16px"><button class="btn btn-p" id="submitBtn">Send request</button></div>
+  </div>
+
+  <div class="card">
+    <h2>Your requests</h2>
+    <div id="ticketList"><div class="muted">Loading…</div></div>
+  </div>
+</div>
+
+<div id="detailView" class="hide">
+  <span class="backlink" onclick="showList()">← Back to your requests</span>
+  <div class="card" id="detailCard"></div>
+</div>
+
+</div>
+<div class="toast" id="t"></div>
+<script>
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3200)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function val(id){return (document.getElementById(id).value||'').trim()}
+var CATS={};
+function stpill(s){return '<span class="pill st-'+esc(s)+'">'+esc(s)+'</span>'}
+function loadList(){
+  fetch('/api/support/tickets').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return; CATS=d.categories||{};
+    var el=document.getElementById('ticketList');
+    if(!d.tickets.length){el.innerHTML='<div class="muted">No requests yet. Open one above if something isn\\'t working.</div>';return}
+    el.innerHTML=d.tickets.map(function(t){
+      var pr=(t.priority==='urgent'||t.priority==='high')?'<span class="pill pr-'+esc(t.priority)+'">'+esc(t.priority)+'</span> ':'';
+      return '<div class="tick" onclick="openTicket('+t.id+')"><div class="s"><div class="subj">'+esc(t.subject)+'</div>'+
+        '<div class="meta">'+esc(CATS[t.category]||t.category)+' · updated '+esc((t.updated_at||'').replace('T',' '))+'</div></div>'+
+        pr+stpill(t.status)+'</div>';
+    }).join('');
+  });
+}
+function openTicket(id){
+  fetch('/api/support/tickets/'+id).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){toast('Not found',1);return}
+    var t=d.ticket;
+    var msgs=d.messages.map(function(m){return '<div class="msg '+(m.author_side==='support'?'support':'customer')+'"><div class="who">'+(m.author_side==='support'?'Support':esc(m.author_name||'You'))+' · '+esc((m.created_at||'').replace('T',' '))+'</div>'+esc(m.body)+'</div>'}).join('');
+    var canClose=t.status!=='closed';
+    document.getElementById('detailCard').innerHTML=
+      '<h2>'+esc(t.subject)+'</h2><div class="desc">'+esc(CATS[t.category]||t.category)+' · '+stpill(t.status)+'</div>'+
+      msgs+
+      (t.status==='closed'?'<div class="muted">This request is closed. Reply to reopen it.</div>':'')+
+      '<label>Reply</label><textarea id="replyBox" placeholder="Add more detail or answer a question…"></textarea>'+
+      '<div style="margin-top:12px;display:flex;gap:10px"><button class="btn btn-p" onclick="sendReply('+t.id+')">Send reply</button>'+
+      (canClose?'<button class="btn btn-s" onclick="setStatus('+t.id+',\\'closed\\')">Mark resolved / close</button>':'<button class="btn btn-s" onclick="setStatus('+t.id+',\\'open\\')">Reopen</button>')+'</div>';
+    document.getElementById('listView').classList.add('hide');
+    document.getElementById('detailView').classList.remove('hide');
+    window.scrollTo(0,0);
+  });
+}
+function showList(){document.getElementById('detailView').classList.add('hide');document.getElementById('listView').classList.remove('hide');loadList()}
+function sendReply(id){
+  var b=val('replyBox'); if(!b){toast('Write a message',1);return}
+  fetch('/api/support/tickets/'+id+'/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:b})})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){openTicket(id)}else{toast(d.error||'Failed',1)}});
+}
+function setStatus(id,s){
+  fetch('/api/support/tickets/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:s})})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Updated');openTicket(id)}else{toast(d.error||'Failed',1)}});
+}
+document.getElementById('submitBtn').addEventListener('click',function(){
+  if(!val('subject')||!val('body')){toast('Add a subject and describe the issue',1);return}
+  var b={category:val('category'),priority:val('priority'),subject:val('subject'),body:val('body'),
+    steps:val('steps'),when:val('when'),url:val('url')};
+  this.disabled=true;var btn=this;
+  fetch('/api/support/tickets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})
+    .then(function(r){return r.json()}).then(function(d){btn.disabled=false;
+      if(d.ok){toast('Request sent');['subject','body','steps','when','url'].forEach(function(i){document.getElementById(i).value=''});loadList()}
+      else{toast(d.error||'Failed',1)}}).catch(function(){btn.disabled=false;toast('Network error',1)});
+});
+loadList();
+</script></body></html>'''
+
+
+PLATFORM_SUPPORT_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Support · Platform</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#fff;color:#1a2130;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1100px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#4f46e5;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1100px;margin:0 auto;padding:8px 28px 40px}
+.card{background:#fff;border:1px solid rgba(17,24,39,0.096);border-radius:16px;padding:20px 22px;margin-bottom:18px}
+.card h2{font-size:15px;font-weight:800;color:#4f46e5;text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.fbtn{border:1px solid rgba(17,24,39,0.12);background:#f6f7f9;border-radius:50px;padding:7px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
+.fbtn.on{background:#4f46e5;color:#fff;border-color:#4f46e5}
+table{width:100%;border-collapse:collapse}
+th,td{padding:11px 10px;font-size:13px;border-bottom:1px solid rgba(17,24,39,0.08);text-align:left}
+th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
+tr.row{cursor:pointer}tr.row:hover td{background:#f9fafb}
+.pill{font-size:11px;font-weight:700;padding:3px 10px;border-radius:50px;white-space:nowrap}
+.st-open{background:rgba(79,70,229,.14);color:#4338ca}.st-pending{background:rgba(251,191,36,.18);color:#b45309}
+.st-resolved{background:rgba(52,211,153,.16);color:#059669}.st-closed{background:rgba(148,163,184,.18);color:#475569}
+.pr-urgent{background:rgba(244,63,94,.14);color:#e11d48}.pr-high{background:rgba(251,146,60,.16);color:#c2410c}.pr-normal{color:#6b7280}.pr-low{color:#9ca3af}
+.msg{padding:12px 14px;border-radius:12px;margin-bottom:10px;font-size:14px;line-height:1.5;white-space:pre-wrap}
+.msg.customer{background:#f3f4f6}.msg.support{background:#eef2ff;border:1px solid #c7d2fe}
+.msg .who{font-size:11px;font-weight:700;color:#6b7280;margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px}
+.ctx{background:#fafafa;border:1px solid rgba(17,24,39,0.08);border-radius:12px;padding:14px;font-size:13px;margin-bottom:14px}
+.ctx b{color:#374151}.ctx div{margin-bottom:5px}
+label{font-size:12px;font-weight:700;color:#6b7280;display:block;margin:12px 0 4px}
+textarea{background:#fff;border:2px solid rgba(17,24,39,0.128);border-radius:10px;padding:11px 14px;font-size:15px;color:#1a2130;font-family:inherit;outline:none;width:100%;min-height:90px;resize:vertical}
+textarea:focus{border-color:#4f46e5}
+.btn{border:none;border-radius:10px;padding:10px 18px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
+.btn-s{background:#f6f7f9;color:#1a2130;border:1px solid rgba(17,24,39,0.12)}
+.muted{color:#9ca3af;font-size:13px}.hide{display:none}
+.backlink{color:#4f46e5;font-weight:700;font-size:13px;cursor:pointer;display:inline-block;margin-bottom:12px}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}
+.toast.err{background:#f43f5e}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🛟 Support <span id="cnt"></span></div></div>
+<div class="wrap">
+
+<div id="listView">
+  <div class="card">
+    <div class="filters" id="filters">
+      <button class="fbtn on" data-f="">All</button>
+      <button class="fbtn" data-f="open">Open</button>
+      <button class="fbtn" data-f="pending">Pending</button>
+      <button class="fbtn" data-f="resolved">Resolved</button>
+      <button class="fbtn" data-f="closed">Closed</button>
+    </div>
+    <table><thead><tr><th>Company</th><th>Subject</th><th>Area</th><th>Priority</th><th>Status</th><th>Updated</th></tr></thead>
+    <tbody id="rows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody></table>
+  </div>
+</div>
+
+<div id="detailView" class="hide">
+  <span class="backlink" onclick="showList()">← Back to all tickets</span>
+  <div class="card" id="detailCard"></div>
+</div>
+
+</div>
+<div class="toast" id="t"></div>
+<script>
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3200)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+var CATS={};var FILTER='';
+function stpill(s){return '<span class="pill st-'+esc(s)+'">'+esc(s)+'</span>'}
+function loadCount(){fetch('/api/support/open-count').then(function(r){return r.json()}).then(function(d){document.getElementById('cnt').textContent=d.count?('· '+d.count+' open'):''})}
+function loadList(){
+  fetch('/api/support/tickets'+(FILTER?('?status='+FILTER):'')).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return; CATS=d.categories||{};
+    var el=document.getElementById('rows');
+    if(!d.tickets.length){el.innerHTML='<tr><td colspan=6 class=muted>No tickets</td></tr>';return}
+    el.innerHTML=d.tickets.map(function(t){
+      return '<tr class="row" onclick="openTicket('+t.id+')"><td><b>'+esc(t.company)+'</b></td><td>'+esc(t.subject)+'</td>'+
+        '<td>'+esc(CATS[t.category]||t.category)+'</td><td><span class="pill pr-'+esc(t.priority)+'">'+esc(t.priority)+'</span></td>'+
+        '<td>'+stpill(t.status)+'</td><td>'+esc((t.updated_at||'').replace('T',' '))+'</td></tr>';
+    }).join('');
+  });
+}
+function openTicket(id){
+  fetch('/api/support/tickets/'+id).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){toast('Not found',1);return}
+    var t=d.ticket,cx=t.context||{};
+    var ctx='<div class="ctx"><div><b>Company:</b> '+esc(t.company)+' ('+esc(t.org_id)+')</div>'+
+      '<div><b>Reported by:</b> '+esc(t.created_by_name||t.created_by)+' ('+esc(cx.role||'')+')</div>'+
+      (cx.steps?'<div><b>Steps:</b> '+esc(cx.steps)+'</div>':'')+
+      (cx.when?'<div><b>When/frequency:</b> '+esc(cx.when)+'</div>':'')+
+      (cx.url?'<div><b>Page:</b> '+esc(cx.url)+'</div>':'')+
+      (cx.user_agent?'<div><b>Browser:</b> '+esc(cx.user_agent)+'</div>':'')+'</div>';
+    var msgs=d.messages.map(function(m){return '<div class="msg '+(m.author_side==='support'?'support':'customer')+'"><div class="who">'+(m.author_side==='support'?'Support (you)':esc(m.author_name||'Customer'))+' · '+esc((m.created_at||'').replace('T',' '))+'</div>'+esc(m.body)+'</div>'}).join('');
+    document.getElementById('detailCard').innerHTML=
+      '<h2>'+esc(t.subject)+' '+stpill(t.status)+'</h2>'+ctx+msgs+
+      '<label>Reply to customer</label><textarea id="replyBox" placeholder="Type your answer…"></textarea>'+
+      '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'+
+      '<button class="btn btn-p" onclick="sendReply('+t.id+')">Send reply</button>'+
+      '<button class="btn btn-s" onclick="setStatus('+t.id+',\\'pending\\')">Pending</button>'+
+      '<button class="btn btn-s" onclick="setStatus('+t.id+',\\'resolved\\')">Resolved</button>'+
+      '<button class="btn btn-s" onclick="setStatus('+t.id+',\\'closed\\')">Close</button>'+
+      '<button class="btn btn-s" onclick="setStatus('+t.id+',\\'open\\')">Reopen</button></div>';
+    document.getElementById('listView').classList.add('hide');
+    document.getElementById('detailView').classList.remove('hide');window.scrollTo(0,0);
+  });
+}
+function showList(){document.getElementById('detailView').classList.add('hide');document.getElementById('listView').classList.remove('hide');loadList();loadCount()}
+function sendReply(id){var b=(document.getElementById('replyBox').value||'').trim();if(!b){toast('Write a message',1);return}
+  fetch('/api/support/tickets/'+id+'/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:b})})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){openTicket(id);loadCount()}else{toast(d.error||'Failed',1)}})}
+function setStatus(id,s){fetch('/api/support/tickets/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:s})})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Set to '+s);openTicket(id);loadCount()}else{toast(d.error||'Failed',1)}})}
+document.querySelectorAll('#filters .fbtn').forEach(function(b){b.addEventListener('click',function(){
+  document.querySelectorAll('#filters .fbtn').forEach(function(x){x.classList.remove('on')});b.classList.add('on');FILTER=b.getAttribute('data-f');loadList()})});
+loadList();loadCount();
 </script></body></html>'''
 
 
