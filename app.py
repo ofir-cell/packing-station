@@ -32,7 +32,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
-    INVENTORY_HTML, PURCHASING_HTML, STOCKTAKE_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
+    INVENTORY_HTML, PURCHASING_HTML, STOCKTAKE_HTML, AUDIT_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
     PICKER_HTML, REPEAT_HTML,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
@@ -296,6 +296,17 @@ def plog(actor,action,org_id="",detail=""):
                            (actor,action,org_id,detail)); c.commit(); c.close()
     except Exception as e:
         print("plog error:",e,flush=True)
+
+def alog(action,detail=""):
+    """Append to the CURRENT tenant's audit trail (sensitive staff actions).
+    Best-effort — never breaks the request. Called from within request handlers."""
+    try:
+        c=sdb()
+        c.execute("INSERT INTO audit_log(actor,role,action,detail,ip) VALUES(?,?,?,?,?)",
+                  (session.get("user"),session.get("role"),action,str(detail)[:500],request.remote_addr))
+        c.commit(); c.close()
+    except Exception as e:
+        print("alog error:",e,flush=True)
 
 def cleanup_old_files(org):
     """Delete one tenant's video/photo files older than RETENTION_DAYS.
@@ -919,6 +930,17 @@ def sdb_init(org):
         moved_at TEXT DEFAULT CURRENT_TIMESTAMP,
         moved_by TEXT
     )""")
+    # Per-tenant audit trail of sensitive staff actions (accountability/forensics).
+    c.execute("""CREATE TABLE IF NOT EXISTS audit_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT DEFAULT CURRENT_TIMESTAMP,
+        actor TEXT,
+        role TEXT,
+        action TEXT,
+        detail TEXT,
+        ip TEXT
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at DESC)")
     # NOTE: the `organizations` table is the cross-tenant control plane and now
     # lives in platform.db (see pdb_init), NOT here in a per-tenant shipments.db.
     c.commit(); c.close()
@@ -1798,6 +1820,60 @@ def _seed_guides():
     except Exception as e:
         print("guide seed error:",e,flush=True)
 _seed_guides()
+
+# ══════════════════════════════════════════════════════════
+# AUTOMATED BACKUPS — daily snapshot of every DB to R2 (or local),
+# rotated by day-of-week (7 rolling copies). Consistent SQLite snapshots
+# via the online backup API. No-op-safe if R2 isn't configured.
+# ══════════════════════════════════════════════════════════
+def _snapshot_db(src_path):
+    import tempfile
+    fd,tmp=tempfile.mkstemp(suffix=".db"); os.close(fd)
+    s=sqlite3.connect(src_path); d=sqlite3.connect(tmp)
+    with d: s.backup(d)
+    d.close(); s.close()
+    return tmp
+
+def _backup_all():
+    dow=datetime.now().strftime('%a').lower()
+    targets=[("platform.db",PLATFORM_DB),("users.json",USERS_FILE)]
+    for org in list_org_ids():
+        targets.append((org+"/shipments.db",shipments_db_path(org)))
+        targets.append((org+"/giveaways.db",giveaway_db_path(org)))
+    done=0
+    for name,path in targets:
+        if not os.path.exists(path): continue
+        try:
+            if path.endswith(".db"):
+                snap=_snapshot_db(path)
+                with open(snap,"rb") as fh: data=fh.read()
+                os.remove(snap)
+            else:
+                with open(path,"rb") as fh: data=fh.read()
+            if r2:
+                r2.put_object(Bucket=R2_BUCKET,Key="backups/"+dow+"/"+name,Body=data)
+            else:
+                bp=os.path.join(DATA_DIR,"backups",dow,name); os.makedirs(os.path.dirname(bp),exist_ok=True)
+                with open(bp,"wb") as fh: fh.write(data)
+            done+=1
+        except Exception as e: print("[backup] error",name,":",e,flush=True)
+    print("[backup] %d files -> %s/backups/%s"%(done,"R2" if r2 else "local",dow),flush=True)
+    return done
+
+def _backup_loop():
+    guard=open(os.path.join(DATA_DIR,".backup.guard"),"a+")
+    try: fcntl.flock(guard.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except OSError: return  # another worker owns backups
+    while True:
+        time.sleep(6*3600)
+        try:
+            marker=os.path.join(DATA_DIR,".backup_last")
+            last=os.path.getmtime(marker) if os.path.exists(marker) else 0
+            if time.time()-last < 20*3600: continue   # ~once per day
+            open(marker,"w").close()
+            _backup_all()
+        except Exception as e: print("backup loop error:",e,flush=True)
+threading.Thread(target=_backup_loop,daemon=True).start()
 
 # ── Bootstrap the platform super-admin (you) from env ──────────────
 # The platform owner is a DEDICATED account, separate from every tenant (5sec
@@ -3392,6 +3468,7 @@ def api_shipments_import():
     c.close()
     sku_missing = sorted(unique_skus - have_weight)
 
+    alog("shipments.import","%s '%s': %d new, %d updated"%(platform,label,inserted,updated))
     return jsonify({
         "ok": True,
         "format": fmt,
@@ -4635,6 +4712,7 @@ def api_po_item_receive(poid,item_id):
     else:
         c.execute("UPDATE purchase_orders SET status='receiving' WHERE id=? AND status IN ('open','ordered','in_transit')",(poid,))
     c.commit(); c.close()
+    alog("stock.receive","PO#%d %s x%d"%(poid,sku,qty))
     return jsonify({"ok":True,"sku":sku,"on_hand":oh,"avg_cost":ac,"received_now":qty,"po_done":left<=0})
 
 @app.route("/api/po")
@@ -6256,6 +6334,21 @@ def api_users():
     return jsonify({k:{"name":v["name"],"role":v["role"],"has_badge":bool(v.get("badge_token"))}
                     for k,v in u.items() if v.get("org",DEFAULT_ORG)==myorg})
 
+@app.route("/api/audit-log")
+@req_role("admin")
+def api_audit_log():
+    c=sdb()
+    rows=[dict(r) for r in c.execute(
+        "SELECT at,actor,role,action,detail,ip FROM audit_log ORDER BY id DESC LIMIT 300").fetchall()]
+    c.close()
+    return jsonify({"ok":True,"entries":rows})
+
+@app.route("/admin/audit")
+@req_role("admin")
+def audit_page():
+    return AUDIT_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
+        "__NAVBAR__",_navbar("audit")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
 @app.route("/api/users/add",methods=["POST"])
 @req_role("admin")
 def api_add():
@@ -6273,6 +6366,7 @@ def api_add():
         if role=="worker":
             users[u]["badge_token"]=_gen_badge_token()
         badge=users[u].get("badge_token")
+    alog("user.create",u+" (role="+role+")")
     return jsonify({"ok":True,"badge_token":badge})
 
 @app.route("/api/users/delete",methods=["POST"])
@@ -6282,6 +6376,7 @@ def api_del():
     if u=="admin": return jsonify({"ok":False,"error":"Cannot delete admin"})
     with update_json(USERS_FILE) as users:
         if u in users and _same_org_user(users,u): del users[u]
+    alog("user.delete",u)
     return jsonify({"ok":True})
 
 @app.route("/api/users/pw",methods=["POST"])
@@ -6292,6 +6387,7 @@ def api_pw():
     with update_json(USERS_FILE) as users:
         if u not in users or not _same_org_user(users,u): return jsonify({"ok":False})
         users[u]["password"]=_h(p)
+    alog("user.password_reset",u)
     return jsonify({"ok":True})
 
 @app.route("/api/users/badge",methods=["POST"])

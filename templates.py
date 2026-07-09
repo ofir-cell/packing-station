@@ -113,6 +113,7 @@ def _navbar(active_page=""):
             user_sections.append(("Team & Admin", [
                 ("hires", "/admin/hires", "🧑‍💼 New Hires"),
                 ("settings", "/admin/settings", "⚙️ Settings"),
+                ("audit", "/admin/audit", "🧾 Audit log"),
             ]))
         elif role == "cs":
             user_sections.append(("Team", [
@@ -6981,6 +6982,52 @@ load();loadStats();loadBestsellers();fillParentList();
 
 
 # ── PROFIT — revenue minus COGS per show ──
+AUDIT_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Audit log</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#fff;color:#1a2130;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1000px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#4f46e5;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1000px;margin:0 auto;padding:8px 28px 40px}
+.card{background:#fff;border:1px solid rgba(17,24,39,0.096);border-radius:16px;padding:20px 22px}
+.card h2{font-size:15px;font-weight:800;color:#4f46e5;text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px}
+table{width:100%;border-collapse:collapse}
+th,td{padding:10px 8px;font-size:13px;border-bottom:1px solid rgba(17,24,39,0.08);text-align:left;vertical-align:top}
+th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
+.act{font-weight:700;color:#4338ca}
+.muted{color:#9ca3af;font-size:13px}
+input{background:#fff;border:2px solid rgba(17,24,39,0.128);border-radius:10px;padding:9px 12px;font-size:14px;font-family:inherit;outline:none}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🧾 Audit log <span>__NAME__</span></div></div>
+<div class="wrap">
+<div class="card">
+  <div style="margin-bottom:12px"><input id="q" placeholder="Filter by user, action…" style="width:280px"></div>
+  <table><thead><tr><th>When</th><th>User</th><th>Role</th><th>Action</th><th>Details</th><th>IP</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody></table>
+</div>
+</div>
+<script>
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+var ALL=[];
+function render(){
+  var q=(document.getElementById('q').value||'').toLowerCase();
+  var rows=ALL.filter(function(e){return !q||((e.actor||'')+' '+(e.action||'')+' '+(e.detail||'')).toLowerCase().indexOf(q)>=0});
+  document.getElementById('rows').innerHTML=rows.length?rows.map(function(e){
+    return '<tr><td class="muted">'+esc((e.at||'').replace('T',' ').slice(0,19))+'</td><td>'+esc(e.actor||'')+'</td>'+
+      '<td class="muted">'+esc(e.role||'')+'</td><td class="act">'+esc(e.action||'')+'</td><td>'+esc(e.detail||'')+'</td>'+
+      '<td class="muted">'+esc(e.ip||'')+'</td></tr>';
+  }).join(''):'<tr><td colspan="6" class="muted">No matching activity.</td></tr>';
+}
+document.getElementById('q').addEventListener('input',render);
+fetch('/api/audit-log').then(function(r){return r.json()}).then(function(d){ALL=d.entries||[];render();});
+</script></body></html>'''
+
+
 STOCKTAKE_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
