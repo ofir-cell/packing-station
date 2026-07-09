@@ -6773,6 +6773,8 @@ __NAVBAR__
   <div class="row" style="margin-bottom:14px">
     <div class="f" style="flex:1"><label>Search</label><input id="q" placeholder="SKU, name, or barcode" style="width:100%"></div>
     <button class="btn btn-s" id="lowBtn">⚠️ Low stock</button>
+    <a class="btn btn-s" href="/admin/stocktake" style="text-decoration:none">🔢 Stock take</a>
+    <a class="btn btn-s" href="/api/products/export.csv" style="text-decoration:none">⬇️ Export</a>
     <a class="btn btn-s" href="/admin/purchasing" style="text-decoration:none">📥 Purchasing</a>
     <button class="btn btn-s" id="addBtn">+ New product</button>
   </div>
@@ -6781,6 +6783,7 @@ __NAVBAR__
 </div>
 </div>
 
+<datalist id="prodList2"></datalist>
 <div class="modal" id="pModal"><div class="box" style="max-width:660px">
   <h3 id="pTitle">Product</h3>
   <div style="display:flex;gap:18px;align-items:flex-start">
@@ -6805,6 +6808,8 @@ __NAVBAR__
         <div class="f adminOnly"><label>Quantity on hand</label><input id="pQty" type="number" placeholder="0" style="width:100%"></div>
         <div class="f"><label>Reorder point (alert when ≤)</label><input id="pReorder" type="number" placeholder="0" style="width:100%"></div>
         <div class="f"><label>Supplier</label><input id="pSupplier" placeholder="Optional" style="width:100%"></div>
+        <div class="f"><label>Variant (shade / size)</label><input id="pVariant" placeholder="e.g. Red, Large" style="width:100%"></div>
+        <div class="f"><label>Parent SKU (if a variant)</label><input id="pParent" list="prodList2" placeholder="Groups shades together" style="width:100%"></div>
       </div>
       <div class="muted" id="pMargin" style="margin-top:10px;font-size:13px"></div>
       <div id="pHistory" style="margin-top:12px"></div>
@@ -6832,7 +6837,9 @@ function renderRows(rows){
     var img=p.image_url?'<img class="thumb" src="'+esc(p.image_url)+'">':'<div class="thumb"></div>';
     var oh=(p.on_hand||0);
     var low=oh<0?' style="color:#e11d48;font-weight:800"':((p.reorder_point>0&&oh<=p.reorder_point)||oh<=0?' style="color:#c2410c;font-weight:700"':'');
-    return '<tr style="cursor:pointer" onclick="openP(\\''+esc(p.sku)+'\\')"><td>'+img+'</td><td class="sku">'+esc(p.sku)+'</td><td>'+esc(p.name||'')+'</td><td class="muted">'+esc(p.barcode||'—')+'</td>'+
+    var vlabel=p.variant_name?' <span style="background:#eef2ff;color:#4338ca;border-radius:50px;padding:1px 8px;font-size:11px;font-weight:700">'+esc(p.variant_name)+'</span>':'';
+    var vind=p.parent_sku?'<span class="muted" style="margin-right:4px">↳</span>':'';
+    return '<tr style="cursor:pointer" onclick="openP(\\''+esc(p.sku)+'\\')"><td>'+img+'</td><td class="sku">'+esc(p.sku)+'</td><td>'+vind+esc(p.name||'')+vlabel+'</td><td class="muted">'+esc(p.barcode||'—')+'</td>'+
       '<td'+low+'>'+oh+(p.reorder_point>0?(' <span class="muted" style="font-size:11px">/'+p.reorder_point+'</span>'):'')+'</td><td>'+money(p.avg_cost)+'</td><td>'+money(p.target_price)+'</td>'+
       '<td><a href="/api/product/'+encodeURIComponent(p.sku)+'/label.pdf" target="_blank" onclick="event.stopPropagation()" style="color:#4f46e5;text-decoration:underline">🏷️ Print</a></td></tr>';
   }).join('');
@@ -6906,6 +6913,8 @@ function fillP(p){
   document.getElementById('pQty').value=(p.on_hand!=null?p.on_hand:'');
   document.getElementById('pReorder').value=(p.reorder_point||'');
   document.getElementById('pSupplier').value=p.supplier||'';
+  document.getElementById('pVariant').value=p.variant_name||'';
+  document.getElementById('pParent').value=p.parent_sku||'';
   document.getElementById('pImg').src=p.image_url||PLACEHOLDER;
   var lbl=document.getElementById('pLabel');
   if(p.sku){lbl.href='/api/product/'+encodeURIComponent(p.sku)+'/label.pdf';lbl.style.visibility='visible'}else{lbl.style.visibility='hidden'}
@@ -6935,7 +6944,8 @@ document.getElementById('pTarget').addEventListener('input',calcMargin);
 function saveP(cb){
   var name=gv('pName');if(!name){toast('Name required',true);return}
   var body={name:name,sku:gv('pSku')||curSku,barcode:gv('pBarcode'),category:gv('pCat'),
-    target_price:gv('pTarget')||0,supplier:gv('pSupplier'),reorder_point:gv('pReorder')||0};
+    target_price:gv('pTarget')||0,supplier:gv('pSupplier'),reorder_point:gv('pReorder')||0,
+    variant_name:gv('pVariant'),parent_sku:gv('pParent')};
   if(ROLE==='admin'){if(gv('pCost')!=='')body.cost=gv('pCost');if(gv('pQty')!=='')body.on_hand=gv('pQty');}
   fetch('/api/products',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json()}).then(function(d){
@@ -6964,11 +6974,106 @@ document.getElementById('rSku').addEventListener('keydown',function(e){if(e.key=
 var dq=null;document.getElementById('q').addEventListener('input',function(){lowMode=false;document.getElementById('lowBtn').classList.remove('btn-p');clearTimeout(dq);dq=setTimeout(load,200)});
 document.getElementById('lowBtn').addEventListener('click',function(){lowMode=!lowMode;this.classList.toggle('btn-p',lowMode);if(lowMode)document.getElementById('q').value='';load()});
 function refreshAll(){load();loadStats();loadBestsellers();}
-load();loadStats();loadBestsellers();
+function fillParentList(){fetch('/api/products').then(function(r){return r.json()}).then(function(rows){
+  document.getElementById('prodList2').innerHTML=(rows||[]).filter(function(p){return !p.parent_sku}).map(function(p){return '<option value="'+esc(p.sku)+'">'+esc(p.name||'')+'</option>'}).join('');})}
+load();loadStats();loadBestsellers();fillParentList();
 </script></body></html>'''
 
 
 # ── PROFIT — revenue minus COGS per show ──
+STOCKTAKE_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Stock take</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#fff;color:#1a2130;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:760px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#4f46e5;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:760px;margin:0 auto;padding:8px 28px 40px}
+.card{background:#fff;border:1px solid rgba(17,24,39,0.096);border-radius:16px;padding:22px 24px;margin-bottom:18px}
+.card h2{font-size:15px;font-weight:800;color:#4f46e5;text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px}
+label{font-size:12px;font-weight:700;color:#6b7280;display:block;margin:8px 0 4px}
+input[type=text],input[type=number]{background:#fff;border:2px solid rgba(17,24,39,0.128);border-radius:10px;padding:13px 15px;font-size:17px;color:#1a2130;font-family:inherit;outline:none;width:100%}
+input:focus{border-color:#4f46e5}
+.btn{border:none;border-radius:10px;padding:13px 22px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
+.prod{display:flex;align-items:center;gap:14px;margin-bottom:14px}
+.prod img,.prod .ni{width:64px;height:64px;border-radius:12px;object-fit:cover;background:#eef0f4;flex:0 0 64px}
+.prod .nm{font-weight:800;font-size:17px}.prod .sub{color:#6b7280;font-size:13px;margin-top:2px}
+.var{font-size:15px;font-weight:800;margin:8px 0}
+.var.up{color:#059669}.var.down{color:#e11d48}.var.zero{color:#6b7280}
+table{width:100%;border-collapse:collapse;margin-top:6px}
+th,td{padding:9px 8px;font-size:13px;border-bottom:1px solid rgba(17,24,39,0.08);text-align:left}
+th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
+.muted{color:#9ca3af;font-size:13px}.hide{display:none}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}
+.toast.err{background:#f43f5e}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🔢 Stock take <span>__NAME__</span></div></div>
+<div class="wrap">
+<div class="card">
+  <label>Scan or type a barcode / SKU</label>
+  <input type="text" id="scan" placeholder="Scan a product…" autocomplete="off" autofocus>
+  <div id="panel" class="hide" style="margin-top:18px">
+    <div class="prod"><img id="pi" alt=""><div><div class="nm" id="pn"></div><div class="sub" id="ps"></div></div></div>
+    <label>Counted quantity (physically on the shelf)</label>
+    <input type="number" id="counted" placeholder="0" inputmode="numeric">
+    <div class="var zero" id="variance"></div>
+    <button class="btn btn-p" id="applyBtn" style="width:100%;margin-top:8px">Apply count</button>
+  </div>
+</div>
+<div class="card">
+  <h2>Counted this session</h2>
+  <table><thead><tr><th>SKU</th><th>Product</th><th>Was</th><th>Counted</th><th>Change</th></tr></thead>
+  <tbody id="log"><tr><td colspan="5" class="muted">Nothing counted yet.</td></tr></tbody></table>
+</div>
+</div>
+<div class="toast" id="t"></div>
+<script>
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},2600)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+var cur=null,logRows=[];
+function lookup(code){
+  fetch('/api/product/lookup/'+encodeURIComponent(code)).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){toast('Not found: '+code,true);return}
+    cur=d.product;
+    document.getElementById('pn').textContent=(cur.name||cur.sku)+(cur.variant_name?(' · '+cur.variant_name):'');
+    document.getElementById('ps').textContent='SKU '+cur.sku+' · recorded on hand: '+(cur.on_hand!=null?cur.on_hand:'—');
+    document.getElementById('pi').src=cur.image_url||'data:image/svg+xml;utf8,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#eef0f4"/><text x="32" y="40" font-size="20" text-anchor="middle">📦</text></svg>');
+    document.getElementById('panel').classList.remove('hide');
+    var ci=document.getElementById('counted');ci.value='';document.getElementById('variance').textContent='';ci.focus();
+  });
+}
+document.getElementById('scan').addEventListener('keydown',function(e){if(e.key==='Enter'){var v=this.value.trim();if(v){lookup(v);this.value=''}}});
+document.getElementById('counted').addEventListener('input',function(){
+  if(!cur)return;var c=parseInt(this.value||'0');var d=c-(cur.on_hand||0);
+  var el=document.getElementById('variance');
+  el.className='var '+(d>0?'up':d<0?'down':'zero');
+  el.textContent=(this.value==='')?'':(d===0?'✓ Matches the system':((d>0?'+':'')+d+' vs system ('+(cur.on_hand||0)+')'));
+});
+document.getElementById('applyBtn').addEventListener('click',function(){
+  if(!cur)return;var c=document.getElementById('counted').value;if(c===''){toast('Enter a count',true);return}
+  fetch('/api/product/'+encodeURIComponent(cur.sku)+'/count',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({counted:parseInt(c)})})
+    .then(function(r){return r.json()}).then(function(d){
+      if(!d.ok){toast(d.error||'Failed',true);return}
+      logRows.unshift({sku:cur.sku,name:cur.name||cur.sku,old:d.old,counted:d.counted,delta:d.delta});
+      renderLog();toast('Counted ✓');document.getElementById('panel').classList.add('hide');cur=null;document.getElementById('scan').focus();
+    });
+});
+function renderLog(){
+  var el=document.getElementById('log');
+  if(!logRows.length){el.innerHTML='<tr><td colspan="5" class="muted">Nothing counted yet.</td></tr>';return}
+  el.innerHTML=logRows.map(function(r){
+    var ch=r.delta>0?'<span style="color:#059669">+'+r.delta+'</span>':(r.delta<0?'<span style="color:#e11d48">'+r.delta+'</span>':'<span class="muted">0</span>');
+    return '<tr><td class="muted">'+esc(r.sku)+'</td><td>'+esc(r.name)+'</td><td>'+r.old+'</td><td><b>'+r.counted+'</b></td><td>'+ch+'</td></tr>';
+  }).join('');
+}
+</script></body></html>'''
+
+
 PURCHASING_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
@@ -7196,14 +7301,25 @@ function openReceive(id){
       '<div style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap">'+
       '<a class="btn btn-s" href="/api/po/'+p.id+'/slip.pdf" target="_blank" style="text-decoration:none">🖨️ Print receiving slip</a>'+
       (p.invoice_name?('<a class="btn btn-s" href="/api/po/'+p.id+'/invoice-file" target="_blank" style="text-decoration:none">📎 Invoice</a>'):'')+'</div>'+
+      '<div style="margin-bottom:14px"><label>📷 Scan to receive (1 unit each)</label>'+
+      '<input type="text" id="scanBox" placeholder="Scan barcode or SKU…" style="width:100%" autocomplete="off" '+
+      'onkeydown="if(event.key===\\'Enter\\'){scanRecv('+p.id+')}"></div>'+
       rows;
     show('recvView');
+    var sb=document.getElementById('scanBox');if(sb)sb.focus();
   });
 }
 function recvLine(poid,itemId){
   var q=parseInt((document.getElementById('q'+itemId)||{}).value||'0');
   fetch('/api/po/'+poid+'/item/'+itemId+'/receive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qty:q})})
     .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Received ✓');openReceive(poid)}else toast(d.error||'Failed',true)});
+}
+function scanRecv(poid){
+  var box=document.getElementById('scanBox');var code=(box.value||'').trim();if(!code)return;box.value='';
+  fetch('/api/po/'+poid+'/scan-receive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code})})
+    .then(function(r){return r.json()}).then(function(d){
+      if(d.ok){toast('✓ '+esc(d.name)+' ('+d.qty_received+'/'+d.qty_ordered+')');openReceive(poid)}
+      else{toast(d.error||'No match',true);var b=document.getElementById('scanBox');if(b)b.focus()}});
 }
 loadPOs();
 </script></body></html>'''

@@ -32,7 +32,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
-    INVENTORY_HTML, PURCHASING_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
+    INVENTORY_HTML, PURCHASING_HTML, STOCKTAKE_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
     PICKER_HTML, REPEAT_HTML,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
@@ -694,6 +694,8 @@ def sdb_init(org):
         "ALTER TABLE products ADD COLUMN image_key TEXT",
         "ALTER TABLE products ADD COLUMN supplier TEXT",
         "ALTER TABLE products ADD COLUMN reorder_point INTEGER DEFAULT 0",
+        "ALTER TABLE products ADD COLUMN parent_sku TEXT",
+        "ALTER TABLE products ADD COLUMN variant_name TEXT",
         # Purchase orders: inbound tracking + attached invoice + ETA.
         "ALTER TABLE purchase_orders ADD COLUMN tracking TEXT",
         "ALTER TABLE purchase_orders ADD COLUMN carrier TEXT",
@@ -850,6 +852,8 @@ def sdb_init(org):
         target_price REAL DEFAULT 0,
         reorder_point INTEGER DEFAULT 0,
         on_hand INTEGER DEFAULT 0,
+        parent_sku TEXT,
+        variant_name TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT
     )""")
@@ -4248,6 +4252,11 @@ def api_product_save():
         try: rp=int(float(d.get("reorder_point") or 0))
         except Exception: rp=0
         c.execute("UPDATE products SET reorder_point=? WHERE sku=?",(rp,sku))
+    if "parent_sku" in d or "variant_name" in d:
+        psku=(d.get("parent_sku") or "").strip() or None
+        if psku==sku: psku=None   # a product can't be its own parent
+        c.execute("UPDATE products SET parent_sku=?,variant_name=? WHERE sku=?",
+                  (psku,(d.get("variant_name") or "").strip() or None,sku))
     # Cost + on-hand are admin-only. A manual on-hand change is logged as a stock move.
     if is_admin and d.get("cost") not in (None,""):
         c.execute("UPDATE products SET avg_cost=? WHERE sku=?",(round(float(d.get("cost")),4),sku))
@@ -4368,6 +4377,76 @@ def api_inventory_bestsellers():
            GROUP BY m.sku ORDER BY sold DESC LIMIT 20""",(since,)).fetchall()]
     c.close()
     return jsonify({"ok":True,"days":days,"products":rows})
+
+@app.route("/api/products/export.csv")
+@req_role("admin","cs")
+def api_products_export():
+    is_admin=session.get("role")=="admin"
+    c=sdb()
+    rows=c.execute("""SELECT sku,name,barcode,category,supplier,variant_name,parent_sku,
+                             on_hand,reorder_point,avg_cost,target_price FROM products ORDER BY name""").fetchall()
+    c.close()
+    buf=io.StringIO(); w=csv.writer(buf)
+    hdr=["SKU","Name","Barcode","Category","Supplier","Variant","Parent SKU","On hand","Reorder point","Target price"]
+    if is_admin: hdr[9:9]=["Avg cost","Stock value"]
+    w.writerow(hdr)
+    for r in rows:
+        row=[r["sku"],r["name"] or "",r["barcode"] or "",r["category"] or "",r["supplier"] or "",
+             r["variant_name"] or "",r["parent_sku"] or "",r["on_hand"] or 0,r["reorder_point"] or 0]
+        if is_admin:
+            val=round((r["on_hand"] or 0)*(r["avg_cost"] or 0),2)
+            row+=[round(r["avg_cost"] or 0,4),val]
+        row.append(r["target_price"] or 0)
+        w.writerow(row)
+    return Response(buf.getvalue(),mimetype="text/csv",
+                    headers={"Content-Disposition":"attachment; filename=inventory.csv"})
+
+@app.route("/api/product/<sku>/count",methods=["POST"])
+@req_role("admin","cs")
+def api_product_count(sku):
+    """Stock take: set on_hand to a counted value, logging the variance as a move."""
+    d=request.get_json() or {}
+    try: counted=int(float(d.get("counted")))
+    except Exception: return jsonify({"ok":False,"error":"Enter a counted quantity"})
+    c=sdb()
+    r=c.execute("SELECT on_hand,avg_cost FROM products WHERE sku=?",(sku,)).fetchone()
+    if not r: c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    old=r["on_hand"] or 0; delta=counted-old
+    c.execute("UPDATE products SET on_hand=?,updated_at=? WHERE sku=?",
+              (counted,datetime.now().isoformat(timespec='seconds'),sku))
+    if delta!=0:
+        c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_by) VALUES(?,?,?,?,?)",
+                  (sku,delta,round(r["avg_cost"] or 0,4),"stock take (counted %d)"%counted,session.get("user")))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"sku":sku,"old":old,"counted":counted,"delta":delta})
+
+@app.route("/api/po/<int:poid>/scan-receive",methods=["POST"])
+@req_role("admin","cs")
+def api_po_scan_receive(poid):
+    """Scan a barcode/SKU on the receive screen → receive 1 unit of the matching line."""
+    d=request.get_json() or {}
+    code=(d.get("code") or "").strip()
+    if not code: return jsonify({"ok":False,"error":"No code"})
+    c=sdb()
+    # resolve barcode -> sku
+    pr=c.execute("SELECT sku FROM products WHERE sku=? OR barcode=?",(code,code)).fetchone()
+    target=pr["sku"] if pr else code
+    it=c.execute("""SELECT * FROM po_items WHERE po_id=? AND sku=? AND qty_received<qty_ordered
+                    ORDER BY id LIMIT 1""",(poid,target)).fetchone()
+    if not it:
+        c.close(); return jsonify({"ok":False,"error":"No open line matches "+code})
+    oh,ac=_receive_stock(c,it["sku"],1,it["unit_cost"] or 0,po_id=poid,note="PO receive (scan)",name=it["product_name"])
+    c.execute("UPDATE po_items SET qty_received=qty_received+1 WHERE id=?",(it["id"],))
+    left=c.execute("SELECT COALESCE(SUM(qty_ordered-qty_received),0) n FROM po_items WHERE po_id=?",(poid,)).fetchone()["n"]
+    if left<=0:
+        c.execute("UPDATE purchase_orders SET status='received',received_at=? WHERE id=?",
+                  (datetime.now().isoformat(timespec='seconds'),poid))
+    else:
+        c.execute("UPDATE purchase_orders SET status='receiving' WHERE id=? AND status IN ('open','ordered','in_transit')",(poid,))
+    newrec=c.execute("SELECT qty_received,qty_ordered,product_name FROM po_items WHERE id=?",(it["id"],)).fetchone()
+    c.commit(); c.close()
+    return jsonify({"ok":True,"sku":it["sku"],"name":newrec["product_name"],
+                    "qty_received":newrec["qty_received"],"qty_ordered":newrec["qty_ordered"],"po_done":left<=0})
 
 @app.route("/api/products/template.csv")
 @req_role("admin")
@@ -4862,6 +4941,11 @@ def inventory_page():
 def purchasing_page():
     return PURCHASING_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__ROLE__",esc(session.get("role",""))).replace("__NAVBAR__",_navbar("purchasing")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
+@app.route("/admin/stocktake")
+@req_role("admin","cs")
+def stocktake_page():
+    return STOCKTAKE_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("purchasing")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
 @app.route("/admin/profit")
 @req_role("admin")
 def profit_page():
@@ -5045,6 +5129,7 @@ OPS_GROUPS = [
     ("warehouse", "🏭 Warehouse", [
         ("📦", "Inventory", "Catalog, stock, costs", "/admin/inventory", True),
         ("📥", "Purchasing", "Supplier orders & receiving", "/admin/purchasing", False),
+        ("🔢", "Stock Take", "Count & reconcile stock", "/admin/stocktake", False),
         ("🧹", "Table Cleanup", "Clear tables between shows", "/admin/cleanup", False),
         ("🚧", "Picking Issues", "Flagged / unresolved picks", "/admin/issues", False),
         ("🎥", "Search Recordings", "Find a packing video", "/dashboard", False),
