@@ -4976,6 +4976,8 @@ OPS_GROUPS = [
         ("🧾", "SKU Reconciliation", "Verify packed vs sold", "/admin/sku-lookup", False),
     ]),
     ("warehouse", "🏭 Warehouse", [
+        ("📦", "Inventory", "Catalog, stock, costs", "/admin/inventory", True),
+        ("📥", "Purchasing", "Supplier orders & receiving", "/admin/purchasing", False),
         ("🧹", "Table Cleanup", "Clear tables between shows", "/admin/cleanup", False),
         ("🚧", "Picking Issues", "Flagged / unresolved picks", "/admin/issues", False),
         ("🎥", "Search Recordings", "Find a packing video", "/dashboard", False),
@@ -4996,8 +4998,6 @@ OPS_GROUPS = [
         ("🎤", "Host Analytics", "Sales & commission by host", "/admin/hosts", True),
         ("📈", "Analytics", "Overall performance", "/analytics", True),
         ("💰", "Profit", "Margins & cost of goods", "/admin/profit", True),
-        ("📦", "Inventory", "Catalog, stock, costs", "/admin/inventory", True),
-        ("📥", "Purchasing", "Supplier orders & receiving", "/admin/purchasing", False),
     ]),
 ]
 
