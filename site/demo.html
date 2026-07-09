@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Book a demo · LiveOpsHub</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='.5' stop-color='%238b5cf6'/%3E%3Cstop offset='1' stop-color='%23ec4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='96' height='96' rx='22' fill='url(%23g)'/%3E%3Cpath d='M20 28 L20 64 L34 64' fill='none' stroke='%23fff' stroke-width='6.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='48' cy='46' r='11' fill='none' stroke='%23fff' stroke-width='6.5'/%3E%3Ccircle cx='48' cy='46' r='3' fill='%23fff'/%3E%3Cpath d='M63 28 L63 64 M79 28 L79 64 M63 46 L79 46' fill='none' stroke='%23fff' stroke-width='6.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#0f1222;--text:#111827;--muted:#6b7280;--line:#e6e8ee;--brand:#6366f1;--soft:#f7f8fb;--grad:linear-gradient(120deg,#6366f1,#8b5cf6 45%,#ec4899)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',system-ui,sans-serif;color:var(--text);background:var(--soft);-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.topbar{background:var(--ink);padding:16px 0}
+.topbar .wrap{max-width:1080px;margin:0 auto;padding:0 24px;display:flex;align-items:center;justify-content:space-between}
+.logo{display:flex;align-items:center;gap:10px;color:#fff;font-weight:900;font-size:19px}
+.logomark{width:30px;height:30px}
+.topbar a.back{color:#c3c7d6;font-size:14px;font-weight:700}
+.wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+.grid{display:grid;grid-template-columns:.9fr 1.1fr;gap:48px;padding:56px 0 80px;align-items:start}
+@media(max-width:860px){.grid{grid-template-columns:1fr;gap:32px}}
+.eyebrow{display:inline-block;font-size:13px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;padding:6px 14px;border-radius:999px;background:rgba(139,92,246,.12);color:#7c3aed;margin-bottom:18px}
+h1{font-size:38px;font-weight:900;letter-spacing:-1px;line-height:1.1}
+.lead{color:var(--muted);font-size:17px;margin-top:14px}
+.next{list-style:none;margin-top:28px;display:flex;flex-direction:column;gap:16px}
+.next li{display:flex;gap:13px;align-items:flex-start}
+.next .n{flex:0 0 30px;width:30px;height:30px;border-radius:9px;background:var(--grad);color:#fff;font-weight:900;font-size:14px;display:flex;align-items:center;justify-content:center}
+.next b{display:block;font-size:15px}.next span{color:var(--muted);font-size:14px}
+.assure{margin-top:30px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px 18px;font-size:14px;color:var(--muted)}
+.assure b{color:var(--text)}
+
+.card{background:#fff;border:1px solid var(--line);border-radius:20px;padding:32px;box-shadow:0 30px 70px -40px rgba(17,24,39,.35)}
+.card h2{font-size:22px;font-weight:800;letter-spacing:-.4px}
+.card .sub{color:var(--muted);font-size:14px;margin:6px 0 22px}
+.field{margin-bottom:16px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:480px){.two{grid-template-columns:1fr}}
+label{display:block;font-size:13px;font-weight:700;color:#374151;margin-bottom:7px}
+input,select,textarea{width:100%;border:2px solid var(--line);border-radius:12px;padding:12px 14px;font-size:15px;font-family:inherit;color:var(--text);outline:none;transition:.15s;background:#fff}
+input:focus,select:focus,textarea:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(99,102,241,.12)}
+textarea{resize:vertical;min-height:80px}
+.chips{display:flex;gap:9px;flex-wrap:wrap}
+.chip{border:2px solid var(--line);border-radius:10px;padding:9px 14px;font-size:14px;font-weight:600;cursor:pointer;user-select:none;transition:.12s}
+.chip input{display:none}
+.chip.on{border-color:var(--brand);background:rgba(99,102,241,.08);color:var(--brand)}
+.btn{width:100%;border:none;border-radius:12px;padding:15px;font-family:inherit;font-size:15px;font-weight:800;color:#fff;background:var(--grad);cursor:pointer;box-shadow:0 8px 24px rgba(99,102,241,.32);transition:.15s;margin-top:6px}
+.btn:hover{transform:translateY(-1px)}
+.btn:disabled{opacity:.6;cursor:default;transform:none}
+.err{color:#e11d48;font-size:13px;margin-top:6px;display:none}
+.err.show{display:block}
+.priv{font-size:12px;color:#9aa1b2;text-align:center;margin-top:14px}
+/* success */
+.done{display:none;text-align:center;padding:26px 8px}
+.done.show{display:block}
+.done .ok{width:72px;height:72px;border-radius:50%;background:rgba(5,150,105,.12);color:#059669;font-size:34px;display:flex;align-items:center;justify-content:center;margin:0 auto 18px}
+.done h2{font-size:24px;font-weight:800}
+.done p{color:var(--muted);font-size:15px;margin-top:10px}
+.done a{display:inline-block;margin-top:22px;color:var(--brand);font-weight:700}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="wrap">
+  <a class="logo" href="index.html"><svg class="logomark" viewBox="0 0 96 96"><use href="#loh-mark"/></svg> LiveOpsHub</a>
+  <a class="back" href="index.html">← Back to site</a>
+</div></div>
+
+<div class="wrap"><div class="grid">
+  <div>
+    <span class="eyebrow">See it on your own shows</span>
+    <h1>Book a 20-minute demo.</h1>
+    <p class="lead">We'll walk through picking, packing with video proof, shipping and the numbers — mapped to how <i>your</i> live selling works. No slides, no fluff.</p>
+    <ul class="next">
+      <li><span class="n">1</span><div><b>You fill this out</b><span>Takes under a minute.</span></div></li>
+      <li><span class="n">2</span><div><b>We reach out</b><span>Within one business day to find a time.</span></div></li>
+      <li><span class="n">3</span><div><b>Live walkthrough</b><span>See LiveOpsHub on a real show, ask anything.</span></div></li>
+    </ul>
+    <div class="assure">🔒 <b>No spam, no pressure.</b> Just a real look at whether LiveOpsHub fits your operation.</div>
+  </div>
+
+  <div class="card">
+    <!-- To make this deliver for real: set FORM_ENDPOINT below to a Formspree/Getform URL
+         (2-min free setup) OR your app's /api/demo-request. Until then it shows the
+         success screen as a working mockup. -->
+    <form id="demoForm" novalidate>
+      <div id="formInner">
+        <h2>Tell us about your setup</h2>
+        <div class="sub">So we can tailor the walkthrough.</div>
+        <div class="two">
+          <div class="field"><label for="name">Full name *</label><input id="name" name="name" placeholder="Jane Doe"></div>
+          <div class="field"><label for="company">Company *</label><input id="company" name="company" placeholder="Glam Beauty Co."></div>
+        </div>
+        <div class="field"><label for="email">Work email *</label><input id="email" name="email" type="email" placeholder="you@yourcompany.com"></div>
+        <div class="field"><label>Where do you sell live?</label>
+          <div class="chips" id="platforms">
+            <label class="chip"><input type="checkbox" value="TikTok Shop"> TikTok Shop</label>
+            <label class="chip"><input type="checkbox" value="Whatnot"> Whatnot</label>
+            <label class="chip"><input type="checkbox" value="eBay"> eBay</label>
+            <label class="chip"><input type="checkbox" value="Other"> Other</label>
+          </div>
+        </div>
+        <div class="two">
+          <div class="field"><label for="volume">Orders per day</label>
+            <select id="volume" name="volume">
+              <option value="">Select…</option><option>Under 100</option><option>100–500</option><option>500–1,000</option><option>1,000+</option>
+            </select></div>
+          <div class="field"><label for="phone">Phone (optional)</label><input id="phone" name="phone" placeholder="+1 …"></div>
+        </div>
+        <div class="field"><label for="msg">Anything specific you want to see? (optional)</label><textarea id="msg" name="message" placeholder="e.g. how giveaways &amp; video proof work"></textarea></div>
+        <div class="err" id="err">Please fill in your name, company and a valid email.</div>
+        <button class="btn" type="submit" id="submitBtn">Book my demo →</button>
+        <div class="priv">By submitting you agree to be contacted about LiveOpsHub.</div>
+      </div>
+    </form>
+    <div class="done" id="done">
+      <div class="ok">✓</div>
+      <h2 id="thanks">Thanks!</h2>
+      <p>We got your request and we'll reach out within one business day to set up your demo.</p>
+      <a href="index.html">← Back to site</a>
+    </div>
+  </div>
+</div></div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="lohgrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset=".5" stop-color="#8b5cf6"/><stop offset="1" stop-color="#ec4899"/></linearGradient>
+  <symbol id="loh-mark" viewBox="0 0 96 96">
+    <rect width="96" height="96" rx="22" fill="url(#lohgrad)"/>
+    <path d="M20 28 L20 64 L34 64" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="48" cy="46" r="11" fill="none" stroke="#fff" stroke-width="6.5"/><circle cx="48" cy="46" r="3" fill="#fff"/>
+    <circle cx="48" cy="35" r="2.4" fill="#fff"/><circle cx="58" cy="52" r="2.4" fill="#fff"/><circle cx="38" cy="52" r="2.4" fill="#fff"/>
+    <path d="M63 28 L63 64 M79 28 L79 64 M63 46 L79 46" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round"/>
+  </symbol>
+</defs></svg>
+
+<script>
+// ▼▼ Plug in a real endpoint here to receive submissions (Formspree/Getform/your API).
+// Leave as "" to run in mockup mode (shows the success screen without sending).
+var FORM_ENDPOINT = "";
+
+// chip toggle
+document.querySelectorAll('#platforms .chip').forEach(function(c){
+  c.addEventListener('click',function(){var i=c.querySelector('input');setTimeout(function(){c.classList.toggle('on',i.checked)},0)});
+});
+function val(id){return (document.getElementById(id).value||'').trim()}
+function validEmail(e){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)}
+document.getElementById('demoForm').addEventListener('submit',function(ev){
+  ev.preventDefault();
+  var err=document.getElementById('err');
+  if(!val('name')||!val('company')||!validEmail(val('email'))){err.classList.add('show');return}
+  err.classList.remove('show');
+  var platforms=[];document.querySelectorAll('#platforms input:checked').forEach(function(i){platforms.push(i.value)});
+  var data={name:val('name'),company:val('company'),email:val('email'),phone:val('phone'),
+            volume:val('volume'),platforms:platforms.join(', '),message:val('msg'),source:'demo.html'};
+  var btn=document.getElementById('submitBtn');btn.disabled=true;btn.textContent='Sending…';
+  function success(){
+    document.getElementById('thanks').textContent='Thanks, '+data.name.split(' ')[0]+'!';
+    document.getElementById('formInner').style.display='none';
+    document.getElementById('done').classList.add('show');
+  }
+  if(!FORM_ENDPOINT){setTimeout(success,500);return;}   // mockup mode
+  fetch(FORM_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify(data)})
+    .then(function(r){if(r.ok)success();else throw 0;})
+    .catch(function(){btn.disabled=false;btn.textContent='Book my demo →';err.textContent='Something went wrong — email hello@liveopshub.com instead.';err.classList.add('show');});
+});
+</script>
+</body>
+</html>

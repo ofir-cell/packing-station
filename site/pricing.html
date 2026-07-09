@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pricing · LiveOpsHub</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='.5' stop-color='%238b5cf6'/%3E%3Cstop offset='1' stop-color='%23ec4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='96' height='96' rx='22' fill='url(%23g)'/%3E%3Cpath d='M20 28 L20 64 L34 64' fill='none' stroke='%23fff' stroke-width='6.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='48' cy='46' r='11' fill='none' stroke='%23fff' stroke-width='6.5'/%3E%3Ccircle cx='48' cy='46' r='3' fill='%23fff'/%3E%3Cpath d='M63 28 L63 64 M79 28 L79 64 M63 46 L79 46' fill='none' stroke='%23fff' stroke-width='6.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#0f1222;--text:#111827;--muted:#6b7280;--line:#e6e8ee;--brand:#6366f1;--soft:#f7f8fb;--grad:linear-gradient(120deg,#6366f1,#8b5cf6 45%,#ec4899)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',system-ui,sans-serif;color:var(--text);background:#fff;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+.topbar{background:var(--ink);padding:16px 0;position:sticky;top:0;z-index:20}
+.topbar .in{max-width:1120px;margin:0 auto;padding:0 24px;display:flex;align-items:center;justify-content:space-between}
+.logo{display:flex;align-items:center;gap:10px;color:#fff;font-weight:900;font-size:19px}
+.logomark{width:30px;height:30px}
+.topbar .r{display:flex;gap:18px;align-items:center}
+.topbar .r a{color:#c3c7d6;font-size:14px;font-weight:700}
+.btn{display:inline-flex;align-items:center;justify-content:center;border:none;border-radius:11px;padding:11px 20px;font-family:inherit;font-size:14px;font-weight:800;cursor:pointer;transition:.15s}
+.btn-grad{background:var(--grad);color:#fff;box-shadow:0 8px 22px rgba(99,102,241,.32)}
+.btn-grad:hover{transform:translateY(-1px)}
+.btn-dark{background:var(--ink);color:#fff}.btn-dark:hover{transform:translateY(-1px)}
+.btn-line{background:#fff;color:var(--ink);border:1.5px solid var(--line)}.btn-line:hover{border-color:var(--brand);color:var(--brand)}
+
+.hero{text-align:center;padding:70px 0 10px}
+.hero h1{font-size:44px;font-weight:900;letter-spacing:-1.4px}
+.hero p{color:var(--muted);font-size:18px;margin-top:14px}
+.toggle{display:inline-flex;align-items:center;gap:12px;margin-top:28px;background:var(--soft);border:1px solid var(--line);border-radius:999px;padding:6px}
+.toggle button{border:none;background:none;font-family:inherit;font-weight:800;font-size:14px;color:var(--muted);padding:9px 18px;border-radius:999px;cursor:pointer}
+.toggle button.on{background:#fff;color:var(--text);box-shadow:0 2px 8px rgba(17,24,39,.08)}
+.save{font-size:12px;font-weight:800;color:#059669;background:rgba(5,150,105,.1);padding:3px 9px;border-radius:999px;margin-left:2px}
+
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin:48px 0 20px;align-items:stretch}
+@media(max-width:900px){.tiles{grid-template-columns:1fr;max-width:440px;margin-left:auto;margin-right:auto}}
+.tile{background:#fff;border:1px solid var(--line);border-radius:20px;padding:30px;display:flex;flex-direction:column}
+.tile.pop{border:2px solid var(--brand);box-shadow:0 30px 70px -34px rgba(99,102,241,.5);position:relative}
+.tile.pop .flag{position:absolute;top:-13px;left:50%;transform:translateX(-50%);background:var(--grad);color:#fff;font-size:12px;font-weight:800;padding:5px 15px;border-radius:999px;letter-spacing:.4px}
+.tile .name{font-size:15px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.tile .price{font-size:44px;font-weight:900;margin:12px 0 2px;letter-spacing:-1.5px}
+.tile .price span{font-size:15px;color:var(--muted);font-weight:600;letter-spacing:0}
+.tile .billed{font-size:12.5px;color:#9aa1b2;min-height:18px}
+.tile .desc{color:var(--muted);font-size:14px;margin:14px 0 18px}
+.tile ul{list-style:none;display:flex;flex-direction:column;gap:11px;margin-bottom:24px;flex:1}
+.tile li{font-size:14.5px;color:#374151;display:flex;gap:9px;align-items:flex-start}
+.tile li::before{content:"✓";color:var(--brand);font-weight:900}
+.tile .btn{width:100%}
+.microcopy{text-align:center;color:#9aa1b2;font-size:13.5px;margin-bottom:10px}
+
+/* comparison */
+.compare{padding:70px 0}
+.compare h2{text-align:center;font-size:32px;font-weight:900;letter-spacing:-1px;margin-bottom:8px}
+.compare .sub{text-align:center;color:var(--muted);font-size:16px;margin-bottom:36px}
+table{width:100%;border-collapse:collapse}
+th,td{padding:15px 16px;text-align:center;border-bottom:1px solid var(--line);font-size:14.5px}
+th:first-child,td:first-child{text-align:left;color:var(--text)}
+thead th{font-size:16px;font-weight:800;position:sticky;top:64px;background:#fff}
+thead th.pop{color:var(--brand)}
+tbody .grp td{background:var(--soft);font-weight:800;color:var(--ink);font-size:13px;text-transform:uppercase;letter-spacing:.5px;padding:12px 16px}
+td .y{color:#059669;font-weight:900}
+td .n{color:#cbd0da}
+td.val{color:#374151;font-weight:600}
+
+.faq{max-width:760px;margin:0 auto;padding:20px 0 10px}
+.faq h2{text-align:center;font-size:30px;font-weight:900;letter-spacing:-1px;margin-bottom:26px}
+.qa{border-bottom:1px solid var(--line)}
+.qa button{width:100%;background:none;border:none;text-align:left;font-family:inherit;cursor:pointer;padding:20px 6px;display:flex;justify-content:space-between;align-items:center;gap:16px;font-size:16px;font-weight:700;color:var(--text)}
+.qa .plus{flex:0 0 22px;width:22px;height:22px;border-radius:6px;background:var(--soft);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;color:var(--brand);transition:.2s}
+.qa.open .plus{transform:rotate(45deg);background:var(--brand);color:#fff}
+.qa .ans{max-height:0;overflow:hidden;transition:max-height .25s ease}
+.qa.open .ans{max-height:300px}
+.qa .ans p{color:var(--muted);font-size:15px;line-height:1.6;padding:0 6px 20px}
+
+.ctaband{background:var(--grad);color:#fff;padding:70px 0;text-align:center;margin-top:40px}
+.ctaband h2{font-size:36px;font-weight:900;letter-spacing:-1px}
+.ctaband p{opacity:.92;margin:12px auto 26px;max-width:520px;font-size:17px}
+.ctaband .btn{background:#fff;color:var(--ink)}
+footer{background:var(--ink);color:#9aa0b6;padding:30px 0;text-align:center;font-size:13px}
+footer a{color:#c3c7d6}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="in">
+  <a class="logo" href="index.html"><svg class="logomark" viewBox="0 0 96 96"><use href="#loh-mark"/></svg> LiveOpsHub</a>
+  <div class="r"><a href="index.html#features">Features</a><a href="index.html#faq">FAQ</a><a class="btn btn-grad" href="demo.html">Book a demo</a></div>
+</div></div>
+
+<section class="hero"><div class="wrap">
+  <h1>Simple pricing that scales with your shows.</h1>
+  <p>Start on a plan, or talk to us for a custom high-volume setup.</p>
+  <div class="toggle">
+    <button id="mBtn" class="on" onclick="setCycle('m')">Monthly</button>
+    <button id="aBtn" onclick="setCycle('a')">Annual <span class="save">2 months free</span></button>
+  </div>
+</div></section>
+
+<div class="wrap">
+  <div class="tiles">
+    <div class="tile">
+      <div class="name">Starter</div>
+      <div class="price"><span>$</span><b class="amt" data-m="149" data-a="124">149</b><span>/mo</span></div>
+      <div class="billed" id="b1"></div>
+      <div class="desc">For new live sellers finding their rhythm.</div>
+      <ul>
+        <li>Order import (TikTok, Whatnot, eBay)</li>
+        <li>Pick &amp; pack workflow</li>
+        <li>Video proof on every box</li>
+        <li>Customer search &amp; history</li>
+        <li>Up to 3 team seats</li>
+        <li>30-day video retention</li>
+      </ul>
+      <a class="btn btn-line" href="demo.html">Start free trial</a>
+    </div>
+    <div class="tile pop">
+      <div class="flag">MOST POPULAR</div>
+      <div class="name">Growth</div>
+      <div class="price"><span>$</span><b class="amt" data-m="399" data-a="332">399</b><span>/mo</span></div>
+      <div class="billed" id="b2"></div>
+      <div class="desc">For teams running weekly shows &amp; a warehouse.</div>
+      <ul>
+        <li>Everything in Starter</li>
+        <li>Unlimited team seats</li>
+        <li>Inventory &amp; true profit per show</li>
+        <li>Host commissions &amp; analytics</li>
+        <li>Packer, picker, geo &amp; repeat-customer analytics</li>
+        <li>Shipping labels &amp; giveaways</li>
+        <li>Custom branding · 90-day video retention</li>
+      </ul>
+      <a class="btn btn-grad" href="demo.html">Book a demo</a>
+    </div>
+    <div class="tile">
+      <div class="name">Scale</div>
+      <div class="price"><b>Custom</b></div>
+      <div class="billed">For 1,000+ orders / day</div>
+      <div class="desc">High-volume operations that can't go down.</div>
+      <ul>
+        <li>Everything in Growth</li>
+        <li>Offline warehouse mode</li>
+        <li>Custom video retention</li>
+        <li>Priority support &amp; onboarding</li>
+        <li>Custom integrations &amp; SLAs</li>
+      </ul>
+      <a class="btn btn-dark" href="demo.html">Talk to us</a>
+    </div>
+  </div>
+  <div class="microcopy">All plans include a free trial. No setup fees on Starter &amp; Growth. Prices are placeholder — we'll finalize together.</div>
+</div>
+
+<!-- COMPARISON -->
+<section class="compare"><div class="wrap">
+  <h2>Compare plans</h2>
+  <div class="sub">Everything you get, side by side.</div>
+  <table>
+    <thead><tr><th>Feature</th><th>Starter</th><th class="pop">Growth</th><th>Scale</th></tr></thead>
+    <tbody>
+      <tr class="grp"><td colspan="4">Fulfillment</td></tr>
+      <tr><td>Order import (TikTok / Whatnot / eBay)</td><td><span class="y">✓</span></td><td><span class="y">✓</span></td><td><span class="y">✓</span></td></tr>
+      <tr><td>Pick &amp; pack workflow (iPad + station)</td><td><span class="y">✓</span></td><td><span class="y">✓</span></td><td><span class="y">✓</span></td></tr>
+      <tr><td>Video proof on every package</td><td><span class="y">✓</span></td><td><span class="y">✓</span></td><td><span class="y">✓</span></td></tr>
+      <tr><td>Video retention</td><td class="val">30 days</td><td class="val">90 days</td><td class="val">Custom</td></tr>
+      <tr><td>Team seats</td><td class="val">3</td><td class="val">Unlimited</td><td class="val">Unlimited</td></tr>
+      <tr><td>Offline warehouse mode</td><td><span class="n">—</span></td><td><span class="n">—</span></td><td><span class="y">✓</span></td></tr>
+
+      <tr class="grp"><td colspan="4">Shipping &amp; inventory</td></tr>
+      <tr><td>Buy &amp; print shipping labels (USPS/UPS)</td><td><span class="n">—</span></td><td><span class="y">✓</span></td><td><span class="y">✓</span></td></tr>
+      <tr><td>Giveaways, end to end</td><td><span class="n">—</span></td><td><span class="y">✓</span></td><td><span class="y">✓</span></td></tr>
+      <tr><td>Inventory &amp; true profit per show</td><td><span class="n">—</span></td><td><span class="y">✓</span></td><td><span class="y">✓</span></td></tr>
+      <tr><td>Supplier orders &amp; inbound labels</td><td><span class="n">—</span></td><td><span class="y">✓</span></td><td><span class="y">✓</span></td></tr>
+
+      <tr class="grp"><td colspan="4">Analytics</td></tr>
+      <tr><td>Customer search &amp; history</td><td><span class="y">✓</span></td><td><span class="y">✓</span></td><td><span class="y">✓</span></td></tr>
+      <tr><td>Packer &amp; picker analytics</td><td class="val">Basic</td><td><span class="y">✓</span></td><td><span class="y">✓</span></td></tr>
+      <tr><td>Host performance &amp; commissions</td><td><span class="n">—</span></td><td><span class="y">✓</span></td><td><span class="y">✓</span></td></tr>
+      <tr><td>Geography &amp; repeat customers</td><td><span class="n">—</span></td><td><span class="y">✓</span></td><td><span class="y">✓</span></td></tr>
+
+      <tr class="grp"><td colspan="4">Platform &amp; support</td></tr>
+      <tr><td>Custom branding (white-label)</td><td><span class="n">—</span></td><td><span class="y">✓</span></td><td><span class="y">✓</span></td></tr>
+      <tr><td>Roles &amp; permissions</td><td><span class="y">✓</span></td><td><span class="y">✓</span></td><td><span class="y">✓</span></td></tr>
+      <tr><td>Support</td><td class="val">Email</td><td class="val">Priority</td><td class="val">Priority + onboarding</td></tr>
+      <tr><td>Custom integrations &amp; SLA</td><td><span class="n">—</span></td><td><span class="n">—</span></td><td><span class="y">✓</span></td></tr>
+    </tbody>
+  </table>
+</div></section>
+
+<!-- PRICING FAQ -->
+<div class="wrap"><div class="faq">
+  <h2>Pricing questions</h2>
+  <div class="qa"><button>Is there a free trial?<span class="plus">+</span></button><div class="ans"><p>Yes — every plan starts with a free trial so your team can run a real show before you commit. No credit card to start.</p></div></div>
+  <div class="qa"><button>Am I locked into a contract?<span class="plus">+</span></button><div class="ans"><p>Monthly plans are month-to-month, cancel anytime. Annual plans are billed yearly and include two months free.</p></div></div>
+  <div class="qa"><button>What counts toward my plan?<span class="plus">+</span></button><div class="ans"><p>Plans are based on your team size and features, not a per-click meter. For very high volume (1,000+ orders/day), Scale is priced to your operation — including video storage and support.</p></div></div>
+  <div class="qa"><button>Do you charge setup fees?<span class="plus">+</span></button><div class="ans"><p>No setup fee on Starter and Growth. Scale includes hands-on onboarding, priced as part of your custom plan.</p></div></div>
+  <div class="qa"><button>Can I change plans later?<span class="plus">+</span></button><div class="ans"><p>Anytime. Upgrade or downgrade as your shows grow — changes take effect on your next cycle.</p></div></div>
+</div></div>
+
+<section class="ctaband"><div class="wrap">
+  <h2>Not sure which plan fits?</h2>
+  <p>Book a 20-minute demo and we'll map it to your exact operation.</p>
+  <a class="btn" href="demo.html">Book a demo →</a>
+</div></section>
+
+<footer><div class="wrap">© 2026 LiveOpsHub · <a href="index.html">Home</a> · <a href="demo.html">Book a demo</a> · <a href="mailto:hello@liveopshub.com">hello@liveopshub.com</a></div></footer>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="lohgrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset=".5" stop-color="#8b5cf6"/><stop offset="1" stop-color="#ec4899"/></linearGradient>
+  <symbol id="loh-mark" viewBox="0 0 96 96">
+    <rect width="96" height="96" rx="22" fill="url(#lohgrad)"/>
+    <path d="M20 28 L20 64 L34 64" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="48" cy="46" r="11" fill="none" stroke="#fff" stroke-width="6.5"/><circle cx="48" cy="46" r="3" fill="#fff"/>
+    <circle cx="48" cy="35" r="2.4" fill="#fff"/><circle cx="58" cy="52" r="2.4" fill="#fff"/><circle cx="38" cy="52" r="2.4" fill="#fff"/>
+    <path d="M63 28 L63 64 M79 28 L79 64 M63 46 L79 46" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round"/>
+  </symbol>
+</defs></svg>
+
+<script>
+function setCycle(c){
+  document.getElementById('mBtn').classList.toggle('on',c==='m');
+  document.getElementById('aBtn').classList.toggle('on',c==='a');
+  document.querySelectorAll('.amt').forEach(function(el){el.textContent=el.getAttribute(c==='a'?'data-a':'data-m')});
+  document.getElementById('b1').textContent=c==='a'?'$1,488 billed yearly':'billed monthly';
+  document.getElementById('b2').textContent=c==='a'?'$3,984 billed yearly':'billed monthly';
+}
+setCycle('m');
+document.querySelectorAll('.qa button').forEach(function(b){
+  b.addEventListener('click',function(){var qa=b.parentNode,open=qa.classList.contains('open');
+    document.querySelectorAll('.qa').forEach(function(x){x.classList.remove('open')});if(!open)qa.classList.add('open');});
+});
+</script>
+</body>
+</html>

@@ -7,7 +7,7 @@ import os,csv,json,hashlib,secrets,time,threading,re,sys,sqlite3,fcntl,io
 from datetime import datetime,timedelta
 from functools import wraps
 from contextlib import contextmanager
-from flask import Flask,request,jsonify,send_file,redirect,session,Response
+from flask import Flask,request,jsonify,send_file,redirect,session,Response,has_request_context,g
 from werkzeug.utils import secure_filename
 from markupsafe import escape as _mescape
 import bcrypt
@@ -42,17 +42,76 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
 # existing single-tenant data is treated as belonging to this org.
 DEFAULT_ORG=os.environ.get("DEFAULT_ORG","5sec")
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
-VIDEO_DIR=os.path.join(DATA_DIR,"videos")
-PHOTO_DIR=os.path.join(DATA_DIR,"photos")
-LOG_FILE=os.path.join(DATA_DIR,"packing_log.csv")
+ORGS_DIR=os.path.join(DATA_DIR,"orgs")   # every tenant gets a private folder here
 LOG_FIELDS=["tracking_number","station","date","time","duration_seconds","video_file","photo_file","worker"]
-USERS_FILE=os.path.join(DATA_DIR,"users.json")
-STATIONS_FILE=os.path.join(DATA_DIR,"stations.json")
-DOCS_FILE=os.path.join(DATA_DIR,"documents.json")
-DOCS_DIR=os.path.join(DATA_DIR,"documents")
-ONB_FILE=os.path.join(DATA_DIR,"onboarding.json")
-ANN_FILE=os.path.join(DATA_DIR,"announcements.json")
-SHIPMENTS_DB=os.path.join(DATA_DIR,"shipments.db")
+
+# ══════════════════════════════════════════════════════════════════
+# MULTI-TENANCY — data isolation model
+# ------------------------------------------------------------------
+# CONTROL PLANE (shared across all tenants, lives at DATA_DIR root):
+#   users.json      - maps a username -> {password, role, org}. Read at
+#                     login, BEFORE we know the org, so it must be global.
+#   stations.json   - shared station registry.
+#   platform.db     - the `organizations` table (the tenant directory).
+#
+# TENANT DATA (per-org, physically isolated under /data/orgs/<org>/):
+#   shipments.db, giveaways.db, videos/, photos/, packing_log.csv,
+#   documents.json + documents/, onboarding.json, announcements.json
+#
+# A query literally cannot reach another tenant's file: isolation is by
+# filesystem path, resolved from the logged-in user's session org through
+# the single choke point below. Nothing may derive the org from a URL/param.
+# ══════════════════════════════════════════════════════════════════
+USERS_FILE=os.path.join(DATA_DIR,"users.json")       # control plane
+STATIONS_FILE=os.path.join(DATA_DIR,"stations.json") # control plane
+PLATFORM_DB=os.path.join(DATA_DIR,"platform.db")     # control plane (organizations)
+
+def org_path(org,*parts):
+    """Absolute path inside a tenant's private folder. org is REQUIRED."""
+    if not org:
+        raise RuntimeError("org_path() called without an org — tenant isolation bug")
+    return os.path.join(ORGS_DIR,str(org),*parts)
+
+def current_org():
+    """The org for the current request: the logged-in user's session org, or
+    for public token flows (e.g. new-hire onboarding) the org pinned into g.org
+    after the token is resolved. None outside a request."""
+    try:
+        if has_request_context():
+            o=session.get("org")
+            if o: return o
+            return getattr(g,"org",None)
+    except Exception:
+        pass
+    return None
+
+def _org_or_current(org):
+    o=org or current_org()
+    if not o:
+        raise RuntimeError("tenant data accessed without an org in context")
+    return o
+
+# Per-org path helpers. Pass an explicit org from schedulers/boot (no session);
+# in a request they default to the session's org.
+def video_dir(org=None):    return org_path(_org_or_current(org),"videos")
+def photo_dir(org=None):    return org_path(_org_or_current(org),"photos")
+def docs_dir(org=None):     return org_path(_org_or_current(org),"documents")
+def log_file(org=None):     return org_path(_org_or_current(org),"packing_log.csv")
+def docs_file(org=None):    return org_path(_org_or_current(org),"documents.json")
+def onb_file(org=None):     return org_path(_org_or_current(org),"onboarding.json")
+def ann_file(org=None):     return org_path(_org_or_current(org),"announcements.json")
+def shipments_db_path(org=None): return org_path(_org_or_current(org),"shipments.db")
+def giveaway_db_path(org=None):  return org_path(_org_or_current(org),"giveaways.db")
+
+def list_org_ids():
+    """All active tenant org_ids (control plane). Used by schedulers/boot."""
+    try:
+        c=pdb()
+        ids=[r["org_id"] for r in c.execute("SELECT org_id FROM organizations WHERE active=1").fetchall()]
+        c.close()
+        return ids or [DEFAULT_ORG]
+    except Exception:
+        return [DEFAULT_ORG]
 
 # FIX #1: SECRET_KEY must be set in environment - fail loud if missing.
 # Auto-generating it would invalidate all sessions on every restart.
@@ -99,42 +158,90 @@ if any(_r2_vars):
 else:
     print("R2 not configured - using local file storage at "+DATA_DIR,flush=True)
 
-for d in [DATA_DIR,VIDEO_DIR,PHOTO_DIR,DOCS_DIR]: os.makedirs(d,exist_ok=True)
-if not os.path.exists(DOCS_FILE):
-    with open(DOCS_FILE,"w") as f: json.dump({},f)
-if not os.path.exists(ONB_FILE):
-    # Seed with a few common onboarding tasks so new installs aren't empty
-    _onb_seed = {
-        "tasks": [
-            {"id":"ob_safety",     "title":"Watch warehouse safety training",
-             "description":"Required 10-minute video covering forklift area, lifting, and emergency exits.",
-             "category":"safety",   "required":True,  "created_at":""},
-            {"id":"ob_handbook",   "title":"Read & sign the employee handbook",
-             "description":"Find it under Documents → Policies.",
-             "category":"paperwork","required":True,  "created_at":""},
-            {"id":"ob_tour",       "title":"Take the warehouse floor tour",
-             "description":"Shift lead will walk you through stations, stockroom, and break area.",
-             "category":"intro",    "required":True,  "created_at":""},
-            {"id":"ob_packing",    "title":"Shadow an experienced packer for 1 hour",
-             "description":"Learn how recordings, tracking scans, and station selection work in practice.",
-             "category":"training", "required":True,  "created_at":""},
-            {"id":"ob_meet_team",  "title":"Meet your team",
-             "description":"Introductions with the rest of the packing crew and management.",
-             "category":"intro",    "required":False, "created_at":""},
-        ],
-        "completions": {}
-    }
-    with open(ONB_FILE,"w") as f: json.dump(_onb_seed,f,indent=2)
+os.makedirs(DATA_DIR,exist_ok=True)
+os.makedirs(ORGS_DIR,exist_ok=True)
+
+# Default onboarding tasks seeded into each new tenant so their install isn't empty.
+_ONB_SEED = {
+    "tasks": [
+        {"id":"ob_safety",     "title":"Watch warehouse safety training",
+         "description":"Required 10-minute video covering forklift area, lifting, and emergency exits.",
+         "category":"safety",   "required":True,  "created_at":""},
+        {"id":"ob_handbook",   "title":"Read & sign the employee handbook",
+         "description":"Find it under Documents → Policies.",
+         "category":"paperwork","required":True,  "created_at":""},
+        {"id":"ob_tour",       "title":"Take the warehouse floor tour",
+         "description":"Shift lead will walk you through stations, stockroom, and break area.",
+         "category":"intro",    "required":True,  "created_at":""},
+        {"id":"ob_packing",    "title":"Shadow an experienced packer for 1 hour",
+         "description":"Learn how recordings, tracking scans, and station selection work in practice.",
+         "category":"training", "required":True,  "created_at":""},
+        {"id":"ob_meet_team",  "title":"Meet your team",
+         "description":"Introductions with the rest of the packing crew and management.",
+         "category":"intro",    "required":False, "created_at":""},
+    ],
+    "completions": {}
+}
+
+def _seed_org_files(org):
+    """Create a tenant's private folders + seed its empty JSON stores."""
+    for d in (video_dir(org),photo_dir(org),docs_dir(org)):
+        os.makedirs(d,exist_ok=True)
+    df=docs_file(org)
+    if not os.path.exists(df):
+        with open(df,"w") as f: json.dump({},f)
+    of=onb_file(org)
+    if not os.path.exists(of):
+        with open(of,"w") as f: json.dump(_ONB_SEED,f,indent=2)
+    lf=log_file(org)
+    if not os.path.exists(lf):
+        with open(lf,"w") as f: f.write(",".join(LOG_FIELDS)+"\n")
+
 MAX_DOC_SIZE = 50*1024*1024  # 50MB per document
 
-def cleanup_old_files():
-    """Delete video/photo files older than RETENTION_DAYS.
+# ══════════════════════════════════════════════════════════
+# CONTROL-PLANE DB (platform.db) — shared across all tenants.
+# Holds the organizations directory. This is the ONLY DB that is
+# allowed to span tenants; all operational data is per-org.
+# ══════════════════════════════════════════════════════════
+def pdb():
+    c=sqlite3.connect(PLATFORM_DB,timeout=10.0)
+    c.row_factory=sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    return c
+
+def pdb_init():
+    c=pdb()
+    c.execute("""CREATE TABLE IF NOT EXISTS organizations(
+        org_id TEXT PRIMARY KEY,
+        company_name TEXT NOT NULL,
+        brand_mark TEXT NOT NULL DEFAULT '5 SEC',
+        brand_sub TEXT NOT NULL DEFAULT 'Employee Hub',
+        brand_color TEXT NOT NULL DEFAULT '#d9748f',
+        logo_url TEXT DEFAULT '',
+        plan TEXT DEFAULT 'standard',
+        active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    # Seed the founding tenant (5 Second Beauty) if the table is empty.
+    if not c.execute("SELECT 1 FROM organizations WHERE org_id=?", (DEFAULT_ORG,)).fetchone():
+        c.execute("""INSERT INTO organizations(org_id,company_name,brand_mark,brand_sub,brand_color)
+                     VALUES(?,?,?,?,?)""",
+                  (DEFAULT_ORG, "5 Second Beauty", "5 SEC", "Employee Hub", "#d9748f"))
+    c.execute("UPDATE organizations SET brand_color='#d9748f' WHERE brand_color='#f3c9c4'")
+    c.commit(); c.close()
+
+pdb_init()
+
+def cleanup_old_files(org):
+    """Delete one tenant's video/photo files older than RETENTION_DAYS.
     When R2 is configured, file deletion is handled by R2 lifecycle rules.
     This function only cleans the local CSV log of old rows in that case."""
     cutoff=time.time()-RETENTION_DAYS*86400
     deleted=0;freed=0
+    lf=log_file(org)
     if not r2:  # only clean local files when not using R2
-        for folder in [VIDEO_DIR,PHOTO_DIR]:
+        for folder in [video_dir(org),photo_dir(org)]:
             if not os.path.exists(folder): continue
             for f in os.listdir(folder):
                 fp=os.path.join(folder,f)
@@ -146,20 +253,30 @@ def cleanup_old_files():
                 except: pass
     # Always clean old log entries. Serialize with the same lock the upload
     # append uses, and rewrite atomically, so a concurrent append is never lost.
-    if os.path.exists(LOG_FILE):
+    if os.path.exists(lf):
         cutoff_date=(datetime.now()-timedelta(days=RETENTION_DAYS)).strftime('%Y-%m-%d')
         try:
-            with _flock("packing_log"):
-                with open(LOG_FILE) as f: rows=list(csv.DictReader(f))
+            with _flock("packing_log_"+str(org)):
+                with open(lf) as f: rows=list(csv.DictReader(f))
                 kept=[r for r in rows if r.get("date","")>=cutoff_date]
                 if len(kept)<len(rows):
                     buf=io.StringIO()
                     w=csv.DictWriter(buf,fieldnames=LOG_FIELDS)
                     w.writeheader();w.writerows(kept)
-                    _atomic_write(LOG_FILE,buf.getvalue())
+                    _atomic_write(lf,buf.getvalue())
         except Exception as e: print("Log cleanup failed:",e,flush=True)
-    if deleted>0: print("Cleanup: deleted",deleted,"files, freed",round(freed/(1024*1024),1),"MB")
+    if deleted>0: print("Cleanup["+str(org)+"]: deleted",deleted,"files, freed",round(freed/(1024*1024),1),"MB")
     return {"deleted":deleted,"freed_mb":round(freed/(1024*1024),1)}
+
+def cleanup_all_orgs():
+    """Run retention cleanup for every tenant."""
+    total={"deleted":0,"freed_mb":0}
+    for org in list_org_ids():
+        try:
+            r=cleanup_old_files(org)
+            total["deleted"]+=r["deleted"]; total["freed_mb"]+=r["freed_mb"]
+        except Exception as e: print("Cleanup error for",org,":",e,flush=True)
+    return total
 
 def cleanup_loop():
     # Only one worker should run the hourly cleanup. A non-blocking lock lets
@@ -171,13 +288,11 @@ def cleanup_loop():
         return  # another worker owns the cleanup loop
     while True:
         time.sleep(3600)
-        try: cleanup_old_files()
+        try: cleanup_all_orgs()
         except Exception as e: print("Cleanup loop error:",e,flush=True)
 
 cleanup_thread=threading.Thread(target=cleanup_loop,daemon=True)
 cleanup_thread.start()
-if not os.path.exists(LOG_FILE):
-    with open(LOG_FILE,"w") as f: f.write(",".join(LOG_FIELDS)+"\n")
 
 def _h(pw):
     """Hash password with bcrypt (rounds=12)."""
@@ -353,21 +468,20 @@ else:
 # ══════════════════════════════════════════════════════════
 # GIVEAWAY MODULE - SQLite database
 # ══════════════════════════════════════════════════════════
-GIVEAWAY_DB=os.path.join(DATA_DIR,"giveaways.db")
 GIVEAWAY_BRANDS=["5 Sec Beauty","Hera Beauty","Peach Beauty"]
 GIVEAWAY_STATUSES=["pending_address","address_received","label_created","shipped","cancelled"]
 
-def gdb():
-    """Get a SQLite connection with row factory."""
-    c=sqlite3.connect(GIVEAWAY_DB,timeout=10.0)
+def gdb(org=None):
+    """Giveaways DB connection for a tenant (defaults to the session's org)."""
+    c=sqlite3.connect(giveaway_db_path(org),timeout=10.0)
     c.row_factory=sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA foreign_keys=ON")
     return c
 
-def gdb_init():
-    """Create the giveaway table if it doesn't exist."""
-    c=gdb()
+def gdb_init(org):
+    """Create the giveaway table for a tenant if it doesn't exist."""
+    c=gdb(org)
     c.execute("""CREATE TABLE IF NOT EXISTS giveaways(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         winner_username TEXT NOT NULL,
@@ -418,25 +532,23 @@ def gdb_init():
     c.execute("CREATE INDEX IF NOT EXISTS idx_giveaways_linked ON giveaways(linked_shipment_id)")
     c.commit();c.close()
 
-gdb_init()
-
 
 # ══════════════════════════════════════════════════════════
 # SHIPMENT WEIGHT VERIFICATION — separate SQLite DB
 # Imported from Whatnot CSV exports. One row per shipment_id.
 # Items in separate table. SKU weights cached for fast lookup.
 # ══════════════════════════════════════════════════════════
-def sdb():
-    """SQLite connection for the shipments DB."""
-    c = sqlite3.connect(SHIPMENTS_DB, timeout=10.0)
+def sdb(org=None):
+    """Shipments DB connection for a tenant (defaults to the session's org)."""
+    c = sqlite3.connect(shipments_db_path(org), timeout=10.0)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA foreign_keys=ON")
     return c
 
-def sdb_init():
-    """Create the shipments / items / sku_weights / weight_config tables."""
-    c = sdb()
+def sdb_init(org):
+    """Create the shipments / items / sku_weights / weight_config tables for a tenant."""
+    c = sdb(org)
     c.execute("""CREATE TABLE IF NOT EXISTS shipments(
         shipment_id TEXT PRIMARY KEY,
         tracking_code TEXT,
@@ -719,35 +831,25 @@ def sdb_init():
         moved_at TEXT DEFAULT CURRENT_TIMESTAMP,
         moved_by TEXT
     )""")
-    # ── Multi-tenancy seam: one row per customer organization (SaaS tenant). ──
-    # Every other table will gain an org_id FK as data isolation is rolled out;
-    # for now this table backs per-tenant branding / white-labeling.
-    c.execute("""CREATE TABLE IF NOT EXISTS organizations(
-        org_id TEXT PRIMARY KEY,
-        company_name TEXT NOT NULL,
-        brand_mark TEXT NOT NULL DEFAULT '5 SEC',
-        brand_sub TEXT NOT NULL DEFAULT 'Employee Hub',
-        brand_color TEXT NOT NULL DEFAULT '#d9748f',
-        logo_url TEXT DEFAULT '',
-        plan TEXT DEFAULT 'standard',
-        active INTEGER DEFAULT 1,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )""")
-    # Seed the founding tenant (5 Second Beauty) if the table is empty.
-    if not c.execute("SELECT 1 FROM organizations WHERE org_id=?", (DEFAULT_ORG,)).fetchone():
-        c.execute("""INSERT INTO organizations(org_id,company_name,brand_mark,brand_sub,brand_color)
-                     VALUES(?,?,?,?,?)""",
-                  (DEFAULT_ORG, "5 Second Beauty", "5 SEC", "Employee Hub", "#d9748f"))
-    # Migration: bump any org still on the old pale pink to the new darker rose.
-    c.execute("UPDATE organizations SET brand_color='#d9748f' WHERE brand_color='#f3c9c4'")
+    # NOTE: the `organizations` table is the cross-tenant control plane and now
+    # lives in platform.db (see pdb_init), NOT here in a per-tenant shipments.db.
     c.commit(); c.close()
 
-sdb_init()
+# ══════════════════════════════════════════════════════════
+# TENANT PROVISIONING — create/prepare a tenant's private data.
+# provision_org() is idempotent: safe to call at boot for every org,
+# and it's what a future SaaS signup flow calls to create a new tenant.
+# ══════════════════════════════════════════════════════════
+def provision_org(org):
+    """Ensure a tenant's folders, JSON stores and databases exist."""
+    _seed_org_files(org)
+    sdb_init(org)
+    gdb_init(org)
 
 # ── Organization / branding helpers (SaaS foundation) ──────────────
 def org_get(org_id):
     """Return an org's config dict, or the default org's config as a fallback."""
-    c = sdb()
+    c = pdb()
     row = c.execute("SELECT * FROM organizations WHERE org_id=? AND active=1", (org_id or DEFAULT_ORG,)).fetchone()
     if not row and org_id != DEFAULT_ORG:
         row = c.execute("SELECT * FROM organizations WHERE org_id=?", (DEFAULT_ORG,)).fetchone()
@@ -764,6 +866,77 @@ def brand_for_session(org_id):
             "logo_url": o.get("logo_url") or "",
             "company": o.get("company_name") or "5 Second Beauty",
             "org_id": o.get("org_id") or DEFAULT_ORG}
+
+
+# ══════════════════════════════════════════════════════════
+# ONE-TIME LEGACY MIGRATION — single-tenant → per-org folders.
+# Existing installs kept everything flat under DATA_DIR. Move that data
+# into /data/orgs/<DEFAULT_ORG>/ exactly once. Idempotent + lock-guarded.
+# BACK UP the /data volume before first deploy, just in case.
+# ══════════════════════════════════════════════════════════
+def _migrate_legacy_to_default_org():
+    import shutil
+    marker=org_path(DEFAULT_ORG,".migrated")
+    if os.path.exists(marker):
+        return  # already migrated — nothing to do
+    legacy_ship=os.path.join(DATA_DIR,"shipments.db")
+    if not os.path.exists(legacy_ship):
+        return  # fresh install, no legacy data (marker written after provision seeds)
+    print("[migrate] copying legacy single-tenant data into org", DEFAULT_ORG, flush=True)
+    os.makedirs(org_path(DEFAULT_ORG), exist_ok=True)
+    # 1) Preserve any customized org/branding rows from the old shipments.db.
+    try:
+        lc=sqlite3.connect(legacy_ship); lc.row_factory=sqlite3.Row
+        if lc.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='organizations'").fetchone():
+            pc=pdb()
+            for r in lc.execute("SELECT * FROM organizations").fetchall():
+                r=dict(r)
+                pc.execute("""INSERT INTO organizations
+                        (org_id,company_name,brand_mark,brand_sub,brand_color,logo_url,plan,active,created_at)
+                        VALUES(?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(org_id) DO UPDATE SET
+                          company_name=excluded.company_name, brand_mark=excluded.brand_mark,
+                          brand_sub=excluded.brand_sub, brand_color=excluded.brand_color,
+                          logo_url=excluded.logo_url, plan=excluded.plan, active=excluded.active""",
+                    (r.get("org_id"),r.get("company_name"),r.get("brand_mark"),r.get("brand_sub"),
+                     r.get("brand_color"),r.get("logo_url"),r.get("plan"),r.get("active",1),r.get("created_at")))
+            pc.commit(); pc.close()
+        lc.close()
+    except Exception as e:
+        print("[migrate] org-row import warning:", e, flush=True)
+    # 2) COPY the databases + JSON stores (small; originals stay at the /data root
+    #    as an automatic backup). MOVE the media dirs (usually absent when R2 is on).
+    def _cp(src,dst):
+        if os.path.exists(src) and not os.path.exists(dst):
+            os.makedirs(os.path.dirname(dst),exist_ok=True)
+            shutil.copy2(src,dst)
+    def _mv_dir(src,dst):
+        if os.path.isdir(src) and not os.path.exists(dst):
+            os.makedirs(os.path.dirname(dst),exist_ok=True)
+            shutil.move(src,dst)
+    for base in ("shipments.db","giveaways.db"):
+        for suf in ("","-wal","-shm"):
+            _cp(os.path.join(DATA_DIR,base+suf), org_path(DEFAULT_ORG,base+suf))
+    _cp(os.path.join(DATA_DIR,"packing_log.csv"), log_file(DEFAULT_ORG))
+    _cp(os.path.join(DATA_DIR,"documents.json"),  docs_file(DEFAULT_ORG))
+    _cp(os.path.join(DATA_DIR,"onboarding.json"), onb_file(DEFAULT_ORG))
+    _cp(os.path.join(DATA_DIR,"announcements.json"), ann_file(DEFAULT_ORG))
+    _mv_dir(os.path.join(DATA_DIR,"videos"),    video_dir(DEFAULT_ORG))
+    _mv_dir(os.path.join(DATA_DIR,"photos"),    photo_dir(DEFAULT_ORG))
+    _mv_dir(os.path.join(DATA_DIR,"documents"), docs_dir(DEFAULT_ORG))
+    with open(marker,"w") as f: f.write(datetime.now().isoformat())
+    print("[migrate] done — legacy DBs copied into", org_path(DEFAULT_ORG),
+          "(originals kept at /data root as backup)", flush=True)
+
+# ── Boot: migrate legacy data once, then provision every known tenant. ──
+with _flock("provision"):
+    try:
+        _migrate_legacy_to_default_org()
+    except Exception as e:
+        print("[migrate] FAILED:", e, flush=True)
+    for _org in list_org_ids():
+        try: provision_org(_org)
+        except Exception as e: print("provision failed for", _org, ":", e, flush=True)
 
 
 # ══════════════════════════════════════════════════════════
@@ -890,12 +1063,12 @@ def _is_usps_tracking(t):
     if t.isdigit() and 20<=len(t)<=34 and (t[0]=='9' or t.startswith('420')): return True
     return False
 
-def refresh_tracking_batch(limit=120):
-    """Poll USPS for not-yet-delivered shipments with a USPS tracking code; update rows.
+def refresh_tracking_batch(org=None, limit=120):
+    """Poll USPS for one tenant's not-yet-delivered shipments; update rows.
     Batches 30 tracking numbers per request. Bounded per call and idempotent.
     Non-USPS tracking codes (Whatnot/other platforms) are skipped."""
     if not USPS_ENABLED: return {"checked":0,"updated":0,"note":"usps_disabled"}
-    c=sdb()
+    c=sdb(org)
     rows=c.execute("""SELECT shipment_id,tracking_code FROM shipments
                       WHERE tracking_code IS NOT NULL AND tracking_code!=''
                         AND (tracking_code GLOB '9*' OR tracking_code GLOB '420*'
@@ -935,7 +1108,9 @@ def _tracking_loop():
             last=os.path.getmtime(marker) if os.path.exists(marker) else 0
             if time.time()-last < 5*3600: continue
             open(marker,"w").close()
-            refresh_tracking_batch(limit=600)
+            for _org in list_org_ids():
+                try: refresh_tracking_batch(org=_org, limit=600)
+                except Exception as e: print("tracking error for",_org,":",e,flush=True)
         except Exception as e:
             print("tracking loop error:",e,flush=True)
 
@@ -1247,10 +1422,10 @@ def _i9_documents_step():
         ),
     }
 
-def _ensure_i9_steps_on_existing_workflows():
+def _ensure_i9_steps_on_existing_workflows(org=None):
     """Append the I-9 form + supporting documents step to every existing workflow
     that doesn't already have them. Idempotent — runs once per workflow."""
-    c = sdb()
+    c = sdb(org)
     workflows = c.execute("SELECT id, name FROM onboarding_workflows").fetchall()
     for wf in workflows:
         already = c.execute("""SELECT id FROM onboarding_steps
@@ -1271,7 +1446,7 @@ def _ensure_i9_steps_on_existing_workflows():
     c.commit(); c.close()
 
 
-def _seed_workflows_from_module():
+def _seed_workflows_from_module(org=None):
     """Seed the real workflows from onboarding_seed.WORKFLOWS on first boot.
     Each workflow gets created once (skipped if a workflow with the same name
     already exists). The first one becomes the default for new hires.
@@ -1279,9 +1454,9 @@ def _seed_workflows_from_module():
     try:
         from onboarding_seed import WORKFLOWS
     except ImportError:
-        _ensure_i9_steps_on_existing_workflows()
+        _ensure_i9_steps_on_existing_workflows(org)
         return None
-    c = sdb()
+    c = sdb(org)
     first_wf_id = None
     for idx, wf in enumerate(WORKFLOWS):
         existing = c.execute("SELECT id FROM onboarding_workflows WHERE name=?",
@@ -1311,17 +1486,17 @@ def _seed_workflows_from_module():
                        step.get("body_es"), cfg_es))
     c.commit(); c.close()
     # Backfill I-9 onto every workflow (including ones we just seeded)
-    _ensure_i9_steps_on_existing_workflows()
+    _ensure_i9_steps_on_existing_workflows(org)
     return first_wf_id
 
-def _seed_default_workflow_if_missing():
+def _seed_default_workflow_if_missing(org=None):
     """Backward-compat shim. If the real seed module ran, that's what we use.
     If for some reason it failed (e.g. file not deployed yet), fall back to a
     minimal hard-coded placeholder so the system isn't completely broken."""
-    seeded = _seed_workflows_from_module()
+    seeded = _seed_workflows_from_module(org)
     if seeded is not None:
         return seeded
-    c = sdb()
+    c = sdb(org)
     existing = c.execute("SELECT id FROM onboarding_workflows ORDER BY id LIMIT 1").fetchone()
     if existing:
         c.close()
@@ -1497,16 +1672,36 @@ def _seed_default_workflow_if_missing():
     c.commit(); c.close()
     return wf_id
 
-# Run once at boot
-_seed_default_workflow_if_missing()
+# Run once at boot — seed the default onboarding workflow for every tenant.
+for _org in list_org_ids():
+    try: _seed_default_workflow_if_missing(_org)
+    except Exception as e: print("workflow seed failed for", _org, ":", e, flush=True)
 
 def _hire_by_token(token):
-    """Look up a hire by their invite token. Returns dict or None."""
+    """Look up a hire by their invite token. Returns dict (with '_org') or None.
+
+    Public onboarding routes have no session, so we resolve which tenant owns
+    the token by scanning tenants, then PIN that org into g.org so every later
+    sdb()/media call in the request stays inside the right tenant. Authenticated
+    callers are scoped to their own session org only — never scan cross-tenant."""
     if not token or len(token) > 64: return None
-    c = sdb()
-    row = c.execute("SELECT * FROM new_hires WHERE invite_token=?", (token,)).fetchone()
-    c.close()
-    return dict(row) if row else None
+    sess_org=None
+    try:
+        if has_request_context(): sess_org=session.get("org")
+    except Exception: pass
+    orgs=[sess_org] if sess_org else list_org_ids()
+    for org in orgs:
+        c = sdb(org)
+        row = c.execute("SELECT * FROM new_hires WHERE invite_token=?", (token,)).fetchone()
+        c.close()
+        if row:
+            if not sess_org:
+                try:
+                    if has_request_context(): g.org=org
+                except Exception: pass
+            d=dict(row); d["_org"]=org
+            return d
+    return None
 
 def _hire_steps_with_progress(hire_id, workflow_id, lang="en"):
     """Returns the ordered list of steps for a workflow with each hire's progress
@@ -1695,8 +1890,8 @@ def req_role(*roles):
 
 def _read_log():
     """Return all rows from packing_log.csv, or [] if missing."""
-    if not os.path.exists(LOG_FILE): return []
-    with open(LOG_FILE) as f: return list(csv.DictReader(f))
+    if not os.path.exists(log_file()): return []
+    with open(log_file()) as f: return list(csv.DictReader(f))
 
 def _filter_by_window(rows, window='month'):
     """Filter log rows by time window: 'today' | 'week' | 'month' | 'all'.
@@ -1786,13 +1981,13 @@ def _onb_id():
     return 'ob_' + secrets.token_hex(4)
 
 def _onb_load():
-    if not os.path.exists(ONB_FILE): return {"tasks": [], "completions": {}}
+    if not os.path.exists(onb_file()): return {"tasks": [], "completions": {}}
     try:
-        with open(ONB_FILE) as f: return json.load(f)
+        with open(onb_file()) as f: return json.load(f)
     except: return {"tasks": [], "completions": {}}
 
 def _onb_save(d):
-    with open(ONB_FILE,"w") as f: json.dump(d,f,indent=2)
+    with open(onb_file(),"w") as f: json.dump(d,f,indent=2)
 
 def _onb_user_progress(username):
     """Return current user's checklist with done-status per task + totals."""
@@ -1827,13 +2022,13 @@ def _ann_id():
     return 'ann_' + secrets.token_hex(4)
 
 def _ann_load():
-    if not os.path.exists(ANN_FILE): return {}
+    if not os.path.exists(ann_file()): return {}
     try:
-        with open(ANN_FILE) as f: return json.load(f)
+        with open(ann_file()) as f: return json.load(f)
     except: return {}
 
 def _ann_save(d):
-    with open(ANN_FILE, "w") as f: json.dump(d, f, indent=2)
+    with open(ann_file(), "w") as f: json.dump(d, f, indent=2)
 
 def _ann_visible(a, role):
     """Whether this announcement is visible to the current user's role.
@@ -1891,13 +2086,13 @@ def _onb_team_progress():
     return out
 
 def _docs_load():
-    if not os.path.exists(DOCS_FILE): return {}
+    if not os.path.exists(docs_file()): return {}
     try:
-        with open(DOCS_FILE) as f: return json.load(f)
+        with open(docs_file()) as f: return json.load(f)
     except: return {}
 
 def _docs_save(d):
-    with open(DOCS_FILE, "w") as f: json.dump(d, f, indent=2)
+    with open(docs_file(), "w") as f: json.dump(d, f, indent=2)
 
 def _doc_visible(doc, user, role):
     """Whether the current user can see this document based on its visibility tag."""
@@ -2125,8 +2320,8 @@ def api_upload():
                 print("R2 video upload failed:",e,flush=True)
                 return jsonify({"ok":False,"error":"Storage upload failed"})
         else:
-            vn=fn+".webm";vp=os.path.join(VIDEO_DIR,vn)
-            if os.path.exists(vp):vn=fn+"_"+now.strftime('%H%M%S')+".webm";vp=os.path.join(VIDEO_DIR,vn)
+            vn=fn+".webm";vp=os.path.join(video_dir(),vn)
+            if os.path.exists(vp):vn=fn+"_"+now.strftime('%H%M%S')+".webm";vp=os.path.join(video_dir(),vn)
             with open(vp,"wb") as out: out.write(vdata)
     pf=request.files.get("photo");pn=None
     if pf:
@@ -2139,11 +2334,11 @@ def api_upload():
                 print("R2 photo upload failed:",e,flush=True)
                 pn=None
         else:
-            pn=fn+".jpg";pp=os.path.join(PHOTO_DIR,pn)
-            if os.path.exists(pp):pn=fn+"_"+now.strftime('%H%M%S')+".jpg";pp=os.path.join(PHOTO_DIR,pn)
+            pn=fn+".jpg";pp=os.path.join(photo_dir(),pn)
+            if os.path.exists(pp):pn=fn+"_"+now.strftime('%H%M%S')+".jpg";pp=os.path.join(photo_dir(),pn)
             pf.save(pp)
     with _flock("packing_log"):
-        with open(LOG_FILE,"a",newline="") as f:
+        with open(log_file(),"a",newline="") as f:
             csv.writer(f).writerow([trk,sta,now.strftime('%Y-%m-%d'),now.strftime('%H:%M:%S'),dur,vn,pn,wrk])
     # Mark the shipment row as packed in the SQL table — that's what the Shows /
     # Customers / SKU Reconciliation pages read from. Without this update, every
@@ -2184,11 +2379,11 @@ def api_backfill_packed():
     tracking_code appears there as 'packed' (unless already shipped/cancelled).
     Use this after deploying the packed-status fix to retroactively close out
     shipments that were already recorded before the fix went live."""
-    if not os.path.exists(LOG_FILE):
+    if not os.path.exists(log_file()):
         return jsonify({"ok": True, "log_rows": 0, "shipments_updated": 0})
     # Collect (tracking, latest_timestamp, worker) tuples from the CSV log
     by_track = {}
-    with open(LOG_FILE) as f:
+    with open(log_file()) as f:
         for row in csv.DictReader(f):
             trk = (row.get("tracking_number") or "").strip()
             if not trk: continue
@@ -2235,8 +2430,8 @@ def api_search(trk):
     Works identically for R2 and local storage."""
     r={"tracking":trk,"videos":[],"photos":[],"log":[]};t=trk.lower()
     seen_v=set();seen_p=set()
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE) as cf:
+    if os.path.exists(log_file()):
+        with open(log_file()) as cf:
             for row in csv.DictReader(cf):
                 if t in row.get("tracking_number","").lower():
                     r["log"].append(row)
@@ -2256,8 +2451,8 @@ def api_search(trk):
 @req_role("admin","cs")
 def api_recent():
     recs=[]
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE) as f: recs=list(csv.DictReader(f))
+    if os.path.exists(log_file()):
+        with open(log_file()) as f: recs=list(csv.DictReader(f))
     recs.reverse()
     return jsonify(recs[:100])
 
@@ -2265,17 +2460,17 @@ def api_recent():
 @req_role("admin","cs")
 def api_stats():
     tv=0;ts=0
-    if os.path.exists(VIDEO_DIR):
-        for f in os.listdir(VIDEO_DIR):tv+=1;ts+=os.path.getsize(os.path.join(VIDEO_DIR,f))
-    tp=len(os.listdir(PHOTO_DIR)) if os.path.exists(PHOTO_DIR) else 0
+    if os.path.exists(video_dir()):
+        for f in os.listdir(video_dir()):tv+=1;ts+=os.path.getsize(os.path.join(video_dir(),f))
+    tp=len(os.listdir(photo_dir())) if os.path.exists(photo_dir()) else 0
     return jsonify({"total_videos":tv,"total_photos":tp,"total_size_mb":round(ts/(1024*1024),1)})
 
 @app.route("/api/analytics")
 @req_role("admin","cs")
 def api_analytics():
     recs=[]
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE) as f: recs=list(csv.DictReader(f))
+    if os.path.exists(log_file()):
+        with open(log_file()) as f: recs=list(csv.DictReader(f))
     today=datetime.now().strftime('%Y-%m-%d')
     # Per worker stats
     workers={}
@@ -2453,7 +2648,7 @@ def api_documents_upload():
             print("R2 document upload failed:", e, flush=True)
             return jsonify({"ok": False, "error": "Storage upload failed"})
     else:
-        path = os.path.join(DOCS_DIR, stored)
+        path = os.path.join(docs_dir(), stored)
         f.save(path)
         size = os.path.getsize(path)
         if size > MAX_DOC_SIZE:
@@ -2498,10 +2693,10 @@ def documents_download(doc_id):
             print("R2 doc presign failed:", e, flush=True)
             return "Download error", 500
     else:
-        path = os.path.join(DOCS_DIR, stored)
+        path = os.path.join(docs_dir(), stored)
         # Path traversal guard
         rp = os.path.realpath(path)
-        if not rp.startswith(os.path.realpath(DOCS_DIR) + os.sep):
+        if not rp.startswith(os.path.realpath(docs_dir()) + os.sep):
             return "Bad path", 400
         if not os.path.exists(rp): return "File missing", 404
         return send_file(rp, as_attachment=True, download_name=d.get('filename', 'file'))
@@ -3265,8 +3460,8 @@ def api_customer_detail(username):
     c.close()
     # Cross-reference with packing_log.csv to find recordings
     recordings = []
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE) as f:
+    if os.path.exists(log_file()):
+        with open(log_file()) as f:
             for row in csv.DictReader(f):
                 t = row.get("tracking_number", "")
                 if t and (t in ship_ids or t in tracking_codes):
@@ -4213,8 +4408,8 @@ def api_packer_analytics():
         if r["shipment_id"]: tmap.setdefault(r["shipment_id"],ti)
     c.close()
     rows=[]; all_workers=set(); all_stations=set()
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE) as f:
+    if os.path.exists(log_file()):
+        with open(log_file()) as f:
             for row in csv.DictReader(f):
                 d=row.get("date","") or ""
                 wk=(row.get("worker","") or "Unknown"); stn=row.get("station","") or ""
@@ -4571,8 +4766,8 @@ def api_show_detail():
         if r["tc"]: tset.add(r["tc"])
         if r["sid"]: tset.add(r["sid"])
     packsec=[]
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE) as f:
+    if os.path.exists(log_file()):
+        with open(log_file()) as f:
             for row in csv.DictReader(f):
                 if (row.get("tracking_number","") or "") in tset:
                     try: dd=float(row.get("duration_seconds","0") or 0)
@@ -5368,9 +5563,9 @@ def api_documents_delete(doc_id):
             try: r2.delete_object(Bucket=R2_BUCKET, Key="documents/" + stored)
             except Exception as e: print("R2 doc delete failed:", e, flush=True)
         else:
-            path = os.path.join(DOCS_DIR, stored)
+            path = os.path.join(docs_dir(), stored)
             rp = os.path.realpath(path)
-            if rp.startswith(os.path.realpath(DOCS_DIR) + os.sep) and os.path.exists(rp):
+            if rp.startswith(os.path.realpath(docs_dir()) + os.sep) and os.path.exists(rp):
                 try: os.remove(rp)
                 except: pass
     del docs[doc_id]
@@ -5728,15 +5923,15 @@ def api_storage():
     # Local mode
     vcount=0;vsize=0;pcount=0;psize=0
     oldest=None;newest=None
-    if os.path.exists(VIDEO_DIR):
-        for f in os.listdir(VIDEO_DIR):
-            fp=os.path.join(VIDEO_DIR,f);vcount+=1;vsize+=os.path.getsize(fp)
+    if os.path.exists(video_dir()):
+        for f in os.listdir(video_dir()):
+            fp=os.path.join(video_dir(),f);vcount+=1;vsize+=os.path.getsize(fp)
             mt=os.path.getmtime(fp)
             if oldest is None or mt<oldest: oldest=mt
             if newest is None or mt>newest: newest=mt
-    if os.path.exists(PHOTO_DIR):
-        for f in os.listdir(PHOTO_DIR):
-            fp=os.path.join(PHOTO_DIR,f);pcount+=1;psize+=os.path.getsize(fp)
+    if os.path.exists(photo_dir()):
+        for f in os.listdir(photo_dir()):
+            fp=os.path.join(photo_dir(),f);pcount+=1;psize+=os.path.getsize(fp)
     total=(vsize+psize)/(1024*1024)
     return jsonify({
         "videos":vcount,"photos":pcount,
@@ -5838,9 +6033,9 @@ def serve_v(fn):
         except Exception as e:
             print("R2 presign failed:",e,flush=True)
             return ("",404)
-    p=os.path.join(VIDEO_DIR,fn)
+    p=os.path.join(video_dir(),fn)
     real=os.path.realpath(p)
-    if not real.startswith(os.path.realpath(VIDEO_DIR)+os.sep): return ("",404)
+    if not real.startswith(os.path.realpath(video_dir())+os.sep): return ("",404)
     return send_file(real,mimetype="video/webm") if os.path.exists(real) else ("",404)
 
 @app.route("/media/photo/<fn>")
@@ -5858,9 +6053,9 @@ def serve_p(fn):
         except Exception as e:
             print("R2 presign failed:",e,flush=True)
             return ("",404)
-    p=os.path.join(PHOTO_DIR,fn)
+    p=os.path.join(photo_dir(),fn)
     real=os.path.realpath(p)
-    if not real.startswith(os.path.realpath(PHOTO_DIR)+os.sep): return ("",404)
+    if not real.startswith(os.path.realpath(photo_dir())+os.sep): return ("",404)
     return send_file(real,mimetype="image/jpeg") if os.path.exists(real) else ("",404)
 
 # ══════════════════════════════════════════════════════════

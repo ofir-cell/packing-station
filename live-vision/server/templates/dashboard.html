@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiveVision — On-Air Product Tracker</title>
+<style>
+  :root{
+    --bg:#101014; --panel:#191a20; --panel2:#1f2129; --line:#2a2c36;
+    --ink:#e8e9ee; --dim:#8b8e9c; --accent:#f2789f; --ok:#5fd39a; --warn:#e8b45a;
+    --mono:'SF Mono',Consolas,'Roboto Mono',monospace;
+  }
+  *{box-sizing:border-box;margin:0}
+  body{background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,'Segoe UI',Roboto,sans-serif;padding:24px}
+  header{display:flex;align-items:baseline;gap:14px;margin-bottom:20px;flex-wrap:wrap}
+  h1{font-size:20px;letter-spacing:.4px}
+  h1 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--accent);margin-right:8px;animation:pulse 1.6s infinite}
+  @keyframes pulse{50%{opacity:.3}}
+  .meta{color:var(--dim);font-family:var(--mono);font-size:13px}
+  select,button,input{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:13px}
+  button{cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#1a1a1e;font-weight:600}
+  .grid{display:grid;grid-template-columns:340px 1fr;gap:18px}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim);margin-bottom:12px}
+  /* current product */
+  #cur-name{font-size:22px;font-weight:650;line-height:1.25}
+  #cur-brand{color:var(--accent);font-size:13px;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+  #cur-img{width:100%;border-radius:8px;margin:12px 0;display:none;max-height:220px;object-fit:cover}
+  .kv{display:grid;grid-template-columns:90px 1fr;gap:4px 10px;font-size:13px;margin-top:10px}
+  .kv dt{color:var(--dim)} .kv dd{font-family:var(--mono)}
+  .conf-bar{height:6px;background:var(--panel2);border-radius:3px;margin-top:12px;overflow:hidden}
+  .conf-bar i{display:block;height:100%;background:var(--ok);border-radius:3px;transition:width .5s}
+  /* timeline segments */
+  .seg{display:flex;gap:12px;align-items:flex-start;padding:12px;border:1px solid var(--line);border-radius:8px;margin-bottom:10px;background:var(--panel2)}
+  .seg.confirmed{border-color:var(--ok)}
+  .seg .time{font-family:var(--mono);font-size:12px;color:var(--dim);min-width:96px;padding-top:2px}
+  .seg .body{flex:1}
+  .seg .name{font-weight:600}
+  .seg .sub{font-size:12px;color:var(--dim);font-family:var(--mono)}
+  .seg .cands{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}
+  .cand{font-size:11px;font-family:var(--mono);border:1px solid var(--line);border-radius:5px;padding:2px 7px;cursor:pointer;color:var(--dim)}
+  .cand:hover{border-color:var(--accent);color:var(--ink)}
+  .badge{font-size:10px;padding:2px 7px;border-radius:10px;letter-spacing:.5px}
+  .badge.ok{background:rgba(95,211,154,.15);color:var(--ok)}
+  .badge.auto{background:rgba(232,180,90,.15);color:var(--warn)}
+  .stats{display:flex;gap:18px;font-family:var(--mono);font-size:13px;color:var(--dim);margin-bottom:14px}
+  .stats b{color:var(--ink)}
+  .tools{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+  .tools form{display:flex;gap:8px;align-items:center}
+  .empty{color:var(--dim);padding:26px;text-align:center;border:1px dashed var(--line);border-radius:8px}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot"></span>LiveVision</h1>
+  <span class="meta" id="show-name">—</span>
+  <select id="show-picker" onchange="location='/show/'+this.value">
+    {% for s in shows %}<option value="{{s.id}}" {% if s.id==show_id %}selected{% endif %}>#{{s.id}} · {{s.name}} · {{s.status}}</option>{% endfor %}
+  </select>
+  <span class="meta" id="stats-inline"></span>
+</header>
+
+{% if show_id is none %}
+  <div class="empty">No shows yet. The studio agent creates one automatically when it starts streaming,<br>
+  or create one manually: <code>POST /api/shows {"name":"Peach Live"}</code></div>
+{% else %}
+<div class="grid">
+  <div>
+    <div class="card">
+      <h2>On air now</h2>
+      <div id="cur-brand">—</div>
+      <div id="cur-name">Waiting for frames…</div>
+      <img id="cur-img" alt="">
+      <dl class="kv">
+        <dt>SKU</dt><dd id="cur-sku">—</dd>
+        <dt>Barcode</dt><dd id="cur-barcode">—</dd>
+        <dt>Since</dt><dd id="cur-since">—</dd>
+      </dl>
+      <div class="conf-bar"><i id="cur-conf" style="width:0%"></i></div>
+    </div>
+    <div class="card" style="margin-top:18px">
+      <h2>Tools</h2>
+      <div class="tools">
+        <form id="catalog-form">
+          <input type="file" id="catalog-file" accept=".csv">
+          <button class="primary" type="submit">Upload catalog CSV</button>
+        </form>
+        <form id="orders-form">
+          <input type="file" id="orders-file" accept=".csv">
+          <button type="submit">Match orders CSV</button>
+        </form>
+      </div>
+      <p class="meta" style="margin-top:10px">Catalog CSV needs <code>sku</code> + <code>name</code> columns (brand, barcode, price, image_url optional). Orders CSV is the To_Ship export — you get it back with a Matched SKU column.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Product timeline</h2>
+    <div class="stats">
+      <span>Segments <b id="st-segs">0</b></span>
+      <span>Frames <b id="st-frames">0</b></span>
+      <span>Queue <b id="st-pending">0</b></span>
+    </div>
+    <div id="segments"><div class="empty">No matched segments yet.</div></div>
+  </div>
+</div>
+
+<script>
+const SHOW_ID = {{ show_id }};
+const fmt = s => `${String(Math.floor(s/60)).padStart(2,'0')}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+
+async function refresh(){
+  try{
+    const r = await fetch(`/api/shows/${SHOW_ID}/state`);
+    const d = await r.json();
+    document.getElementById('show-name').textContent = d.show.name;
+    document.getElementById('st-frames').textContent = d.frames_total;
+    document.getElementById('st-pending').textContent = d.frames_pending;
+    document.getElementById('st-segs').textContent = d.segments.length;
+    document.getElementById('stats-inline').textContent =
+      d.show.status === 'live' ? 'LIVE' : 'ended';
+
+    const c = d.current;
+    if(c){
+      document.getElementById('cur-brand').textContent = c.brand || '';
+      document.getElementById('cur-name').textContent = c.name;
+      document.getElementById('cur-sku').textContent = c.sku;
+      document.getElementById('cur-barcode').textContent = c.barcode || '—';
+      document.getElementById('cur-since').textContent = fmt(c.start_ts);
+      document.getElementById('cur-conf').style.width = Math.round(c.confidence*100)+'%';
+      const img = document.getElementById('cur-img');
+      if(c.image_url){ img.src = c.image_url; img.style.display='block'; }
+      else img.style.display='none';
+    }
+
+    const wrap = document.getElementById('segments');
+    if(!d.segments.length){ wrap.innerHTML = '<div class="empty">No matched segments yet.</div>'; return; }
+    wrap.innerHTML = d.segments.slice().reverse().map(s => `
+      <div class="seg ${s.confirmed?'confirmed':''}">
+        <div class="time">${fmt(s.start_ts)}–${fmt(s.end_ts)}<br>${s.frames} frames</div>
+        <div class="body">
+          <div class="name">${s.name} <span class="badge ${s.confirmed?'ok':'auto'}">${s.confirmed?'CONFIRMED':'AUTO '+Math.round(s.confidence*100)+'%'}</span></div>
+          <div class="sub">${s.sku}${s.barcode ? ' · '+s.barcode : ''}</div>
+          <div class="cands">
+            ${s.confirmed ? '' : `<span class="cand" onclick="confirmSeg(${s.start_ts},${s.end_ts},'${s.sku}')">✓ confirm ${s.sku}</span>`}
+            ${(s.candidates||[]).slice(1).map(x=>`<span class="cand" onclick="confirmSeg(${s.start_ts},${s.end_ts},'${x.sku}')">→ ${x.sku} (${Math.round(x.confidence*100)}%)</span>`).join('')}
+          </div>
+        </div>
+      </div>`).join('');
+  }catch(e){ console.error(e); }
+}
+
+async function confirmSeg(start_ts, end_ts, sku){
+  await fetch(`/api/shows/${SHOW_ID}/confirm`,{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({start_ts,end_ts,sku})});
+  refresh();
+}
+
+document.getElementById('catalog-form').onsubmit = async e=>{
+  e.preventDefault();
+  const f = document.getElementById('catalog-file').files[0];
+  if(!f) return alert('Choose a CSV file first.');
+  const fd = new FormData(); fd.append('file', f);
+  const r = await fetch('/api/catalog/upload',{method:'POST',body:fd});
+  const d = await r.json();
+  alert(d.error || `Imported ${d.imported} products (catalog total: ${d.catalog_total}).`);
+};
+
+document.getElementById('orders-form').onsubmit = async e=>{
+  e.preventDefault();
+  const f = document.getElementById('orders-file').files[0];
+  if(!f) return alert('Choose the To_Ship CSV first.');
+  const fd = new FormData(); fd.append('file', f);
+  const r = await fetch(`/api/shows/${SHOW_ID}/match_orders`,{method:'POST',body:fd});
+  if(!r.ok){ const d = await r.json(); return alert(d.error); }
+  const blob = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `orders_matched_show${SHOW_ID}.csv`;
+  a.click();
+};
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+{% endif %}
+</body>
+</html>
