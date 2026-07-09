@@ -693,6 +693,7 @@ def sdb_init(org):
         "ALTER TABLE products ADD COLUMN target_price REAL DEFAULT 0",
         "ALTER TABLE products ADD COLUMN image_key TEXT",
         "ALTER TABLE products ADD COLUMN supplier TEXT",
+        "ALTER TABLE products ADD COLUMN reorder_point INTEGER DEFAULT 0",
         # Purchase orders: inbound tracking + attached invoice + ETA.
         "ALTER TABLE purchase_orders ADD COLUMN tracking TEXT",
         "ALTER TABLE purchase_orders ADD COLUMN carrier TEXT",
@@ -847,6 +848,7 @@ def sdb_init(org):
         supplier TEXT,
         avg_cost REAL DEFAULT 0,
         target_price REAL DEFAULT 0,
+        reorder_point INTEGER DEFAULT 0,
         on_hand INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT
@@ -4237,11 +4239,15 @@ def api_product_save():
                     category=excluded.category,updated_at=excluded.updated_at""",
               (sku,(d.get("name") or "").strip(),(d.get("barcode") or "").strip() or None,
                d.get("image_url"),d.get("category"),now))
-    # Target sell price + supplier are editable by admin/cs.
+    # Target sell price + supplier + reorder point are editable by admin/cs.
     if "target_price" in d:
         c.execute("UPDATE products SET target_price=? WHERE sku=?",(float(d.get("target_price") or 0),sku))
     if "supplier" in d:
         c.execute("UPDATE products SET supplier=? WHERE sku=?",((d.get("supplier") or "").strip() or None,sku))
+    if "reorder_point" in d:
+        try: rp=int(float(d.get("reorder_point") or 0))
+        except Exception: rp=0
+        c.execute("UPDATE products SET reorder_point=? WHERE sku=?",(rp,sku))
     # Cost + on-hand are admin-only. A manual on-hand change is logged as a stock move.
     if is_admin and d.get("cost") not in (None,""):
         c.execute("UPDATE products SET avg_cost=? WHERE sku=?",(round(float(d.get("cost")),4),sku))
@@ -4310,6 +4316,58 @@ def product_image(sku):
     p=org_path(current_org(),"products",key)
     if not os.path.exists(p): return ("",404)
     return send_file(p)
+
+@app.route("/api/inventory/stats")
+@req_role("admin","cs")
+def api_inventory_stats():
+    c=sdb()
+    r=c.execute("""SELECT COUNT(*) skus, COALESCE(SUM(on_hand),0) units,
+                          COALESCE(SUM(CASE WHEN on_hand>0 THEN on_hand*avg_cost ELSE 0 END),0) value,
+                          SUM(CASE WHEN reorder_point>0 AND on_hand<=reorder_point THEN 1 ELSE 0 END) low,
+                          SUM(CASE WHEN on_hand<=0 THEN 1 ELSE 0 END) out,
+                          SUM(CASE WHEN on_hand<0 THEN 1 ELSE 0 END) neg
+                   FROM products""").fetchone()
+    c.close()
+    out={"skus":r["skus"],"units":r["units"],"low":r["low"] or 0,"out":r["out"] or 0,"negative":r["neg"] or 0}
+    if session.get("role")=="admin": out["value"]=round(r["value"] or 0,2)
+    return jsonify({"ok":True,"stats":out})
+
+@app.route("/api/inventory/low-stock")
+@req_role("admin","cs")
+def api_inventory_low_stock():
+    c=sdb()
+    rows=[dict(x) for x in c.execute(
+        """SELECT sku,name,on_hand,reorder_point,image_url FROM products
+           WHERE (reorder_point>0 AND on_hand<=reorder_point) OR on_hand<0
+           ORDER BY (on_hand-reorder_point) ASC LIMIT 300""").fetchall()]
+    c.close()
+    return jsonify({"ok":True,"products":rows})
+
+@app.route("/api/product/<sku>/moves")
+@req_role("admin","cs")
+def api_product_moves(sku):
+    c=sdb()
+    rows=[dict(x) for x in c.execute(
+        "SELECT qty,unit_cost,note,moved_at,moved_by FROM stock_moves WHERE sku=? ORDER BY id DESC LIMIT 100",(sku,)).fetchall()]
+    c.close()
+    if session.get("role")!="admin":
+        for r in rows: r.pop("unit_cost",None)
+    return jsonify({"ok":True,"moves":rows})
+
+@app.route("/api/inventory/bestsellers")
+@req_role("admin","cs")
+def api_inventory_bestsellers():
+    try: days=int(request.args.get("days") or 30)
+    except Exception: days=30
+    since=(datetime.now()-timedelta(days=days)).isoformat(timespec='seconds')
+    c=sdb()
+    rows=[dict(x) for x in c.execute(
+        """SELECT m.sku, COALESCE(p.name,m.sku) name, p.on_hand, -SUM(m.qty) sold
+           FROM stock_moves m LEFT JOIN products p ON p.sku=m.sku
+           WHERE m.note LIKE 'sale (%' AND m.qty<0 AND m.moved_at>=?
+           GROUP BY m.sku ORDER BY sold DESC LIMIT 20""",(since,)).fetchall()]
+    c.close()
+    return jsonify({"ok":True,"days":days,"products":rows})
 
 @app.route("/api/products/template.csv")
 @req_role("admin")
@@ -4578,22 +4636,24 @@ def api_po_extract_invoice():
     if not anthropic_client:
         return jsonify({"ok":False,"error":"Auto-extract isn't set up — add the lines manually."})
     f=request.files.get("file")
-    if not f or not f.filename: return jsonify({"ok":False,"error":"Pick an invoice image"})
+    if not f or not f.filename: return jsonify({"ok":False,"error":"Pick an invoice file"})
     ext=f.filename.rsplit(".",1)[-1].lower() if "." in f.filename else ""
-    if ext not in ("jpg","jpeg","png","webp"):
-        return jsonify({"ok":False,"error":"Auto-extract works on images (JPG/PNG). For PDFs, add lines manually."})
+    if ext not in ("jpg","jpeg","png","webp","pdf"):
+        return jsonify({"ok":False,"error":"Use an image (JPG/PNG) or a PDF invoice."})
     import base64
-    media="image/png" if ext=="png" else ("image/webp" if ext=="webp" else "image/jpeg")
     b64=base64.standard_b64encode(f.read()).decode()
     prompt=("Extract the purchased line items from this supplier invoice. Return ONLY a JSON array; "
             "each element: {\"name\": product name, \"sku\": supplier SKU or code if shown else \"\", "
             "\"qty\": integer quantity, \"unit_cost\": number}. No prose, no code fences.")
+    if ext=="pdf":
+        block={"type":"document","source":{"type":"base64","media_type":"application/pdf","data":b64}}
+    else:
+        media="image/png" if ext=="png" else ("image/webp" if ext=="webp" else "image/jpeg")
+        block={"type":"image","source":{"type":"base64","media_type":media,"data":b64}}
     try:
         msg=anthropic_client.messages.create(
             model="claude-haiku-4-5-20251001", max_tokens=2000,
-            messages=[{"role":"user","content":[
-                {"type":"image","source":{"type":"base64","media_type":media,"data":b64}},
-                {"type":"text","text":prompt}]}])
+            messages=[{"role":"user","content":[block,{"type":"text","text":prompt}]}])
         txt="".join(b.text for b in msg.content if getattr(b,"type","")=="text").strip()
         if txt.startswith("```"): txt=txt.strip("`").split("\n",1)[-1]
         import json as _j
@@ -4673,9 +4733,16 @@ def api_preshow_map():
     sold_qty=sum((it["quantity"] or 1) for it in items if _part_num(it["product_name"] or "")==part)
     # Restore any prior deduction (re-bind / corrected scan), then deduct from the real product.
     ex=c.execute("SELECT product_sku,COALESCE(depleted_qty,0) dq FROM show_product_map WHERE import_label=? AND sticker_sku=? AND part=?",(show,sticker,part)).fetchone()
-    if ex and ex["product_sku"]:
+    _now=datetime.now().isoformat(timespec='seconds'); _who=session.get("name","")[:60]
+    if ex and ex["product_sku"] and ex["dq"]:
         c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(ex["dq"],ex["product_sku"]))
+        c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
+                  (ex["product_sku"],ex["dq"],"sale reversal (re-map "+show+")",_now,_who))
     c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(sold_qty,prod["sku"]))
+    if sold_qty:
+        _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(prod["sku"],)).fetchone()
+        c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
+                  (prod["sku"],-sold_qty,(_ac["avg_cost"] if _ac else 0) or 0,"sale ("+show+")",_now,_who))
     c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by)
                  VALUES(?,?,?,?,?,?,?)
                  ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET

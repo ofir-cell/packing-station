@@ -6763,9 +6763,16 @@ __NAVBAR__
   <div class="muted" id="csvResult" style="margin-top:10px;font-size:13px"></div>
 </div>
 <div class="card">
+  <h2>📊 Inventory at a glance</h2>
+  <div id="kpis" style="display:flex;gap:12px;flex-wrap:wrap"></div>
+  <div id="bestsellers" style="margin-top:16px"></div>
+</div>
+
+<div class="card">
   <h2>🗂️ Product catalog</h2>
   <div class="row" style="margin-bottom:14px">
     <div class="f" style="flex:1"><label>Search</label><input id="q" placeholder="SKU, name, or barcode" style="width:100%"></div>
+    <button class="btn btn-s" id="lowBtn">⚠️ Low stock</button>
     <a class="btn btn-s" href="/admin/purchasing" style="text-decoration:none">📥 Purchasing</a>
     <button class="btn btn-s" id="addBtn">+ New product</button>
   </div>
@@ -6796,9 +6803,11 @@ __NAVBAR__
         <div class="f adminOnly"><label>Cost price ($)</label><input id="pCost" type="number" step="0.01" placeholder="0.00" style="width:100%"></div>
         <div class="f"><label>Target sell price ($)</label><input id="pTarget" type="number" step="0.01" placeholder="0.00" style="width:100%"></div>
         <div class="f adminOnly"><label>Quantity on hand</label><input id="pQty" type="number" placeholder="0" style="width:100%"></div>
+        <div class="f"><label>Reorder point (alert when ≤)</label><input id="pReorder" type="number" placeholder="0" style="width:100%"></div>
         <div class="f"><label>Supplier</label><input id="pSupplier" placeholder="Optional" style="width:100%"></div>
       </div>
       <div class="muted" id="pMargin" style="margin-top:10px;font-size:13px"></div>
+      <div id="pHistory" style="margin-top:12px"></div>
     </div>
   </div>
   <div class="muted" id="pResult" style="margin:12px 0;font-size:13px"></div>
@@ -6816,16 +6825,38 @@ __NAVBAR__
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
 function money(v){return v==null?'—':'$'+Number(v).toFixed(2)}
+var lowMode=false;
+function renderRows(rows){
+  if(!rows.length){document.getElementById('rows').innerHTML='<tr><td colspan="8" class="muted">'+(lowMode?'Nothing low on stock. 🎉':'No products yet. Receive stock or add a product.')+'</td></tr>';return}
+  document.getElementById('rows').innerHTML=rows.map(function(p){
+    var img=p.image_url?'<img class="thumb" src="'+esc(p.image_url)+'">':'<div class="thumb"></div>';
+    var oh=(p.on_hand||0);
+    var low=oh<0?' style="color:#e11d48;font-weight:800"':((p.reorder_point>0&&oh<=p.reorder_point)||oh<=0?' style="color:#c2410c;font-weight:700"':'');
+    return '<tr style="cursor:pointer" onclick="openP(\\''+esc(p.sku)+'\\')"><td>'+img+'</td><td class="sku">'+esc(p.sku)+'</td><td>'+esc(p.name||'')+'</td><td class="muted">'+esc(p.barcode||'—')+'</td>'+
+      '<td'+low+'>'+oh+(p.reorder_point>0?(' <span class="muted" style="font-size:11px">/'+p.reorder_point+'</span>'):'')+'</td><td>'+money(p.avg_cost)+'</td><td>'+money(p.target_price)+'</td>'+
+      '<td><a href="/api/product/'+encodeURIComponent(p.sku)+'/label.pdf" target="_blank" onclick="event.stopPropagation()" style="color:#4f46e5;text-decoration:underline">🏷️ Print</a></td></tr>';
+  }).join('');
+}
 function load(){
-  fetch('/api/products'+(document.getElementById('q').value.trim()?('?q='+encodeURIComponent(document.getElementById('q').value.trim())):'')).then(function(r){return r.json()}).then(function(rows){
-    if(!rows.length){document.getElementById('rows').innerHTML='<tr><td colspan="8" class="muted">No products yet. Receive stock or add a product.</td></tr>';return}
-    document.getElementById('rows').innerHTML=rows.map(function(p){
-      var img=p.image_url?'<img class="thumb" src="'+esc(p.image_url)+'">':'<div class="thumb"></div>';
-      var low=(p.on_hand||0)<=0?' style="color:#e11d48;font-weight:700"':'';
-      return '<tr style="cursor:pointer" onclick="openP(\\''+esc(p.sku)+'\\')"><td>'+img+'</td><td class="sku">'+esc(p.sku)+'</td><td>'+esc(p.name||'')+'</td><td class="muted">'+esc(p.barcode||'—')+'</td>'+
-        '<td'+low+'>'+(p.on_hand||0)+'</td><td>'+money(p.avg_cost)+'</td><td>'+money(p.target_price)+'</td>'+
-        '<td><a href="/api/product/'+encodeURIComponent(p.sku)+'/label.pdf" target="_blank" onclick="event.stopPropagation()" style="color:#4f46e5;text-decoration:underline">🏷️ Print</a></td></tr>';
-    }).join('');
+  if(lowMode){fetch('/api/inventory/low-stock').then(function(r){return r.json()}).then(function(d){renderRows(d.products||[])});return}
+  fetch('/api/products'+(document.getElementById('q').value.trim()?('?q='+encodeURIComponent(document.getElementById('q').value.trim())):'')).then(function(r){return r.json()}).then(renderRows);
+}
+function kpi(label,val,color){return '<div style="flex:1;min-width:130px;background:#fff;border:1px solid rgba(17,24,39,.1);border-radius:12px;padding:14px 16px"><div style="font-size:12px;color:#6b7280">'+label+'</div><div style="font-size:22px;font-weight:800;color:'+(color||'#1a2130')+'">'+val+'</div></div>'}
+function loadStats(){
+  fetch('/api/inventory/stats').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;var s=d.stats;var h='';
+    h+=kpi('Products',s.skus);h+=kpi('Units on hand',s.units);
+    if(s.value!=null)h+=kpi('Inventory value',money(s.value),'#4f46e5');
+    h+=kpi('Low stock',s.low,s.low?'#c2410c':'#059669');
+    h+=kpi('Out of stock',s.out,s.out?'#e11d48':'#059669');
+    document.getElementById('kpis').innerHTML=h;
+  });
+}
+function loadBestsellers(){
+  fetch('/api/inventory/bestsellers?days=30').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok||!d.products.length){document.getElementById('bestsellers').innerHTML='';return}
+    var items=d.products.slice(0,8).map(function(p){return '<span style="display:inline-flex;gap:6px;align-items:center;background:#f6f7f9;border:1px solid rgba(17,24,39,.1);border-radius:50px;padding:5px 12px;font-size:12.5px;margin:3px"><b>'+esc(p.name)+'</b> <span class="muted">'+p.sold+' sold</span></span>'}).join('');
+    document.getElementById('bestsellers').innerHTML='<div style="font-size:12px;font-weight:700;color:#6b7280;margin-bottom:6px">🔥 TOP SELLERS · LAST 30 DAYS</div>'+items;
   });
 }
 document.getElementById('rBtn').addEventListener('click',function(){
@@ -6873,11 +6904,24 @@ function fillP(p){
   document.getElementById('pCost').value=(p.avg_cost!=null?p.avg_cost:'');
   document.getElementById('pTarget').value=(p.target_price||'');
   document.getElementById('pQty').value=(p.on_hand!=null?p.on_hand:'');
+  document.getElementById('pReorder').value=(p.reorder_point||'');
   document.getElementById('pSupplier').value=p.supplier||'';
   document.getElementById('pImg').src=p.image_url||PLACEHOLDER;
   var lbl=document.getElementById('pLabel');
   if(p.sku){lbl.href='/api/product/'+encodeURIComponent(p.sku)+'/label.pdf';lbl.style.visibility='visible'}else{lbl.style.visibility='hidden'}
   document.getElementById('pResult').innerHTML='';calcMargin();
+  loadHistory(p.sku);
+}
+function loadHistory(sku){
+  var h=document.getElementById('pHistory');if(!sku){h.innerHTML='';return}
+  fetch('/api/product/'+encodeURIComponent(sku)+'/moves').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok||!d.moves.length){h.innerHTML='<div class="muted" style="font-size:12px">No stock movements yet.</div>';return}
+    var rows=d.moves.map(function(m){
+      var q=m.qty>0?('<span style="color:#059669">+'+m.qty+'</span>'):('<span style="color:#e11d48">'+m.qty+'</span>');
+      return '<tr><td style="padding:4px 8px">'+esc((m.moved_at||'').replace('T',' ').slice(0,16))+'</td><td style="padding:4px 8px">'+q+'</td><td style="padding:4px 8px" class="muted">'+esc(m.note||'')+'</td></tr>';
+    }).join('');
+    h.innerHTML='<div style="font-size:12px;font-weight:700;color:#6b7280;margin-bottom:4px">STOCK HISTORY</div><div style="max-height:160px;overflow:auto;border:1px solid rgba(17,24,39,.08);border-radius:10px"><table style="width:100%;font-size:12.5px">'+rows+'</table></div>';
+  });
 }
 function openP(sku){
   document.getElementById('pModal').classList.add('on');
@@ -6891,7 +6935,7 @@ document.getElementById('pTarget').addEventListener('input',calcMargin);
 function saveP(cb){
   var name=gv('pName');if(!name){toast('Name required',true);return}
   var body={name:name,sku:gv('pSku')||curSku,barcode:gv('pBarcode'),category:gv('pCat'),
-    target_price:gv('pTarget')||0,supplier:gv('pSupplier')};
+    target_price:gv('pTarget')||0,supplier:gv('pSupplier'),reorder_point:gv('pReorder')||0};
   if(ROLE==='admin'){if(gv('pCost')!=='')body.cost=gv('pCost');if(gv('pQty')!=='')body.on_hand=gv('pQty');}
   fetch('/api/products',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json()}).then(function(d){
@@ -6917,8 +6961,10 @@ document.getElementById('pFile').addEventListener('change',function(){
   if(curSku)up(curSku);else saveP(up);
 });
 document.getElementById('rSku').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('rBtn').click()});
-var dq=null;document.getElementById('q').addEventListener('input',function(){clearTimeout(dq);dq=setTimeout(load,200)});
-load();
+var dq=null;document.getElementById('q').addEventListener('input',function(){lowMode=false;document.getElementById('lowBtn').classList.remove('btn-p');clearTimeout(dq);dq=setTimeout(load,200)});
+document.getElementById('lowBtn').addEventListener('click',function(){lowMode=!lowMode;this.classList.toggle('btn-p',lowMode);if(lowMode)document.getElementById('q').value='';load()});
+function refreshAll(){load();loadStats();loadBestsellers();}
+load();loadStats();loadBestsellers();
 </script></body></html>'''
 
 
