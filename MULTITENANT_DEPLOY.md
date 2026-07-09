@@ -44,6 +44,38 @@ routes returning 200.
 5. **Later, once verified**, you can delete the leftover backup files at the
    `/data` root (`shipments.db`, `giveaways.db`, the old JSON files). Optional.
 
+## Onboarding a second customer (super-admin)
+
+Built and tested: a platform-owner ("super-admin") role + an **Organizations** screen
+to create and manage tenants without touching code.
+
+The platform owner is a **dedicated account, separate from every tenant** — 5sec is
+just a normal customer with its own admin. The super-admin has no tenant screens;
+they land on the Organizations console and cannot see any customer's operational data.
+
+**One-time setup on your side:**
+1. In Railway → Variables, add a **new** username (NOT 5sec's `admin`):
+   - `SUPERADMIN_USER=ofir`
+   - `SUPERADMIN_PASSWORD=<choose a strong password>`
+2. On next boot the platform account is created with the `superadmin` role and the
+   sentinel org `__platform__`. (If you leave `SUPERADMIN_PASSWORD` unset, a password
+   is generated and printed once in the boot logs.)
+3. 5sec keeps its own `admin` login for running 5sec's warehouse. You log in as
+   `ofir` for platform/tenant management, and as 5sec's `admin` to operate 5sec.
+
+**To onboard a customer:** open **Organizations**, fill in company name, an Org ID
+(e.g. `glamco`), branding, and the first admin username. The system registers the
+tenant, provisions its fully-isolated data, and creates its first admin login —
+showing the password once. Hand those credentials to the customer; they log in at
+`/login` and see only their own data.
+
+**Suspend/reactivate:** the Organizations table has a Suspend button. A suspended
+tenant's users cannot log in (the founding tenant can't be suspended).
+
+Safety verified: usernames are global (duplicates rejected); one tenant's admin
+cannot see, edit, or delete another tenant's users; a suspended org blocks login;
+each new tenant starts with an empty, isolated database.
+
 ## Not included in this change (next step)
 
 - **R2 object keys are not yet namespaced per org.** Media is still access-gated

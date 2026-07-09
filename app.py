@@ -34,13 +34,17 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
     INVENTORY_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
     PICKER_HTML, REPEAT_HTML,
-    OPERATIONS_HTML,
+    OPERATIONS_HTML, ORGANIZATIONS_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
 
 
 # Default (founding) tenant id. Multi-tenancy: every user belongs to an org;
 # existing single-tenant data is treated as belonging to this org.
 DEFAULT_ORG=os.environ.get("DEFAULT_ORG","5sec")
+# The platform owner (super-admin) is NOT a tenant. Their account carries this
+# sentinel org so they never touch any customer's operational data — including
+# the founding tenant (5sec), which is just a normal customer.
+PLATFORM_ORG="__platform__"
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
 ORGS_DIR=os.path.join(DATA_DIR,"orgs")   # every tenant gets a private folder here
 LOG_FIELDS=["tracking_number","station","date","time","duration_seconds","video_file","photo_file","worker"]
@@ -857,8 +861,20 @@ def org_get(org_id):
     return dict(row) if row else {"org_id": DEFAULT_ORG, "company_name": "5 Second Beauty",
         "brand_mark": "5 SEC", "brand_sub": "Employee Hub", "brand_color": "#d9748f", "logo_url": ""}
 
+def org_is_active(org_id):
+    """True if the tenant is active (allowed to log in). Unknown org => only the
+    founding tenant passes. Does NOT fall back to default (that would mask a
+    suspension), unlike org_get()."""
+    if org_id==PLATFORM_ORG: return True   # the platform owner is never a tenant
+    c=pdb(); r=c.execute("SELECT active FROM organizations WHERE org_id=?",(org_id or DEFAULT_ORG,)).fetchone(); c.close()
+    if r is None: return (org_id or DEFAULT_ORG)==DEFAULT_ORG
+    return bool(r["active"])
+
 def brand_for_session(org_id):
     """Shape an org's branding for session['brand'] (consumed by templates._brand)."""
+    if org_id==PLATFORM_ORG:
+        return {"mark":"LiveOpsHub","sub":"Platform","color":"#6366f1","logo_url":"",
+                "company":"LiveOpsHub","org_id":PLATFORM_ORG}
     o = org_get(org_id)
     return {"mark": o.get("brand_mark") or "5 SEC",
             "sub": o.get("brand_sub") or "Employee Hub",
@@ -1677,6 +1693,34 @@ for _org in list_org_ids():
     try: _seed_default_workflow_if_missing(_org)
     except Exception as e: print("workflow seed failed for", _org, ":", e, flush=True)
 
+# ── Bootstrap the platform super-admin (you) from env ──────────────
+# The platform owner is a DEDICATED account, separate from every tenant (5sec
+# included). Use a NEW username — do NOT reuse a tenant's 'admin', or that tenant
+# would lose its admin. Set in Railway:
+#   SUPERADMIN_USER=ofir           (a fresh username, not a tenant user)
+#   SUPERADMIN_PASSWORD=...         (optional; auto-generated + printed once if unset)
+SUPERADMIN_USER=(os.environ.get("SUPERADMIN_USER") or "").strip().lower()
+SUPERADMIN_PASSWORD=os.environ.get("SUPERADMIN_PASSWORD") or ""
+if SUPERADMIN_USER:
+    try:
+        with update_json(USERS_FILE) as _uu:
+            _ex=_uu.get(SUPERADMIN_USER)
+            if _ex:
+                if _ex.get("role")!="superadmin" or _ex.get("org")!=PLATFORM_ORG:
+                    _ex["role"]="superadmin"; _ex["org"]=PLATFORM_ORG; _ex.pop("badge_token",None)
+                    print("Configured platform super-admin:",SUPERADMIN_USER,flush=True)
+            else:
+                _pw=SUPERADMIN_PASSWORD or _gen_pw()
+                _uu[SUPERADMIN_USER]={"password":_h(_pw),"role":"superadmin",
+                                      "name":"Platform Owner","org":PLATFORM_ORG}
+                if SUPERADMIN_PASSWORD:
+                    print("Created platform super-admin:",SUPERADMIN_USER,flush=True)
+                else:
+                    print("="*60+"\nCREATED PLATFORM SUPER-ADMIN\n  username: "+SUPERADMIN_USER+
+                          "\n  password: "+_pw+"\n  (set SUPERADMIN_PASSWORD to pick your own; change after login)\n"+"="*60,flush=True)
+    except Exception as e:
+        print("superadmin bootstrap error:",e,flush=True)
+
 def _hire_by_token(token):
     """Look up a hire by their invite token. Returns dict (with '_org') or None.
 
@@ -1928,10 +1972,27 @@ def req_role(*roles):
         @wraps(f)
         def d(*a,**k):
             if "user" not in session: return redirect("/")
+            # The super-admin is a pure platform owner (no tenant). They must NOT
+            # reach tenant-operational routes — only the control plane (req_super).
             if session.get("role") not in roles: return "Access denied",403
             return f(*a,**k)
         return d
     return w
+def req_super(f):
+    """Platform-owner only (cross-tenant control plane: org management)."""
+    @wraps(f)
+    def d(*a,**k):
+        if "user" not in session: return redirect("/")
+        if session.get("role")!="superadmin": return "Access denied",403
+        return f(*a,**k)
+    return d
+def is_super():
+    return session.get("role")=="superadmin"
+def _same_org_user(users,u):
+    """True if target user u belongs to the caller's org (or caller is super).
+    Stops one tenant's admin from touching another tenant's user account."""
+    if is_super(): return True
+    return users.get(u,{}).get("org",DEFAULT_ORG)==session.get("org",DEFAULT_ORG)
 
 
 # ══════════════════════════════════════════════════════════
@@ -2201,6 +2262,9 @@ def index():
         # Default to badge-login (warehouse stations have no keyboard/mouse).
         # Admins/anyone needing password type can click "Use password instead" → /login
         return redirect("/badge-login")
+    # Platform owner has no tenant screens — land on the Organizations console.
+    if session.get("role")=="superadmin":
+        return redirect("/admin/organizations")
     # Explicit admin override via cookie wins over auto-detection
     if machine_mode == "pick" and force != "pack":
         return redirect("/pick")
@@ -2229,6 +2293,7 @@ def index():
 @app.route("/home")
 @req_login
 def home_page():
+    if session.get("role")=="superadmin": return redirect("/admin/organizations")
     role = session.get("role", "")
     brand = session.get("brand") or {}
     return (HOME_HTML
@@ -2284,6 +2349,8 @@ def api_login():
     users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
     user=users.get(u)
     if user and _verify(p,user.get("password","")):
+        if not org_is_active(user.get("org",DEFAULT_ORG)):
+            return jsonify({"ok":False,"error":"This organization is suspended. Please contact support."}),403
         _login_rate_clear(request.remote_addr,u)
         # Auto-upgrade legacy SHA256 hash to bcrypt on successful login (locked)
         if not user.get("password","").startswith("$2"):
@@ -5628,7 +5695,9 @@ def api_documents_delete(doc_id):
 @req_role("admin")
 def api_users():
     u=ldj(USERS_FILE)
-    return jsonify({k:{"name":v["name"],"role":v["role"],"has_badge":bool(v.get("badge_token"))} for k,v in u.items()})
+    myorg=session.get("org",DEFAULT_ORG)
+    return jsonify({k:{"name":v["name"],"role":v["role"],"has_badge":bool(v.get("badge_token"))}
+                    for k,v in u.items() if v.get("org",DEFAULT_ORG)==myorg})
 
 @app.route("/api/users/add",methods=["POST"])
 @req_role("admin")
@@ -5655,7 +5724,7 @@ def api_del():
     d=request.get_json();u=d.get("username","")
     if u=="admin": return jsonify({"ok":False,"error":"Cannot delete admin"})
     with update_json(USERS_FILE) as users:
-        if u in users: del users[u]
+        if u in users and _same_org_user(users,u): del users[u]
     return jsonify({"ok":True})
 
 @app.route("/api/users/pw",methods=["POST"])
@@ -5664,7 +5733,7 @@ def api_pw():
     d=request.get_json();u=d.get("username","");p=d.get("password","")
     if not p: return jsonify({"ok":False})
     with update_json(USERS_FILE) as users:
-        if u not in users: return jsonify({"ok":False})
+        if u not in users or not _same_org_user(users,u): return jsonify({"ok":False})
         users[u]["password"]=_h(p)
     return jsonify({"ok":True})
 
@@ -5675,7 +5744,7 @@ def api_badge_regen():
     Use cases: lost badge, leaked token, switching from password to badge auth."""
     d=request.get_json();u=d.get("username","")
     with update_json(USERS_FILE) as users:
-        if u not in users: return jsonify({"ok":False,"error":"User not found"})
+        if u not in users or not _same_org_user(users,u): return jsonify({"ok":False,"error":"User not found"})
         if users[u]["role"]!="worker":
             return jsonify({"ok":False,"error":"Badges are for workers only"})
         users[u]["badge_token"]=_gen_badge_token()
@@ -5688,7 +5757,7 @@ def api_badge_revoke():
     """Remove a worker's badge token (e.g. employee left). They'll need a password to log in."""
     d=request.get_json();u=d.get("username","")
     with update_json(USERS_FILE) as users:
-        if u not in users: return jsonify({"ok":False,"error":"User not found"})
+        if u not in users or not _same_org_user(users,u): return jsonify({"ok":False,"error":"User not found"})
         if "badge_token" in users[u]: del users[u]["badge_token"]
     return jsonify({"ok":True})
 
@@ -5710,6 +5779,8 @@ def api_badge_login():
         time.sleep(0.5)
         return jsonify({"ok":False,"error":"Badge not recognized"})
     user=users[matched_u]
+    if not org_is_active(user.get("org",DEFAULT_ORG)):
+        return jsonify({"ok":False,"error":"This organization is suspended. Please contact support."}),403
     session.clear()  # rotate session id to prevent fixation
     session["user"]=matched_u;session["role"]=user["role"];session["name"]=user["name"]
     session["org"]=user.get("org",DEFAULT_ORG)
@@ -5725,12 +5796,97 @@ def badge_login_page():
 def users_badges_page():
     return USERS_BADGES_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("badges")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
+# ══════════════════════════════════════════════════════════
+# PLATFORM / TENANT MANAGEMENT — super-admin only (control plane)
+# ══════════════════════════════════════════════════════════
+_ORG_ID_RE=re.compile(r'^[a-z0-9][a-z0-9\-]{1,30}$')
+
+@app.route("/api/orgs")
+@req_super
+def api_orgs_list():
+    """All tenant organizations + a live user count per org."""
+    c=pdb(); rows=[dict(r) for r in c.execute(
+        "SELECT * FROM organizations ORDER BY created_at").fetchall()]; c.close()
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    counts={}
+    for _,info in users.items():
+        o=info.get("org",DEFAULT_ORG); counts[o]=counts.get(o,0)+1
+    for r in rows:
+        r["user_count"]=counts.get(r["org_id"],0)
+        r["is_default"]=(r["org_id"]==DEFAULT_ORG)
+    return jsonify({"ok":True,"orgs":rows,"default_org":DEFAULT_ORG})
+
+@app.route("/api/orgs/create",methods=["POST"])
+@req_super
+def api_orgs_create():
+    """Create a new tenant: register it, provision its isolated data, and create
+    its first admin user. Returns the admin's one-time password."""
+    d=request.get_json() or {}
+    org_id=(d.get("org_id") or "").strip().lower()
+    company=(d.get("company_name") or "").strip()
+    admin_user=(d.get("admin_username") or "").strip().lower()
+    admin_pw=(d.get("admin_password") or "").strip()
+    if not _ORG_ID_RE.match(org_id):
+        return jsonify({"ok":False,"error":"Org ID: lowercase letters/digits/-, 2-31 chars, must start alphanumeric"})
+    if not company:
+        return jsonify({"ok":False,"error":"Company name is required"})
+    if not re.match(r'^[a-z0-9_\-]{2,32}$',admin_user):
+        return jsonify({"ok":False,"error":"Admin username: lowercase letters, digits, _ -, 2-32 chars"})
+    if not admin_pw: admin_pw=_gen_pw()
+    # org_id must be unique
+    c=pdb()
+    if c.execute("SELECT 1 FROM organizations WHERE org_id=?",(org_id,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"That Org ID already exists"})
+    # username must be globally unique (usernames are global across tenants)
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    if admin_user in users:
+        c.close(); return jsonify({"ok":False,"error":"That admin username is already taken (usernames are global)"})
+    # 1) register the tenant
+    c.execute("""INSERT INTO organizations(org_id,company_name,brand_mark,brand_sub,brand_color,logo_url,plan)
+                 VALUES(?,?,?,?,?,?,?)""",
+              (org_id,company,(d.get("brand_mark") or company[:12] or "BRAND").upper(),
+               (d.get("brand_sub") or "Employee Hub"),(d.get("brand_color") or "#d9748f"),
+               (d.get("logo_url") or ""),(d.get("plan") or "standard")))
+    c.commit(); c.close()
+    # 2) provision its isolated data folders/DBs + seed defaults
+    try:
+        provision_org(org_id)
+        _seed_default_workflow_if_missing(org_id)
+    except Exception as e:
+        print("provision error for new org",org_id,":",e,flush=True)
+    # 3) create its first admin user
+    with update_json(USERS_FILE) as uu:
+        uu[admin_user]={"password":_h(admin_pw),"role":"admin",
+                        "name":_clean_name(d.get("admin_name") or "Admin"),"org":org_id}
+    return jsonify({"ok":True,"org_id":org_id,"admin_username":admin_user,"admin_password":admin_pw})
+
+@app.route("/api/orgs/toggle",methods=["POST"])
+@req_super
+def api_orgs_toggle():
+    """Suspend or reactivate a tenant. Suspended tenants' users cannot log in."""
+    d=request.get_json() or {}
+    org_id=(d.get("org_id") or "").strip().lower()
+    active=1 if d.get("active") else 0
+    if org_id==DEFAULT_ORG:
+        return jsonify({"ok":False,"error":"The founding tenant cannot be suspended"})
+    c=pdb()
+    if not c.execute("SELECT 1 FROM organizations WHERE org_id=?",(org_id,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"Org not found"})
+    c.execute("UPDATE organizations SET active=? WHERE org_id=?",(active,org_id)); c.commit(); c.close()
+    return jsonify({"ok":True,"org_id":org_id,"active":bool(active)})
+
+@app.route("/admin/organizations")
+@req_super
+def organizations_page():
+    return ORGANIZATIONS_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
+        "__NAVBAR__",_navbar("organizations")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
 @app.route("/api/users/badge/pdf/<u>")
 @req_role("admin")
 def api_badge_pdf(u):
     """Generate a printable badge PDF for one worker (single label, ID-card sized, ~3.5x2 inches)."""
     users=ldj(USERS_FILE)
-    if u not in users: return ("",404)
+    if u not in users or not _same_org_user(users,u): return ("",404)
     info=users[u]
     token=info.get("badge_token")
     if not token: return jsonify({"ok":False,"error":"User has no badge token"}),400
@@ -5783,7 +5939,7 @@ def api_badge_label4x6(u):
     half can be folded over the badge or left blank for hole-punching/lamination.
     Optimized for thermal label printers (DYMO 4XL, Rollo, Zebra, etc.)."""
     users = ldj(USERS_FILE)
-    if u not in users: return ("", 404)
+    if u not in users or not _same_org_user(users,u): return ("", 404)
     info = users[u]
     token = info.get("badge_token")
     if not token: return jsonify({"ok": False, "error": "User has no badge token"}), 400
@@ -5854,7 +6010,9 @@ def api_badge_sheet():
         from barcode.writer import ImageWriter
         from reportlab.lib.utils import ImageReader
         users=ldj(USERS_FILE)
-        workers=[(u,info) for u,info in users.items() if info.get("badge_token")]
+        myorg=session.get("org",DEFAULT_ORG)
+        workers=[(u,info) for u,info in users.items()
+                 if info.get("badge_token") and info.get("org",DEFAULT_ORG)==myorg]
         if not workers:
             return jsonify({"ok":False,"error":"No workers with badges yet"}),400
         # Avery 5160: 30 labels per page, 3 cols x 10 rows

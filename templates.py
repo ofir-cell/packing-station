@@ -56,44 +56,53 @@ def _navbar(active_page=""):
     initials=str(_e(_initials(raw_name)))
 
     # ── Top-row entries (operations / fast links only) ──
-    entries = [("home", "/home", "🏠 Home")]
-    entries.append(("announcements", "/announcements", "📣 News"))
-    if role == "worker":
-        entries.append(("pack", "/", "📦 Pack"))
-    if role in ("worker", "picker"):
-        entries.append(("preshow", "/admin/preshow", "🔗 Match Products"))
-    if role in ("admin", "cs"):
-        # Operations is now a dedicated hub page (/operations) with tabbed cards
-        # (Giveaways is one of its tabs).
-        entries.append(("operations", "/operations", "📦 Operations"))
+    if role == "superadmin":
+        # Platform owner: no tenant screens, just the Organizations console.
+        entries = [("organizations", "/admin/organizations", "🏢 Organizations")]
+    else:
+        entries = [("home", "/home", "🏠 Home")]
+        entries.append(("announcements", "/announcements", "📣 News"))
+        if role == "worker":
+            entries.append(("pack", "/", "📦 Pack"))
+        if role in ("worker", "picker"):
+            entries.append(("preshow", "/admin/preshow", "🔗 Match Products"))
+        if role in ("admin", "cs"):
+            # Operations is now a dedicated hub page (/operations) with tabbed cards
+            # (Giveaways is one of its tabs).
+            entries.append(("operations", "/operations", "📦 Operations"))
 
     # ── Avatar menu sections (personal + team/settings) ──
     # Each section: (title, [(key,url,label),...]). Titles of "" render with no header.
-    user_sections = [
-        ("", [
-            ("me", "/me", "👤 My Profile"),
-            ("leaderboard", "/leaderboard", "🏆 Leaderboard"),
-            ("documents", "/documents", "📄 Documents"),
-            ("onboarding", "/onboarding", "✅ Onboarding"),
-        ]),
-    ]
-    if role == "admin":
-        # Users / Badges / Permissions live *inside* Settings now, so they're
-        # not repeated here — Settings is the single entry point for org config.
-        user_sections.append(("Team & Admin", [
-            ("hires", "/admin/hires", "🧑‍💼 New Hires"),
-            ("settings", "/admin/settings", "⚙️ Settings"),
-        ]))
-    elif role == "cs":
-        user_sections.append(("Team", [
-            ("hires", "/admin/hires", "🧑‍💼 New Hires"),
-        ]))
+    if role == "superadmin":
+        # Platform owner has no personal/tenant sections — only Logout.
+        user_sections = []
+    else:
+        user_sections = [
+            ("", [
+                ("me", "/me", "👤 My Profile"),
+                ("leaderboard", "/leaderboard", "🏆 Leaderboard"),
+                ("documents", "/documents", "📄 Documents"),
+                ("onboarding", "/onboarding", "✅ Onboarding"),
+            ]),
+        ]
+        if role == "admin":
+            # Users / Badges / Permissions live *inside* Settings now, so they're
+            # not repeated here — Settings is the single entry point for org config.
+            user_sections.append(("Team & Admin", [
+                ("hires", "/admin/hires", "🧑‍💼 New Hires"),
+                ("settings", "/admin/settings", "⚙️ Settings"),
+            ]))
+        elif role == "cs":
+            user_sections.append(("Team", [
+                ("hires", "/admin/hires", "🧑‍💼 New Hires"),
+            ]))
 
     # ── Render row ──
     logo = ('<img src="' + str(_e(brand["logo_url"])) + '" alt="" class="brand-logo">') if brand["logo_url"] else ""
     nav_html = _brand_style()
     nav_html += '<nav class="topnav"><div class="topnav-inner">'
-    nav_html += ('<a href="/home" class="topnav-brand">' + logo +
+    _home_url = "/admin/organizations" if role == "superadmin" else "/home"
+    nav_html += ('<a href="' + _home_url + '" class="topnav-brand">' + logo +
                  '<span class="brand-txt"><span class="brand-mark">' + str(_e(brand["mark"])) +
                  '</span><span class="brand-sub">' + str(_e(brand["sub"])) + '</span></span></a>')
     # Any Operations sub-page should light up the Operations link.
@@ -8168,4 +8177,124 @@ document.getElementById('printSel').addEventListener('click',function(){
   window.open('/label/inbound/multi?ids='+ids.join(','),'_blank');
 });
 loadInbound();
+</script></body></html>'''
+
+
+ORGANIZATIONS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Organizations</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#ffffff;color:#1a2130;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1040px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#4f46e5;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1040px;margin:0 auto;padding:8px 28px 40px}
+.card{background:#ffffff;border:1px solid rgba(17,24,39,0.096);border-radius:16px;padding:22px 24px;margin-bottom:20px}
+.card h2{font-size:15px;font-weight:800;color:#4f46e5;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
+.card .desc{font-size:13px;color:#586274;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:720px}
+label{font-size:12px;font-weight:700;color:#6b7280;display:block;margin-bottom:4px}
+input[type=text],input[type=password],select{background:#ffffff;border:2px solid rgba(17,24,39,0.128);border-radius:10px;padding:11px 14px;font-size:15px;color:#1a2130;font-family:inherit;outline:none;width:100%}
+input:focus,select:focus{border-color:#4f46e5}
+.btn{border:none;border-radius:10px;padding:11px 20px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
+.btn-s{background:#f6f7f9;color:#1a2130;border:1px solid rgba(17,24,39,0.12)}
+.btn-warn{background:rgba(251,191,36,.16);color:#b45309}
+.btn-ok{background:rgba(52,211,153,.16);color:#059669}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+th,td{padding:12px 10px;font-size:13px;border-bottom:1px solid rgba(17,24,39,0.096);text-align:left}
+th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
+.pill{font-size:11px;font-weight:700;padding:3px 10px;border-radius:50px}
+.pill.on{background:rgba(52,211,153,.16);color:#059669}.pill.off{background:rgba(244,63,94,.14);color:#e11d48}
+.swatch{display:inline-block;width:14px;height:14px;border-radius:4px;vertical-align:middle;margin-right:6px;border:1px solid rgba(0,0,0,.1)}
+.cred{background:#eef2ff;border:1px solid #c7d2fe;border-radius:12px;padding:16px;margin-top:14px;display:none}
+.cred b{color:#4338ca}
+.cred code{background:#fff;border:1px solid #c7d2fe;border-radius:6px;padding:2px 8px;font-size:14px;font-weight:700}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}
+.toast.err{background:#f43f5e}
+.note{font-size:12px;color:#6b7280;margin-top:10px}
+.muted{color:#9ca3af}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🏢 Organizations <span>__NAME__</span></div></div>
+<div class="wrap">
+
+<div class="card">
+  <h2>All tenants</h2>
+  <div class="desc">Every company using the platform. Each tenant's data is fully isolated.</div>
+  <table><thead><tr><th>Company</th><th>Org ID</th><th>Brand</th><th>Plan</th><th>Users</th><th>Status</th><th></th></tr></thead>
+  <tbody id="orgRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody></table>
+</div>
+
+<div class="card">
+  <h2>Create a new tenant</h2>
+  <div class="desc">Registers the company, provisions its isolated data, and creates its first admin login.</div>
+  <div class="grid">
+    <div><label>Company name *</label><input type="text" id="company" placeholder="Glam Co"></div>
+    <div><label>Org ID * (lowercase, no spaces)</label><input type="text" id="org_id" placeholder="glamco"></div>
+    <div><label>Brand mark (short)</label><input type="text" id="brand_mark" placeholder="GLAM"></div>
+    <div><label>Brand subtitle</label><input type="text" id="brand_sub" placeholder="Employee Hub"></div>
+    <div><label>Brand color</label><input type="text" id="brand_color" placeholder="#d9748f"></div>
+    <div><label>Plan</label><select id="plan"><option value="standard">standard</option><option value="pro">pro</option><option value="enterprise">enterprise</option></select></div>
+    <div><label>First admin username *</label><input type="text" id="admin_username" placeholder="glamco_admin"></div>
+    <div><label>First admin name</label><input type="text" id="admin_name" placeholder="Admin"></div>
+    <div><label>Admin password (blank = auto-generate)</label><input type="text" id="admin_password" placeholder="leave blank to auto-generate"></div>
+  </div>
+  <div class="row" style="margin-top:16px"><button class="btn btn-p" id="createBtn">Create organization</button></div>
+  <div class="cred" id="cred"></div>
+  <div class="note">Usernames are global across all tenants, so pick something unique (e.g. prefix with the company).</div>
+</div>
+
+</div>
+<div class="toast" id="t"></div>
+<script>
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3200)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function load(){
+  fetch('/api/orgs').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){document.getElementById('orgRows').innerHTML='<tr><td colspan=7 class=muted>Failed to load</td></tr>';return}
+    var rows=d.orgs.map(function(o){
+      var status=o.active?'<span class="pill on">active</span>':'<span class="pill off">suspended</span>';
+      var act=o.is_default?'<span class="muted">founding</span>':(o.active
+        ?'<button class="btn btn-warn" data-o="'+esc(o.org_id)+'" data-a="0">Suspend</button>'
+        :'<button class="btn btn-ok" data-o="'+esc(o.org_id)+'" data-a="1">Reactivate</button>');
+      return '<tr><td><b>'+esc(o.company_name)+'</b></td><td><code>'+esc(o.org_id)+'</code></td>'+
+        '<td><span class="swatch" style="background:'+esc(o.brand_color||'#ccc')+'"></span>'+esc(o.brand_mark||'')+'</td>'+
+        '<td>'+esc(o.plan||'')+'</td><td>'+o.user_count+'</td><td>'+status+'</td><td>'+act+'</td></tr>';
+    }).join('');
+    document.getElementById('orgRows').innerHTML=rows||'<tr><td colspan=7 class=muted>No organizations</td></tr>';
+    document.querySelectorAll('#orgRows button').forEach(function(b){
+      b.addEventListener('click',function(){
+        var active=b.getAttribute('data-a')==='1';
+        if(!active && !confirm('Suspend this tenant? Their users will not be able to log in.'))return;
+        fetch('/api/orgs/toggle',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({org_id:b.getAttribute('data-o'),active:active})})
+          .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Updated');load()}else{toast(d.error||'Failed',1)}});
+      });
+    });
+  });
+}
+document.getElementById('createBtn').addEventListener('click',function(){
+  var btn=this;btn.disabled=true;
+  var body={company_name:val('company'),org_id:val('org_id'),brand_mark:val('brand_mark'),
+    brand_sub:val('brand_sub'),brand_color:val('brand_color'),plan:val('plan'),
+    admin_username:val('admin_username'),admin_name:val('admin_name'),admin_password:val('admin_password')};
+  fetch('/api/orgs/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json()}).then(function(d){
+      btn.disabled=false;
+      if(!d.ok){toast(d.error||'Failed',1);return}
+      var c=document.getElementById('cred');
+      c.style.display='block';
+      c.innerHTML='<b>✅ Tenant created.</b> Save these credentials now — the password is shown only once.<br><br>'+
+        'Login URL: <code>'+location.origin+'/login</code><br>'+
+        'Username: <code>'+esc(d.admin_username)+'</code><br>'+
+        'Password: <code>'+esc(d.admin_password)+'</code>';
+      ['company','org_id','brand_mark','brand_sub','brand_color','admin_username','admin_name','admin_password'].forEach(function(id){document.getElementById(id).value=''});
+      toast('Organization created');load();
+    }).catch(function(){btn.disabled=false;toast('Network error',1)});
+});
+function val(id){return (document.getElementById(id).value||'').trim()}
+load();
 </script></body></html>'''
