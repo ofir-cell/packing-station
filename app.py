@@ -1242,20 +1242,83 @@ if USPS_ENABLED:
 else:
     print("USPS tracking not configured — set USPS_CLIENT_ID / USPS_CLIENT_SECRET to enable",flush=True)
 
-# ── EASYPOST — buy shipping labels (giveaways + inbound). Bring-your-own UPS. ──
+# ── SHIPSTATION (API V2) — buy shipping labels (giveaways + inbound). ──────────
+# api.shipstation.com, single API key in the "API-Key" header. Rate → buy flow,
+# carriers connected inside your ShipStation account. The helpers below return
+# EasyPost-shaped output so the existing label routes work unchanged.
 import base64 as _b64
-EASYPOST_API_KEY=os.environ.get("EASYPOST_API_KEY")
-EASYPOST_ENABLED=bool(EASYPOST_API_KEY)
-EASYPOST_BASE=os.environ.get("EASYPOST_BASE","https://api.easypost.com/v2")
-def _easypost(method, path, payload=None):
-    """Call the EasyPost API (API key as HTTP Basic username). Raises on HTTP error."""
+SHIPSTATION_API_KEY=os.environ.get("SHIPSTATION_API_KEY") or os.environ.get("SHIPSTATION_KEY")
+SHIPSTATION_ENABLED=bool(SHIPSTATION_API_KEY)
+SHIPSTATION_BASE=os.environ.get("SHIPSTATION_BASE","https://api.shipstation.com")
+EASYPOST_ENABLED=SHIPSTATION_ENABLED   # back-compat alias used by the label routes
+
+def _ss(method, path, payload=None):
+    """Call the ShipStation V2 API. Raises RuntimeError('ShipStation: <msg>') on error."""
     data=json.dumps(payload).encode() if payload is not None else None
-    req=_urlreq.Request(EASYPOST_BASE+path, data=data, method=method,
-        headers={"Authorization":"Basic "+_b64.b64encode((EASYPOST_API_KEY+":").encode()).decode(),
-                 "Content-Type":"application/json","Accept":"application/json"})
-    with _urlreq.urlopen(req, timeout=30) as r:
-        return json.loads(r.read().decode())
-print("EasyPost "+("enabled (test mode)" if (EASYPOST_API_KEY or "").startswith("EZTK") else ("enabled" if EASYPOST_ENABLED else "not configured — set EASYPOST_API_KEY")),flush=True)
+    req=_urlreq.Request(SHIPSTATION_BASE+path, data=data, method=method,
+        headers={"API-Key":SHIPSTATION_API_KEY or "","Content-Type":"application/json","Accept":"application/json"})
+    try:
+        with _urlreq.urlopen(req, timeout=45) as r:
+            return json.loads(r.read().decode())
+    except _urlerr.HTTPError as e:
+        try:
+            b=json.loads(e.read().decode())
+            msg=(b.get("errors") or [{}])[0].get("message") or b.get("message") or ("HTTP "+str(e.code))
+        except Exception: msg="HTTP "+str(e.code)
+        raise RuntimeError("ShipStation: "+str(msg))
+
+_ss_carriers={"ids":None,"ts":0}
+def _ship_carrier_ids():
+    """Carrier IDs connected in the ShipStation account (cached 1h). Rates need these."""
+    if _ss_carriers["ids"] is not None and time.time()-_ss_carriers["ts"]<3600:
+        return _ss_carriers["ids"]
+    r=_ss("GET","/v2/carriers")
+    ids=[c.get("carrier_id") for c in (r.get("carriers") or []) if c.get("carrier_id")]
+    _ss_carriers["ids"]=ids; _ss_carriers["ts"]=time.time()
+    return ids
+
+def _ship_addr(a):
+    out={"name":a.get("name") or "Recipient",
+         "address_line1":a.get("street1") or "","address_line2":a.get("street2") or "",
+         "city_locality":a.get("city") or "","state_province":a.get("state") or "",
+         "postal_code":a.get("zip") or "","country_code":(a.get("country") or "US")}
+    if a.get("phone"): out["phone"]=a.get("phone")
+    if a.get("company"): out["company_name"]=a.get("company")
+    return out
+
+def _ship_rates(to, frm, weight, dims):
+    """(shipment_id, [rates]) — rate dict shaped like EasyPost: id/carrier/service/rate/days."""
+    pkg={"weight":{"value":float(weight),"unit":"ounce"}}
+    dd={}
+    for k in ("length","width","height"):
+        try:
+            if dims.get(k): dd[k]=float(dims[k])
+        except Exception: pass
+    if len(dd)==3: pkg["dimensions"]=dict(unit="inch",**dd)
+    body={"rate_options":{"carrier_ids":_ship_carrier_ids()},
+          "shipment":{"ship_from":_ship_addr(frm),"ship_to":_ship_addr(to),"packages":[pkg]}}
+    resp=_ss("POST","/v2/rates",body)
+    rr=resp.get("rate_response") or {}
+    rates=[]
+    for r in (rr.get("rates") or []):
+        amt=(r.get("shipping_amount") or {}).get("amount")
+        rates.append({"id":r.get("rate_id"),
+                      "carrier":r.get("carrier_friendly_name") or r.get("carrier_code"),
+                      "service":r.get("service_type") or r.get("service_code"),
+                      "rate":amt,"days":r.get("delivery_days")})
+    rates.sort(key=lambda x: float(x["rate"] if x["rate"] is not None else 9999))
+    return resp.get("shipment_id"), rates
+
+def _ship_buy(rate_id):
+    """Purchase a label for a rate. Returns EasyPost-shaped dict so routes are unchanged."""
+    lbl=_ss("POST","/v2/labels/rates/"+str(rate_id),{"label_layout":"4x6","label_format":"pdf"})
+    dl=lbl.get("label_download") or {}
+    url=dl.get("pdf") or dl.get("href") or dl.get("png")
+    cost=float((lbl.get("shipment_cost") or {}).get("amount") or 0)
+    return {"postage_label":{"label_url":url},"tracking_code":lbl.get("tracking_number"),
+            "selected_rate":{"rate":cost,"carrier":lbl.get("carrier_code"),"service":lbl.get("service_code")}}
+
+print("ShipStation "+("enabled" if SHIPSTATION_ENABLED else "not configured — set SHIPSTATION_API_KEY"),flush=True)
 
 
 def _weight_config():
@@ -7633,7 +7696,7 @@ def _ship_from():
 def api_giveaway_rates(gid):
     """Get EasyPost rates for shipping this giveaway's prize."""
     if not EASYPOST_ENABLED:
-        return jsonify({"ok":False,"error":"EasyPost not configured — set EASYPOST_API_KEY on Railway."})
+        return jsonify({"ok":False,"error":"ShipStation not configured — set SHIPSTATION_API_KEY on Railway."})
     d=request.get_json() or {}
     c=gdb(); g=c.execute("SELECT * FROM giveaways WHERE id=?",(gid,)).fetchone(); c.close()
     if not g: return jsonify({"ok":False,"error":"Giveaway not found"})
@@ -7650,29 +7713,17 @@ def api_giveaway_rates(gid):
     try: weight=float(d.get("weight_oz") or 0)
     except Exception: weight=0
     if weight<=0: return jsonify({"ok":False,"error":"Enter package weight (oz)."})
-    parcel={"weight":weight}
-    for k in ("length","width","height"):
-        try:
-            if d.get(k): parcel[k]=float(d[k])
-        except Exception: pass
     try:
-        sh=_easypost("POST","/shipments",{"shipment":{"to_address":to,"from_address":frm,"parcel":parcel}})
-    except _urlerr.HTTPError as e:
-        try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
-        except Exception: msg="HTTP "+str(e.code)
-        return jsonify({"ok":False,"error":"EasyPost: "+str(msg)})
+        sid,rates=_ship_rates(to, frm, weight, d)
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)})
-    rates=[{"id":r.get("id"),"carrier":r.get("carrier"),"service":r.get("service"),
-            "rate":r.get("rate"),"days":r.get("delivery_days")} for r in (sh.get("rates") or [])]
-    rates.sort(key=lambda x: float(x["rate"] or 9999))
-    return jsonify({"ok":True,"shipment_id":sh.get("id"),"rates":rates})
+    return jsonify({"ok":True,"shipment_id":sid,"rates":rates})
 
 @app.route("/api/giveaway/<int:gid>/buy-label",methods=["POST"])
 @req_role("admin","cs")
 def api_giveaway_buy_label(gid):
     if not EASYPOST_ENABLED:
-        return jsonify({"ok":False,"error":"EasyPost not configured."})
+        return jsonify({"ok":False,"error":"ShipStation not configured."})
     d=request.get_json() or {}
     sid=(d.get("shipment_id") or "").strip(); rate_id=(d.get("rate_id") or "").strip()
     if not sid or not rate_id: return jsonify({"ok":False,"error":"Missing shipment/rate"})
@@ -7686,11 +7737,11 @@ def api_giveaway_buy_label(gid):
             c.close(); return jsonify({"ok":False,"error":"A label was already purchased for this giveaway"})
         c.close()
         try:
-            sh=_easypost("POST","/shipments/"+sid+"/buy",{"rate":{"id":rate_id}})
+            sh=_ship_buy(rate_id)
         except _urlerr.HTTPError as e:
             try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
             except Exception: msg="HTTP "+str(e.code)
-            return jsonify({"ok":False,"error":"EasyPost: "+str(msg)})
+            return jsonify({"ok":False,"error":"ShipStation: "+str(msg)})
         except Exception as e:
             return jsonify({"ok":False,"error":str(e)})
         label=(sh.get("postage_label") or {}).get("label_url")
@@ -7792,21 +7843,13 @@ def api_packages():
     return jsonify({"ok":True,"packages": json.loads(raw) if raw else []})
 
 def _easypost_rates(to, frm, weight, dims):
-    parcel={"weight":weight}
-    for k in ("length","width","height"):
-        try:
-            if dims.get(k): parcel[k]=float(dims[k])
-        except Exception: pass
-    sh=_easypost("POST","/shipments",{"shipment":{"to_address":to,"from_address":frm,"parcel":parcel}})
-    rates=[{"id":r.get("id"),"carrier":r.get("carrier"),"service":r.get("service"),
-            "rate":r.get("rate"),"days":r.get("delivery_days")} for r in (sh.get("rates") or [])]
-    rates.sort(key=lambda x: float(x["rate"] or 9999))
-    return sh.get("id"), rates
+    # Back-compat name — now backed by ShipStation V2.
+    return _ship_rates(to, frm, weight, dims)
 
 @app.route("/api/label/rates",methods=["POST"])
 @req_role("admin","cs")
 def api_label_rates():
-    if not EASYPOST_ENABLED: return jsonify({"ok":False,"error":"EasyPost not configured — set EASYPOST_API_KEY."})
+    if not EASYPOST_ENABLED: return jsonify({"ok":False,"error":"ShipStation not configured — set SHIPSTATION_API_KEY."})
     d=request.get_json() or {}
     to=d.get("to_address") or {}
     frm=d.get("from_address") or _ship_from()
@@ -7822,7 +7865,7 @@ def api_label_rates():
     except _urlerr.HTTPError as e:
         try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
         except Exception: msg="HTTP "+str(e.code)
-        return jsonify({"ok":False,"error":"EasyPost: "+str(msg)})
+        return jsonify({"ok":False,"error":"ShipStation: "+str(msg)})
     except Exception as e: return jsonify({"ok":False,"error":str(e)})
     return jsonify({"ok":True,"shipment_id":sid,"rates":rates})
 
@@ -7834,11 +7877,11 @@ def api_label_buy():
     sid=(d.get("shipment_id") or "").strip(); rid=(d.get("rate_id") or "").strip()
     if not sid or not rid: return jsonify({"ok":False,"error":"Missing shipment/rate"})
     try:
-        sh=_easypost("POST","/shipments/"+sid+"/buy",{"rate":{"id":rid}})
+        sh=_ship_buy(rid)
     except _urlerr.HTTPError as e:
         try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
         except Exception: msg="HTTP "+str(e.code)
-        return jsonify({"ok":False,"error":"EasyPost: "+str(msg)})
+        return jsonify({"ok":False,"error":"ShipStation: "+str(msg)})
     except Exception as e: return jsonify({"ok":False,"error":str(e)})
     label=(sh.get("postage_label") or {}).get("label_url"); tracking=sh.get("tracking_code")
     sr=sh.get("selected_rate") or {}
@@ -7855,7 +7898,7 @@ def api_label_buy():
 def api_label_rates_multi():
     """Rates for a multi-box supplier shipment. One EasyPost shipment per box; we
     return only services available on EVERY box, with the summed total."""
-    if not EASYPOST_ENABLED: return jsonify({"ok":False,"error":"EasyPost not configured — set EASYPOST_API_KEY."})
+    if not EASYPOST_ENABLED: return jsonify({"ok":False,"error":"ShipStation not configured — set SHIPSTATION_API_KEY."})
     d=request.get_json() or {}
     to=d.get("to_address") or {}
     frm=d.get("from_address") or _ship_from()
@@ -7876,7 +7919,7 @@ def api_label_rates_multi():
     except _urlerr.HTTPError as e:
         try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
         except Exception: msg="HTTP "+str(e.code)
-        return jsonify({"ok":False,"error":"EasyPost: "+str(msg)})
+        return jsonify({"ok":False,"error":"ShipStation: "+str(msg)})
     except Exception as e: return jsonify({"ok":False,"error":str(e)})
     nb=len(legs); combo={}
     for leg in legs:
@@ -7914,7 +7957,7 @@ def api_label_buy_multi():
         for leg in legs:
             sid=(leg.get("shipment_id") or "").strip(); rid=(leg.get("rate_id") or "").strip()
             if not sid or not rid: continue
-            sh=_easypost("POST","/shipments/"+sid+"/buy",{"rate":{"id":rid}})
+            sh=_ship_buy(rid)
             label=(sh.get("postage_label") or {}).get("label_url"); tracking=sh.get("tracking_code")
             sr=sh.get("selected_rate") or {}; cost=float(sr.get("rate") or 0); total+=cost
             c.execute("""INSERT INTO inbound_shipments(supplier,carrier,service,tracking,cost,label_url,po_id,created_by,batch_id)
