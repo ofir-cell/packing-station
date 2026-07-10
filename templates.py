@@ -6790,8 +6790,10 @@ __NAVBAR__
   <div style="display:flex;gap:18px;align-items:flex-start">
     <div style="flex:0 0 140px;text-align:center">
       <img id="pImg" alt="" style="width:140px;height:140px;object-fit:cover;border-radius:12px;background:#eef0f4;border:1px solid #e4e7ec;display:block">
+      <input type="file" id="pCamera" accept="image/*" capture="environment" style="display:none">
       <input type="file" id="pFile" accept="image/*" style="display:none">
-      <button class="btn btn-s" style="margin-top:8px;width:100%;font-size:12px" id="pPhotoBtn">📷 Upload photo</button>
+      <button class="btn btn-p" style="margin-top:8px;width:100%;font-size:12px" id="pCamBtn">📸 Take photo</button>
+      <button class="btn btn-s" style="margin-top:6px;width:100%;font-size:12px" id="pPhotoBtn">🖼️ Upload photo</button>
     </div>
     <div style="flex:1">
       <div class="grid">
@@ -6962,15 +6964,18 @@ document.getElementById('pGenBc').addEventListener('click',function(){
   function gen(sku){fetch('/api/product/'+encodeURIComponent(sku)+'/gen-barcode',{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d.ok){document.getElementById('pBarcode').value=d.barcode;toast('Barcode generated')}else toast(d.error||'Failed',true)})}
   if(curSku)gen(curSku);else saveP(gen);
 });
-document.getElementById('pPhotoBtn').addEventListener('click',function(){document.getElementById('pFile').click()});
-document.getElementById('pFile').addEventListener('change',function(){
-  var f=this.files&&this.files[0];if(!f)return;
+function uploadPhoto(f){
+  if(!f)return;
   function up(sku){var fd=new FormData();fd.append('file',f);
     document.getElementById('pResult').textContent='Uploading photo…';
     fetch('/api/product/'+encodeURIComponent(sku)+'/image',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
       if(d.ok){document.getElementById('pImg').src=d.image_url;document.getElementById('pResult').innerHTML='✓ Photo updated.';load()}else{toast(d.error||'Upload failed',true);document.getElementById('pResult').innerHTML=''}}).catch(function(){toast('Upload failed',true)});}
   if(curSku)up(curSku);else saveP(up);
-});
+}
+document.getElementById('pPhotoBtn').addEventListener('click',function(){document.getElementById('pFile').click()});
+document.getElementById('pCamBtn').addEventListener('click',function(){document.getElementById('pCamera').click()});
+document.getElementById('pFile').addEventListener('change',function(){uploadPhoto(this.files&&this.files[0]);this.value=''});
+document.getElementById('pCamera').addEventListener('change',function(){uploadPhoto(this.files&&this.files[0]);this.value=''});
 document.getElementById('rSku').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('rBtn').click()});
 var dq=null;document.getElementById('q').addEventListener('input',function(){lowMode=false;document.getElementById('lowBtn').classList.remove('btn-p');clearTimeout(dq);dq=setTimeout(load,200)});
 document.getElementById('lowBtn').addEventListener('click',function(){lowMode=!lowMode;this.classList.toggle('btn-p',lowMode);if(lowMode)document.getElementById('q').value='';load()});
@@ -7250,8 +7255,9 @@ function loadPOs(){
   });
 }
 function openPO(id,status){
-  // received / receiving -> go to receive screen; otherwise edit
-  if(status==='received'||status==='receiving')openReceive(id);else editPO(id);
+  // Always open the receive screen — you can receive from any status.
+  // (Edit the order via the "Edit order" button there.)
+  openReceive(id);
 }
 // ── line rows ──
 function lineRow(it){
@@ -7347,7 +7353,9 @@ function openReceive(id){
       '<div class="muted" style="margin-bottom:12px">'+esc(p.supplier||'')+(p.tracking?(' · '+esc(p.tracking)):'')+'</div>'+
       '<div style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap">'+
       '<a class="btn btn-s" href="/api/po/'+p.id+'/slip.pdf" target="_blank" style="text-decoration:none">🖨️ Print receiving slip</a>'+
-      (p.invoice_name?('<a class="btn btn-s" href="/api/po/'+p.id+'/invoice-file" target="_blank" style="text-decoration:none">📎 Invoice</a>'):'')+'</div>'+
+      (p.invoice_name?('<a class="btn btn-s" href="/api/po/'+p.id+'/invoice-file" target="_blank" style="text-decoration:none">📎 Invoice</a>'):'')+
+      (p.status!=='received'?('<button class="btn btn-s" onclick="editPO('+p.id+')">✎ Edit order</button>'):'')+
+      '<button class="btn btn-g" onclick="receiveAll('+p.id+')">✓ Receive all remaining</button>'+'</div>'+
       '<div style="margin-bottom:14px"><label>📷 Scan to receive (1 unit each)</label>'+
       '<input type="text" id="scanBox" placeholder="Scan barcode or SKU…" style="width:100%" autocomplete="off" '+
       'onkeydown="if(event.key===\\'Enter\\'){scanRecv('+p.id+')}"></div>'+
@@ -7360,6 +7368,11 @@ function recvLine(poid,itemId){
   var q=parseInt((document.getElementById('q'+itemId)||{}).value||'0');
   fetch('/api/po/'+poid+'/item/'+itemId+'/receive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qty:q})})
     .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Received ✓');openReceive(poid)}else toast(d.error||'Failed',true)});
+}
+function receiveAll(poid){
+  if(!confirm('Receive all remaining items into inventory?'))return;
+  fetch('/api/po/'+poid+'/receive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Received all ✓');openReceive(poid)}else toast(d.error||'Failed',true)});
 }
 function scanRecv(poid){
   var box=document.getElementById('scanBox');var code=(box.value||'').trim();if(!code)return;box.value='';
