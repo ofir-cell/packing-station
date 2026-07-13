@@ -8800,6 +8800,8 @@ __NAVBAR__
       <div><label>When did it start / how often?</label><input type="text" id="when" placeholder="e.g. since this morning, every time"></div>
       <div><label>Which page/URL? (optional)</label><input type="text" id="url" placeholder="e.g. /operations shipments"></div>
     </div>
+    <label>📷 Screenshot (optional — this helps us a lot)</label>
+    <input type="file" id="shot" accept="image/*,.pdf">
     <div style="margin-top:16px"><button class="btn btn-p" id="submitBtn">Send request</button></div>
   </div>
 
@@ -8822,6 +8824,26 @@ function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return
 function val(id){return (document.getElementById(id).value||'').trim()}
 var CATS={};
 function stpill(s){return '<span class="pill st-'+esc(s)+'">'+esc(s)+'</span>'}
+function attHtml(atts){
+  if(!atts||!atts.length)return '';
+  return '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">'+atts.map(function(a){
+    var u='/api/support/attachment/'+a.id;
+    if((a.mime||'').indexOf('image')===0)
+      return '<a href="'+u+'" target="_blank"><img src="'+u+'" alt="'+esc(a.filename)+'" style="max-width:200px;max-height:150px;border-radius:8px;border:1px solid rgba(17,24,39,.12);display:block"></a>';
+    return '<a href="'+u+'" target="_blank" style="font-size:12.5px;color:#4f46e5">📎 '+esc(a.filename)+'</a>';
+  }).join('')+'</div>';
+}
+function uploadAtt(mid,inputId,done){
+  var el=document.getElementById(inputId);
+  var f=el&&el.files&&el.files[0];
+  if(!f||!mid){if(done)done();return}
+  var fd=new FormData();fd.append('file',f);
+  fetch('/api/support/messages/'+mid+'/attachment',{method:'POST',body:fd})
+    .then(function(r){return r.json()}).then(function(d){
+      if(!d.ok)toast(d.error||'Attachment failed',1);
+      if(el)el.value='';if(done)done();
+    }).catch(function(){toast('Attachment failed',1);if(done)done()});
+}
 function loadList(){
   fetch('/api/support/tickets').then(function(r){return r.json()}).then(function(d){
     if(!d.ok)return; CATS=d.categories||{};
@@ -8839,13 +8861,14 @@ function openTicket(id){
   fetch('/api/support/tickets/'+id).then(function(r){return r.json()}).then(function(d){
     if(!d.ok){toast('Not found',1);return}
     var t=d.ticket;
-    var msgs=d.messages.map(function(m){return '<div class="msg '+(m.author_side==='support'?'support':'customer')+'"><div class="who">'+(m.author_side==='support'?'Support':esc(m.author_name||'You'))+' · '+esc((m.created_at||'').replace('T',' '))+'</div>'+esc(m.body)+'</div>'}).join('');
+    var msgs=d.messages.map(function(m){return '<div class="msg '+(m.author_side==='support'?'support':'customer')+'"><div class="who">'+(m.author_side==='support'?'Support':esc(m.author_name||'You'))+' · '+esc((m.created_at||'').replace('T',' '))+'</div>'+esc(m.body)+attHtml(m.attachments)+'</div>'}).join('');
     var canClose=t.status!=='closed';
     document.getElementById('detailCard').innerHTML=
       '<h2>'+esc(t.subject)+'</h2><div class="desc">'+esc(CATS[t.category]||t.category)+' · '+stpill(t.status)+'</div>'+
       msgs+
       (t.status==='closed'?'<div class="muted">This request is closed. Reply to reopen it.</div>':'')+
       '<label>Reply</label><textarea id="replyBox" placeholder="Add more detail or answer a question…"></textarea>'+
+      '<label>📷 Attach a screenshot (optional)</label><input type="file" id="replyShot" accept="image/*,.pdf">'+
       '<div style="margin-top:12px;display:flex;gap:10px"><button class="btn btn-p" onclick="sendReply('+t.id+')">Send reply</button>'+
       (canClose?'<button class="btn btn-s" onclick="setStatus('+t.id+',\\'closed\\')">Mark resolved / close</button>':'<button class="btn btn-s" onclick="setStatus('+t.id+',\\'open\\')">Reopen</button>')+'</div>';
     document.getElementById('listView').classList.add('hide');
@@ -8857,7 +8880,10 @@ function showList(){document.getElementById('detailView').classList.add('hide');
 function sendReply(id){
   var b=val('replyBox'); if(!b){toast('Write a message',1);return}
   fetch('/api/support/tickets/'+id+'/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:b})})
-    .then(function(r){return r.json()}).then(function(d){if(d.ok){openTicket(id)}else{toast(d.error||'Failed',1)}});
+    .then(function(r){return r.json()}).then(function(d){
+      if(!d.ok){toast(d.error||'Failed',1);return}
+      uploadAtt(d.message_id,'replyShot',function(){openTicket(id)});
+    });
 }
 function setStatus(id,s){
   fetch('/api/support/tickets/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:s})})
@@ -8869,9 +8895,14 @@ document.getElementById('submitBtn').addEventListener('click',function(){
     steps:val('steps'),when:val('when'),url:val('url')};
   this.disabled=true;var btn=this;
   fetch('/api/support/tickets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})
-    .then(function(r){return r.json()}).then(function(d){btn.disabled=false;
-      if(d.ok){toast('Request sent');['subject','body','steps','when','url'].forEach(function(i){document.getElementById(i).value=''});loadList()}
-      else{toast(d.error||'Failed',1)}}).catch(function(){btn.disabled=false;toast('Network error',1)});
+    .then(function(r){return r.json()}).then(function(d){
+      if(!d.ok){btn.disabled=false;toast(d.error||'Failed',1);return}
+      uploadAtt(d.message_id,'shot',function(){
+        btn.disabled=false;toast('Request sent');
+        ['subject','body','steps','when','url'].forEach(function(i){document.getElementById(i).value=''});
+        loadList();
+      });
+    }).catch(function(){btn.disabled=false;toast('Network error',1)});
 });
 loadList();
 </script></body></html>'''
@@ -9164,6 +9195,26 @@ function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.classNa
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 var CATS={};var FILTER='';
 function stpill(s){return '<span class="pill st-'+esc(s)+'">'+esc(s)+'</span>'}
+function attHtml(atts){
+  if(!atts||!atts.length)return '';
+  return '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">'+atts.map(function(a){
+    var u='/api/support/attachment/'+a.id;
+    if((a.mime||'').indexOf('image')===0)
+      return '<a href="'+u+'" target="_blank"><img src="'+u+'" alt="'+esc(a.filename)+'" style="max-width:240px;max-height:180px;border-radius:8px;border:1px solid rgba(17,24,39,.12);display:block"></a>';
+    return '<a href="'+u+'" target="_blank" style="font-size:12.5px;color:#4f46e5">📎 '+esc(a.filename)+'</a>';
+  }).join('')+'</div>';
+}
+function uploadAtt(mid,inputId,done){
+  var el=document.getElementById(inputId);
+  var f=el&&el.files&&el.files[0];
+  if(!f||!mid){if(done)done();return}
+  var fd=new FormData();fd.append('file',f);
+  fetch('/api/support/messages/'+mid+'/attachment',{method:'POST',body:fd})
+    .then(function(r){return r.json()}).then(function(d){
+      if(!d.ok)toast(d.error||'Attachment failed',1);
+      if(el)el.value='';if(done)done();
+    }).catch(function(){toast('Attachment failed',1);if(done)done()});
+}
 function loadCount(){fetch('/api/support/open-count').then(function(r){return r.json()}).then(function(d){document.getElementById('cnt').textContent=d.count?('· '+d.count+' open'):''})}
 function loadList(){
   fetch('/api/support/tickets'+(FILTER?('?status='+FILTER):'')).then(function(r){return r.json()}).then(function(d){
@@ -9187,10 +9238,11 @@ function openTicket(id){
       (cx.when?'<div><b>When/frequency:</b> '+esc(cx.when)+'</div>':'')+
       (cx.url?'<div><b>Page:</b> '+esc(cx.url)+'</div>':'')+
       (cx.user_agent?'<div><b>Browser:</b> '+esc(cx.user_agent)+'</div>':'')+'</div>';
-    var msgs=d.messages.map(function(m){return '<div class="msg '+(m.author_side==='support'?'support':'customer')+'"><div class="who">'+(m.author_side==='support'?'Support (you)':esc(m.author_name||'Customer'))+' · '+esc((m.created_at||'').replace('T',' '))+'</div>'+esc(m.body)+'</div>'}).join('');
+    var msgs=d.messages.map(function(m){return '<div class="msg '+(m.author_side==='support'?'support':'customer')+'"><div class="who">'+(m.author_side==='support'?'Support (you)':esc(m.author_name||'Customer'))+' · '+esc((m.created_at||'').replace('T',' '))+'</div>'+esc(m.body)+attHtml(m.attachments)+'</div>'}).join('');
     document.getElementById('detailCard').innerHTML=
       '<h2>'+esc(t.subject)+' '+stpill(t.status)+'</h2>'+ctx+msgs+
       '<label>Reply to customer</label><textarea id="replyBox" placeholder="Type your answer…"></textarea>'+
+      '<label>📷 Attach a screenshot (optional)</label><input type="file" id="replyShot" accept="image/*,.pdf" style="font-size:13px">'+
       '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'+
       '<button class="btn btn-p" onclick="sendReply('+t.id+')">Send reply</button>'+
       '<button class="btn btn-s" onclick="setStatus('+t.id+',\\'pending\\')">Pending</button>'+
@@ -9204,7 +9256,10 @@ function openTicket(id){
 function showList(){document.getElementById('detailView').classList.add('hide');document.getElementById('listView').classList.remove('hide');loadList();loadCount()}
 function sendReply(id){var b=(document.getElementById('replyBox').value||'').trim();if(!b){toast('Write a message',1);return}
   fetch('/api/support/tickets/'+id+'/reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:b})})
-    .then(function(r){return r.json()}).then(function(d){if(d.ok){openTicket(id);loadCount()}else{toast(d.error||'Failed',1)}})}
+    .then(function(r){return r.json()}).then(function(d){
+      if(!d.ok){toast(d.error||'Failed',1);return}
+      uploadAtt(d.message_id,'replyShot',function(){openTicket(id);loadCount()});
+    })}
 function setStatus(id,s){fetch('/api/support/tickets/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:s})})
     .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Set to '+s);openTicket(id);loadCount()}else{toast(d.error||'Failed',1)}})}
 document.querySelectorAll('#filters .fbtn').forEach(function(b){b.addEventListener('click',function(){

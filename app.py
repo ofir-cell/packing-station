@@ -271,6 +271,18 @@ def pdb_init():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_tmsg_ticket ON ticket_messages(ticket_id)")
+    # Screenshots / files attached to a ticket message.
+    c.execute("""CREATE TABLE IF NOT EXISTS ticket_attachments(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket_id INTEGER NOT NULL,
+        message_id INTEGER,
+        filename TEXT,
+        storage_key TEXT,
+        mime TEXT,
+        size_bytes INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tatt_ticket ON ticket_attachments(ticket_id)")
     # Help guides — authored by the platform owner, shown to all tenants.
     c.execute("""CREATE TABLE IF NOT EXISTS guides(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -6702,10 +6714,11 @@ def api_ticket_create():
                      VALUES(?,?,?,?,?,?, 'open', ?, ?)""",
                   (org,who,who_name,cat,subject,prio,json.dumps(ctx),who))
     tid=cur.lastrowid
-    c.execute("""INSERT INTO ticket_messages(ticket_id,author,author_name,author_side,body)
+    m=c.execute("""INSERT INTO ticket_messages(ticket_id,author,author_name,author_side,body)
                  VALUES(?,?,?,'customer',?)""",(tid,who,who_name,body))
+    mid=m.lastrowid
     c.commit(); c.close()
-    return jsonify({"ok":True,"id":tid})
+    return jsonify({"ok":True,"id":tid,"message_id":mid})
 
 @app.route("/api/support/tickets")
 @req_login
@@ -6743,6 +6756,11 @@ def api_ticket_get(tid):
     c=pdb()
     msgs=[dict(m) for m in c.execute(
         "SELECT * FROM ticket_messages WHERE ticket_id=? ORDER BY id",(tid,)).fetchall()]
+    atts=[dict(a) for a in c.execute(
+        "SELECT id,message_id,filename,mime FROM ticket_attachments WHERE ticket_id=? ORDER BY id",(tid,)).fetchall()]
+    by_msg={}
+    for a in atts: by_msg.setdefault(a["message_id"],[]).append(a)
+    for m in msgs: m["attachments"]=by_msg.get(m["id"],[])
     o=c.execute("SELECT company_name FROM organizations WHERE org_id=?",(t["org_id"],)).fetchone()
     c.close()
     t["company"]=o["company_name"] if o else t["org_id"]
@@ -6763,14 +6781,73 @@ def api_ticket_reply(tid):
     new_status="pending" if support else "open"
     now=datetime.now().isoformat(timespec="seconds")
     c=pdb()
-    c.execute("""INSERT INTO ticket_messages(ticket_id,author,author_name,author_side,body)
+    m=c.execute("""INSERT INTO ticket_messages(ticket_id,author,author_name,author_side,body)
                  VALUES(?,?,?,?,?)""",(tid,who,who_name,"support" if support else "customer",body))
+    mid=m.lastrowid
     # Don't resurrect a closed ticket unless the customer reopens by replying.
     if t["status"]=="closed" and support:
         new_status="closed"
     c.execute("UPDATE tickets SET status=?,updated_at=?,last_actor=? WHERE id=?",(new_status,now,who,tid))
     c.commit(); c.close()
-    return jsonify({"ok":True})
+    return jsonify({"ok":True,"message_id":mid})
+
+_TICKET_ATT_EXT={"png","jpg","jpeg","webp","gif","pdf"}
+_TICKET_ATT_MAX=10*1024*1024   # 10 MB per attachment
+
+@app.route("/api/support/messages/<int:mid>/attachment",methods=["POST"])
+@req_login
+def api_ticket_attach(mid):
+    """Attach a screenshot/file to a ticket message (customer or support)."""
+    c=pdb()
+    m=c.execute("SELECT ticket_id FROM ticket_messages WHERE id=?",(mid,)).fetchone()
+    c.close()
+    if not m: return jsonify({"ok":False,"error":"Message not found"}),404
+    tid=m["ticket_id"]
+    t=_ticket_get(tid)
+    if not _ticket_visible(t): return jsonify({"ok":False,"error":"Not found"}),404
+    f=request.files.get("file")
+    if not f or not f.filename: return jsonify({"ok":False,"error":"Pick a file"})
+    ext=f.filename.rsplit(".",1)[-1].lower() if "." in f.filename else ""
+    if ext not in _TICKET_ATT_EXT:
+        return jsonify({"ok":False,"error":"Use an image (PNG/JPG/WEBP/GIF) or a PDF"})
+    data=f.read()
+    if len(data)>_TICKET_ATT_MAX:
+        return jsonify({"ok":False,"error":"File too large (max 10 MB)"})
+    fname=secure_filename(f.filename) or ("file."+ext)
+    key="support/%d/%s_%s"%(tid,secrets.token_hex(4),fname)
+    if r2:
+        r2.put_object(Bucket=R2_BUCKET,Key=key,Body=data,
+                      ContentType=f.mimetype or "application/octet-stream")
+    else:
+        p=os.path.join(DATA_DIR,"support",str(tid)); os.makedirs(p,exist_ok=True)
+        key=os.path.basename(key)
+        with open(os.path.join(p,key),"wb") as fh: fh.write(data)
+    c=pdb()
+    cur=c.execute("""INSERT INTO ticket_attachments(ticket_id,message_id,filename,storage_key,mime,size_bytes)
+                     VALUES(?,?,?,?,?,?)""",
+                  (tid,mid,fname,key,f.mimetype or "",len(data)))
+    aid=cur.lastrowid; c.commit(); c.close()
+    return jsonify({"ok":True,"id":aid,"filename":fname})
+
+@app.route("/api/support/attachment/<int:aid>")
+@req_login
+def api_ticket_attachment_file(aid):
+    c=pdb()
+    a=c.execute("SELECT * FROM ticket_attachments WHERE id=?",(aid,)).fetchone()
+    c.close()
+    if not a: return ("",404)
+    t=_ticket_get(a["ticket_id"])
+    if not _ticket_visible(t): return ("",404)
+    key=a["storage_key"]
+    if r2 and key.startswith("support/"):
+        try:
+            url=r2.generate_presigned_url("get_object",
+                Params={"Bucket":R2_BUCKET,"Key":key},ExpiresIn=R2_PRESIGN_TTL)
+            return redirect(url)
+        except Exception: return ("",404)
+    p=os.path.join(DATA_DIR,"support",str(a["ticket_id"]),key)
+    if not os.path.exists(p): return ("",404)
+    return send_file(p)
 
 @app.route("/api/support/tickets/<int:tid>/status",methods=["POST"])
 @req_login
@@ -7845,6 +7922,21 @@ def api_packages():
 def _easypost_rates(to, frm, weight, dims):
     # Back-compat name — now backed by ShipStation V2.
     return _ship_rates(to, frm, weight, dims)
+
+@app.route("/api/ship/carriers")
+@req_role("admin","cs")
+def api_ship_carriers():
+    """Diagnostic: which carriers your ShipStation key can see (for rate/label)."""
+    if not SHIPSTATION_ENABLED:
+        return jsonify({"ok":False,"error":"ShipStation not configured — set SHIPSTATION_API_KEY."})
+    try:
+        r=_ss("GET","/v2/carriers")
+        cs=[{"carrier_id":c.get("carrier_id"),"carrier_code":c.get("carrier_code"),
+             "name":c.get("friendly_name") or c.get("nickname"),
+             "services":len(c.get("services") or [])} for c in (r.get("carriers") or [])]
+        return jsonify({"ok":True,"count":len(cs),"carriers":cs})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)})
 
 @app.route("/api/label/rates",methods=["POST"])
 @req_role("admin","cs")
