@@ -942,6 +942,21 @@ def sdb_init(org):
         moved_at TEXT DEFAULT CURRENT_TIMESTAMP,
         moved_by TEXT
     )""")
+    # Every CSV import, keyed by a hash of the file contents — so re-uploading the
+    # exact same file can be detected and flagged instead of silently re-importing.
+    c.execute("""CREATE TABLE IF NOT EXISTS import_files(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_hash TEXT,
+        filename TEXT,
+        label TEXT,
+        platform TEXT,
+        rows INTEGER,
+        shipments_new INTEGER,
+        shipments_updated INTEGER,
+        imported_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        imported_by TEXT
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_import_hash ON import_files(file_hash)")
     # Per-tenant audit trail of sensitive staff actions (accountability/forensics).
     c.execute("""CREATE TABLE IF NOT EXISTS audit_log(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3411,6 +3426,28 @@ def api_shipments_import():
         raw = f.stream.read().decode("utf-8-sig", errors="replace")
     except Exception as e:
         return jsonify({"ok": False, "error": "Could not read file: " + str(e)})
+    # ── Duplicate-file guard ──────────────────────────────────────────
+    # Hash the file contents. If this exact file was imported before, stop and tell
+    # the user when/where — unless they explicitly confirm (force=1).
+    file_hash = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
+    force_dup = str(request.form.get("force") or "").lower() in ("1", "true", "yes")
+    if not force_dup:
+        _c = sdb()
+        prev = _c.execute("""SELECT filename,label,platform,imported_at,imported_by,
+                                    shipments_new,shipments_updated
+                             FROM import_files WHERE file_hash=? ORDER BY id DESC LIMIT 1""",
+                          (file_hash,)).fetchone()
+        _c.close()
+        if prev:
+            p = dict(prev)
+            return jsonify({
+                "ok": False, "duplicate": True,
+                "error": "This exact file was already imported on %s into show \"%s\"%s." % (
+                    (p.get("imported_at") or "").replace("T", " ")[:16],
+                    p.get("label") or "?",
+                    (" by " + p["imported_by"]) if p.get("imported_by") else ""),
+                "previous": p,
+            })
     import io
     reader = csv.DictReader(io.StringIO(raw))
     fmt = _detect_csv_format(reader.fieldnames)
@@ -3517,18 +3554,28 @@ def api_shipments_import():
                      platform, import_batch, label, ship_fee,
                      dvs, dvd, dva, dtrk))
                 inserted += 1
-            # Replace items for this shipment
+            # Replace items for this shipment.
+            # IMPORTANT: re-importing a show must NOT wipe picking progress. Snapshot
+            # which lines were already picked, then restore those flags after the
+            # rebuild (matched on sku + product name).
+            prev_picked = {}
+            for pr in c.execute("""SELECT sku, product_name, picked_at FROM shipment_items
+                                   WHERE shipment_id=? AND COALESCE(picked,0)=1""", (pkg_id,)).fetchall():
+                prev_picked[((pr["sku"] or "").strip(), (pr["product_name"] or "").strip())] = pr["picked_at"]
             c.execute("DELETE FROM shipment_items WHERE shipment_id=?", (pkg_id,))
             for n in group:
                 sku = n["sku"]
                 # Prefer per-row weight from CSV (TikTok); fall back to sku_weights map
                 w = (n["weight_g"] / max(len(group), 1)) if n["weight_g"] > 0 else sku_map.get(sku)
+                _key = ((sku or "").strip(), (n["product_name"] or "").strip())
+                _wasp = _key in prev_picked
                 c.execute("""INSERT INTO shipment_items
                              (shipment_id, order_id, sku, product_name, quantity, item_weight_g, revenue,
-                              created_time, buyer_state, buyer_city)
-                             VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                              created_time, buyer_state, buyer_city, picked, picked_at)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                           (pkg_id, n["order_id"], sku, n["product_name"], n["quantity"], w, n.get("revenue", 0) or 0,
-                           n.get("created_time") or None, n.get("state") or None, n.get("city") or None))
+                           n.get("created_time") or None, n.get("state") or None, n.get("city") or None,
+                           1 if _wasp else 0, prev_picked.get(_key) if _wasp else None))
                 items_inserted += 1
                 if sku: unique_skus.add(sku)
             _recompute_shipment_weight(c, pkg_id, overhead=_overhead)
@@ -3543,6 +3590,17 @@ def api_shipments_import():
     c.close()
     sku_missing = sorted(unique_skus - have_weight)
 
+    # Remember this file so an identical re-upload is caught next time.
+    try:
+        _c = sdb()
+        _c.execute("""INSERT INTO import_files(file_hash,filename,label,platform,rows,
+                                               shipments_new,shipments_updated,imported_by)
+                      VALUES(?,?,?,?,?,?,?,?)""",
+                   (file_hash, f.filename[:120], label, platform, len(norm),
+                    inserted, updated, session.get("name","")[:60]))
+        _c.commit(); _c.close()
+    except Exception as e:
+        print("import_files record error:", e, flush=True)
     alog("shipments.import","%s '%s': %d new, %d updated"%(platform,label,inserted,updated))
     return jsonify({
         "ok": True,
@@ -3934,12 +3992,23 @@ def api_pick_get(sid):
         if not cp["is_clean"] and not (force and role in ("admin", "cs")):
             cleanup_blocked = True
         cleanup_info = cp
+    # Already-handled gate — an order that's been picked (or packed/shipped) must not
+    # be re-opened for picking. Admin/CS can override with ?force=1 to fix a mistake.
+    st = (s["status"] or "").lower()
+    already = st in ("picked", "packed", "shipped") or bool(s["picked_at"])
+    if already and not (force and role in ("admin", "cs")):
+        already_picked = True
+    else:
+        already_picked = False
     return jsonify({
         "ok": True,
         "shipment": dict(s),
         "items": [dict(i) for i in items],
         "cleanup_blocked": cleanup_blocked,
         "cleanup": cleanup_info,
+        "already_picked": already_picked,
+        "picked_by": s["picked_by"],
+        "picked_at": s["picked_at"],
         "giveaways": _pending_giveaways_for(s["shipment_id"], s["tracking_code"]),
     })
 
@@ -4072,13 +4141,21 @@ def api_pick_complete(sid):
         return jsonify({"ok": False, "error": "Invalid id"})
     user = session.get("name", "Unknown")
     c = sdb()
-    s = c.execute("SELECT status FROM shipments WHERE shipment_id=?", (sid,)).fetchone()
+    s = c.execute("SELECT status, picked_by, picked_at FROM shipments WHERE shipment_id=?", (sid,)).fetchone()
     if not s:
         c.close()
         return jsonify({"ok": False, "error": "Shipment not found"})
     if s["status"] == "cancelled":
         c.close()
         return jsonify({"ok": False, "error": "This order is cancelled — do not pick"})
+    # Already picked (or already packed/shipped) — don't re-attribute or double-count.
+    st = (s["status"] or "").lower()
+    if st in ("picked", "packed", "shipped") or s["picked_at"]:
+        who = s["picked_by"] or "someone"
+        c.close()
+        return jsonify({"ok": False, "already_picked": True,
+                        "picked_by": s["picked_by"], "picked_at": s["picked_at"],
+                        "error": "Already picked by " + who})
     c.execute("""UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP
                  WHERE shipment_id=? AND COALESCE(cancelled,0)=0 AND COALESCE(picked,0)=0""", (sid,))
     c.execute("""UPDATE shipments SET status='picked', picked_at=CURRENT_TIMESTAMP, picked_by=?

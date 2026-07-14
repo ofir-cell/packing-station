@@ -3659,13 +3659,14 @@ document.querySelectorAll('.import-btn[data-kind]').forEach(function(btn){
 document.getElementById('cancelImport').addEventListener('click',function(){modal.classList.remove('show')});
 modal.addEventListener('click',function(e){if(e.target===modal)modal.classList.remove('show')});
 
-document.getElementById('doImport').addEventListener('click',function(){
+function runImport(force){
   var f=document.getElementById('csvFile').files[0];
   var label=document.getElementById('showName').value.trim();
   var res=document.getElementById('modalResult');
   if(!label){res.className='modal-result err show';res.textContent='Show name is required';document.getElementById('showName').focus();return}
   if(!f){res.className='modal-result err show';res.textContent='Pick a CSV file';return}
   var fd=new FormData();fd.append('file',f);fd.append('label',label);
+  if(force)fd.append('force','1');
   var btn=document.getElementById('doImport');btn.disabled=true;btn.textContent='Importing…';
   res.className='modal-result show';res.textContent='Importing… large shows can take up to a minute, please wait.';
   fetch('/api/shipments/import',{method:'POST',body:fd}).then(function(r){
@@ -3679,17 +3680,33 @@ document.getElementById('doImport').addEventListener('click',function(){
         '<b>'+d.items+'</b> items · <b>'+d.skipped_rows+'</b> rows skipped (cancelled/failed)<br>'+
         '<b>'+d.unique_skus+'</b> unique products · <b>'+d.skus_missing_weight+'</b> still need weights set';
       loadShipments();
-    } else {
-      res.className='modal-result err show';
-      res.innerHTML='<b>Import failed:</b> '+(d.error||'unknown error');
+      return;
     }
+    if(d.duplicate){
+      // Same file contents already imported — make the user confirm.
+      var p=d.previous||{};
+      res.className='modal-result err show';
+      res.innerHTML='<b>⚠️ This file was already imported</b><br>'+
+        escapeHtml(d.error||'')+'<br>'+
+        '<span style="opacity:.85">It brought in '+(p.shipments_new||0)+' new and '+(p.shipments_updated||0)+' updated shipments.</span><br><br>'+
+        '<button id="dupYes" class="btn btn-p" style="padding:8px 16px">Import it again anyway</button> '+
+        '<button id="dupNo" class="btn btn-s" style="padding:8px 16px">Cancel</button>';
+      document.getElementById('dupYes').addEventListener('click',function(){runImport(true)});
+      document.getElementById('dupNo').addEventListener('click',function(){
+        res.className='modal-result';res.innerHTML='';document.getElementById('csvFile').value='';
+      });
+      return;
+    }
+    res.className='modal-result err show';
+    res.innerHTML='<b>Import failed:</b> '+(d.error||'unknown error');
   }).catch(function(e){
     btn.disabled=false;btn.textContent='Import';
     res.className='modal-result err show';
     res.innerHTML='<b>Import interrupted</b> ('+escapeHtml(String(e.message||e))+'). The file may be very large or the connection dropped — part of it may have imported. Refresh and check the list, or try again.';
     loadShipments();
   });
-});
+}
+document.getElementById('doImport').addEventListener('click',function(){runImport(false)});
 
 loadShipments();
 </script>
@@ -4811,9 +4828,12 @@ function openDetail(sid){
             document.getElementById('cancelOverlay').classList.add('on');
             return;
         }
-        if(s.status==='picked'){
+        // Server is the source of truth: blocks picked / packed / shipped orders.
+        if(d.already_picked || s.status==='picked'){
             sndError();
-            showToast(t('alreadypicked')+' '+(s.picked_by||'someone'),true);
+            var who=d.picked_by||s.picked_by||'someone';
+            var when=(d.picked_at||s.picked_at||'').replace('T',' ').slice(0,16);
+            showToast(t('alreadypicked')+' '+who+(when?(' · '+when):''),true);
             return;
         }
         // Optional: warn if from a different show than the one currently selected
