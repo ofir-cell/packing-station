@@ -89,8 +89,11 @@ def _navbar(active_page=""):
             # Operations is now a dedicated hub page (/operations) with tabbed cards
             # (Giveaways is one of its tabs).
             entries.append(("operations", "/operations", "📦 Operations"))
+            entries.append(("roster", "/admin/roster", "🗓️ Roster"))
             entries.append(("support", "/support", "🛟 Support"))
             entries.append(("guides", "/guides", "📚 Guides"))
+        if role in ("host", "assistant"):
+            entries.append(("myschedule", "/my-schedule", "🗓️ My Schedule"))
 
     # ── Avatar menu sections (personal + team/settings) ──
     # Each section: (title, [(key,url,label),...]). Titles of "" render with no header.
@@ -106,6 +109,8 @@ def _navbar(active_page=""):
         ]
         if role in ("worker", "picker"):
             _common.append(("guides", "/guides", "📚 Guides"))
+        if role in ("host", "assistant"):
+            _common = [("myschedule", "/my-schedule", "🗓️ My Schedule")]
         user_sections = [("", _common)]
         if role == "admin":
             # Users / Badges / Permissions live *inside* Settings now, so they're
@@ -5599,6 +5604,7 @@ __NAVBAR__
       <option value="picker">Picker</option>
       <option value="cs">Customer Service</option>
       <option value="host">Live Show Host</option>
+      <option value="assistant">Show Assistant</option>
       <option value="admin">Admin</option>
     </select></label>
     <div class="modal-actions">
@@ -7007,6 +7013,199 @@ load();loadStats();loadBestsellers();fillParentList();
 
 
 # ── PROFIT — revenue minus COGS per show ──
+ROSTER_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Roster</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#fff;color:#1a2130;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:1200px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#4f46e5;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:1200px;margin:0 auto;padding:8px 28px 50px}
+.card{background:#fff;border:1px solid rgba(17,24,39,0.096);border-radius:16px;padding:18px 20px;margin-bottom:18px}
+.card h2{font-size:14px;font-weight:800;color:#4f46e5;text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px}
+.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+input[type=date],select{background:#fff;border:2px solid rgba(17,24,39,0.128);border-radius:9px;padding:8px 11px;font-size:14px;font-family:inherit;outline:none}
+select{padding:6px 8px}
+.btn{border:none;border-radius:10px;padding:9px 16px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
+.btn-g{background:rgba(52,211,153,.16);color:#059669}
+.btn-s{background:#f6f7f9;color:#1a2130;border:1px solid rgba(17,24,39,0.12)}
+.pill{font-size:11px;font-weight:700;padding:3px 10px;border-radius:50px}
+.p-app{background:rgba(52,211,153,.16);color:#059669}.p-prop{background:rgba(251,191,36,.18);color:#b45309}
+.p-gap{background:rgba(244,63,94,.14);color:#e11d48}
+.days{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.day{border:1px solid rgba(17,24,39,.12);background:#f6f7f9;border-radius:50px;padding:6px 14px;font-size:13px;font-weight:700;cursor:pointer}
+.day.on{background:#4f46e5;color:#fff;border-color:#4f46e5}
+table{width:100%;border-collapse:collapse}
+th,td{border:1px solid rgba(17,24,39,0.1);padding:8px;font-size:13px;text-align:left;vertical-align:top}
+th{background:#f6f7f9;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#6b7280}
+td.gap{background:#fff5f5}
+.cell label{display:block;font-size:10px;color:#9ca3af;font-weight:700;margin:2px 0}
+.cell select{width:100%;font-size:12.5px}
+.staff-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid rgba(17,24,39,.07);flex-wrap:wrap}
+.staff-row .nm{font-weight:700;min-width:150px}.staff-row .rl{font-size:11px;color:#6b7280;text-transform:uppercase}
+.chk{font-size:12.5px;display:inline-flex;align-items:center;gap:4px;margin-right:10px}
+.muted{color:#9ca3af;font-size:13px}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}
+.toast.err{background:#f43f5e}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🗓️ Roster <span>__NAME__</span></div></div>
+<div class="wrap">
+<div class="card">
+  <div class="controls">
+    <label class="muted" style="font-weight:700">Week of</label>
+    <input type="date" id="week">
+    <button class="btn btn-p" id="genBtn">⚙️ Auto-generate</button>
+    <button class="btn btn-g" id="apprBtn">✓ Approve week</button>
+    <span id="status"></span>
+  </div>
+  <div class="muted" style="font-size:12.5px">Auto-fills every channel 24/7 in 6-hour blocks, respecting each person's allowed channels and never double-booking. Red = uncovered. Only you can change assignments.</div>
+</div>
+
+<div class="card">
+  <div class="days" id="days"></div>
+  <div id="grid"><div class="muted">Pick a week and click Auto-generate.</div></div>
+</div>
+
+<div class="card">
+  <h2>👥 Who can run which channel</h2>
+  <div class="muted" style="font-size:12.5px;margin-bottom:10px">Tick the channels each host/assistant is allowed on. Unticked = never scheduled there.</div>
+  <div id="staff"><div class="muted">Loading…</div></div>
+</div>
+</div>
+<div class="toast" id="t"></div>
+<script>
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+var CH=[],STAFF={host:[],assistant:[]},WEEK=[],DAYSEL=0,BLOCKS=[];
+function monday(){var d=new Date();var g=(d.getDay()+6)%7;d.setDate(d.getDate()-g);return d.toISOString().slice(0,10)}
+document.getElementById('week').value=monday();
+function eligible(role,chId){return STAFF[role].filter(function(p){return !p.allowed_channels.length||p.allowed_channels.indexOf(chId)>=0})}
+function loadStaff(){
+  fetch('/api/roster/staff').then(function(r){return r.json()}).then(function(d){
+    CH=d.channels;STAFF=d.staff;renderStaff();
+  });
+}
+function renderStaff(){
+  var el=document.getElementById('staff');var all=STAFF.host.concat(STAFF.assistant);
+  if(!all.length){el.innerHTML='<div class="muted">No hosts or assistants yet. Create them in Settings → Users (role: host / assistant).</div>';return}
+  function row(p,role){
+    var chk=CH.map(function(c){var on=!p.allowed_channels.length||p.allowed_channels.indexOf(c.id)>=0;
+      return '<label class="chk"><input type="checkbox" data-u="'+esc(p.username)+'" value="'+c.id+'" '+(on?'checked':'')+'> '+esc(c.name)+'</label>'}).join('');
+    return '<div class="staff-row"><span class="nm">'+esc(p.name)+'</span><span class="rl">'+role+'</span><span>'+chk+'</span>'+
+      '<button class="btn btn-s" style="padding:5px 12px;font-size:12px" onclick="saveChannels(\\''+esc(p.username)+'\\')">Save</button></div>';
+  }
+  el.innerHTML=STAFF.host.map(function(p){return row(p,'host')}).join('')+STAFF.assistant.map(function(p){return row(p,'assistant')}).join('');
+}
+function saveChannels(u){
+  var ids=[];document.querySelectorAll('input[data-u="'+u+'"]:checked').forEach(function(x){ids.push(parseInt(x.value))});
+  fetch('/api/roster/staff/'+encodeURIComponent(u)+'/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({allowed_channels:ids})})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Saved');loadStaff()}else toast(d.error||'Failed',1)});
+}
+function loadWeek(){
+  fetch('/api/roster/week?week_start='+document.getElementById('week').value).then(function(r){return r.json()}).then(function(d){
+    WEEK=d.shifts;BLOCKS=d.blocks;CH=d.channels;
+    document.getElementById('status').innerHTML=(d.approved?'<span class="pill p-app">approved</span>':(WEEK.length?'<span class="pill p-prop">proposed</span>':''))+
+      (d.gaps?(' <span class="pill p-gap">'+d.gaps+' gaps</span>'):(WEEK.length?' <span class="pill p-app">fully covered</span>':''));
+    renderDays();renderGrid();
+  });
+}
+function renderDays(){
+  var names=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];var base=new Date(document.getElementById('week').value);
+  document.getElementById('days').innerHTML=names.map(function(n,i){
+    var dt=new Date(base);dt.setDate(dt.getDate()+i);
+    return '<div class="day'+(i===DAYSEL?' on':'')+'" onclick="DAYSEL='+i+';renderDays();renderGrid()">'+n+' '+(dt.getMonth()+1)+'/'+dt.getDate()+'</div>';
+  }).join('');
+}
+function dateForSel(){var b=new Date(document.getElementById('week').value);b.setDate(b.getDate()+DAYSEL);return b.toISOString().slice(0,10)}
+function sel(role,chId,cur,sid){
+  var opts='<option value="">— none —</option>'+eligible(role,chId).map(function(p){
+    return '<option value="'+esc(p.username)+'"'+(p.username===cur?' selected':'')+'>'+esc(p.name)+'</option>'}).join('');
+  return '<select onchange="reassign('+sid+',\\''+role+'\\',this.value)">'+opts+'</select>';
+}
+function renderGrid(){
+  if(!WEEK.length){document.getElementById('grid').innerHTML='<div class="muted">No shifts yet for this week — click Auto-generate.</div>';return}
+  var day=dateForSel();
+  var head='<tr><th>Block</th>'+CH.map(function(c){return '<th>'+esc(c.name)+'</th>'}).join('')+'</tr>';
+  var body=BLOCKS.map(function(b){
+    var tds=CH.map(function(c){
+      var sh=WEEK.filter(function(s){return s.shift_date===day&&s.start_time===b[0]&&s.channel_id===c.id})[0];
+      if(!sh)return '<td class="muted">—</td>';
+      var gap=(!sh.host_user||!sh.assistant_user);
+      return '<td class="cell'+(gap?' gap':'')+'"><label>Host</label>'+sel('host',c.id,sh.host_user,sh.id)+
+        '<label>Assistant</label>'+sel('assistant',c.id,sh.assistant_user,sh.id)+'</td>';
+    }).join('');
+    return '<tr><td><b>'+b[0]+'–'+b[1]+'</b></td>'+tds+'</tr>';
+  }).join('');
+  document.getElementById('grid').innerHTML='<table>'+head+body+'</table>';
+}
+function reassign(sid,role,val){
+  var body={};body[role+'_user']=val;
+  fetch('/api/roster/shift/'+sid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Updated');loadWeek()}else{toast(d.error||'Conflict',1);loadWeek()}});
+}
+document.getElementById('genBtn').addEventListener('click',function(){
+  fetch('/api/roster/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({week_start:document.getElementById('week').value})})
+    .then(function(r){return r.json()}).then(function(d){
+      if(d.ok){toast('Generated '+d.shifts+' shifts');loadWeek()}
+      else if(d.needs_force){if(confirm(d.error))fetch('/api/roster/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({week_start:document.getElementById('week').value,force:true})}).then(function(r){return r.json()}).then(function(){toast('Regenerated');loadWeek()})}
+      else toast(d.error||'Failed',1);
+    });
+});
+document.getElementById('apprBtn').addEventListener('click',function(){
+  if(!confirm('Approve & publish this week to all hosts and assistants?'))return;
+  fetch('/api/roster/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({week_start:document.getElementById('week').value})})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Approved ✓');loadWeek()}else toast(d.error||'Failed',1)});
+});
+document.getElementById('week').addEventListener('change',function(){DAYSEL=0;loadWeek()});
+loadStaff();loadWeek();
+</script></body></html>'''
+
+
+MYSCHEDULE_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>My Schedule</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#fff;color:#1a2130;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:720px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#4f46e5;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:720px;margin:0 auto;padding:8px 28px 40px}
+.day-h{font-size:13px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin:18px 0 8px}
+.shift{display:flex;align-items:center;gap:14px;background:#fff;border:1px solid rgba(17,24,39,0.1);border-radius:14px;padding:14px 16px;margin-bottom:10px}
+.shift .time{font-weight:800;font-size:16px;min-width:120px}
+.shift .ch{flex:1}.shift .cn{font-weight:700}.shift .meta{font-size:12.5px;color:#6b7280;margin-top:2px}
+.role{font-size:11px;font-weight:800;padding:3px 10px;border-radius:50px;background:rgba(79,70,229,.14);color:#4338ca}
+.muted{color:#9ca3af;font-size:14px}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🗓️ My Schedule <span>__NAME__</span></div></div>
+<div class="wrap"><div id="list"><div class="muted">Loading…</div></div></div>
+<script>
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+fetch('/api/my-schedule').then(function(r){return r.json()}).then(function(d){
+  var el=document.getElementById('list');
+  if(!d.shifts.length){el.innerHTML='<div class="muted">No upcoming shifts published yet. Check back after your manager approves the week.</div>';return}
+  var byday={},order=[];
+  d.shifts.forEach(function(s){if(!byday[s.shift_date]){byday[s.shift_date]=[];order.push(s.shift_date)}byday[s.shift_date].push(s)});
+  el.innerHTML=order.map(function(dt){
+    var d2=new Date(dt+'T00:00');var hdr=d2.toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'});
+    return '<div class="day-h">'+hdr+'</div>'+byday[dt].map(function(s){
+      return '<div class="shift"><div class="time">'+s.start_time+'–'+s.end_time+'</div>'+
+        '<div class="ch"><div class="cn">'+esc(s.channel_name)+'</div><div class="meta">'+esc(s.platform||'')+' · with '+esc(s['with']||'—')+'</div></div>'+
+        '<span class="role">'+esc(s.role_here)+'</span></div>';
+    }).join('');
+  }).join('');
+});
+</script></body></html>'''
+
+
 AUDIT_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''

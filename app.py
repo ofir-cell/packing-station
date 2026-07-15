@@ -32,7 +32,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
-    INVENTORY_HTML, PURCHASING_HTML, STOCKTAKE_HTML, AUDIT_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
+    INVENTORY_HTML, PURCHASING_HTML, STOCKTAKE_HTML, AUDIT_HTML, ROSTER_HTML, MYSCHEDULE_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
     PICKER_HTML, REPEAT_HTML,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
@@ -968,6 +968,38 @@ def sdb_init(org):
         ip TEXT
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at DESC)")
+    # ── Live-show scheduling (roster) ──────────────────────────────
+    c.execute("""CREATE TABLE IF NOT EXISTS channels(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        platform TEXT,
+        language TEXT,
+        active INTEGER DEFAULT 1,
+        sort INTEGER DEFAULT 0
+    )""")
+    if not c.execute("SELECT 1 FROM channels LIMIT 1").fetchone():
+        for i,(nm,pf,lg) in enumerate([
+            ("Peach Beauty Live","tiktok","en"),
+            ("Peach Beauty Español","tiktok","es"),
+            ("Hera Beauty","whatnot",""),
+            ("5 Sec Beauty","whatnot",""),
+        ]):
+            c.execute("INSERT INTO channels(name,platform,language,sort) VALUES(?,?,?,?)",(nm,pf,lg,i))
+    c.execute("""CREATE TABLE IF NOT EXISTS shifts(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL,
+        shift_date TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        end_time TEXT NOT NULL,
+        host_user TEXT,
+        assistant_user TEXT,
+        week_start TEXT,
+        status TEXT DEFAULT 'proposed',
+        is_exception INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_shifts_week ON shifts(week_start)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_shifts_date ON shifts(shift_date)")
     # NOTE: the `organizations` table is the cross-tenant control plane and now
     # lives in platform.db (see pdb_init), NOT here in a per-tenant shipments.db.
     c.commit(); c.close()
@@ -6501,6 +6533,189 @@ def audit_page():
     return AUDIT_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
         "__NAVBAR__",_navbar("audit")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
+# ══════════════════════════════════════════════════════════
+# ROSTER — schedule hosts + assistants across the live channels 24/7.
+# 6-hour blocks, auto-assigned (eligibility + no double-booking + fair hours),
+# reviewed & approved by a manager. Everyone else sees their own shifts.
+# ══════════════════════════════════════════════════════════
+_ROSTER_BLOCKS=[("00:00","06:00"),("06:00","12:00"),("12:00","18:00"),("18:00","24:00")]
+
+def _week_start(dstr):
+    """Monday of the week containing dstr (YYYY-MM-DD)."""
+    try: d=datetime.strptime(dstr[:10],"%Y-%m-%d").date()
+    except Exception: d=datetime.now().date()
+    return (d - timedelta(days=d.weekday())).isoformat()
+
+def _channels():
+    c=sdb(); rows=[dict(r) for r in c.execute(
+        "SELECT id,name,platform,language FROM channels WHERE active=1 ORDER BY sort,id").fetchall()]; c.close()
+    return rows
+
+def _roster_staff():
+    """Hosts + assistants in this org, with their allowed channel ids."""
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    org=session.get("org",DEFAULT_ORG)
+    out={"host":[],"assistant":[]}
+    for un,info in users.items():
+        if info.get("role") in ("host","assistant") and info.get("org",DEFAULT_ORG)==org:
+            out[info["role"]].append({"username":un,"name":info.get("name") or un,
+                "allowed_channels":info.get("allowed_channels") or []})
+    return out
+
+@app.route("/api/roster/channels")
+@req_role("admin","cs","host","assistant")
+def api_roster_channels():
+    return jsonify({"ok":True,"channels":_channels()})
+
+@app.route("/api/roster/staff")
+@req_role("admin","cs")
+def api_roster_staff():
+    return jsonify({"ok":True,"staff":_roster_staff(),"channels":_channels()})
+
+@app.route("/api/roster/staff/<username>/channels",methods=["POST"])
+@req_role("admin","cs")
+def api_roster_set_channels(username):
+    ids=(request.get_json() or {}).get("allowed_channels")
+    if not isinstance(ids,list): return jsonify({"ok":False,"error":"channels list required"})
+    ids=[int(x) for x in ids if str(x).isdigit()]
+    with update_json(USERS_FILE) as users:
+        if username not in users or not _same_org_user(users,username):
+            return jsonify({"ok":False,"error":"User not found"}),404
+        if users[username].get("role") not in ("host","assistant"):
+            return jsonify({"ok":False,"error":"Only hosts/assistants have channels"})
+        users[username]["allowed_channels"]=ids
+    alog("roster.channels",username+" -> "+",".join(map(str,ids)))
+    return jsonify({"ok":True})
+
+def _eligible(person, ch_id):
+    ac=person.get("allowed_channels") or []
+    return (not ac) or (ch_id in ac)   # empty = allowed everywhere
+
+@app.route("/api/roster/generate",methods=["POST"])
+@req_role("admin","cs")
+def api_roster_generate():
+    """Auto-fill a week: for each channel × day × 6h block, pick an eligible host +
+    assistant, never double-booking anyone, balancing total hours. Overwrites the
+    week's proposed shifts (refuses if the week is already approved unless force)."""
+    d=request.get_json() or {}
+    ws=_week_start(d.get("week_start") or datetime.now().date().isoformat())
+    force=bool(d.get("force"))
+    c=sdb()
+    appr=c.execute("SELECT COUNT(*) n FROM shifts WHERE week_start=? AND status='approved'",(ws,)).fetchone()["n"]
+    if appr and not force:
+        c.close(); return jsonify({"ok":False,"error":"This week is already approved. Regenerate anyway?","needs_force":True})
+    c.execute("DELETE FROM shifts WHERE week_start=?",(ws,))
+    chans=[r["id"] for r in c.execute("SELECT id FROM channels WHERE active=1 ORDER BY sort,id").fetchall()]
+    staff=_roster_staff()
+    hours={p["username"]:0 for grp in staff.values() for p in grp}
+    def pick(pool, ch_id, used):
+        cands=[p for p in pool if _eligible(p,ch_id) and p["username"] not in used]
+        if not cands: return None
+        cands.sort(key=lambda p: hours.get(p["username"],0))   # least-loaded first
+        return cands[0]["username"]
+    made=0
+    base=datetime.strptime(ws,"%Y-%m-%d").date()
+    for dayoff in range(7):
+        day=(base+timedelta(days=dayoff)).isoformat()
+        for bi,(st,en) in enumerate(_ROSTER_BLOCKS):
+            used=set()   # nobody in two channels during the same block that day
+            for ch_id in chans:
+                h=pick(staff["host"],ch_id,used)
+                if h: used.add(h); hours[h]=hours.get(h,0)+6
+                a=pick(staff["assistant"],ch_id,used)
+                if a: used.add(a); hours[a]=hours.get(a,0)+6
+                c.execute("""INSERT INTO shifts(channel_id,shift_date,start_time,end_time,host_user,assistant_user,week_start,status)
+                             VALUES(?,?,?,?,?,?,?, 'proposed')""",(ch_id,day,st,en,h,a,ws))
+                made+=1
+    c.commit(); c.close()
+    alog("roster.generate","week "+ws+": "+str(made)+" shifts")
+    return jsonify({"ok":True,"week_start":ws,"shifts":made})
+
+def _overlap(a_st,a_en,b_st,b_en):
+    def m(t):
+        t=t.replace("24:00","23:59"); h,mn=t.split(":"); return int(h)*60+int(mn)
+    return m(a_st)<m(b_en) and m(b_st)<m(a_en)
+
+@app.route("/api/roster/week")
+@req_role("admin","cs")
+def api_roster_week():
+    ws=_week_start(request.args.get("week_start") or datetime.now().date().isoformat())
+    c=sdb()
+    rows=[dict(r) for r in c.execute("SELECT * FROM shifts WHERE week_start=? ORDER BY shift_date,start_time,channel_id",(ws,)).fetchall()]
+    c.close()
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    def nm(u): return users.get(u,{}).get("name") or u if u else None
+    gaps=0
+    for r in rows:
+        r["host_name"]=nm(r["host_user"]); r["assistant_name"]=nm(r["assistant_user"])
+        if not r["host_user"] or not r["assistant_user"]: gaps+=1
+    approved=any(r["status"]=="approved" for r in rows)
+    return jsonify({"ok":True,"week_start":ws,"shifts":rows,"channels":_channels(),
+                    "blocks":_ROSTER_BLOCKS,"gaps":gaps,"approved":approved})
+
+@app.route("/api/roster/shift/<int:sid>",methods=["POST"])
+@req_role("admin","cs")
+def api_roster_reassign(sid):
+    """Reassign a shift's host/assistant, blocking any double-booking conflict."""
+    d=request.get_json() or {}
+    c=sdb()
+    sh=c.execute("SELECT * FROM shifts WHERE id=?",(sid,)).fetchone()
+    if not sh: c.close(); return jsonify({"ok":False,"error":"Shift not found"}),404
+    sh=dict(sh)
+    for field,who in (("host_user",d.get("host_user")),("assistant_user",d.get("assistant_user"))):
+        if field not in d: continue
+        who=(who or "").strip() or None
+        if who:
+            # conflict: same person already on another shift overlapping this time/day
+            others=c.execute("""SELECT start_time,end_time FROM shifts
+                                WHERE id!=? AND shift_date=? AND (host_user=? OR assistant_user=?)""",
+                             (sid,sh["shift_date"],who,who)).fetchall()
+            if any(_overlap(sh["start_time"],sh["end_time"],o["start_time"],o["end_time"]) for o in others):
+                c.close(); return jsonify({"ok":False,"error":who+" is already booked in that time slot"})
+        c.execute("UPDATE shifts SET "+field+"=? WHERE id=?",(who,sid))
+    c.commit(); c.close()
+    alog("roster.reassign","shift #"+str(sid))
+    return jsonify({"ok":True})
+
+@app.route("/api/roster/approve",methods=["POST"])
+@req_role("admin","cs")
+def api_roster_approve():
+    ws=_week_start((request.get_json() or {}).get("week_start") or "")
+    c=sdb(); n=c.execute("UPDATE shifts SET status='approved' WHERE week_start=?",(ws,)).rowcount; c.commit(); c.close()
+    alog("roster.approve","week "+ws)
+    return jsonify({"ok":True,"approved":n})
+
+@app.route("/api/my-schedule")
+@req_login
+def api_my_schedule():
+    """A host/assistant's own upcoming approved shifts."""
+    u=session.get("user")
+    today=datetime.now().date().isoformat()
+    c=sdb()
+    rows=[dict(r) for r in c.execute(
+        """SELECT s.*, c.name channel_name, c.platform FROM shifts s JOIN channels c ON c.id=s.channel_id
+           WHERE (s.host_user=? OR s.assistant_user=?) AND s.shift_date>=? AND s.status='approved'
+           ORDER BY s.shift_date,s.start_time LIMIT 200""",(u,u,today)).fetchall()]
+    c.close()
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    for r in rows:
+        r["role_here"]="Host" if r["host_user"]==u else "Assistant"
+        other=r["assistant_user"] if r["host_user"]==u else r["host_user"]
+        r["with"]=users.get(other,{}).get("name") or other
+    return jsonify({"ok":True,"shifts":rows})
+
+@app.route("/admin/roster")
+@req_role("admin","cs")
+def roster_page():
+    return ROSTER_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
+        "__NAVBAR__",_navbar("roster")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/my-schedule")
+@req_login
+def my_schedule_page():
+    return MYSCHEDULE_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
+        "__NAVBAR__",_navbar("myschedule")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
 @app.route("/api/users/add",methods=["POST"])
 @req_role("admin")
 def api_add():
@@ -6509,11 +6724,15 @@ def api_add():
     if not u or not p: return jsonify({"ok":False,"error":"Required"})
     if not re.match(r'^[a-z0-9_\-]{2,32}$',u):
         return jsonify({"ok":False,"error":"Username: lowercase letters, digits, _ -, 2-32 chars"})
-    if role not in ("admin","cs","worker"):
+    if role not in ("admin","cs","worker","picker","host","assistant"):
         return jsonify({"ok":False,"error":"Invalid role"})
     with update_json(USERS_FILE) as users:
         if u in users: return jsonify({"ok":False,"error":"Already exists"})
         users[u]={"password":_h(p),"role":role,"name":n,"org":session.get("org",DEFAULT_ORG)}
+        # On-camera staff (host/assistant) can be limited to specific channels.
+        if role in ("host","assistant"):
+            ch=d.get("allowed_channels")
+            if isinstance(ch,list): users[u]["allowed_channels"]=[int(x) for x in ch if str(x).isdigit()]
         # Workers automatically get a badge token for scan-to-login
         if role=="worker":
             users[u]["badge_token"]=_gen_badge_token()
