@@ -719,6 +719,7 @@ def sdb_init(org):
         "ALTER TABLE products ADD COLUMN reorder_point INTEGER DEFAULT 0",
         "ALTER TABLE products ADD COLUMN parent_sku TEXT",
         "ALTER TABLE products ADD COLUMN variant_name TEXT",
+        "ALTER TABLE availability ADD COLUMN end_time TEXT",
         # Purchase orders: inbound tracking + attached invoice + ETA.
         "ALTER TABLE purchase_orders ADD COLUMN tracking TEXT",
         "ALTER TABLE purchase_orders ADD COLUMN carrier TEXT",
@@ -1007,6 +1008,7 @@ def sdb_init(org):
         week_start TEXT NOT NULL,
         shift_date TEXT NOT NULL,
         start_time TEXT NOT NULL,
+        end_time TEXT,
         channel_id INTEGER,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
@@ -6616,77 +6618,99 @@ def _eligible(person, ch_id):
     ac=person.get("allowed_channels") or []
     return (not ac) or (ch_id in ac)   # empty = allowed everywhere
 
-@app.route("/api/roster/generate",methods=["POST"])
-@req_role("admin","cs")
-def api_roster_generate():
-    """Auto-fill a week: for each channel × day × 6h block, pick an eligible host +
-    assistant, never double-booking anyone, balancing total hours. Overwrites the
-    week's proposed shifts (refuses if the week is already approved unless force)."""
-    d=request.get_json() or {}
-    ws=_week_start(d.get("week_start") or datetime.now().date().isoformat())
-    force=bool(d.get("force"))
-    c=sdb()
-    appr=c.execute("SELECT COUNT(*) n FROM shifts WHERE week_start=? AND status='approved'",(ws,)).fetchone()["n"]
-    if appr and not force:
-        c.close(); return jsonify({"ok":False,"error":"This week is already approved. Regenerate anyway?","needs_force":True})
-    c.execute("DELETE FROM shifts WHERE week_start=?",(ws,))
-    chans=[r["id"] for r in c.execute("SELECT id FROM channels WHERE active=1 ORDER BY sort,id").fetchall()]
-    staff=_roster_staff()
-    hours={p["username"]:0 for grp in staff.values() for p in grp}
-    # Only assign people who SUBMITTED availability for that exact day+block.
-    avail=set()
-    for r in c.execute("SELECT username,shift_date,start_time FROM availability WHERE week_start=?",(ws,)).fetchall():
-        avail.add((r["username"],r["shift_date"],r["start_time"]))
-    def pick(pool, ch_id, used, day, st):
-        cands=[p for p in pool if _eligible(p,ch_id) and p["username"] not in used
-               and (p["username"],day,st) in avail]
-        if not cands: return None
-        cands.sort(key=lambda p: hours.get(p["username"],0))   # least-loaded first
-        return cands[0]["username"]
-    made=0
-    base=datetime.strptime(ws,"%Y-%m-%d").date()
-    for dayoff in range(7):
-        day=(base+timedelta(days=dayoff)).isoformat()
-        for bi,(st,en) in enumerate(_ROSTER_BLOCKS):
-            used=set()   # nobody in two channels during the same block that day
-            for ch_id in chans:
-                h=pick(staff["host"],ch_id,used,day,st)
-                if h: used.add(h); hours[h]=hours.get(h,0)+6
-                a=pick(staff["assistant"],ch_id,used,day,st)
-                if a: used.add(a); hours[a]=hours.get(a,0)+6
-                c.execute("""INSERT INTO shifts(channel_id,shift_date,start_time,end_time,host_user,assistant_user,week_start,status)
-                             VALUES(?,?,?,?,?,?,?, 'proposed')""",(ch_id,day,st,en,h,a,ws))
-                made+=1
-    c.commit(); c.close()
-    alog("roster.generate","week "+ws+": "+str(made)+" shifts")
-    return jsonify({"ok":True,"week_start":ws,"shifts":made})
+def _ov(a_st,a_en,b_st,b_en):
+    return _tmin(a_st)<_tmin(b_en) and _tmin(b_st)<_tmin(a_en)
 
-def _overlap(a_st,a_en,b_st,b_en):
-    def m(t):
-        t=t.replace("24:00","23:59"); h,mn=t.split(":"); return int(h)*60+int(mn)
-    return m(a_st)<m(b_en) and m(b_st)<m(a_en)
+def _avail_covers(c, u, date, s, e):
+    """True if user u submitted an availability range covering [s,e] on date."""
+    for r in c.execute("SELECT start_time,end_time FROM availability WHERE username=? AND shift_date=?",(u,date)).fetchall():
+        if _tmin(r["start_time"])<=_tmin(s) and _tmin(r["end_time"] or "24:00")>=_tmin(e):
+            return True
+    return False
+
+def _person_free(c, u, date, s, e, exclude=None):
+    for r in c.execute("SELECT id,start_time,end_time FROM shifts WHERE shift_date=? AND (host_user=? OR assistant_user=?)",(date,u,u)).fetchall():
+        if exclude and r["id"]==exclude: continue
+        if _ov(s,e,r["start_time"],r["end_time"]): return False
+    return True
+
+@app.route("/api/roster/available")
+@req_role("admin","cs")
+def api_roster_available():
+    """Who can take a proposed shift: eligible for the channel, available for the
+    whole time range, and not already booked in an overlapping shift."""
+    ch_id=request.args.get("channel_id",type=int)
+    date=(request.args.get("date") or "").strip()
+    s=(request.args.get("start") or "").strip(); e=(request.args.get("end") or "").strip()
+    exclude=request.args.get("exclude",type=int)
+    if not (ch_id and re.match(r'^\d{4}-\d{2}-\d{2}$',date) and _tmin(s) is not None and _tmin(e) is not None and _tmin(e)>_tmin(s)):
+        return jsonify({"ok":False,"error":"Set channel, date and a valid time range"})
+    staff=_roster_staff(); c=sdb()
+    def avail_pool(pool):
+        out=[]
+        for p in pool:
+            if not _eligible(p,ch_id): continue
+            if not _avail_covers(c,p["username"],date,s,e): continue
+            free=_person_free(c,p["username"],date,s,e,exclude)
+            out.append({"username":p["username"],"name":p["name"],"free":free})
+        return out
+    res={"hosts":avail_pool(staff["host"]),"assistants":avail_pool(staff["assistant"])}
+    c.close()
+    return jsonify({"ok":True,**res})
+
+@app.route("/api/roster/shift/create",methods=["POST"])
+@req_role("admin","cs")
+def api_roster_shift_create():
+    """Create a custom shift. Validates host/assistant availability + no overlap."""
+    d=request.get_json() or {}
+    ch_id=d.get("channel_id"); date=(d.get("date") or "").strip()
+    s=(d.get("start") or "").strip(); e=(d.get("end") or "").strip()
+    if not (ch_id and re.match(r'^\d{4}-\d{2}-\d{2}$',date) and _tmin(s) is not None and _tmin(e) is not None and _tmin(e)>_tmin(s)):
+        return jsonify({"ok":False,"error":"Pick a channel, date and valid start/end times"})
+    host=(d.get("host_user") or "").strip() or None
+    asst=(d.get("assistant_user") or "").strip() or None
+    ws=_week_start(date)
+    c=sdb()
+    for who in (host,asst):
+        if who and not _person_free(c,who,date,s,e):
+            c.close(); return jsonify({"ok":False,"error":who+" is already booked in an overlapping shift"})
+    c.execute("""INSERT INTO shifts(channel_id,shift_date,start_time,end_time,host_user,assistant_user,week_start,status,is_exception)
+                 VALUES(?,?,?,?,?,?,?, 'proposed', 1)""",(ch_id,date,s,e,host,asst,ws))
+    c.commit(); c.close()
+    alog("roster.shift_add",date+" "+s+"-"+e)
+    return jsonify({"ok":True})
+
+@app.route("/api/roster/shift/<int:sid>/delete",methods=["POST"])
+@req_role("admin","cs")
+def api_roster_shift_delete(sid):
+    c=sdb(); c.execute("DELETE FROM shifts WHERE id=?",(sid,)); c.commit(); c.close()
+    return jsonify({"ok":True})
 
 @app.route("/api/roster/week")
 @req_role("admin","cs")
 def api_roster_week():
     ws=_week_start(request.args.get("week_start") or datetime.now().date().isoformat())
     c=sdb()
-    rows=[dict(r) for r in c.execute("SELECT * FROM shifts WHERE week_start=? ORDER BY shift_date,start_time,channel_id",(ws,)).fetchall()]
+    rows=[dict(r) for r in c.execute("SELECT * FROM shifts WHERE week_start=? ORDER BY shift_date,channel_id,start_time",(ws,)).fetchall()]
     c.close()
     users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
-    def nm(u): return users.get(u,{}).get("name") or u if u else None
-    gaps=0
+    def nm(u): return (users.get(u,{}).get("name") or u) if u else None
+    incomplete=0; covered=0
     for r in rows:
         r["host_name"]=nm(r["host_user"]); r["assistant_name"]=nm(r["assistant_user"])
-        if not r["host_user"] or not r["assistant_user"]: gaps+=1
+        if not r["host_user"] or not r["assistant_user"]: incomplete+=1
+        else: covered+=max(0,_tmin(r["end_time"])-_tmin(r["start_time"]))
     approved=any(r["status"]=="approved" for r in rows)
+    # 24/7 target across every channel & day
+    nchan=len(_channels()); target=nchan*7*1440
     return jsonify({"ok":True,"week_start":ws,"shifts":rows,"channels":_channels(),
-                    "blocks":_ROSTER_BLOCKS,"gaps":gaps,"approved":approved})
+                    "incomplete":incomplete,"approved":approved,
+                    "covered_hours":round(covered/60,1),"target_hours":round(target/60,1)})
 
 @app.route("/api/roster/shift/<int:sid>",methods=["POST"])
 @req_role("admin","cs")
 def api_roster_reassign(sid):
-    """Reassign a shift's host/assistant, blocking any double-booking conflict."""
+    """Reassign a shift's host/assistant; blocks overlap conflicts."""
     d=request.get_json() or {}
     c=sdb()
     sh=c.execute("SELECT * FROM shifts WHERE id=?",(sid,)).fetchone()
@@ -6695,13 +6719,8 @@ def api_roster_reassign(sid):
     for field,who in (("host_user",d.get("host_user")),("assistant_user",d.get("assistant_user"))):
         if field not in d: continue
         who=(who or "").strip() or None
-        if who:
-            # conflict: same person already on another shift overlapping this time/day
-            others=c.execute("""SELECT start_time,end_time FROM shifts
-                                WHERE id!=? AND shift_date=? AND (host_user=? OR assistant_user=?)""",
-                             (sid,sh["shift_date"],who,who)).fetchall()
-            if any(_overlap(sh["start_time"],sh["end_time"],o["start_time"],o["end_time"]) for o in others):
-                c.close(); return jsonify({"ok":False,"error":who+" is already booked in that time slot"})
+        if who and not _person_free(c,who,sh["shift_date"],sh["start_time"],sh["end_time"],exclude=sid):
+            c.close(); return jsonify({"ok":False,"error":who+" is already booked in that time slot"})
         c.execute("UPDATE shifts SET "+field+"=? WHERE id=?",(who,sid))
     c.commit(); c.close()
     alog("roster.reassign","shift #"+str(sid))
@@ -6746,36 +6765,47 @@ def my_schedule_page():
     return MYSCHEDULE_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
         "__NAVBAR__",_navbar("myschedule")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
+def _tmin(t):
+    """'HH:MM' -> minutes. '24:00' allowed as end-of-day."""
+    t=(t or "").strip()
+    if t=="24:00": return 1440
+    m=re.match(r'^(\d{1,2}):(\d{2})$',t)
+    if not m: return None
+    h,mn=int(m.group(1)),int(m.group(2))
+    if h>23 or mn>59: return None
+    return h*60+mn
+
 @app.route("/api/availability")
 @req_role("host","assistant","admin","cs")
 def api_availability_get():
-    """The logged-in user's submitted availability for a week + their channels."""
+    """The logged-in user's submitted availability ranges for a week + their channels."""
     ws=_week_start(request.args.get("week_start") or datetime.now().date().isoformat())
     u=session.get("user")
     c=sdb()
-    slots=[{"date":r["shift_date"],"start":r["start_time"]} for r in c.execute(
-        "SELECT shift_date,start_time FROM availability WHERE username=? AND week_start=?",(u,ws)).fetchall()]
+    ranges=[{"date":r["shift_date"],"start":r["start_time"],"end":r["end_time"] or "24:00"} for r in c.execute(
+        "SELECT shift_date,start_time,end_time FROM availability WHERE username=? AND week_start=? ORDER BY shift_date,start_time",(u,ws)).fetchall()]
     c.close()
     info=(ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}).get(u,{})
-    return jsonify({"ok":True,"week_start":ws,"slots":slots,"blocks":_ROSTER_BLOCKS,
+    return jsonify({"ok":True,"week_start":ws,"ranges":ranges,
                     "channels":_channels(),"allowed_channels":info.get("allowed_channels") or []})
 
 @app.route("/api/availability",methods=["POST"])
 @req_role("host","assistant","admin","cs")
 def api_availability_save():
-    """Replace the user's availability for a week with the submitted blocks."""
+    """Replace the user's availability for a week with submitted time RANGES."""
     d=request.get_json() or {}
     ws=_week_start(d.get("week_start") or "")
     u=session.get("user")
-    slots=d.get("slots") or []
-    valid_starts={b[0] for b in _ROSTER_BLOCKS}
+    ranges=d.get("ranges") or []
     c=sdb()
     c.execute("DELETE FROM availability WHERE username=? AND week_start=?",(u,ws))
     n=0
-    for s in slots:
-        dt=(s.get("date") or "").strip(); st=(s.get("start") or "").strip()
-        if not re.match(r'^\d{4}-\d{2}-\d{2}$',dt) or st not in valid_starts: continue
-        c.execute("INSERT INTO availability(username,week_start,shift_date,start_time) VALUES(?,?,?,?)",(u,ws,dt,st))
+    for r in ranges:
+        dt=(r.get("date") or "").strip(); st=(r.get("start") or "").strip(); en=(r.get("end") or "").strip()
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$',dt): continue
+        sm,em=_tmin(st),_tmin(en)
+        if sm is None or em is None or em<=sm: continue
+        c.execute("INSERT INTO availability(username,week_start,shift_date,start_time,end_time) VALUES(?,?,?,?,?)",(u,ws,dt,st,en))
         n+=1
     c.commit(); c.close()
     return jsonify({"ok":True,"saved":n})
@@ -6790,18 +6820,18 @@ def api_roster_submissions():
     for role,grp in staff.items():
         for p in grp: everyone.setdefault(p["username"],{"username":p["username"],"name":p["name"],"roles":set()})["roles"].add(role)
     c=sdb()
-    rows=c.execute("SELECT username,shift_date,start_time FROM availability WHERE week_start=?",(ws,)).fetchall()
+    rows=c.execute("SELECT username,shift_date,start_time,end_time FROM availability WHERE week_start=? ORDER BY shift_date,start_time",(ws,)).fetchall()
     c.close()
-    counts={}; per_slot={}
+    byuser={}
     for r in rows:
-        counts[r["username"]]=counts.get(r["username"],0)+1
-        per_slot.setdefault((r["shift_date"],r["start_time"]),0)
-        per_slot[(r["shift_date"],r["start_time"])]+=1
+        byuser.setdefault(r["username"],[]).append({"date":r["shift_date"],"start":r["start_time"],"end":r["end_time"] or "24:00"})
     submitted=[]; missing=[]
     for un,info in everyone.items():
-        entry={"username":un,"name":info["name"],"roles":sorted(info["roles"]),"slots":counts.get(un,0)}
-        (submitted if counts.get(un,0) else missing).append(entry)
-    submitted.sort(key=lambda x:-x["slots"])
+        rngs=byuser.get(un,[])
+        entry={"username":un,"name":info["name"],"roles":sorted(info["roles"]),
+               "count":len(rngs),"ranges":rngs}
+        (submitted if rngs else missing).append(entry)
+    submitted.sort(key=lambda x:-x["count"])
     return jsonify({"ok":True,"week_start":ws,"submitted":submitted,"missing":missing,
                     "total_staff":len(everyone),"submitted_count":len(submitted)})
 

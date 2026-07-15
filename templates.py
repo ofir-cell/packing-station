@@ -7106,11 +7106,10 @@ __NAVBAR__
   <div class="controls">
     <label class="muted" style="font-weight:700">Week of</label>
     <input type="date" id="week">
-    <button class="btn btn-p" id="genBtn">⚙️ Auto-generate</button>
     <button class="btn btn-g" id="apprBtn">✓ Approve week</button>
     <span id="status"></span>
   </div>
-  <div class="muted" style="font-size:12.5px">Auto-fills each channel from the availability the girls submitted — never double-booking, balancing hours. Red = uncovered (nobody available). Only you can change assignments.</div>
+  <div class="muted" style="font-size:12.5px">Build shifts from the time ranges the girls submitted. Only people available for the whole shift (and not already booked) can be chosen. Approve to publish.</div>
 </div>
 
 <div class="card">
@@ -7120,7 +7119,7 @@ __NAVBAR__
 
 <div class="card">
   <div class="days" id="days"></div>
-  <div id="grid"><div class="muted">Pick a week and click Auto-generate.</div></div>
+  <div id="grid"><div class="muted">Pick a day.</div></div>
 </div>
 
 <div class="card">
@@ -7133,15 +7132,14 @@ __NAVBAR__
 <script>
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
-var CH=[],STAFF={host:[],assistant:[]},WEEK=[],DAYSEL=0,BLOCKS=[];
+var CH=[],STAFF={host:[],assistant:[]},WEEK=[],DAYSEL=0,RANGES={};
 function monday(){var d=new Date();var g=(d.getDay()+6)%7;d.setDate(d.getDate()-g);return d.toISOString().slice(0,10)}
 document.getElementById('week').value=monday();
-function eligible(role,chId){return STAFF[role].filter(function(p){return !p.allowed_channels.length||p.allowed_channels.indexOf(chId)>=0})}
-function loadStaff(){
-  fetch('/api/roster/staff').then(function(r){return r.json()}).then(function(d){
-    CH=d.channels;STAFF=d.staff;renderStaff();
-  });
-}
+function tmin(t){if(!t)return null;if(t==='24:00')return 1440;var m=t.split(':');return parseInt(m[0])*60+parseInt(m[1])}
+function eligibleCh(p,chId){return !p.allowed_channels.length||p.allowed_channels.indexOf(chId)>=0}
+function covers(u,day,s,e){var rs=RANGES[u]||[];return rs.some(function(r){return r.date===day&&tmin(r.start)<=tmin(s)&&tmin(r.end)>=tmin(e)})}
+function isFree(u,day,s,e,exceptId){return !WEEK.some(function(sh){return sh.shift_date===day&&sh.id!==exceptId&&(sh.host_user===u||sh.assistant_user===u)&&tmin(s)<tmin(sh.end_time)&&tmin(sh.start_time)<tmin(e)})}
+function loadStaff(){fetch('/api/roster/staff').then(function(r){return r.json()}).then(function(d){CH=d.channels;STAFF=d.staff;renderStaff()})}
 function renderStaff(){
   var el=document.getElementById('staff');var all=STAFF.host.concat(STAFF.assistant);
   if(!all.length){el.innerHTML='<div class="muted">No hosts or assistants yet. Create them in Settings → Users (role: host / assistant).</div>';return}
@@ -7156,69 +7154,80 @@ function renderStaff(){
 function saveChannels(u){
   var ids=[];document.querySelectorAll('input[data-u="'+u+'"]:checked').forEach(function(x){ids.push(parseInt(x.value))});
   fetch('/api/roster/staff/'+encodeURIComponent(u)+'/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({allowed_channels:ids})})
-    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Saved');loadStaff()}else toast(d.error||'Failed',1)});
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Saved');loadStaff();loadWeek()}else toast(d.error||'Failed',1)});
 }
+function fmtRanges(rngs){var by={};rngs.forEach(function(r){(by[r.date]=by[r.date]||[]).push(r.start+'–'+(r.end==='24:00'?'24:00':r.end))});
+  return Object.keys(by).sort().map(function(dt){var d=new Date(dt+'T00:00');return '<b>'+['Su','Mo','Tu','We','Th','Fr','Sa'][d.getDay()]+'</b> '+by[dt].join(', ')}).join(' &nbsp;·&nbsp; ')}
 function loadSubs(){
   fetch('/api/roster/submissions?week_start='+document.getElementById('week').value).then(function(r){return r.json()}).then(function(d){
-    if(!d.ok)return;
+    if(!d.ok)return;RANGES={};d.submitted.forEach(function(p){RANGES[p.username]=p.ranges});
     document.getElementById('subCount').textContent='('+d.submitted_count+' of '+d.total_staff+' submitted)';
-    var sub=d.submitted.map(function(p){return '<span style="display:inline-flex;gap:6px;align-items:center;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:50px;padding:4px 12px;font-size:12.5px;margin:3px"><b>'+esc(p.name)+'</b> <span class="muted">'+p.roles.join('/')+' · '+p.slots+' blocks</span></span>'}).join('');
-    var miss=d.missing.map(function(p){return '<span style="display:inline-flex;gap:6px;align-items:center;background:#fff5f5;border:1px solid #fecaca;border-radius:50px;padding:4px 12px;font-size:12.5px;margin:3px;color:#b91c1c">'+esc(p.name)+' <span style="opacity:.7">('+p.roles.join('/')+') — not yet</span></span>'}).join('');
+    var sub=d.submitted.map(function(p){return '<div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;padding:8px 12px;font-size:12.5px;margin:4px 0"><b>'+esc(p.name)+'</b> <span class="muted">('+p.roles.join('/')+')</span> — '+fmtRanges(p.ranges)+'</div>'}).join('');
+    var miss=d.missing.map(function(p){return '<span style="display:inline-flex;background:#fff5f5;border:1px solid #fecaca;border-radius:50px;padding:3px 12px;font-size:12.5px;margin:3px;color:#b91c1c">'+esc(p.name)+' <span style="opacity:.7">&nbsp;('+p.roles.join('/')+')</span></span>'}).join('');
     document.getElementById('subs').innerHTML=(sub||'<span class="muted">No submissions yet.</span>')+
       (miss?('<div style="margin-top:10px;font-size:12px;font-weight:700;color:#6b7280">STILL WAITING ON</div>'+miss):'');
+    renderChannels();
   });
 }
 function loadWeek(){
-  loadSubs();
   fetch('/api/roster/week?week_start='+document.getElementById('week').value).then(function(r){return r.json()}).then(function(d){
-    WEEK=d.shifts;BLOCKS=d.blocks;CH=d.channels;
+    WEEK=d.shifts;CH=d.channels;
     document.getElementById('status').innerHTML=(d.approved?'<span class="pill p-app">approved</span>':(WEEK.length?'<span class="pill p-prop">proposed</span>':''))+
-      (d.gaps?(' <span class="pill p-gap">'+d.gaps+' gaps</span>'):(WEEK.length?' <span class="pill p-app">fully covered</span>':''));
-    renderDays();renderGrid();
+      (d.incomplete?(' <span class="pill p-gap">'+d.incomplete+' need people</span>'):'')+
+      ' <span class="muted" style="font-size:12px">'+d.covered_hours+'h covered</span>';
+    renderDays();loadSubs();
   });
 }
 function renderDays(){
   var names=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];var base=new Date(document.getElementById('week').value);
   document.getElementById('days').innerHTML=names.map(function(n,i){
     var dt=new Date(base);dt.setDate(dt.getDate()+i);
-    return '<div class="day'+(i===DAYSEL?' on':'')+'" onclick="DAYSEL='+i+';renderDays();renderGrid()">'+n+' '+(dt.getMonth()+1)+'/'+dt.getDate()+'</div>';
+    return '<div class="day'+(i===DAYSEL?' on':'')+'" onclick="DAYSEL='+i+';renderDays();renderChannels()">'+n+' '+(dt.getMonth()+1)+'/'+dt.getDate()+'</div>';
   }).join('');
 }
 function dateForSel(){var b=new Date(document.getElementById('week').value);b.setDate(b.getDate()+DAYSEL);return b.toISOString().slice(0,10)}
-function sel(role,chId,cur,sid){
-  var opts='<option value="">— none —</option>'+eligible(role,chId).map(function(p){
-    return '<option value="'+esc(p.username)+'"'+(p.username===cur?' selected':'')+'>'+esc(p.name)+'</option>'}).join('');
-  return '<select onchange="reassign('+sid+',\\''+role+'\\',this.value)">'+opts+'</select>';
+function personSel(role,chId,day,sh,which){
+  var cur=which==='host'?sh.host_user:sh.assistant_user;
+  var pool=STAFF[role].filter(function(p){return eligibleCh(p,chId)&&covers(p.username,day,sh.start_time,sh.end_time)&&(p.username===cur||isFree(p.username,day,sh.start_time,sh.end_time,sh.id))});
+  var opts='<option value="">— pick —</option>'+pool.map(function(p){return '<option value="'+esc(p.username)+'"'+(p.username===cur?' selected':'')+'>'+esc(p.name)+'</option>'}).join('');
+  if(cur&&!pool.some(function(p){return p.username===cur}))opts+='<option value="'+esc(cur)+'" selected>'+esc(cur)+' (was)</option>';
+  return '<select onchange="reassign('+sh.id+',\\''+which+'\\',this.value)">'+opts+'</select>';
 }
-function renderGrid(){
-  if(!WEEK.length){document.getElementById('grid').innerHTML='<div class="muted">No shifts yet for this week — click Auto-generate.</div>';return}
+function renderChannels(){
   var day=dateForSel();
-  var head='<tr><th>Block</th>'+CH.map(function(c){return '<th>'+esc(c.name)+'</th>'}).join('')+'</tr>';
-  var body=BLOCKS.map(function(b){
-    var tds=CH.map(function(c){
-      var sh=WEEK.filter(function(s){return s.shift_date===day&&s.start_time===b[0]&&s.channel_id===c.id})[0];
-      if(!sh)return '<td class="muted">—</td>';
-      var gap=(!sh.host_user||!sh.assistant_user);
-      return '<td class="cell'+(gap?' gap':'')+'"><label>Host</label>'+sel('host',c.id,sh.host_user,sh.id)+
-        '<label>Assistant</label>'+sel('assistant',c.id,sh.assistant_user,sh.id)+'</td>';
+  document.getElementById('grid').innerHTML=CH.map(function(c){
+    var shifts=WEEK.filter(function(s){return s.shift_date===day&&s.channel_id===c.id}).sort(function(a,b){return tmin(a.start_time)-tmin(b.start_time)});
+    var cov=0;shifts.forEach(function(s){if(s.host_user&&s.assistant_user)cov+=tmin(s.end_time)-tmin(s.start_time)});
+    var rows=shifts.map(function(s){
+      var gap=(!s.host_user||!s.assistant_user);
+      return '<div class="cell'+(gap?' gap':'')+'" style="border:1px solid rgba(17,24,39,.1);border-radius:10px;padding:8px 10px;margin-bottom:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'+
+        '<b style="min-width:110px">'+s.start_time+'–'+s.end_time+'</b>'+
+        '<span><label style="font-size:10px;color:#9ca3af;font-weight:700">Host</label>'+personSel('host',c.id,day,s,'host')+'</span>'+
+        '<span><label style="font-size:10px;color:#9ca3af;font-weight:700">Assistant</label>'+personSel('assistant',c.id,day,s,'assistant')+'</span>'+
+        '<button class="btn btn-s" style="margin-left:auto;padding:5px 10px;color:#e11d48" onclick="delShift('+s.id+')">Delete</button></div>';
     }).join('');
-    return '<tr><td><b>'+b[0]+'–'+b[1]+'</b></td>'+tds+'</tr>';
+    return '<div style="border:1px solid rgba(17,24,39,.12);border-radius:14px;padding:14px;margin-bottom:12px">'+
+      '<div style="font-weight:800;margin-bottom:8px">'+esc(c.name)+' <span class="muted" style="font-weight:600;font-size:12px">· '+(cov/60).toFixed(1)+'h / 24h covered</span></div>'+
+      (rows||'<div class="muted" style="font-size:12.5px;margin-bottom:8px">No shifts yet.</div>')+
+      '<div style="display:flex;gap:8px;align-items:center;margin-top:8px"><span class="muted" style="font-size:12px">Add shift:</span>'+
+      '<input type="time" id="ns'+c.id+'" style="padding:6px;border:2px solid #e4e7ec;border-radius:8px"><span class="muted">to</span>'+
+      '<input type="time" id="ne'+c.id+'" style="padding:6px;border:2px solid #e4e7ec;border-radius:8px">'+
+      '<button class="btn btn-p" style="padding:7px 14px" onclick="addShift('+c.id+')">+ Add</button></div></div>';
   }).join('');
-  document.getElementById('grid').innerHTML='<table>'+head+body+'</table>';
 }
+function addShift(chId){
+  var s=document.getElementById('ns'+chId).value,e=document.getElementById('ne'+chId).value;
+  if(!s||!e||e<=s){toast('Enter a valid start/end',1);return}
+  fetch('/api/roster/shift/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel_id:chId,date:dateForSel(),start:s,end:e})})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Shift added');loadWeek()}else toast(d.error||'Failed',1)});
+}
+function delShift(id){if(!confirm('Delete this shift?'))return;
+  fetch('/api/roster/shift/'+id+'/delete',{method:'POST'}).then(function(r){return r.json()}).then(function(){toast('Deleted');loadWeek()})}
 function reassign(sid,role,val){
   var body={};body[role+'_user']=val;
   fetch('/api/roster/shift/'+sid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Updated');loadWeek()}else{toast(d.error||'Conflict',1);loadWeek()}});
 }
-document.getElementById('genBtn').addEventListener('click',function(){
-  fetch('/api/roster/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({week_start:document.getElementById('week').value})})
-    .then(function(r){return r.json()}).then(function(d){
-      if(d.ok){toast('Generated '+d.shifts+' shifts');loadWeek()}
-      else if(d.needs_force){if(confirm(d.error))fetch('/api/roster/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({week_start:document.getElementById('week').value,force:true})}).then(function(r){return r.json()}).then(function(){toast('Regenerated');loadWeek()})}
-      else toast(d.error||'Failed',1);
-    });
-});
 document.getElementById('apprBtn').addEventListener('click',function(){
   if(!confirm('Approve & publish this week to all hosts and assistants?'))return;
   fetch('/api/roster/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({week_start:document.getElementById('week').value})})
@@ -7262,44 +7271,56 @@ __NAVBAR__
   <div class="controls">
     <span class="muted" style="font-weight:700">Week of</span>
     <input type="date" id="week">
-    <button class="btn btn-s" id="allBtn">Select all</button>
-    <button class="btn btn-s" id="clrBtn">Clear</button>
     <button class="btn btn-p" id="saveBtn" style="margin-left:auto">Submit availability</button>
   </div>
   <div class="muted" id="chnote"></div>
-  <div class="muted" style="font-size:12.5px;margin-top:4px">Tick every 6-hour block you can work. Your manager assigns you to a channel from the ones you're allowed on, without clashes.</div>
-  <div id="grid"></div>
+  <div class="muted" style="font-size:12.5px;margin-top:4px">For each day, add the time ranges you can work (e.g. 14:00–20:00). Add more than one if there's a gap. Your manager builds the shifts from these.</div>
+  <div id="dayList" style="margin-top:14px"></div>
 </div>
 </div>
 <div class="toast" id="t"></div>
 <script>
 function toast(m){var t=document.getElementById('t');t.textContent=m;t.style.display='block';setTimeout(function(){t.style.display='none'},2600)}
-var BLOCKS=[],CUR={};
 function monday(){var d=new Date();var g=(d.getDay()+6)%7;d.setDate(d.getDate()-g);return d.toISOString().slice(0,10)}
 document.getElementById('week').value=monday();
-function days(){var names=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];var b=new Date(document.getElementById('week').value);
+function days(){var names=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];var b=new Date(document.getElementById('week').value);
   return names.map(function(n,i){var d=new Date(b);d.setDate(d.getDate()+i);return {name:n+' '+(d.getMonth()+1)+'/'+d.getDate(),iso:d.toISOString().slice(0,10)}})}
+function rangeRow(iso,st,en){
+  return '<div class="rr" data-date="'+iso+'" style="display:flex;gap:8px;align-items:center;margin-bottom:6px">'+
+    '<input type="time" class="rs" value="'+(st||'')+'" style="padding:7px;border:2px solid #e4e7ec;border-radius:8px;font-size:14px">'+
+    '<span class="muted">to</span>'+
+    '<input type="time" class="re" value="'+(en||'')+'" style="padding:7px;border:2px solid #e4e7ec;border-radius:8px;font-size:14px">'+
+    '<button class="btn btn-s" style="padding:5px 10px" onclick="this.parentNode.remove()">✕</button></div>';
+}
+function render(byday){
+  var D=days();
+  document.getElementById('dayList').innerHTML=D.map(function(x){
+    var rs=(byday[x.iso]||[]);
+    var rows=rs.map(function(r){return rangeRow(x.iso,r.start==='24:00'?'':r.start,r.end==='24:00'?'':r.end)}).join('');
+    return '<div style="border:1px solid rgba(17,24,39,.1);border-radius:12px;padding:12px 14px;margin-bottom:10px">'+
+      '<div style="font-weight:800;margin-bottom:8px">'+x.name+'</div><div class="rows" data-day="'+x.iso+'">'+rows+'</div>'+
+      '<button class="btn btn-s" style="padding:6px 12px;font-size:13px" onclick="addRange(\\''+x.iso+'\\')">+ Add time range</button></div>';
+  }).join('');
+}
+function addRange(iso){
+  var box=document.querySelector('.rows[data-day="'+iso+'"]');
+  var tmp=document.createElement('div');tmp.innerHTML=rangeRow(iso,'','');box.appendChild(tmp.firstChild);
+}
 function load(){
   fetch('/api/availability?week_start='+document.getElementById('week').value).then(function(r){return r.json()}).then(function(d){
-    BLOCKS=d.blocks;var sel={};(d.slots||[]).forEach(function(s){sel[s.date+'|'+s.start]=true});
     var chn=(d.channels||[]).filter(function(c){return !d.allowed_channels.length||d.allowed_channels.indexOf(c.id)>=0}).map(function(c){return c.name});
     document.getElementById('chnote').innerHTML='You can be scheduled on: <b>'+(chn.join(', ')||'any channel')+'</b>';
-    var D=days();
-    var head='<tr><th>Block</th>'+D.map(function(x){return '<th>'+x.name+'</th>'}).join('')+'</tr>';
-    var body=BLOCKS.map(function(b){
-      var tds=D.map(function(x){var k=x.iso+'|'+b[0];var on=!!sel[k];
-        return '<td class="'+(on?'on':'')+'"><label><input type="checkbox" data-date="'+x.iso+'" data-start="'+b[0]+'" '+(on?'checked':'')+' onchange="this.closest(\\'td\\').className=this.checked?\\'on\\':\\'\\'"></label></td>'}).join('');
-      return '<tr><td class="blk">'+b[0]+'–'+b[1]+'</td>'+tds+'</tr>';
-    }).join('');
-    document.getElementById('grid').innerHTML='<table>'+head+body+'</table>';
+    var byday={};(d.ranges||[]).forEach(function(r){(byday[r.date]=byday[r.date]||[]).push(r)});
+    render(byday);
   });
 }
-document.getElementById('allBtn').addEventListener('click',function(){document.querySelectorAll('#grid input').forEach(function(x){x.checked=true;x.closest('td').className='on'})});
-document.getElementById('clrBtn').addEventListener('click',function(){document.querySelectorAll('#grid input').forEach(function(x){x.checked=false;x.closest('td').className=''})});
 document.getElementById('saveBtn').addEventListener('click',function(){
-  var slots=[];document.querySelectorAll('#grid input:checked').forEach(function(x){slots.push({date:x.getAttribute('data-date'),start:x.getAttribute('data-start')})});
-  fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({week_start:document.getElementById('week').value,slots:slots})})
-    .then(function(r){return r.json()}).then(function(d){if(d.ok)toast('Submitted '+d.saved+' blocks ✓')});
+  var ranges=[];document.querySelectorAll('#dayList .rr').forEach(function(rr){
+    var s=rr.querySelector('.rs').value,e=rr.querySelector('.re').value;
+    if(s&&e&&e>s)ranges.push({date:rr.getAttribute('data-date'),start:s,end:e});
+  });
+  fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({week_start:document.getElementById('week').value,ranges:ranges})})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok)toast('Submitted '+d.saved+' time ranges ✓');else toast('Check your times')});
 });
 document.getElementById('week').addEventListener('change',load);
 load();
