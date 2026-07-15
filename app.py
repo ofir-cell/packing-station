@@ -6525,7 +6525,8 @@ def api_documents_delete(doc_id):
 def api_users():
     u=ldj(USERS_FILE)
     myorg=session.get("org",DEFAULT_ORG)
-    return jsonify({k:{"name":v["name"],"role":v["role"],"has_badge":bool(v.get("badge_token"))}
+    return jsonify({k:{"name":v["name"],"role":v["role"],"extra_roles":v.get("extra_roles",[]),
+                       "has_badge":bool(v.get("badge_token"))}
                     for k,v in u.items() if v.get("org",DEFAULT_ORG)==myorg})
 
 @app.route("/api/audit-log")
@@ -6755,6 +6756,31 @@ def api_add():
         badge=users[u].get("badge_token")
     alog("user.create",u+" (role="+role+")")
     return jsonify({"ok":True,"badge_token":badge})
+
+@app.route("/api/users/roles",methods=["POST"])
+@req_role("admin")
+def api_user_roles():
+    """Update an existing user's primary role + extra roles."""
+    d=request.get_json() or {}
+    u=(d.get("username") or "").strip().lower()
+    role=(d.get("role") or "").strip()
+    if role not in ("admin","cs","worker","picker","host","assistant"):
+        return jsonify({"ok":False,"error":"Invalid role"})
+    _valid_extra={"worker","picker","cs","host","assistant"}
+    extra=[r for r in (d.get("extra_roles") or []) if r in _valid_extra and r!=role]
+    with update_json(USERS_FILE) as users:
+        if u not in users or not _same_org_user(users,u):
+            return jsonify({"ok":False,"error":"User not found"}),404
+        if u=="admin" and role!="admin":
+            return jsonify({"ok":False,"error":"The founding admin must stay admin"})
+        users[u]["role"]=role
+        if extra: users[u]["extra_roles"]=extra
+        else: users[u].pop("extra_roles",None)
+        # keep a badge for anyone who can work the floor
+        if ("worker" in [role]+extra) and not users[u].get("badge_token"):
+            users[u]["badge_token"]=_gen_badge_token()
+    alog("user.roles",u+" -> "+role+("+"+",".join(extra) if extra else ""))
+    return jsonify({"ok":True})
 
 @app.route("/api/users/delete",methods=["POST"])
 @req_role("admin")

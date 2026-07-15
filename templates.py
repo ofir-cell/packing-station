@@ -1041,18 +1041,24 @@ function loadUsers(){
         Object.keys(d).forEach(function(k){
             var v=d[k];
             var rc=v.role==='admin'?'r-admin':v.role==='cs'?'r-cs':'r-worker';
-            rows+='<tr><td><b>'+k+'</b></td><td>'+v.name+'</td><td><span class="role '+rc+'">'+v.role+'</span></td><td>';
+            var xr=(v.extra_roles||[]).map(function(r){return '<span class="role r-worker" style="opacity:.7;margin-left:4px">+'+r+'</span>'}).join('');
+            rows+='<tr><td><b>'+k+'</b></td><td>'+v.name+'</td><td><span class="role '+rc+'">'+v.role+'</span>'+xr+'</td><td>';
+            rows+='<div class="actions"><button class="act-btn" data-u="'+k+'" data-a="roles">Edit Roles</button>';
             if(k!=='admin'){
-                rows+='<div class="actions"><button class="act-btn act-pw" data-u="'+k+'" data-a="pw">Change Password</button><button class="act-btn act-del" data-u="'+k+'" data-a="del">Delete</button></div>';
+                rows+='<button class="act-btn act-pw" data-u="'+k+'" data-a="pw">Change Password</button><button class="act-btn act-del" data-u="'+k+'" data-a="del">Delete</button>';
             }
-            rows+='</td></tr>';
+            rows+='</div></td></tr>';
         });
         document.getElementById('ut').innerHTML=rows;
+        USERS=d;
         document.querySelectorAll('[data-a="pw"]').forEach(function(b){
             b.addEventListener('click',function(){changePw(this.dataset.u)});
         });
         document.querySelectorAll('[data-a="del"]').forEach(function(b){
             b.addEventListener('click',function(){delUser(this.dataset.u)});
+        });
+        document.querySelectorAll('[data-a="roles"]').forEach(function(b){
+            b.addEventListener('click',function(){editRoles(this.dataset.u)});
         });
     });
 }
@@ -1080,6 +1086,32 @@ function changePw(u){
     if(!p)return;
     fetch('/api/users/pw',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})})
     .then(function(r){return r.json()}).then(function(d){alert(d.ok?'Password changed!':'Failed')});
+}
+var USERS={};
+var ALL_ROLES=[['worker','Worker'],['picker','Picker'],['cs','Customer Service'],['host','Live Show Host'],['assistant','Show Assistant'],['admin','Admin']];
+function editRoles(u){
+    var v=USERS[u]||{};var cur=v.role||'worker';var ex=v.extra_roles||[];
+    var ov=document.createElement('div');
+    ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999';
+    var primOpts=ALL_ROLES.map(function(r){return '<option value="'+r[0]+'"'+(r[0]===cur?' selected':'')+'>'+r[1]+'</option>'}).join('');
+    var extOpts=ALL_ROLES.filter(function(r){return r[0]!=='admin'}).map(function(r){
+        return '<label style="display:inline-flex;gap:5px;align-items:center;margin:4px 12px 4px 0;font-size:14px"><input type="checkbox" class="er" value="'+r[0]+'"'+(ex.indexOf(r[0])>=0?' checked':'')+'> '+r[1]+'</label>'}).join('');
+    ov.innerHTML='<div style="background:#fff;border-radius:14px;padding:22px;max-width:440px;width:92%;font-family:inherit">'+
+        '<h3 style="margin:0 0 14px;font-size:17px">Roles — '+u+'</h3>'+
+        '<label style="font-size:12px;font-weight:700;color:#6b7280">Primary role</label>'+
+        '<select id="erPrim" style="width:100%;padding:9px;border:2px solid #e4e7ec;border-radius:9px;margin:4px 0 14px;font-size:14px">'+primOpts+'</select>'+
+        '<label style="font-size:12px;font-weight:700;color:#6b7280">Also does (extra roles)</label><div style="margin-top:6px">'+extOpts+'</div>'+
+        '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px">'+
+        '<button id="erCancel" style="padding:9px 16px;border:1px solid #e4e7ec;background:#f6f7f9;border-radius:9px;font-weight:700;cursor:pointer">Cancel</button>'+
+        '<button id="erSave" style="padding:9px 16px;border:none;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;border-radius:9px;font-weight:700;cursor:pointer">Save</button></div></div>';
+    document.body.appendChild(ov);
+    ov.querySelector('#erCancel').onclick=function(){ov.remove()};
+    ov.querySelector('#erSave').onclick=function(){
+        var role=ov.querySelector('#erPrim').value;var extra=[];
+        ov.querySelectorAll('.er:checked').forEach(function(x){if(x.value!==role)extra.push(x.value)});
+        fetch('/api/users/roles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,role:role,extra_roles:extra})})
+          .then(function(r){return r.json()}).then(function(d){if(d.ok){ov.remove();loadUsers()}else alert(d.error||'Failed')});
+    };
 }
 loadUsers();
 </script></div></body></html>'''
