@@ -52,6 +52,11 @@ def _navbar(active_page=""):
     raw_name=session.get("name","")
     name=str(_e(raw_name))
     if not role: return ""
+    # A user can hold several roles (primary + extras). The nav shows everything
+    # any of their roles grants.
+    _rr=set(session.get("roles") or [role])
+    def has(*rs):
+        return any(r in _rr for r in rs)
     brand=_brand()
     initials=str(_e(_initials(raw_name)))
 
@@ -81,18 +86,18 @@ def _navbar(active_page=""):
     else:
         entries = [("home", "/home", "🏠 Home")]
         entries.append(("announcements", "/announcements", "📣 News"))
-        if role == "worker":
+        if has("worker"):
             entries.append(("pack", "/", "📦 Pack"))
-        if role in ("worker", "picker"):
+        if has("worker", "picker"):
             entries.append(("preshow", "/admin/preshow", "🔗 Match Products"))
-        if role in ("admin", "cs"):
+        if has("admin", "cs"):
             # Operations is now a dedicated hub page (/operations) with tabbed cards
             # (Giveaways is one of its tabs).
             entries.append(("operations", "/operations", "📦 Operations"))
             entries.append(("roster", "/admin/roster", "🗓️ Roster"))
             entries.append(("support", "/support", "🛟 Support"))
             entries.append(("guides", "/guides", "📚 Guides"))
-        if role in ("host", "assistant"):
+        if has("host", "assistant"):
             entries.append(("myschedule", "/my-schedule", "🗓️ My Schedule"))
 
     # ── Avatar menu sections (personal + team/settings) ──
@@ -107,12 +112,12 @@ def _navbar(active_page=""):
             ("documents", "/documents", "📄 Documents"),
             ("onboarding", "/onboarding", "✅ Onboarding"),
         ]
-        if role in ("worker", "picker"):
+        if has("worker", "picker"):
             _common.append(("guides", "/guides", "📚 Guides"))
-        if role in ("host", "assistant"):
-            _common = [("myschedule", "/my-schedule", "🗓️ My Schedule")]
+        if has("host", "assistant"):
+            _common.append(("myschedule", "/my-schedule", "🗓️ My Schedule"))
         user_sections = [("", _common)]
-        if role == "admin":
+        if has("admin"):
             # Users / Badges / Permissions live *inside* Settings now, so they're
             # not repeated here — Settings is the single entry point for org config.
             user_sections.append(("Team & Admin", [
@@ -120,7 +125,7 @@ def _navbar(active_page=""):
                 ("settings", "/admin/settings", "⚙️ Settings"),
                 ("audit", "/admin/audit", "🧾 Audit log"),
             ]))
-        elif role == "cs":
+        elif has("cs"):
             user_sections.append(("Team", [
                 ("hires", "/admin/hires", "🧑‍💼 New Hires"),
             ]))
@@ -1018,8 +1023,15 @@ __NAVBAR__
 <input type="text" id="nu" placeholder="Username">
 <input type="password" id="np" placeholder="Password">
 <input type="text" id="nn" placeholder="Display Name">
-<select id="nr"><option value="worker">Worker</option><option value="cs">Customer Service</option><option value="admin">Admin</option></select>
+<select id="nr"><option value="worker">Worker</option><option value="picker">Picker</option><option value="cs">Customer Service</option><option value="host">Live Show Host</option><option value="assistant">Show Assistant</option><option value="admin">Admin</option></select>
 <button class="add-btn" id="addBtn">+ Add User</button>
+<div style="flex-basis:100%;margin-top:8px;font-size:13px;color:#6b7280">Also does (optional — for people with more than one job):
+  <label style="margin-left:8px"><input type="checkbox" class="xrole" value="picker"> Picker</label>
+  <label style="margin-left:8px"><input type="checkbox" class="xrole" value="worker"> Worker</label>
+  <label style="margin-left:8px"><input type="checkbox" class="xrole" value="cs"> CS</label>
+  <label style="margin-left:8px"><input type="checkbox" class="xrole" value="host"> Host</label>
+  <label style="margin-left:8px"><input type="checkbox" class="xrole" value="assistant"> Assistant</label>
+</div>
 <div class="msg" id="am"></div>
 </div></div>
 <script>
@@ -1049,11 +1061,12 @@ document.getElementById('addBtn').addEventListener('click',function(){
     var p=document.getElementById('np').value;
     var n=document.getElementById('nn').value.trim()||u;
     var rl=document.getElementById('nr').value;
+    var extra=[];document.querySelectorAll('.xrole:checked').forEach(function(x){if(x.value!==rl)extra.push(x.value)});
     var m=document.getElementById('am');
     if(!u||!p){m.className='msg err';m.textContent='Username and password are required';return}
-    fetch('/api/users/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p,name:n,role:rl})})
+    fetch('/api/users/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p,name:n,role:rl,extra_roles:extra})})
     .then(function(r){return r.json()}).then(function(d){
-        if(d.ok){m.className='msg ok';m.textContent='User added successfully!';loadUsers();document.getElementById('nu').value='';document.getElementById('np').value='';document.getElementById('nn').value=''}
+        if(d.ok){m.className='msg ok';m.textContent='User added successfully!';loadUsers();document.getElementById('nu').value='';document.getElementById('np').value='';document.getElementById('nn').value='';document.querySelectorAll('.xrole').forEach(function(x){x.checked=false})}
         else{m.className='msg err';m.textContent=d.error||'Failed to add user'}
     });
 });

@@ -2271,6 +2271,14 @@ def req_login(f):
         if "user" not in session: return redirect("/")
         return f(*a,**k)
     return d
+def _effective_roles(info):
+    """A user's full role set: primary role + any extra_roles (deduped)."""
+    rs=[info.get("role")] + list(info.get("extra_roles") or [])
+    return [r for r in dict.fromkeys(rs) if r]
+
+def session_roles():
+    return session.get("roles") or ([session.get("role")] if session.get("role") else [])
+
 def req_role(*roles):
     def w(f):
         @wraps(f)
@@ -2278,7 +2286,8 @@ def req_role(*roles):
             if "user" not in session: return redirect("/")
             # The super-admin is a pure platform owner (no tenant). They must NOT
             # reach tenant-operational routes — only the control plane (req_super).
-            if session.get("role") not in roles: return "Access denied",403
+            # A user passes if ANY of their roles (primary or extra) is allowed.
+            if not any(r in roles for r in session_roles()): return "Access denied",403
             return f(*a,**k)
         return d
     return w
@@ -2662,6 +2671,7 @@ def api_login():
                 if u in uu: uu[u]["password"]=_h(p)
         session.clear()  # rotate session id to prevent fixation
         session["user"]=u;session["role"]=user["role"];session["name"]=user["name"]
+        session["roles"]=_effective_roles(user)
         session["org"]=user.get("org",DEFAULT_ORG)
         session["brand"]=brand_for_session(session["org"])
         return jsonify({"ok":True,"role":user["role"]})
@@ -6557,9 +6567,11 @@ def _roster_staff():
     org=session.get("org",DEFAULT_ORG)
     out={"host":[],"assistant":[]}
     for un,info in users.items():
-        if info.get("role") in ("host","assistant") and info.get("org",DEFAULT_ORG)==org:
-            out[info["role"]].append({"username":un,"name":info.get("name") or un,
-                "allowed_channels":info.get("allowed_channels") or []})
+        if info.get("org",DEFAULT_ORG)!=org: continue
+        roles=_effective_roles(info)
+        person={"username":un,"name":info.get("name") or un,"allowed_channels":info.get("allowed_channels") or []}
+        if "host" in roles: out["host"].append(person)
+        if "assistant" in roles: out["assistant"].append(dict(person))
     return out
 
 @app.route("/api/roster/channels")
@@ -6581,7 +6593,7 @@ def api_roster_set_channels(username):
     with update_json(USERS_FILE) as users:
         if username not in users or not _same_org_user(users,username):
             return jsonify({"ok":False,"error":"User not found"}),404
-        if users[username].get("role") not in ("host","assistant"):
+        if not any(r in ("host","assistant") for r in _effective_roles(users[username])):
             return jsonify({"ok":False,"error":"Only hosts/assistants have channels"})
         users[username]["allowed_channels"]=ids
     alog("roster.channels",username+" -> "+",".join(map(str,ids)))
@@ -6726,11 +6738,15 @@ def api_add():
         return jsonify({"ok":False,"error":"Username: lowercase letters, digits, _ -, 2-32 chars"})
     if role not in ("admin","cs","worker","picker","host","assistant"):
         return jsonify({"ok":False,"error":"Invalid role"})
+    # Extra roles let one person do several jobs (e.g. picker + host).
+    _valid_extra={"worker","picker","cs","host","assistant"}
+    extra=[r for r in (d.get("extra_roles") or []) if r in _valid_extra and r!=role]
     with update_json(USERS_FILE) as users:
         if u in users: return jsonify({"ok":False,"error":"Already exists"})
         users[u]={"password":_h(p),"role":role,"name":n,"org":session.get("org",DEFAULT_ORG)}
+        if extra: users[u]["extra_roles"]=extra
         # On-camera staff (host/assistant) can be limited to specific channels.
-        if role in ("host","assistant"):
+        if role in ("host","assistant") or "host" in extra or "assistant" in extra:
             ch=d.get("allowed_channels")
             if isinstance(ch,list): users[u]["allowed_channels"]=[int(x) for x in ch if str(x).isdigit()]
         # Workers automatically get a badge token for scan-to-login
@@ -6807,6 +6823,7 @@ def api_badge_login():
         return jsonify({"ok":False,"error":"This organization is suspended. Please contact support."}),403
     session.clear()  # rotate session id to prevent fixation
     session["user"]=matched_u;session["role"]=user["role"];session["name"]=user["name"]
+    session["roles"]=_effective_roles(user)
     session["org"]=user.get("org",DEFAULT_ORG)
     session["brand"]=brand_for_session(session["org"])
     return jsonify({"ok":True,"role":user["role"],"name":user["name"]})
@@ -6923,7 +6940,7 @@ def api_impersonate():
     plog(owner,"impersonate_enter",org_id,"support session started")
     # Act as that tenant's admin, remembering who we really are.
     session["impersonator"]=owner
-    session["role"]="admin"
+    session["role"]="admin"; session["roles"]=["admin"]
     session["org"]=org_id
     session["name"]="Support · "+(o.get("company_name") or org_id)
     session["brand"]=brand_for_session(org_id)
@@ -6939,7 +6956,7 @@ def api_impersonate_exit():
     plog(owner,"impersonate_exit",session.get("org",""),"support session ended")
     session.pop("impersonator",None)
     session["user"]=owner
-    session["role"]="superadmin"
+    session["role"]="superadmin"; session["roles"]=["superadmin"]
     session["org"]=PLATFORM_ORG
     session["name"]="Platform Owner"
     session["brand"]=brand_for_session(PLATFORM_ORG)
