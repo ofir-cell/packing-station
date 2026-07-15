@@ -98,6 +98,7 @@ def _navbar(active_page=""):
             entries.append(("support", "/support", "🛟 Support"))
             entries.append(("guides", "/guides", "📚 Guides"))
         if has("host", "assistant"):
+            entries.append(("myavail", "/my-availability", "🕒 My Availability"))
             entries.append(("myschedule", "/my-schedule", "🗓️ My Schedule"))
 
     # ── Avatar menu sections (personal + team/settings) ──
@@ -115,6 +116,7 @@ def _navbar(active_page=""):
         if has("worker", "picker"):
             _common.append(("guides", "/guides", "📚 Guides"))
         if has("host", "assistant"):
+            _common.append(("myavail", "/my-availability", "🕒 My Availability"))
             _common.append(("myschedule", "/my-schedule", "🗓️ My Schedule"))
         user_sections = [("", _common)]
         if has("admin"):
@@ -7108,7 +7110,12 @@ __NAVBAR__
     <button class="btn btn-g" id="apprBtn">✓ Approve week</button>
     <span id="status"></span>
   </div>
-  <div class="muted" style="font-size:12.5px">Auto-fills every channel 24/7 in 6-hour blocks, respecting each person's allowed channels and never double-booking. Red = uncovered. Only you can change assignments.</div>
+  <div class="muted" style="font-size:12.5px">Auto-fills each channel from the availability the girls submitted — never double-booking, balancing hours. Red = uncovered (nobody available). Only you can change assignments.</div>
+</div>
+
+<div class="card">
+  <h2>📥 Availability submissions <span id="subCount" class="muted" style="text-transform:none;font-weight:600"></span></h2>
+  <div id="subs"><div class="muted">Loading…</div></div>
 </div>
 
 <div class="card">
@@ -7151,7 +7158,18 @@ function saveChannels(u){
   fetch('/api/roster/staff/'+encodeURIComponent(u)+'/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({allowed_channels:ids})})
     .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Saved');loadStaff()}else toast(d.error||'Failed',1)});
 }
+function loadSubs(){
+  fetch('/api/roster/submissions?week_start='+document.getElementById('week').value).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;
+    document.getElementById('subCount').textContent='('+d.submitted_count+' of '+d.total_staff+' submitted)';
+    var sub=d.submitted.map(function(p){return '<span style="display:inline-flex;gap:6px;align-items:center;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:50px;padding:4px 12px;font-size:12.5px;margin:3px"><b>'+esc(p.name)+'</b> <span class="muted">'+p.roles.join('/')+' · '+p.slots+' blocks</span></span>'}).join('');
+    var miss=d.missing.map(function(p){return '<span style="display:inline-flex;gap:6px;align-items:center;background:#fff5f5;border:1px solid #fecaca;border-radius:50px;padding:4px 12px;font-size:12.5px;margin:3px;color:#b91c1c">'+esc(p.name)+' <span style="opacity:.7">('+p.roles.join('/')+') — not yet</span></span>'}).join('');
+    document.getElementById('subs').innerHTML=(sub||'<span class="muted">No submissions yet.</span>')+
+      (miss?('<div style="margin-top:10px;font-size:12px;font-weight:700;color:#6b7280">STILL WAITING ON</div>'+miss):'');
+  });
+}
 function loadWeek(){
+  loadSubs();
   fetch('/api/roster/week?week_start='+document.getElementById('week').value).then(function(r){return r.json()}).then(function(d){
     WEEK=d.shifts;BLOCKS=d.blocks;CH=d.channels;
     document.getElementById('status').innerHTML=(d.approved?'<span class="pill p-app">approved</span>':(WEEK.length?'<span class="pill p-prop">proposed</span>':''))+
@@ -7208,6 +7226,83 @@ document.getElementById('apprBtn').addEventListener('click',function(){
 });
 document.getElementById('week').addEventListener('change',function(){DAYSEL=0;loadWeek()});
 loadStaff();loadWeek();
+</script></body></html>'''
+
+
+MYAVAIL_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>My Availability</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#fff;color:#1a2130;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:900px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#4f46e5;margin-left:8px;font-weight:600;font-size:14px}
+.wrap{max-width:900px;margin:0 auto;padding:8px 28px 50px}
+.card{background:#fff;border:1px solid rgba(17,24,39,0.096);border-radius:16px;padding:18px 20px;margin-bottom:18px}
+.controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+input[type=date]{border:2px solid rgba(17,24,39,0.128);border-radius:9px;padding:8px 11px;font-size:14px;font-family:inherit;outline:none}
+.btn{border:none;border-radius:10px;padding:10px 18px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}.btn-s{background:#f6f7f9;color:#1a2130;border:1px solid rgba(17,24,39,0.12)}
+table{width:100%;border-collapse:collapse;margin-top:6px}
+th,td{border:1px solid rgba(17,24,39,0.1);padding:10px 6px;text-align:center;font-size:13px}
+th{background:#f6f7f9;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#6b7280}
+td.blk{background:#f9fafb;font-weight:800;text-align:left;white-space:nowrap}
+td.on{background:#ecfdf5}
+td label{display:block;cursor:pointer;padding:6px}
+input[type=checkbox]{width:20px;height:20px;cursor:pointer;accent-color:#4f46e5}
+.muted{color:#9ca3af;font-size:13px}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:600;z-index:100;display:none}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🕒 My Availability <span>__NAME__</span></div></div>
+<div class="wrap">
+<div class="card">
+  <div class="controls">
+    <span class="muted" style="font-weight:700">Week of</span>
+    <input type="date" id="week">
+    <button class="btn btn-s" id="allBtn">Select all</button>
+    <button class="btn btn-s" id="clrBtn">Clear</button>
+    <button class="btn btn-p" id="saveBtn" style="margin-left:auto">Submit availability</button>
+  </div>
+  <div class="muted" id="chnote"></div>
+  <div class="muted" style="font-size:12.5px;margin-top:4px">Tick every 6-hour block you can work. Your manager assigns you to a channel from the ones you're allowed on, without clashes.</div>
+  <div id="grid"></div>
+</div>
+</div>
+<div class="toast" id="t"></div>
+<script>
+function toast(m){var t=document.getElementById('t');t.textContent=m;t.style.display='block';setTimeout(function(){t.style.display='none'},2600)}
+var BLOCKS=[],CUR={};
+function monday(){var d=new Date();var g=(d.getDay()+6)%7;d.setDate(d.getDate()-g);return d.toISOString().slice(0,10)}
+document.getElementById('week').value=monday();
+function days(){var names=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];var b=new Date(document.getElementById('week').value);
+  return names.map(function(n,i){var d=new Date(b);d.setDate(d.getDate()+i);return {name:n+' '+(d.getMonth()+1)+'/'+d.getDate(),iso:d.toISOString().slice(0,10)}})}
+function load(){
+  fetch('/api/availability?week_start='+document.getElementById('week').value).then(function(r){return r.json()}).then(function(d){
+    BLOCKS=d.blocks;var sel={};(d.slots||[]).forEach(function(s){sel[s.date+'|'+s.start]=true});
+    var chn=(d.channels||[]).filter(function(c){return !d.allowed_channels.length||d.allowed_channels.indexOf(c.id)>=0}).map(function(c){return c.name});
+    document.getElementById('chnote').innerHTML='You can be scheduled on: <b>'+(chn.join(', ')||'any channel')+'</b>';
+    var D=days();
+    var head='<tr><th>Block</th>'+D.map(function(x){return '<th>'+x.name+'</th>'}).join('')+'</tr>';
+    var body=BLOCKS.map(function(b){
+      var tds=D.map(function(x){var k=x.iso+'|'+b[0];var on=!!sel[k];
+        return '<td class="'+(on?'on':'')+'"><label><input type="checkbox" data-date="'+x.iso+'" data-start="'+b[0]+'" '+(on?'checked':'')+' onchange="this.closest(\\'td\\').className=this.checked?\\'on\\':\\'\\'"></label></td>'}).join('');
+      return '<tr><td class="blk">'+b[0]+'–'+b[1]+'</td>'+tds+'</tr>';
+    }).join('');
+    document.getElementById('grid').innerHTML='<table>'+head+body+'</table>';
+  });
+}
+document.getElementById('allBtn').addEventListener('click',function(){document.querySelectorAll('#grid input').forEach(function(x){x.checked=true;x.closest('td').className='on'})});
+document.getElementById('clrBtn').addEventListener('click',function(){document.querySelectorAll('#grid input').forEach(function(x){x.checked=false;x.closest('td').className=''})});
+document.getElementById('saveBtn').addEventListener('click',function(){
+  var slots=[];document.querySelectorAll('#grid input:checked').forEach(function(x){slots.push({date:x.getAttribute('data-date'),start:x.getAttribute('data-start')})});
+  fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({week_start:document.getElementById('week').value,slots:slots})})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok)toast('Submitted '+d.saved+' blocks ✓')});
+});
+document.getElementById('week').addEventListener('change',load);
+load();
 </script></body></html>'''
 
 

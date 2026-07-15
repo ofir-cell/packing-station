@@ -32,7 +32,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
-    INVENTORY_HTML, PURCHASING_HTML, STOCKTAKE_HTML, AUDIT_HTML, ROSTER_HTML, MYSCHEDULE_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
+    INVENTORY_HTML, PURCHASING_HTML, STOCKTAKE_HTML, AUDIT_HTML, ROSTER_HTML, MYSCHEDULE_HTML, MYAVAIL_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
     PICKER_HTML, REPEAT_HTML,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
@@ -1000,6 +1000,18 @@ def sdb_init(org):
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_shifts_week ON shifts(week_start)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_shifts_date ON shifts(shift_date)")
+    # Availability the hosts/assistants submit (which slots they CAN work).
+    c.execute("""CREATE TABLE IF NOT EXISTS availability(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        week_start TEXT NOT NULL,
+        shift_date TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        channel_id INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_avail_week ON availability(week_start)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_avail_user ON availability(username,week_start)")
     # NOTE: the `organizations` table is the cross-tenant control plane and now
     # lives in platform.db (see pdb_init), NOT here in a per-tenant shipments.db.
     c.commit(); c.close()
@@ -6621,8 +6633,13 @@ def api_roster_generate():
     chans=[r["id"] for r in c.execute("SELECT id FROM channels WHERE active=1 ORDER BY sort,id").fetchall()]
     staff=_roster_staff()
     hours={p["username"]:0 for grp in staff.values() for p in grp}
-    def pick(pool, ch_id, used):
-        cands=[p for p in pool if _eligible(p,ch_id) and p["username"] not in used]
+    # Only assign people who SUBMITTED availability for that exact day+block.
+    avail=set()
+    for r in c.execute("SELECT username,shift_date,start_time FROM availability WHERE week_start=?",(ws,)).fetchall():
+        avail.add((r["username"],r["shift_date"],r["start_time"]))
+    def pick(pool, ch_id, used, day, st):
+        cands=[p for p in pool if _eligible(p,ch_id) and p["username"] not in used
+               and (p["username"],day,st) in avail]
         if not cands: return None
         cands.sort(key=lambda p: hours.get(p["username"],0))   # least-loaded first
         return cands[0]["username"]
@@ -6633,9 +6650,9 @@ def api_roster_generate():
         for bi,(st,en) in enumerate(_ROSTER_BLOCKS):
             used=set()   # nobody in two channels during the same block that day
             for ch_id in chans:
-                h=pick(staff["host"],ch_id,used)
+                h=pick(staff["host"],ch_id,used,day,st)
                 if h: used.add(h); hours[h]=hours.get(h,0)+6
-                a=pick(staff["assistant"],ch_id,used)
+                a=pick(staff["assistant"],ch_id,used,day,st)
                 if a: used.add(a); hours[a]=hours.get(a,0)+6
                 c.execute("""INSERT INTO shifts(channel_id,shift_date,start_time,end_time,host_user,assistant_user,week_start,status)
                              VALUES(?,?,?,?,?,?,?, 'proposed')""",(ch_id,day,st,en,h,a,ws))
@@ -6728,6 +6745,71 @@ def roster_page():
 def my_schedule_page():
     return MYSCHEDULE_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
         "__NAVBAR__",_navbar("myschedule")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+@app.route("/api/availability")
+@req_role("host","assistant","admin","cs")
+def api_availability_get():
+    """The logged-in user's submitted availability for a week + their channels."""
+    ws=_week_start(request.args.get("week_start") or datetime.now().date().isoformat())
+    u=session.get("user")
+    c=sdb()
+    slots=[{"date":r["shift_date"],"start":r["start_time"]} for r in c.execute(
+        "SELECT shift_date,start_time FROM availability WHERE username=? AND week_start=?",(u,ws)).fetchall()]
+    c.close()
+    info=(ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}).get(u,{})
+    return jsonify({"ok":True,"week_start":ws,"slots":slots,"blocks":_ROSTER_BLOCKS,
+                    "channels":_channels(),"allowed_channels":info.get("allowed_channels") or []})
+
+@app.route("/api/availability",methods=["POST"])
+@req_role("host","assistant","admin","cs")
+def api_availability_save():
+    """Replace the user's availability for a week with the submitted blocks."""
+    d=request.get_json() or {}
+    ws=_week_start(d.get("week_start") or "")
+    u=session.get("user")
+    slots=d.get("slots") or []
+    valid_starts={b[0] for b in _ROSTER_BLOCKS}
+    c=sdb()
+    c.execute("DELETE FROM availability WHERE username=? AND week_start=?",(u,ws))
+    n=0
+    for s in slots:
+        dt=(s.get("date") or "").strip(); st=(s.get("start") or "").strip()
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$',dt) or st not in valid_starts: continue
+        c.execute("INSERT INTO availability(username,week_start,shift_date,start_time) VALUES(?,?,?,?)",(u,ws,dt,st))
+        n+=1
+    c.commit(); c.close()
+    return jsonify({"ok":True,"saved":n})
+
+@app.route("/api/roster/submissions")
+@req_role("admin","cs")
+def api_roster_submissions():
+    """Manager view: who submitted what for a week + who hasn't + coverage per slot."""
+    ws=_week_start(request.args.get("week_start") or datetime.now().date().isoformat())
+    staff=_roster_staff()
+    everyone={}
+    for role,grp in staff.items():
+        for p in grp: everyone.setdefault(p["username"],{"username":p["username"],"name":p["name"],"roles":set()})["roles"].add(role)
+    c=sdb()
+    rows=c.execute("SELECT username,shift_date,start_time FROM availability WHERE week_start=?",(ws,)).fetchall()
+    c.close()
+    counts={}; per_slot={}
+    for r in rows:
+        counts[r["username"]]=counts.get(r["username"],0)+1
+        per_slot.setdefault((r["shift_date"],r["start_time"]),0)
+        per_slot[(r["shift_date"],r["start_time"])]+=1
+    submitted=[]; missing=[]
+    for un,info in everyone.items():
+        entry={"username":un,"name":info["name"],"roles":sorted(info["roles"]),"slots":counts.get(un,0)}
+        (submitted if counts.get(un,0) else missing).append(entry)
+    submitted.sort(key=lambda x:-x["slots"])
+    return jsonify({"ok":True,"week_start":ws,"submitted":submitted,"missing":missing,
+                    "total_staff":len(everyone),"submitted_count":len(submitted)})
+
+@app.route("/my-availability")
+@req_role("host","assistant","admin","cs")
+def my_availability_page():
+    return MYAVAIL_HTML.replace("__NAME__",esc(session.get("name",""))).replace(
+        "__NAVBAR__",_navbar("myavail")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/users/add",methods=["POST"])
 @req_role("admin")
