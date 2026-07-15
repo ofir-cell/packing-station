@@ -7118,6 +7118,13 @@ __NAVBAR__
 </div>
 
 <div class="card">
+  <h2>📅 Week at a glance</h2>
+  <div id="weekgrid"><div class="muted">—</div></div>
+  <div class="muted" style="font-size:11.5px;margin-top:8px">🟩 fully staffed · 🟨 needs a person · 🟥 empty. Each cell: time · Host / Assistant.</div>
+</div>
+
+<div class="card">
+  <h2>✏️ Build the day</h2>
   <div class="days" id="days"></div>
   <div id="grid"><div class="muted">Pick a day.</div></div>
 </div>
@@ -7175,8 +7182,28 @@ function loadWeek(){
     document.getElementById('status').innerHTML=(d.approved?'<span class="pill p-app">approved</span>':(WEEK.length?'<span class="pill p-prop">proposed</span>':''))+
       (d.incomplete?(' <span class="pill p-gap">'+d.incomplete+' need people</span>'):'')+
       ' <span class="muted" style="font-size:12px">'+d.covered_hours+'h covered</span>';
-    renderDays();loadSubs();
+    renderDays();renderWeekGrid();loadSubs();
   });
+}
+function renderWeekGrid(){
+  var base=new Date(document.getElementById('week').value);var days=[];
+  for(var i=0;i<7;i++){var d=new Date(base);d.setDate(d.getDate()+i);days.push(d.toISOString().slice(0,10))}
+  var names=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  if(!CH.length){document.getElementById('weekgrid').innerHTML='<div class="muted">No channels.</div>';return}
+  var head='<tr><th>Channel</th>'+names.map(function(n,i){var d=new Date(days[i]+'T00:00');return '<th>'+n+' '+(d.getMonth()+1)+'/'+d.getDate()+'</th>'}).join('')+'</tr>';
+  var body=CH.map(function(c){
+    var tds=days.map(function(day){
+      var shifts=WEEK.filter(function(s){return s.shift_date===day&&s.channel_id===c.id}).sort(function(a,b){return tmin(a.start_time)-tmin(b.start_time)});
+      if(!shifts.length)return '<td class="muted" style="text-align:center">·</td>';
+      return '<td>'+shifts.map(function(s){var full=s.host_user&&s.assistant_user;
+        var bg=full?'#ecfdf5':((s.host_user||s.assistant_user)?'#fffbeb':'#fff5f5');
+        var bd=full?'#a7f3d0':((s.host_user||s.assistant_user)?'#fde68a':'#fecaca');
+        return '<div style="background:'+bg+';border:1px solid '+bd+';border-radius:6px;padding:3px 6px;margin-bottom:3px;font-size:11px;line-height:1.35"><b>'+s.start_time+'–'+s.end_time+'</b><br>'+esc(s.host_name||'— host')+'<br><span class="muted">'+esc(s.assistant_name||'— asst')+'</span></div>';
+      }).join('')+'</td>';
+    }).join('');
+    return '<tr><td style="font-weight:800;font-size:12px;white-space:nowrap">'+esc(c.name)+'</td>'+tds+'</tr>';
+  }).join('');
+  document.getElementById('weekgrid').innerHTML='<div style="overflow-x:auto"><table style="min-width:920px">'+head+body+'</table></div>';
 }
 function renderDays(){
   var names=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];var base=new Date(document.getElementById('week').value);
