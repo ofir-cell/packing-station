@@ -1341,9 +1341,10 @@ def _ss(method, path, payload=None):
         raise RuntimeError("ShipStation: "+str(msg))
 
 _ss_carriers={"ids":None,"ts":0}
-def _ship_carrier_ids():
-    """Carrier IDs connected in the ShipStation account (cached 1h). Rates need these."""
-    if _ss_carriers["ids"] is not None and time.time()-_ss_carriers["ts"]<3600:
+def _ship_carrier_ids(force=False):
+    """Carrier IDs connected in the ShipStation account (cached 10min). Rates need these.
+    Pass force=True to bust the cache after connecting a new carrier (e.g. UPS)."""
+    if not force and _ss_carriers["ids"] is not None and time.time()-_ss_carriers["ts"]<600:
         return _ss_carriers["ids"]
     r=_ss("GET","/v2/carriers")
     ids=[c.get("carrier_id") for c in (r.get("carriers") or []) if c.get("carrier_id")]
@@ -8385,6 +8386,10 @@ def api_ship_carriers():
         cs=[{"carrier_id":c.get("carrier_id"),"carrier_code":c.get("carrier_code"),
              "name":c.get("friendly_name") or c.get("nickname"),
              "services":len(c.get("services") or [])} for c in (r.get("carriers") or [])]
+        # If the caller asked to refresh, rebuild the carrier-id cache used for rating
+        # so a just-connected carrier (e.g. UPS) is included in the next rate request.
+        if request.args.get("refresh"):
+            _ship_carrier_ids(force=True)
         return jsonify({"ok":True,"count":len(cs),"carriers":cs})
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)})

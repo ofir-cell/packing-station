@@ -8963,6 +8963,14 @@ __NAVBAR__
   </div>
   <div class="grid2" style="margin-top:10px;margin-bottom:8px"><div><label>Weight unit</label>
     <select id="wUnit"><option value="oz">Ounces (oz)</option><option value="lb">Pounds (lb)</option></select></div></div>
+  <div id="carrierStrip" style="margin:6px 0 12px;padding:10px 12px;border:1px solid rgba(148,163,184,.35);border-radius:10px;background:rgba(148,163,184,.06)">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <b style="font-size:13px">🚚 Carriers connected to ShipStation:</b>
+      <span id="carrierChips" class="muted" style="font-size:13px">Checking…</span>
+      <button class="btn btn-s" id="refreshCarriers" style="padding:3px 10px;font-size:12px;margin-left:auto">↻ Refresh</button>
+    </div>
+    <div id="carrierHint" class="muted" style="font-size:12px;margin-top:6px;display:none"></div>
+  </div>
   <label>Boxes in this shipment</label>
   <div class="desc" style="margin-bottom:8px">Supplier sending several packages? Add a row per box (or set <b>×copies</b> for identical boxes). One label is bought per box and the total is summed. Edit saved box presets in ⚙️ Settings.</div>
   <div class="boxhdr"><span>Preset</span><span id="bhWeight">Weight (oz)</span><span>L (in)</span><span>W (in)</span><span>H (in)</span><span>×Copies</span><span></span></div>
@@ -9053,6 +9061,33 @@ document.getElementById('delSup').addEventListener('click',function(){
 });
 fetch('/api/suppliers').then(function(r){return r.json()}).then(function(d){SUPPLIERS=d.suppliers||[];renderSuppliers()});
 
+// ── Connected carriers strip (so you can confirm UPS is there before rating) ──
+var CARRIERS=[];
+function carrierLabel(c){var code=(c.carrier_code||'').toLowerCase();
+  if(code.indexOf('ups')>=0)return 'UPS';if(code.indexOf('fedex')>=0)return 'FedEx';
+  if(code.indexOf('usps')>=0||code.indexOf('stamps')>=0)return 'USPS';
+  if(code.indexOf('dhl')>=0)return 'DHL';return c.name||c.carrier_code||'Carrier';}
+function loadCarriers(refresh){
+  var chips=document.getElementById('carrierChips');var hint=document.getElementById('carrierHint');
+  chips.textContent='Checking…';
+  fetch('/api/ship/carriers'+(refresh?'?refresh=1':'')).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){chips.innerHTML='<span style="color:#e11d48">'+esc(d.error||'ShipStation not reachable')+'</span>';return}
+    CARRIERS=d.carriers||[];
+    if(!CARRIERS.length){chips.innerHTML='<span style="color:#e11d48">None connected</span>';return}
+    var seen={};chips.innerHTML=CARRIERS.map(function(c){
+      var lbl=carrierLabel(c);if(seen[lbl])return '';seen[lbl]=1;
+      var up=lbl==='UPS';
+      return '<span style="display:inline-block;padding:2px 9px;margin:2px 3px 0 0;border-radius:999px;font-size:12px;font-weight:600;'+
+        (up?'background:#7c2d12;color:#fed7aa':'background:rgba(52,211,153,.15);color:#059669')+'">'+esc(lbl)+' ✓</span>';
+    }).join('');
+    var hasUPS=CARRIERS.some(function(c){return (c.carrier_code||'').toLowerCase().indexOf('ups')>=0});
+    if(!hasUPS){hint.style.display='block';hint.innerHTML='⚠️ UPS is not connected in ShipStation. Add it in ShipStation → Settings → Carriers, then hit ↻ Refresh.';}
+    else{hint.style.display='none';}
+  });
+}
+document.getElementById('refreshCarriers').addEventListener('click',function(){loadCarriers(true)});
+loadCarriers(false);
+
 document.getElementById('getRates').addEventListener('click',function(){
   if(!BOXES.length){toast('Add at least one box',true);return}
   var boxes=[];
@@ -9079,15 +9114,44 @@ document.getElementById('getRates').addEventListener('click',function(){
          '<button class="btn btn-p" style="padding:6px 14px" onclick="buyMulti(\\'best\\',this)">$'+d.best_mix.total+'</button></div>';
      }
      if(!d.rates.length&&!d.best_mix){box.innerHTML='<div style="color:#e11d48">No service is available for all '+d.boxes+' boxes. Try different dimensions.</div>';return}
-     if(d.rates.length)html+='<div class="muted" style="margin:10px 0 6px;font-size:12px">Or one carrier for all boxes:</div>';
-     html+=d.rates.map(function(rt,idx){
-       window._legsById[idx]=rt.legs;
-       return '<div class="card" style="display:flex;justify-content:space-between;align-items:center;margin:0 0 8px;padding:12px 14px"><div><b>'+esc(rt.carrier)+'</b> '+esc(rt.service)+(rt.days?(' · '+rt.days+'d'):'')+' · <span class="muted">'+d.boxes+' labels</span></div>'+
-         '<button class="btn btn-p" style="padding:6px 14px" onclick="buyMulti('+idx+',this)">$'+rt.total+'</button></div>';
-     }).join('');
+     // Keep a stable legs map by original index; render list with a carrier filter.
+     window._rates=d.rates||[];window._rboxes=d.boxes;
+     (window._rates).forEach(function(rt,idx){window._legsById[idx]=rt.legs;});
+     if(window._rates.length){
+       // Build carrier filter chips (UPS first), so you can jump straight to UPS.
+       var order={'UPS':0,'FedEx':1,'USPS':2,'DHL':3};
+       var cset=[];window._rates.forEach(function(rt){var c=rt.carrier||'?';if(cset.indexOf(c)<0)cset.push(c)});
+       cset.sort(function(a,b){var oa=(order[a]==null?9:order[a]),ob=(order[b]==null?9:order[b]);return oa-ob||a.localeCompare(b)});
+       html+='<div style="margin:12px 0 8px"><span class="muted" style="font-size:12px">Show carrier: </span>'+
+         '<button class="crf btn btn-s" data-c="" style="padding:3px 10px;font-size:12px;margin:2px">All</button>'+
+         cset.map(function(c){return '<button class="crf btn btn-s" data-c="'+esc(c)+'" style="padding:3px 10px;font-size:12px;margin:2px">'+esc(c)+'</button>'}).join('')+'</div>';
+       html+='<div id="rateList"></div>';
+     }
      box.innerHTML=html;
+     if(window._rates.length){
+       document.querySelectorAll('.crf').forEach(function(btn){btn.addEventListener('click',function(){renderRateList(this.dataset.c)})});
+       // Default filter: if UPS exists, show UPS first; else show all.
+       var hasUPS=window._rates.some(function(rt){return /ups/i.test(rt.carrier||'')});
+       renderRateList(hasUPS?'':'');
+     }
    });
 });
+function renderRateList(filter){
+  var el=document.getElementById('rateList');if(!el)return;
+  var order={'UPS':0,'FedEx':1,'USPS':2,'DHL':3};
+  function ck(c){c=c||'';if(/ups/i.test(c))return 'UPS';if(/fedex/i.test(c))return 'FedEx';if(/usps|stamps/i.test(c))return 'USPS';if(/dhl/i.test(c))return 'DHL';return c;}
+  // Attach original index, filter, then sort UPS-first then cheapest.
+  var rows=window._rates.map(function(rt,idx){return {rt:rt,idx:idx}});
+  if(filter)rows=rows.filter(function(x){return (x.rt.carrier||'')===filter});
+  rows.sort(function(a,b){var oa=(order[ck(a.rt.carrier)]==null?9:order[ck(a.rt.carrier)]),ob=(order[ck(b.rt.carrier)]==null?9:order[ck(b.rt.carrier)]);
+    return oa-ob||(parseFloat(a.rt.total||0)-parseFloat(b.rt.total||0));});
+  if(!rows.length){el.innerHTML='<div class="muted">No options for this carrier.</div>';return}
+  el.innerHTML='<div class="muted" style="margin:2px 0 6px;font-size:12px">Choose one carrier for all boxes:</div>'+rows.map(function(x){
+    var rt=x.rt;var up=/ups/i.test(rt.carrier||'');
+    return '<div class="card" style="display:flex;justify-content:space-between;align-items:center;margin:0 0 8px;padding:12px 14px'+(up?';border:1px solid rgba(234,88,12,.5)':'')+'"><div><b>'+esc(rt.carrier)+'</b> '+esc(rt.service)+(rt.days?(' · '+rt.days+'d'):'')+' · <span class="muted">'+window._rboxes+' labels</span></div>'+
+      '<button class="btn btn-p" style="padding:6px 14px" onclick="buyMulti('+x.idx+',this)">$'+rt.total+'</button></div>';
+  }).join('');
+}
 function buyMulti(idx,btn){
   var legs=window._legsById[idx];if(!legs){toast('Pick rates again',true);return}
   if(btn){btn.disabled=true;btn.textContent='Buying '+legs.length+'…'}
