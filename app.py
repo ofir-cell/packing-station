@@ -556,6 +556,9 @@ else:
 # GIVEAWAY MODULE - SQLite database
 # ══════════════════════════════════════════════════════════
 GIVEAWAY_BRANDS=["5 Sec Beauty","Hera Beauty","Peach Beauty"]
+# A giveaway winner with no order yet waits this many days for an order to appear in a
+# CSV import before we give up and it moves to "need to create a label".
+GIVEAWAY_NO_ORDER_DAYS=4
 GIVEAWAY_STATUSES=["pending_address","address_received","label_created","shipped","cancelled"]
 
 def gdb(org=None):
@@ -3929,6 +3932,8 @@ def api_shipments_import():
     except Exception as e:
         print("import_files record error:", e, flush=True)
     alog("shipments.import","%s '%s': %d new, %d updated"%(platform,label,inserted,updated))
+    # A winner who was waiting for an order may now have one in this import — attach it.
+    gv_attached=_autoattach_giveaways()
     return jsonify({
         "ok": True,
         "format": fmt,
@@ -3937,6 +3942,7 @@ def api_shipments_import():
         "label": label,
         "shipments_new": inserted,
         "shipments_updated": updated,
+        "giveaways_attached": gv_attached,
         "items": items_inserted,
         "skipped_rows": skipped,
         "cancelled_inline": len(cancelled_inline),
@@ -8151,48 +8157,70 @@ def giveaway_dashboard():
 def giveaway_detail(gid):
     return GIVEAWAY_DETAIL_HTML.replace("__GID__",str(gid)).replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("giveaway")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
+def _lifetime_spend(c, usernames):
+    """{username: total_spend}, {username: order_count} across all their store orders.
+    Keyed by exact buyer_username. revenue may be 0 on Whatnot exports (best-effort)."""
+    usernames=[u for u in usernames if u]
+    spend={}; orders={}
+    if not usernames: return spend, orders
+    qm=",".join("?"*len(usernames))
+    for r in c.execute(
+        "SELECT s.buyer_username bu, COALESCE(SUM(i.revenue),0) sp, COUNT(DISTINCT s.shipment_id) oc "
+        "FROM shipments s JOIN shipment_items i ON i.shipment_id=s.shipment_id "
+        "WHERE s.buyer_username IN ("+qm+") GROUP BY s.buyer_username", usernames).fetchall():
+        spend[r["bu"]]=round(r["sp"] or 0,2); orders[r["bu"]]=r["oc"]
+    return spend, orders
+
+def _giveaway_stage(d, s):
+    """New board model:
+       pending_pick — attached to an order still being picked (waiting to go in the box)
+       no_order     — winner has no order yet, still inside the 4-day wait window
+       need_label   — 4-day window elapsed with no order → ship a standalone label
+       done         — packed / shipped (leaves the board, kept for history/search)"""
+    if d.get("attach_mode")=="piggyback" and s:
+        st=(s.get("status") or ""); dv=(s.get("delivery_status") or "")
+        if st in ("packed","shipped") or dv in ("PRE_TRANSIT","IN_TRANSIT","OUT_FOR_DELIVERY","DELIVERED","RETURNED","EXCEPTION"):
+            return "done"
+        return "pending_pick"
+    # standalone (no linked order)
+    if d.get("status") in ("shipped",) or d.get("tracking_number"):
+        return "done"
+    created=_parse_dt(d.get("created_at"))
+    age_days=(datetime.now()-created).days if created else 0
+    return "need_label" if age_days>=GIVEAWAY_NO_ORDER_DAYS else "no_order"
+
 @app.route("/api/giveaway/list")
 @req_role("admin","cs")
 def api_giveaway_list():
-    """Giveaways grouped by their position in the piggyback process:
-       toadd → added → shipped → delivered.
-    Each card is enriched from the linked order: recipient, address, customer
-    order-history count, current tracking, live stage, who added the prize, and
-    (for customer service) the shipping/delivery record — so nothing is lost."""
+    """Active giveaways in the new 3-lane board:
+       pending_pick → no_order → need_label.
+    Packed/shipped giveaways drop off the board (searchable in history). Each card is
+    enriched with the winner's lifetime spend so you know what tier of prize to give."""
     c=gdb()
     rows=c.execute("SELECT * FROM giveaways WHERE status!='cancelled' ORDER BY created_at DESC").fetchall()
     c.close()
     items=[dict(r) for r in rows]
     sids=[d["linked_shipment_id"] for d in items if d.get("linked_shipment_id")]
-    smap={}; hist={}
-    if sids:
-        try:
-            sc=sdb(); qm=",".join("?"*len(sids))
-            srows=sc.execute("SELECT shipment_id,buyer_username,buyer_name,address_full,postal_code,"
+    winners=sorted({(d.get("winner_username") or "").strip() for d in items if d.get("winner_username")})
+    smap={}; spend={}; orders={}
+    try:
+        sc=sdb()
+        if sids:
+            qm=",".join("?"*len(sids))
+            for sr in sc.execute("SELECT shipment_id,buyer_username,buyer_name,address_full,postal_code,"
                              "tracking_code,status,delivery_status,delivery_detail,delivered_at,"
-                             "packed_by,packed_at,picked_by FROM shipments WHERE shipment_id IN ("+qm+")", sids).fetchall()
-            for sr in srows: smap[sr["shipment_id"]]=dict(sr)
-            unames=sorted({(sr["buyer_username"] or "") for sr in srows if sr["buyer_username"]})
-            if unames:
-                uq=",".join("?"*len(unames))
-                for hr in sc.execute("SELECT buyer_username, COUNT(*) n FROM shipments "
-                                     "WHERE buyer_username IN ("+uq+") GROUP BY buyer_username", unames).fetchall():
-                    hist[hr["buyer_username"]]=hr["n"]
-            sc.close()
-        except Exception as e:
-            print("giveaway enrich failed:",e,flush=True)
-    def _stage(d,s):
-        if d.get("attach_mode")!="piggyback" or not s:
-            return "shipped" if d.get("status")=="shipped" else "toadd"
-        dv=(s.get("delivery_status") or "")
-        if dv=="DELIVERED": return "delivered"
-        if dv in ("PRE_TRANSIT","IN_TRANSIT","OUT_FOR_DELIVERY","RETURNED","EXCEPTION") or s.get("status")=="shipped":
-            return "shipped"
-        if d.get("attach_status")=="added": return "added"
-        return "toadd"
-    grouped={"toadd":[],"added":[],"shipped":[],"delivered":[]}
+                             "packed_by,packed_at,picked_by FROM shipments WHERE shipment_id IN ("+qm+")", sids).fetchall():
+                smap[sr["shipment_id"]]=dict(sr)
+        spend,orders=_lifetime_spend(sc, winners)
+        sc.close()
+    except Exception as e:
+        print("giveaway enrich failed:",e,flush=True)
+    grouped={"pending_pick":[],"no_order":[],"need_label":[]}
     for d in items:
         s=smap.get(d.get("linked_shipment_id"))
+        wu=(d.get("winner_username") or "").strip()
+        d["lifetime_spend"]=spend.get(wu,0.0)
+        d["lifetime_orders"]=orders.get(wu,0)
         if s:
             d["order_recipient"]=s.get("buyer_name")
             d["order_address"]=s.get("address_full")
@@ -8201,9 +8229,78 @@ def api_giveaway_list():
             d["order_delivery_detail"]=s.get("delivery_detail")
             d["order_delivered_at"]=s.get("delivered_at")
             d["order_tracking"]=s.get("tracking_code") or d.get("linked_tracking")
-            d["order_history"]=hist.get(s.get("buyer_username"),1)
-        grouped[_stage(d,s)].append(d)
+        st=_giveaway_stage(d, s)
+        if st=="done":
+            continue
+        if st=="no_order":
+            created=_parse_dt(d.get("created_at"))
+            age=max(0,(datetime.now()-created).days) if created else 0
+            d["days_left"]=max(0, min(GIVEAWAY_NO_ORDER_DAYS, GIVEAWAY_NO_ORDER_DAYS-age))
+        grouped[st].append(d)
     return jsonify({"groups":grouped,"brands":GIVEAWAY_BRANDS})
+
+@app.route("/api/giveaway/customer")
+@req_role("admin","cs")
+def api_giveaway_customer():
+    """Customer card for a winner: lifetime spend + order count + last order date.
+    Lets the team see the customer's tier before deciding what prize to give."""
+    u=(request.args.get("username") or "").strip().lstrip("@")
+    if not u: return jsonify({"ok":False,"error":"username required"})
+    try:
+        c=sdb()
+        row=c.execute("""SELECT buyer_name,
+                                COUNT(DISTINCT s.shipment_id) orders,
+                                COALESCE(SUM(i.revenue),0) spend,
+                                MAX(s.show_date) last_order
+                         FROM shipments s LEFT JOIN shipment_items i ON i.shipment_id=s.shipment_id
+                         WHERE LOWER(s.buyer_username)=LOWER(?)""",(u,)).fetchone()
+        c.close()
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)})
+    found=bool(row and row["orders"])
+    return jsonify({"ok":True,"username":u,"found":found,
+        "name":(row["buyer_name"] if row else None),
+        "lifetime_spend":round((row["spend"] if row else 0) or 0,2),
+        "orders":(row["orders"] if row else 0),
+        "last_order":(row["last_order"] if row else None)})
+
+@app.route("/api/giveaway/search")
+@req_role("admin","cs")
+def api_giveaway_search():
+    """Search giveaways by winner username (incl shipped history), plus the customer card.
+    Replaces the old shipped/delivered history columns."""
+    u=(request.args.get("username") or "").strip().lstrip("@")
+    if not u: return jsonify({"ok":True,"giveaways":[],"card":None})
+    g=gdb()
+    rows=g.execute("SELECT * FROM giveaways WHERE LOWER(winner_username) LIKE LOWER(?) ORDER BY created_at DESC LIMIT 100",
+                   ("%"+u+"%",)).fetchall()
+    g.close()
+    gvs=[dict(r) for r in rows]
+    # Enrich with linked order status + a plain status label.
+    sids=[d["linked_shipment_id"] for d in gvs if d.get("linked_shipment_id")]
+    smap={}
+    card=None
+    try:
+        c=sdb()
+        if sids:
+            qm=",".join("?"*len(sids))
+            for sr in c.execute("SELECT shipment_id,status,delivery_status,tracking_code FROM shipments WHERE shipment_id IN ("+qm+")",sids).fetchall():
+                smap[sr["shipment_id"]]=dict(sr)
+        row=c.execute("""SELECT buyer_name, COUNT(DISTINCT s.shipment_id) orders,
+                                COALESCE(SUM(i.revenue),0) spend, MAX(s.show_date) last_order
+                         FROM shipments s LEFT JOIN shipment_items i ON i.shipment_id=s.shipment_id
+                         WHERE LOWER(s.buyer_username)=LOWER(?)""",(u,)).fetchone()
+        c.close()
+        if row and row["orders"]:
+            card={"name":row["buyer_name"],"orders":row["orders"],
+                  "lifetime_spend":round((row["spend"] or 0),2),"last_order":row["last_order"]}
+    except Exception as e:
+        print("giveaway search enrich failed:",e,flush=True)
+    for d in gvs:
+        s=smap.get(d.get("linked_shipment_id"))
+        d["stage"]=_giveaway_stage(d, s)
+        d["order_status"]=(s.get("status") if s else None)
+    return jsonify({"ok":True,"giveaways":gvs,"card":card})
 
 @app.route("/api/giveaway/<int:gid>")
 @req_role("admin","cs")
@@ -8348,6 +8445,41 @@ def _pending_giveaways_for(shipment_id, tracking=None):
         print("pending-giveaways lookup failed:",e,flush=True)
         return []
 
+def _autoattach_giveaways():
+    """After a CSV import, try to attach any still-waiting 'no order yet' giveaways to a
+    freshly-imported order for the same winner. If found, the giveaway becomes a piggyback
+    and moves from 'no order' → 'pending to picking'. Returns how many were attached."""
+    try:
+        g=gdb()
+        waiting=[dict(r) for r in g.execute(
+            "SELECT * FROM giveaways WHERE COALESCE(attach_mode,'standalone')!='piggyback' "
+            "AND status NOT IN ('shipped','cancelled') AND COALESCE(tracking_number,'')=''").fetchall()]
+        g.close()
+    except Exception as e:
+        print("autoattach load failed:",e,flush=True); return 0
+    if not waiting: return 0
+    n=0
+    try:
+        c=sdb(); g=gdb()
+        for d in waiting:
+            u=(d.get("winner_username") or "").strip()
+            if not u: continue
+            cand,_=_rank_attachable(c, u, None, None, None)
+            # Only auto-attach to an order that can still receive the prize during picking.
+            cand=[x for x in cand if x.get("status") in ("pending","picked")]
+            if not cand: continue
+            ship=cand[0]
+            g.execute("""UPDATE giveaways SET attach_mode='piggyback', linked_shipment_id=?,
+                            linked_tracking=?, attach_status='pending', attach_show=?,
+                            status='address_received'
+                         WHERE id=?""",
+                      (ship.get("shipment_id"), ship.get("tracking_code"), ship.get("import_label"), d["id"]))
+            n+=1
+        g.commit(); g.close(); c.close()
+    except Exception as e:
+        print("autoattach failed:",e,flush=True)
+    return n
+
 @app.route("/api/giveaway/match",methods=["POST"])
 @req_role("admin","cs")
 def api_giveaway_match():
@@ -8366,6 +8498,7 @@ def api_giveaway_match():
             for hr in c.execute("SELECT buyer_username, COUNT(*) n FROM shipments "
                                 "WHERE buyer_username IN ("+uq+") GROUP BY buyer_username", unames).fetchall():
                 hist[hr["buyer_username"]]=hr["n"]
+        spend,_o=_lifetime_spend(c, unames)
         c.close()
     except Exception as e:
         print("giveaway match failed:",e,flush=True)
@@ -8375,7 +8508,8 @@ def api_giveaway_match():
         return jsonify({"ok":True,"candidates":[],"best":None,"reason":reason})
     slim=[]
     for r in cand:
-        s=_slim_ship(r); s["order_history"]=hist.get(r.get("buyer_username"),1); slim.append(s)
+        s=_slim_ship(r); s["order_history"]=hist.get(r.get("buyer_username"),1)
+        s["lifetime_spend"]=spend.get(r.get("buyer_username"),0.0); slim.append(s)
     return jsonify({"ok":True,"candidates":slim,"best":slim[0]})
 
 @app.route("/api/giveaway/attach",methods=["POST"])
@@ -8420,14 +8554,22 @@ def api_giveaway_attach():
 @app.route("/api/giveaway/<int:gid>/mark-added",methods=["POST"])
 @req_login
 def api_giveaway_mark_added(gid):
-    """Packer/picker confirms the prize is in the box. Sets attach_status='added'."""
+    """Picker/packer checks the prize off (it's in the box). Toggles attach_status.
+    Body {added:false} un-checks it (parity with tapping a product line off)."""
+    d=request.get_json(silent=True) or {}
+    added = d.get("added", True)
     c=gdb()
-    c.execute("""UPDATE giveaways SET attach_status='added',
-                    attach_added_at=?, attach_added_by=?
-                 WHERE id=? AND attach_mode='piggyback'""",
-              (datetime.now().isoformat(timespec='seconds'), session.get("name","")[:60], gid))
+    if added:
+        c.execute("""UPDATE giveaways SET attach_status='added',
+                        attach_added_at=?, attach_added_by=?
+                     WHERE id=? AND attach_mode='piggyback'""",
+                  (datetime.now().isoformat(timespec='seconds'), session.get("name","")[:60], gid))
+    else:
+        c.execute("""UPDATE giveaways SET attach_status='pending',
+                        attach_added_at=NULL, attach_added_by=NULL
+                     WHERE id=? AND attach_mode='piggyback'""", (gid,))
     c.commit();c.close()
-    return jsonify({"ok":True})
+    return jsonify({"ok":True,"added":bool(added)})
 
 @app.route("/api/tracking/refresh",methods=["POST"])
 @req_role("admin","cs")

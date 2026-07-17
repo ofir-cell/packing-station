@@ -1291,7 +1291,11 @@ body{font-family:'DM Sans',sans-serif;background:#ffffff;color:#1a2130;min-heigh
 .btn-p:hover{transform:translateY(-1px)}
 .btn-s{background:rgba(17,24,39,0.128);color:#1a2130;border:1px solid rgba(17,24,39,0.16)}
 .cols{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
-@media(max-width:1100px){.cols{grid-template-columns:repeat(2,1fr)}.add-row{grid-template-columns:1fr 1fr;}}
+.cols.cols3{grid-template-columns:repeat(3,1fr)}
+.spendchip{display:inline-block;background:rgba(16,185,129,.14);color:#059669;font-weight:800;font-size:11px;padding:2px 9px;border-radius:50px;letter-spacing:.2px}
+.daysleft{display:inline-block;background:rgba(245,158,11,.16);color:#b45309;font-weight:800;font-size:11px;padding:2px 9px;border-radius:50px}
+.daysleft.urgent{background:rgba(244,63,94,.16);color:#e11d48}
+@media(max-width:1100px){.cols{grid-template-columns:repeat(2,1fr)}.cols.cols3{grid-template-columns:repeat(2,1fr)}.add-row{grid-template-columns:1fr 1fr;}}
 @media(max-width:640px){.cols{grid-template-columns:1fr}.add-row{grid-template-columns:1fr}}
 .col{background:#ffffff;border:1px solid rgba(17,24,39,0.064);border-radius:14px;padding:16px;min-height:200px}
 .col-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid rgba(17,24,39,0.08)}
@@ -1338,11 +1342,19 @@ __NAVBAR__
 <div id="a-result" style="margin-top:14px;display:none"></div>
 </div>
 
-<div class="cols">
-<div class="col pa"><div class="col-h"><div class="col-t">🎯 To Add</div><div class="cnt" id="c-toadd">0</div></div><div id="g-toadd"></div></div>
-<div class="col ar"><div class="col-h"><div class="col-t">✅ Added · awaiting ship</div><div class="cnt" id="c-added">0</div></div><div id="g-added"></div></div>
-<div class="col lc"><div class="col-h"><div class="col-t">🚚 Shipped</div><div class="cnt" id="c-shipped">0</div></div><div id="g-shipped"></div></div>
-<div class="col sh"><div class="col-h"><div class="col-t">📬 Delivered</div><div class="cnt" id="c-delivered">0</div></div><div id="g-delivered"></div></div>
+<div class="add-card" style="border-color:rgba(79,70,229,.25)">
+<div class="add-title" style="color:#4f46e5">🔎 Look up a winner</div>
+<div class="add-row" style="grid-template-columns:1.4fr auto">
+<div class="f"><label>Winner username</label><input id="s-user" placeholder="@username — see spend + giveaway history"></div>
+<button class="btn btn-s" id="s-find">Search</button>
+</div>
+<div id="s-result" style="margin-top:14px;display:none"></div>
+</div>
+
+<div class="cols cols3">
+<div class="col pa"><div class="col-h"><div class="col-t">📋 Pending → Picking</div><div class="cnt" id="c-pending_pick">0</div></div><div id="g-pending_pick"></div></div>
+<div class="col ar"><div class="col-h"><div class="col-t">⏳ No order yet</div><div class="cnt" id="c-no_order">0</div></div><div id="g-no_order"></div></div>
+<div class="col lc"><div class="col-h"><div class="col-t">🏷️ Need to create a label</div><div class="cnt" id="c-need_label">0</div></div><div id="g-need_label"></div></div>
 </div>
 </div>
 <div class="toast" id="t"></div>
@@ -1352,25 +1364,33 @@ function timeAgo(ts){if(!ts)return '';var d=new Date(ts);var s=Math.floor((Date.
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
 var STAGE={pending:'🕗 Awaiting pick',picked:'📋 Picked',packed:'📦 Packed',shipped:'🚚 Shipped',cancelled:'🚫 Cancelled',
     PRE_TRANSIT:'🚚 Shipped',IN_TRANSIT:'✈️ In transit',OUT_FOR_DELIVERY:'📬 Out for delivery',DELIVERED:'✅ Delivered',EXCEPTION:'⚠️ Exception',RETURNED:'↩️ Returned'};
-function card(g){
+function spendChip(g){
+    var sp=g.lifetime_spend||0; var oc=g.lifetime_orders||0;
+    if(sp>0)return '<span class="spendchip">💰 $'+Number(sp).toFixed(2)+' lifetime'+(oc?' · '+oc+' ord':'')+'</span>';
+    if(oc>0)return '<span class="spendchip">'+oc+' order'+(oc>1?'s':'')+'</span>';
+    return '<span class="spendchip" style="background:rgba(148,163,184,.16);color:#64748b">new customer</span>';
+}
+function card(g,stage){
     var pl=g.platform==='tiktok'?'<span class="pl tt">TikTok</span>':'<span class="pl wn">Whatnot</span>';
     var extra='';
-    if(g.attach_mode==='piggyback'){
-        var raw=g.order_delivery||g.order_status||'';
-        var stage=STAGE[raw]||(raw?String(raw).replace(/_/g,' '):'');
+    if(stage==='pending_pick'){
         var ast=g.attach_status==='added'
             ?'<span style="color:#059669;font-weight:700">✓ ADDED'+(g.attach_added_by?' · '+esc(g.attach_added_by):'')+'</span>'
             :'<span style="color:#b45309;font-weight:700">⏳ get from manager</span>';
-        var hist=g.order_history?(' · <span style="color:#4f46e5">'+g.order_history+' order'+(g.order_history>1?'s':'')+'</span>'):'';
-        var deliv=g.order_delivered_at?('<span style="color:#059669">✅ '+esc((g.order_delivered_at||'').slice(0,16).replace('T',' '))+'</span>')
-                  :(g.order_delivery_detail?('<span style="color:#6b7280;font-size:11px">'+esc(g.order_delivery_detail)+'</span>'):'');
-        extra='<div style="font-size:13px;color:#475569;margin-bottom:2px">👤 '+esc(g.order_recipient||g.winner_username||'')+hist+'</div>'+
+        extra='<div style="font-size:13px;color:#475569;margin-bottom:2px">👤 '+esc(g.order_recipient||g.winner_username||'')+'</div>'+
             (g.order_address?'<div style="font-size:11px;color:#6b7280;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">📍 '+esc(g.order_address)+'</div>':'')+
-            '<div class="card-m"><span style="font-family:monospace;color:#4f46e5">📦 '+esc(g.order_tracking||g.linked_tracking||'')+'</span><span style="color:#475569;font-weight:600">'+stage+'</span></div>'+
-            '<div class="card-m" style="margin-top:4px">'+ast+deliv+'</div>';
+            '<div class="card-m"><span style="font-family:monospace;color:#4f46e5">📦 '+esc(g.order_tracking||g.linked_tracking||'')+'</span><span style="color:#475569;font-weight:600">'+(STAGE[g.order_status]||esc(g.order_status||''))+'</span></div>'+
+            '<div class="card-m" style="margin-top:4px">'+ast+'</div>';
+    } else if(stage==='no_order'){
+        var dl=(g.days_left==null?4:g.days_left);
+        var cls=dl<=1?'daysleft urgent':'daysleft';
+        extra='<div class="card-m"><span style="color:#6b7280">⏳ waiting for their order</span>'+
+              '<span class="'+cls+'">'+dl+' day'+(dl===1?'':'s')+' left</span></div>';
+    } else if(stage==='need_label'){
+        extra='<div class="card-m"><span style="color:#e11d48;font-weight:700">🏷️ No order arrived — create a label</span></div>';
     }
     return '<a class="card" href="/giveaway/'+g.id+'">'+
-        '<div class="card-w"><span class="at">@</span>'+esc(g.winner_username)+'</div>'+
+        '<div class="card-w"><span class="at">@</span>'+esc(g.winner_username)+' '+spendChip(g)+'</div>'+
         '<div class="card-p">🎁 '+esc(g.prize_name)+'</div>'+
         extra+
         '<div class="card-m" style="margin-top:8px">'+pl+'<span>'+timeAgo(g.created_at)+'</span></div>'+
@@ -1380,8 +1400,9 @@ var attachPrizeName='';
 function shipRow(s,best){
     var col={pending:'#b45309',picked:'#2563eb',packed:'#7c3aed'}[s.status]||'#6b7280';
     var hist=s.order_history?(' · '+s.order_history+' order'+(s.order_history>1?'s':'')+' in history'):'';
+    var sp=(s.lifetime_spend>0)?(' <span class="spendchip">💰 $'+Number(s.lifetime_spend).toFixed(2)+' lifetime</span>'):'';
     return '<div class="card" style="cursor:default;border-color:'+(best?'rgba(52,211,153,.45)':'rgba(17,24,39,0.096)')+'">'+
-        '<div class="card-w">'+esc(s.buyer_name||'?')+' <span class="at">@'+esc(s.buyer_username||'')+'</span></div>'+
+        '<div class="card-w">'+esc(s.buyer_name||'?')+' <span class="at">@'+esc(s.buyer_username||'')+'</span>'+sp+'</div>'+
         '<div style="font-size:11px;color:#6b7280;margin:2px 0 6px">📍 '+esc(s.address_full||'—')+hist+'</div>'+
         '<div class="card-m"><span style="color:'+col+';font-weight:700;text-transform:uppercase">'+s.status+'</span>'+
         '<span>'+esc(s.import_label||'')+' · '+(s.total_items||0)+' items</span></div>'+
@@ -1430,15 +1451,53 @@ function load(){
     fetch('/api/giveaway/list').then(function(r){return r.json()}).then(function(d){
         var br=document.getElementById('br');
         if(br.children.length===1){d.brands.forEach(function(b){var o=document.createElement('option');o.value=b;o.textContent=b;br.appendChild(o)})}
-        var groups={toadd:'toadd',added:'added',shipped:'shipped',delivered:'delivered'};
-        Object.keys(groups).forEach(function(k){
-            var arr=d.groups[groups[k]]||[];
+        ['pending_pick','no_order','need_label'].forEach(function(k){
+            var arr=d.groups[k]||[];
             document.getElementById('c-'+k).textContent=arr.length;
-            var html=arr.length?arr.map(card).join(''):'<div class="empty">No giveaways here</div>';
+            var html=arr.length?arr.map(function(g){return card(g,k)}).join(''):'<div class="empty">No giveaways here</div>';
             document.getElementById('g-'+k).innerHTML=html;
         });
     });
 }
+// ── Winner lookup (search + customer card) ──
+var GVSTAGE={pending_pick:['#2563eb','📋 Pending → picking'],no_order:['#b45309','⏳ Waiting for order'],
+    need_label:['#e11d48','🏷️ Needs a label'],done:['#059669','✅ Sent']};
+function runSearch(){
+    var u=document.getElementById('s-user').value.trim().replace(/^@/,'');
+    var box=document.getElementById('s-result');box.style.display='block';
+    if(!u){box.innerHTML='<div class="empty">Type a username to search.</div>';return}
+    box.innerHTML='<div class="empty">Searching…</div>';
+    fetch('/api/giveaway/search?username='+encodeURIComponent(u)).then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){box.innerHTML='<div class="empty">'+esc(d.error||'Search failed')+'</div>';return}
+        var html='';
+        if(d.card){
+            html+='<div class="card" style="cursor:default;border-color:rgba(16,185,129,.4);background:rgba(16,185,129,.04)">'+
+                '<div class="card-w">👤 '+esc(d.card.name||u)+' <span class="at">@'+esc(u)+'</span></div>'+
+                '<div style="display:flex;gap:22px;margin-top:6px;flex-wrap:wrap">'+
+                  '<div><div style="font-size:22px;font-weight:900;color:#059669">$'+Number(d.card.lifetime_spend||0).toFixed(2)+'</div><div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;font-weight:800">Lifetime spend</div></div>'+
+                  '<div><div style="font-size:22px;font-weight:900;color:#141b26">'+(d.card.orders||0)+'</div><div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;font-weight:800">Orders</div></div>'+
+                  (d.card.last_order?'<div><div style="font-size:16px;font-weight:800;color:#475569;padding-top:4px">'+esc((d.card.last_order||'').slice(0,10))+'</div><div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;font-weight:800">Last order</div></div>':'')+
+                '</div></div>';
+        } else {
+            html+='<div style="font-size:12px;color:#6b7280;margin-bottom:8px">No store orders on record for this username yet.</div>';
+        }
+        if(d.giveaways.length){
+            html+='<div style="font-size:12px;color:#6b7280;font-weight:700;margin:12px 0 6px">GIVEAWAY HISTORY ('+d.giveaways.length+')</div>';
+            html+=d.giveaways.map(function(g){
+                var st=GVSTAGE[g.stage]||['#6b7280',esc(g.stage||'')];
+                return '<a class="card" href="/giveaway/'+g.id+'" style="padding:10px 12px">'+
+                  '<div class="card-m"><span style="font-weight:700">🎁 '+esc(g.prize_name)+'</span>'+
+                  '<span style="color:'+st[0]+';font-weight:700;font-size:11px">'+st[1]+'</span></div>'+
+                  '<div class="card-m" style="margin-top:4px"><span style="color:#6b7280;font-size:11px">'+esc(g.brand||g.platform||'')+'</span><span>'+timeAgo(g.created_at)+'</span></div></a>';
+            }).join('');
+        } else {
+            html+='<div class="empty">No giveaways for this winner.</div>';
+        }
+        box.innerHTML=html;
+    }).catch(function(e){box.innerHTML='<div class="empty">Request failed: '+esc(String(e))+'</div>'});
+}
+document.getElementById('s-find').addEventListener('click',runSearch);
+document.getElementById('s-user').addEventListener('keydown',function(e){if(e.key==='Enter')runSearch()});
 document.getElementById('add').addEventListener('click',function(){
     var pn=document.getElementById('pn').value.trim();
     var wu=document.getElementById('wu').value.trim().replace(/^@/,'');
@@ -4494,6 +4553,9 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .pi-box{width:40px;height:40px;border-radius:50%;border:4px solid rgba(17,24,39,0.16);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:transparent;flex-shrink:0;transition:all .15s}
 .pi.done .pi-box{background:#10b981;border-color:#10b981;color:#ffffff}
 .pi.done .pi-box::before{content:'✓'}
+.pi.gv{background:rgba(16,185,129,.05);border-color:rgba(16,185,129,.3)}
+.pi.gv .pi-sku{font-size:24px}
+.pi.gv.done{background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.45)}
 .pi-info{min-width:0}
 .pi-sku{font-family:'SF Mono',Menlo,monospace;font-size:30px;font-weight:900;color:var(--brand);background:rgba(217,116,143,.12);padding:6px 14px;border-radius:12px;display:inline-block;letter-spacing:1px;line-height:1;margin-bottom:6px}
 .pi-name{font-size:14px;color:var(--text);line-height:1.4}
@@ -4682,7 +4744,7 @@ function applyLang(){
 }
 applyLang();
 var currentShow=localStorage.getItem('pickShow')||'';
-var currentDetail=null,currentItems=[],sessionCount=0;
+var currentDetail=null,currentItems=[],currentGiveaways=[],sessionCount=0;
 var availableShows=[];
 
 // ─── Audio feedback (Web Audio API). Mobile Safari needs a user gesture to start. ───
@@ -4900,6 +4962,7 @@ function openDetail(sid){
         }
         currentDetail=sid;
         currentItems=items;
+        currentGiveaways=(d.giveaways||[]).map(function(g){return {id:g.id,prize_name:g.prize_name,winner_username:g.winner_username,brand:g.brand,added:(g.attach_status==='added')}});
         document.getElementById('listBuyer').textContent=s.buyer_name||s.buyer_username||'Customer';
         var meta='<span class="pill pill-id">'+escapeHtml(s.shipment_id)+'</span>';
         if(s.tracking_code)meta+='<span class="pill pill-track">'+escapeHtml(s.tracking_code)+'</span>';
@@ -4926,8 +4989,10 @@ function _partOf(name){var m=(name||'').match(/Part\s*(\d+)/i);return m?parseInt
 function _skuNum(s){var m=(s||'').toString().match(/\d+/);return m?parseInt(m[0]):999999}
 function renderItems(){
     var active=currentItems.filter(function(i){return !i.cancelled});
-    var pickedN=active.filter(function(i){return i.picked}).length;
-    var total=active.length;
+    var gvs=currentGiveaways||[];
+    var gvAdded=gvs.filter(function(g){return g.added}).length;
+    var pickedN=active.filter(function(i){return i.picked}).length + gvAdded;
+    var total=active.length + gvs.length;
     document.getElementById('pickedCount').textContent=pickedN;
     document.getElementById('totalCount').textContent=total;
     document.getElementById('progressFill').style.width=(total?100*pickedN/total:0)+'%';
@@ -4956,9 +5021,24 @@ function renderItems(){
             '<div class="pi-qty">×'+(it.quantity||1)+'</div>'+
         '</div>';
     });
+    // Attached giveaways — checked off like any other product before the order is done.
+    if(gvs.length){
+        html+='<div style="margin:16px 0 8px;padding:9px 13px;border-radius:10px;background:rgba(16,185,129,.14);border:1px solid rgba(16,185,129,.4);color:#059669;font-weight:800;font-size:14px">🎁 '+t('giveaway')+' — '+t('gotomanager')+'</div>';
+        gvs.forEach(function(g){
+            html+='<div class="pi gv'+(g.added?' done':'')+'" data-gid="'+g.id+'">'+
+                '<div class="pi-box"></div>'+
+                '<div class="pi-info">'+
+                    '<div class="pi-sku">🎁</div>'+
+                    '<div class="pi-name"><b>'+t('giveaway')+'</b> · '+escapeHtml(g.prize_name||'')+(g.winner_username?' · @'+escapeHtml(g.winner_username):'')+'</div>'+
+                '</div>'+
+                '<div class="pi-qty">×1</div>'+
+            '</div>';
+        });
+    }
     document.getElementById('itemsList').innerHTML=html;
     document.getElementById('itemsList').querySelectorAll('.pi').forEach(function(el){
         if(el.classList.contains('cancelled'))return;
+        if(el.classList.contains('gv')){el.addEventListener('click',function(){toggleGiveaway(parseInt(el.dataset.gid))});return;}
         el.addEventListener('click',function(){toggleItem(parseInt(el.dataset.id))});
     });
     var btn=document.getElementById('doneBtn');
@@ -4979,6 +5059,19 @@ function toggleItem(itemId){
         if(d.picked)sndCheck();else sndClick();
         renderItems();
     });
+}
+function toggleGiveaway(gid){
+    var g=(currentGiveaways||[]).find(function(x){return x.id===gid});
+    if(!g)return;
+    var newAdded=!g.added;
+    g.added=newAdded;                 // optimistic
+    if(newAdded)sndCheck();else sndClick();
+    renderItems();
+    fetch('/api/giveaway/'+gid+'/mark-added',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({added:newAdded})})
+    .then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){g.added=!newAdded;renderItems();sndError();showToast(d.error||'Error')}
+    }).catch(function(){g.added=!newAdded;renderItems();sndError()});
 }
 
 function refreshMyStats(){
