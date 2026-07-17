@@ -720,6 +720,8 @@ def sdb_init(org):
         "ALTER TABLE products ADD COLUMN parent_sku TEXT",
         "ALTER TABLE products ADD COLUMN variant_name TEXT",
         "ALTER TABLE availability ADD COLUMN end_time TEXT",
+        # Show start time — used to attribute after-midnight sales to the right show.
+        "ALTER TABLE show_state ADD COLUMN show_start TEXT",
         # Purchase orders: inbound tracking + attached invoice + ETA.
         "ALTER TABLE purchase_orders ADD COLUMN tracking TEXT",
         "ALTER TABLE purchase_orders ADD COLUMN carrier TEXT",
@@ -855,7 +857,8 @@ def sdb_init(org):
         import_label TEXT PRIMARY KEY,
         done INTEGER DEFAULT 0,
         done_at TEXT,
-        done_by TEXT
+        done_by TEXT,
+        show_start TEXT
     )""")
     # Key/value settings: manager PIN hash, permissions config, etc.
     c.execute("""CREATE TABLE IF NOT EXISTS settings(
@@ -1614,6 +1617,47 @@ def _weight_config():
 # A show is "clean" iff every cancelled (sku, part) group has been marked.
 # ──────────────────────────────────────────────────────────────────────
 import re as _re_cleanup
+def _parse_dt(s):
+    """Parse a sale timestamp from TikTok / Whatnot / ISO exports into a datetime.
+    Returns None when it can't. Handles '07/15/2026 1:19:13 PM', ISO 8601, etc."""
+    if not s: return None
+    s=str(s).strip()
+    if not s: return None
+    # Strip a trailing timezone label some exports add (e.g. ' UTC', ' PDT').
+    for tz in (" UTC"," GMT"," PST"," PDT"," EST"," EDT"," CST"," CDT"," MST"," MDT"):
+        if s.upper().endswith(tz): s=s[:-len(tz)].strip()
+    fmts=("%m/%d/%Y %I:%M:%S %p","%m/%d/%Y %I:%M %p","%m/%d/%Y %H:%M:%S","%m/%d/%Y %H:%M",
+          "%Y-%m-%d %H:%M:%S","%Y-%m-%dT%H:%M:%S","%Y-%m-%dT%H:%M","%Y-%m-%d %H:%M","%m/%d/%Y","%Y-%m-%d")
+    for f in fmts:
+        try: return datetime.strptime(s, f)
+        except Exception: pass
+    # Last resort: ISO with timezone offset (strip the offset).
+    try:
+        return datetime.fromisoformat(s.replace("Z","").split("+")[0].strip())
+    except Exception:
+        return None
+
+def _load_show_windows(c, extra_label=None, extra_start=None):
+    """Return [(label, start_datetime), ...] sorted by start, for every show that has a
+    show_start. Optionally include an in-flight (label,start) not yet committed."""
+    rows=c.execute("SELECT import_label, show_start FROM show_state WHERE show_start IS NOT NULL AND show_start!=''").fetchall()
+    wins={}
+    for r in rows:
+        dt=_parse_dt(r["show_start"])
+        if dt: wins[r["import_label"]]=dt
+    if extra_label and extra_start: wins[extra_label]=extra_start
+    return sorted(wins.items(), key=lambda kv: kv[1])
+
+def _owning_show(created_dt, windows, default_label):
+    """The show whose window contains this sale = the one with the greatest start
+    that is <= the sale time. Falls back to default_label (e.g. sale before any show)."""
+    if not created_dt or not windows: return default_label
+    owner=None; best=None
+    for lbl,start in windows:
+        if start<=created_dt and (best is None or start>best):
+            best=start; owner=lbl
+    return owner or default_label
+
 def _extract_part(product_name):
     """Pull a 'Part N' label out of a product name. Returns empty string when
     there's no part suffix — that's the normal case for non-TikTok shows."""
@@ -3681,6 +3725,9 @@ def api_shipments_import():
         return jsonify({"ok": False, "error": "Show name is required — name it after the live show (e.g. 'Beauty 5/15 — TikTok')"})
     if len(label) > 80:
         return jsonify({"ok": False, "error": "Show name too long (max 80 characters)"})
+    # Optional: when the live show STARTED. Used to attribute after-midnight sales to
+    # this show (a sale at 00:30 still belongs to the show that began the night before).
+    show_start_raw = (request.form.get("show_start") or "").strip()
     try:
         raw = f.stream.read().decode("utf-8-sig", errors="replace")
     except Exception as e:
@@ -3760,12 +3807,33 @@ def api_shipments_import():
     _cfgrow = c.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
     _overhead = _cfgrow["packaging_overhead_g"] if _cfgrow else 30
 
+    # ── Show-window attribution ──────────────────────────────────────────
+    # Determine when this show started. If the user didn't type it, default to the
+    # earliest sale time in the file (≈ when the show began). Store it, then build the
+    # list of all shows' windows so each order can be routed to the show whose window
+    # contains its sale time — even across midnight.
+    show_start_dt = _parse_dt(show_start_raw)
+    if not show_start_dt:
+        _cands = [d for d in (_parse_dt(n.get("created_time")) for n in norm) if d]
+        show_start_dt = min(_cands) if _cands else None
+    if show_start_dt:
+        c.execute("""INSERT INTO show_state(import_label, show_start) VALUES(?,?)
+                     ON CONFLICT(import_label) DO UPDATE SET show_start=excluded.show_start""",
+                  (label, show_start_dt.isoformat(timespec="seconds")))
+    show_windows = _load_show_windows(c, label, show_start_dt)
+    win_start = dict(show_windows)  # label -> start datetime
+
     inserted = 0; updated = 0; items_inserted = 0
     unique_skus = set()
     try:
         for pkg_id, group in by_pkg.items():
             first = group[0]
             tracking = first["tracking"] or None
+            # Which show does this order really belong to? (window contains the sale time)
+            _created_dt = _parse_dt(first.get("created_time"))
+            owner_label = _owning_show(_created_dt, show_windows, label)
+            _owner_start = win_start.get(owner_label)
+            owner_show_date = _owner_start.date().isoformat() if _owner_start else first["created_at"]
             dvs, dvd, dva = _derive_delivery(first)
             dtrk = datetime.now().isoformat(timespec='seconds') if dvs else None
             # Giveaway orders ship free (stamp/envelope) with no scannable tracking —
@@ -3788,7 +3856,7 @@ def api_shipments_import():
                              SET tracking_code=COALESCE(?,tracking_code),
                                  buyer_username=?, buyer_name=?, address_full=?, postal_code=?,
                                  show_date=?, platform=?, import_batch=COALESCE(import_batch,?),
-                                 import_label=COALESCE(import_label,?),
+                                 import_label=?,
                                  shipping_fee=?,
                                  delivery_status=COALESCE(?,delivery_status),
                                  delivery_detail=COALESCE(?,delivery_detail),
@@ -3796,8 +3864,8 @@ def api_shipments_import():
                                  tracked_at=COALESCE(?,tracked_at)
                              WHERE shipment_id=?""",
                           (tracking, first["buyer_username"], first["buyer_name"],
-                           first["address"], first["postal"], first["created_at"],
-                           platform, import_batch, label, ship_fee,
+                           first["address"], first["postal"], owner_show_date,
+                           platform, import_batch, owner_label, ship_fee,
                            dvs, dvd, dva, dtrk, pkg_id))
                 if is_gv:   # move a still-pending giveaway out of the pipeline
                     c.execute("UPDATE shipments SET status='giveaway' WHERE shipment_id=? AND status='pending'", (pkg_id,))
@@ -3809,8 +3877,8 @@ def api_shipments_import():
                      delivery_status, delivery_detail, delivered_at, tracked_at)
                     VALUES (?,?,?,?,?,?,?, ?, ?, ?, ?, ?, ?,?,?,?)""",
                     (pkg_id, tracking, first["buyer_username"], first["buyer_name"],
-                     first["address"], first["postal"], first["created_at"], new_status,
-                     platform, import_batch, label, ship_fee,
+                     first["address"], first["postal"], owner_show_date, new_status,
+                     platform, import_batch, owner_label, ship_fee,
                      dvs, dvd, dva, dtrk))
                 inserted += 1
             # Replace items for this shipment.

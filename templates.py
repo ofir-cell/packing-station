@@ -3559,6 +3559,11 @@ __NAVBAR__
       <div class="fld-hint">Required. Same name for all uploads of the same show (orders + cancellations). Recent shows appear as you type.</div>
     </div>
     <div class="fld">
+      <label>Show start <span class="muted" style="font-weight:400">(optional)</span></label>
+      <input type="datetime-local" id="showStart" autocomplete="off">
+      <div class="fld-hint">When the live show began. Sales after midnight are matched to this show — not the next day's. Leave blank to auto-use the earliest sale time in the file.</div>
+    </div>
+    <div class="fld">
       <label id="modalLabel">CSV file <span class="req-star">*</span></label>
       <input type="file" id="csvFile" accept=".csv">
     </div>
@@ -3718,6 +3723,7 @@ function runImport(force){
   if(!label){res.className='modal-result err show';res.textContent='Show name is required';document.getElementById('showName').focus();return}
   if(!f){res.className='modal-result err show';res.textContent='Pick a CSV file';return}
   var fd=new FormData();fd.append('file',f);fd.append('label',label);
+  var ss=document.getElementById('showStart');if(ss&&ss.value)fd.append('show_start',ss.value);
   if(force)fd.append('force','1');
   var btn=document.getElementById('doImport');btn.disabled=true;btn.textContent='Importing…';
   res.className='modal-result show';res.textContent='Importing… large shows can take up to a minute, please wait.';
