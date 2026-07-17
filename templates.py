@@ -5352,15 +5352,18 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
 .grp:hover{border-color:rgba(217,116,143,.3)}
 .grp:active{transform:scale(.995)}
 .grp.done{background:rgba(16,185,129,.05);border-color:rgba(16,185,129,.22);opacity:.7}
-.grp.done .g-name,.grp.done .g-sku{text-decoration:line-through;text-decoration-color:rgba(255,255,255,.4)}
+.grp.done .g-name-txt,.grp.done .g-sku{text-decoration:line-through;text-decoration-color:rgba(255,255,255,.4)}
 .g-box{width:42px;height:42px;border-radius:50%;border:4px solid rgba(17,24,39,0.16);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:transparent;flex-shrink:0;transition:all .15s}
 .grp.done .g-box{background:#10b981;border-color:#10b981;color:#ffffff}
 .grp.done .g-box::before{content:'✓'}
 .g-sku{font-family:'SF Mono',Menlo,monospace;font-size:30px;font-weight:900;color:var(--brand);background:rgba(217,116,143,.14);padding:8px 16px;border-radius:12px;min-width:80px;text-align:center;letter-spacing:.5px;line-height:1}
 .g-info{min-width:0}
-.g-name{font-size:15px;color:var(--text);font-weight:600;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.g-name .part-tag{display:inline-block;background:rgba(217,116,143,.2);color:var(--brand);font-family:'SF Mono',Menlo,monospace;font-weight:900;font-size:15px;padding:3px 10px;border-radius:8px;letter-spacing:.5px;margin-right:8px;vertical-align:middle;text-transform:uppercase}
-.grp.done .g-name .part-tag{opacity:.45}
+.g-name{display:flex;align-items:center;gap:14px;min-width:0}
+.g-name-txt{font-size:15px;color:var(--text);font-weight:600;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.g-part-wrap{flex:none;text-align:center}
+.g-part-big{font-family:'SF Mono',Menlo,monospace;font-size:30px;font-weight:900;color:#fff;background:var(--brand);padding:5px 16px;border-radius:12px;min-width:56px;text-align:center;letter-spacing:.5px;line-height:1;box-shadow:0 2px 6px rgba(217,116,143,.35)}
+.g-part-lbl{font-size:9px;font-weight:900;letter-spacing:.7px;color:var(--text-dim);text-transform:uppercase;margin-top:3px}
+.grp.done .g-part-big{opacity:.45;box-shadow:none}
 .g-meta{font-size:11px;color:var(--text-dim);margin-top:4px;letter-spacing:.4px}
 .g-meta b{color:var(--text-muted);font-weight:700}
 .g-qty{font-size:34px;font-weight:900;color:#141b26;font-feature-settings:'tnum';line-height:1}
@@ -5426,6 +5429,21 @@ var preLabel=new URLSearchParams(location.search).get('show');
 
 function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function fmtPart(name){var safe=esc(name||'');var m=safe.match(/(Part\\s*\\d+)/i);if(!m)return safe;var stripped=safe.replace(/[\\s·,—–-]*Part\\s*\\d+[\\s·,—–-]*/i,' ').replace(/\\s{2,}/g,' ').trim();return '<span class="part-tag">'+m[1].toUpperCase()+'</span>'+stripped}
+// Split a product name into {part, base}. Handles "…Part 2" and a bare trailing
+// number ("LUXURY PERFUMES AND BEAUTY 2" → part "2"). Base must contain a letter.
+function splitPart(name){
+  var raw=String(name||'').trim();
+  var m=raw.match(/\\bPart\\s*(\\d+)\\b/i);
+  if(m){var base=raw.replace(/[\\s·,—–-]*Part\\s*\\d+[\\s·,—–-]*/i,' ').replace(/\\s{2,}/g,' ').trim();return {part:m[1],base:base};}
+  var t=raw.match(/^(.*[A-Za-z].*?)[\\s·,—–-]+(\\d+)\\s*$/);
+  if(t){return {part:t[2],base:t[1].trim()};}
+  return {part:'',base:raw};
+}
+function nameCell(name){
+  var s=splitPart(name);
+  var badge=s.part?('<div class="g-part-wrap"><div class="g-part-big">'+esc(s.part)+'</div><div class="g-part-lbl">Part</div></div>'):'';
+  return badge+'<span class="g-name-txt">'+esc(s.base)+'</span>';
+}
 function toast(m,err){var t=document.getElementById('toast');t.textContent=m;t.className='toast on'+(err?' err':'');setTimeout(function(){t.className='toast'},2200)}
 
 function loadShows(){
@@ -5497,7 +5515,7 @@ function renderDetail(d){
             '<div class="g-box"></div>'+
             '<div class="g-sku">'+esc(g.sku||'?')+'</div>'+
             '<div class="g-info">'+
-                '<div class="g-name">'+fmtPart(g.product_name)+'</div>'+
+                '<div class="g-name">'+nameCell(g.product_name)+'</div>'+
                 '<div class="g-meta">From <b>'+g.order_count+'</b> cancelled order'+(g.order_count===1?'':'s')+'</div>'+
             '</div>'+
             '<div style="text-align:center"><div class="g-qty">×'+g.total_qty+'</div><div class="g-qty-lbl">to remove</div></div>'+

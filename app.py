@@ -958,6 +958,13 @@ def sdb_init(org):
         imported_by TEXT
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_import_hash ON import_files(file_hash)")
+    # UPS rate quotes — hold the shipment context between "get rates" and "buy label"
+    # so a label can be purchased with only the rate_id (UPS rating gives no buy token).
+    c.execute("""CREATE TABLE IF NOT EXISTS ship_quotes(
+        id TEXT PRIMARY KEY,
+        ctx TEXT,
+        created REAL
+    )""")
     # Per-tenant audit trail of sensitive staff actions (accountability/forensics).
     c.execute("""CREATE TABLE IF NOT EXISTS audit_log(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1323,7 +1330,21 @@ import base64 as _b64
 SHIPSTATION_API_KEY=os.environ.get("SHIPSTATION_API_KEY") or os.environ.get("SHIPSTATION_KEY")
 SHIPSTATION_ENABLED=bool(SHIPSTATION_API_KEY)
 SHIPSTATION_BASE=os.environ.get("SHIPSTATION_BASE","https://api.shipstation.com")
-EASYPOST_ENABLED=SHIPSTATION_ENABLED   # back-compat alias used by the label routes
+
+# ── UPS DIRECT (own account, OAuth client-credentials) ─────────────────────────
+# When these three env vars are set, labels go straight to UPS — no middleman.
+# UPS takes priority over ShipStation; ShipStation stays as a fallback so nothing
+# breaks before UPS is configured.
+UPS_CLIENT_ID=os.environ.get("UPS_CLIENT_ID","").strip()
+UPS_CLIENT_SECRET=os.environ.get("UPS_CLIENT_SECRET","").strip()
+UPS_ACCOUNT_NUMBER=os.environ.get("UPS_ACCOUNT_NUMBER","").strip()
+UPS_ENABLED=bool(UPS_CLIENT_ID and UPS_CLIENT_SECRET and UPS_ACCOUNT_NUMBER)
+UPS_ENV=(os.environ.get("UPS_ENV","production") or "production").lower()
+UPS_BASE=os.environ.get("UPS_BASE") or ("https://wwwcie.ups.com" if UPS_ENV in ("test","cie","sandbox") else "https://onlinetools.ups.com")
+UPS_RATE_VERSION=os.environ.get("UPS_RATE_VERSION","v2409")
+UPS_SHIP_VERSION=os.environ.get("UPS_SHIP_VERSION","v2409")
+
+EASYPOST_ENABLED=bool(UPS_ENABLED or SHIPSTATION_ENABLED)   # back-compat alias used by the label routes
 
 def _ss(method, path, payload=None):
     """Call the ShipStation V2 API. Raises RuntimeError('ShipStation: <msg>') on error."""
@@ -1361,7 +1382,10 @@ def _ship_addr(a):
     return out
 
 def _ship_rates(to, frm, weight, dims):
-    """(shipment_id, [rates]) — rate dict shaped like EasyPost: id/carrier/service/rate/days."""
+    """(shipment_id, [rates]) — rate dict shaped like EasyPost: id/carrier/service/rate/days.
+    Routes to UPS direct when configured, else falls back to ShipStation."""
+    if UPS_ENABLED:
+        return _ups_rates(to, frm, weight, dims)
     pkg={"weight":{"value":float(weight),"unit":"ounce"}}
     dd={}
     for k in ("length","width","height"):
@@ -1384,7 +1408,10 @@ def _ship_rates(to, frm, weight, dims):
     return resp.get("shipment_id"), rates
 
 def _ship_buy(rate_id):
-    """Purchase a label for a rate. Returns EasyPost-shaped dict so routes are unchanged."""
+    """Purchase a label for a rate. Returns EasyPost-shaped dict so routes are unchanged.
+    Routes to UPS direct when configured, else ShipStation."""
+    if UPS_ENABLED:
+        return _ups_buy(rate_id)
     lbl=_ss("POST","/v2/labels/rates/"+str(rate_id),{"label_layout":"4x6","label_format":"pdf"})
     dl=lbl.get("label_download") or {}
     url=dl.get("pdf") or dl.get("href") or dl.get("png")
@@ -1392,6 +1419,181 @@ def _ship_buy(rate_id):
     return {"postage_label":{"label_url":url},"tracking_code":lbl.get("tracking_number"),
             "selected_rate":{"rate":cost,"carrier":lbl.get("carrier_code"),"service":lbl.get("service_code")}}
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# UPS DIRECT — OAuth client-credentials + Rating (Shop) + Shipping (label).
+# Returns EasyPost-shaped output so the existing label routes are unchanged.
+# ═══════════════════════════════════════════════════════════════════════════════
+UPS_SERVICE_NAMES={"01":"UPS Next Day Air","02":"UPS 2nd Day Air","03":"UPS Ground",
+    "12":"UPS 3 Day Select","13":"UPS Next Day Air Saver","14":"UPS Next Day Air Early",
+    "59":"UPS 2nd Day Air AM","07":"UPS Worldwide Express","08":"UPS Worldwide Expedited",
+    "11":"UPS Standard","54":"UPS Worldwide Express Plus","65":"UPS Worldwide Saver",
+    "70":"UPS Access Point Economy","82":"UPS Today Standard","83":"UPS Today Dedicated Courier",
+    "85":"UPS Today Express","86":"UPS Today Express Saver"}
+
+_ups_tok={"tok":None,"exp":0}
+def _ups_token():
+    """Cached OAuth bearer token (client-credentials). Refreshes 5 min before expiry."""
+    if _ups_tok["tok"] and time.time()<_ups_tok["exp"]-300:
+        return _ups_tok["tok"]
+    auth=_b64.b64encode((UPS_CLIENT_ID+":"+UPS_CLIENT_SECRET).encode()).decode()
+    body="grant_type=client_credentials".encode()
+    req=_urlreq.Request(UPS_BASE+"/security/v1/oauth/token", data=body, method="POST",
+        headers={"Authorization":"Basic "+auth,"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json"})
+    try:
+        with _urlreq.urlopen(req, timeout=45) as r:
+            d=json.loads(r.read().decode())
+    except _urlerr.HTTPError as e:
+        try: msg=json.loads(e.read().decode()).get("response",{}).get("errors",[{}])[0].get("message") or ("HTTP "+str(e.code))
+        except Exception: msg="HTTP "+str(e.code)
+        raise RuntimeError("UPS auth: "+str(msg))
+    _ups_tok["tok"]=d.get("access_token")
+    try: _ups_tok["exp"]=time.time()+float(d.get("expires_in") or 3600)
+    except Exception: _ups_tok["exp"]=time.time()+3600
+    return _ups_tok["tok"]
+
+def _ups(method, path, payload=None):
+    """Call a UPS REST API with a bearer token. Raises RuntimeError('UPS: <msg>')."""
+    data=json.dumps(payload).encode() if payload is not None else None
+    req=_urlreq.Request(UPS_BASE+path, data=data, method=method,
+        headers={"Authorization":"Bearer "+_ups_token(),"Content-Type":"application/json",
+                 "Accept":"application/json","transId":secrets.token_hex(8),"transactionSrc":"liveopshub"})
+    try:
+        with _urlreq.urlopen(req, timeout=60) as r:
+            return json.loads(r.read().decode())
+    except _urlerr.HTTPError as e:
+        try:
+            b=json.loads(e.read().decode())
+            errs=(b.get("response") or {}).get("errors") or b.get("errors") or [{}]
+            msg=errs[0].get("message") or ("HTTP "+str(e.code))
+            if errs[0].get("code"): msg=str(errs[0]["code"])+": "+msg
+        except Exception: msg="HTTP "+str(e.code)
+        raise RuntimeError("UPS: "+str(msg))
+
+def _ups_addr(a):
+    """Map an internal address dict to a UPS Address block."""
+    lines=[a.get("street1") or ""]
+    if a.get("street2"): lines.append(a.get("street2"))
+    return {"AddressLine":lines,"City":a.get("city") or "","StateProvinceCode":a.get("state") or "",
+            "PostalCode":a.get("zip") or "","CountryCode":a.get("country") or "US"}
+
+def _ups_party(a, with_acct=False):
+    p={"Name":(a.get("name") or a.get("company") or "Shipper")[:35],"Address":_ups_addr(a)}
+    if a.get("phone"): p["Phone"]={"Number":"".join(ch for ch in str(a.get("phone")) if ch.isdigit())[:15]}
+    if with_acct: p["ShipperNumber"]=UPS_ACCOUNT_NUMBER
+    return p
+
+def _ups_package(weight_oz, dims, for_ship=False):
+    lbs=max(round(float(weight_oz or 0)/16.0,1),0.1)
+    pkg={("Packaging" if for_ship else "PackagingType"):{"Code":"02","Description":"Package"},
+         "PackageWeight":{"UnitOfMeasurement":{"Code":"LBS"},"Weight":str(lbs)}}
+    dd={}
+    for k in ("length","width","height"):
+        try:
+            if dims.get(k): dd[k]=str(int(round(float(dims[k]))))
+        except Exception: pass
+    if len(dd)==3:
+        pkg["Dimensions"]={"UnitOfMeasurement":{"Code":"IN"},"Length":dd["length"],"Width":dd["width"],"Height":dd["height"]}
+    return pkg
+
+def _ship_quote_save(quote_id, ctx):
+    """Persist a rate quote's shipment context (per-org) so a label can be bought later."""
+    try:
+        c=sdb()
+        c.execute("INSERT OR REPLACE INTO ship_quotes(id,ctx,created) VALUES(?,?,?)",
+                  (quote_id,json.dumps(ctx),time.time()))
+        # prune quotes older than 24h to keep the table tiny
+        c.execute("DELETE FROM ship_quotes WHERE created < ?",(time.time()-86400,))
+        c.commit(); c.close()
+    except Exception as e:
+        print("ship_quote save failed:",e,flush=True)
+
+def _ship_quote_load(quote_id):
+    try:
+        c=sdb()
+        r=c.execute("SELECT ctx FROM ship_quotes WHERE id=?",(quote_id,)).fetchone()
+        c.close()
+        return json.loads(r["ctx"]) if r and r["ctx"] else None
+    except Exception as e:
+        print("ship_quote load failed:",e,flush=True); return None
+
+def _ups_rates(to, frm, weight, dims):
+    """(quote_id, [rates]) — Shop all UPS services. Persists the quote so a label can be
+    bought later with just the rate_id (which encodes quote_id + service code)."""
+    biz=_ship_from() or frm
+    shipment={"Shipper":_ups_party(biz, with_acct=True),
+              "ShipFrom":_ups_party(frm),"ShipTo":_ups_party(to),
+              "Package":[_ups_package(weight, dims, for_ship=False)]}
+    body={"RateRequest":{"Request":{"SubVersion":UPS_RATE_VERSION.lstrip("v"),
+              "RequestOption":"Shop","TransactionReference":{"CustomerContext":"rate"}},
+          "Shipment":shipment}}
+    resp=_ups("POST","/api/rating/"+UPS_RATE_VERSION+"/Shop",body)
+    rr=resp.get("RateResponse") or {}
+    rated=rr.get("RatedShipment") or []
+    if isinstance(rated,dict): rated=[rated]
+    quote_id="upsq_"+secrets.token_hex(8)
+    _ship_quote_save(quote_id, {"to":to,"frm":frm,"weight_oz":weight,"dims":dims})
+    rates=[]
+    for rs in rated:
+        code=((rs.get("Service") or {}).get("Code")) or ""
+        tot=(rs.get("TotalCharges") or {}).get("MonetaryValue")
+        days=(rs.get("GuaranteedDelivery") or {}).get("BusinessDaysInTransit")
+        rates.append({"id":quote_id+"~"+code,"carrier":"UPS",
+                      "service":UPS_SERVICE_NAMES.get(code,"UPS "+code),
+                      "rate":tot,"days":days})
+    rates.sort(key=lambda x: float(x["rate"] if x["rate"] is not None else 9999))
+    return quote_id, rates
+
+def _ups_buy(rate_id):
+    """Buy a UPS label. rate_id = '<quote_id>~<serviceCode>'. Returns EasyPost-shaped dict."""
+    quote_id,_,code=str(rate_id).partition("~")
+    ctx=_ship_quote_load(quote_id)
+    if not ctx: raise RuntimeError("UPS: quote expired — get rates again")
+    to=ctx["to"]; frm=ctx["frm"]; biz=_ship_from() or frm
+    shipment={"Description":"Merchandise",
+              "Shipper":_ups_party(biz, with_acct=True),
+              "ShipFrom":_ups_party(frm),"ShipTo":_ups_party(to),
+              "PaymentInformation":{"ShipmentCharge":[{"Type":"01","BillShipper":{"AccountNumber":UPS_ACCOUNT_NUMBER}}]},
+              "Service":{"Code":code or "03","Description":UPS_SERVICE_NAMES.get(code,"UPS")},
+              "Package":[_ups_package(ctx.get("weight_oz"), ctx.get("dims") or {}, for_ship=True)]}
+    body={"ShipmentRequest":{"Request":{"SubVersion":UPS_SHIP_VERSION.lstrip("v"),
+              "RequestOption":"nonvalidate","TransactionReference":{"CustomerContext":"ship"}},
+          "Shipment":shipment,
+          "LabelSpecification":{"LabelImageFormat":{"Code":"GIF"},"LabelStockSize":{"Height":"6","Width":"4"}}}}
+    resp=_ups("POST","/api/shipments/"+UPS_SHIP_VERSION+"/ship",body)
+    sr=(resp.get("ShipmentResponse") or {})
+    res=(sr.get("ShipmentResults") or {})
+    pkgs=res.get("PackageResults") or []
+    if isinstance(pkgs,dict): pkgs=[pkgs]
+    tracking=(pkgs[0].get("TrackingNumber") if pkgs else None) or res.get("ShipmentIdentificationNumber")
+    img=((pkgs[0].get("ShippingLabel") or {}).get("GraphicImage")) if pkgs else None
+    label_url=None
+    if img:
+        try: label_url=_store_label(_b64.b64decode(img),"gif")
+        except Exception as e: print("UPS label store failed:",e,flush=True)
+    cost=0.0
+    try: cost=float((res.get("ShipmentCharges") or {}).get("TotalCharges",{}).get("MonetaryValue") or 0)
+    except Exception: pass
+    return {"postage_label":{"label_url":label_url},"tracking_code":tracking,
+            "selected_rate":{"rate":cost,"carrier":"UPS","service":UPS_SERVICE_NAMES.get(code,"UPS")}}
+
+def _labels_dir(org=None):
+    d=org_path(_org_or_current(org),"labels"); os.makedirs(d,exist_ok=True); return d
+
+def _store_label(data, ext):
+    """Persist raw label bytes (R2 if configured, else local) and return a served URL
+    that ends in .<ext> so the print pages render it correctly."""
+    fn=secrets.token_hex(10)+"."+ext
+    if r2:
+        try:
+            ct={"gif":"image/gif","png":"image/png","pdf":"application/pdf"}.get(ext,"application/octet-stream")
+            r2.put_object(Bucket=R2_BUCKET,Key="labels/"+fn,Body=data,ContentType=ct)
+            return "/label/file/"+fn
+        except Exception as e:
+            print("R2 label put failed:",e,flush=True)
+    with open(os.path.join(_labels_dir(),fn),"wb") as fh: fh.write(data)
+    return "/label/file/"+fn
+
+print("UPS direct "+("enabled (base="+UPS_BASE+")" if UPS_ENABLED else "not configured — set UPS_CLIENT_ID / UPS_CLIENT_SECRET / UPS_ACCOUNT_NUMBER"),flush=True)
 print("ShipStation "+("enabled" if SHIPSTATION_ENABLED else "not configured — set SHIPSTATION_API_KEY"),flush=True)
 
 
@@ -7846,6 +8048,26 @@ def serve_p(fn):
     if not real.startswith(os.path.realpath(photo_dir())+os.sep): return ("",404)
     return send_file(real,mimetype="image/jpeg") if os.path.exists(real) else ("",404)
 
+@app.route("/label/file/<fn>")
+@req_role("admin","cs")
+def serve_label(fn):
+    """Serve a stored shipping label (UPS direct). R2 presign or local file."""
+    fn=secure_filename(fn)
+    if not fn: return ("",404)
+    ext=fn.rsplit(".",1)[-1].lower() if "." in fn else ""
+    mt={"gif":"image/gif","png":"image/png","pdf":"application/pdf"}.get(ext,"application/octet-stream")
+    if r2:
+        try:
+            url=r2.generate_presigned_url("get_object",
+                Params={"Bucket":R2_BUCKET,"Key":"labels/"+fn}, ExpiresIn=R2_PRESIGN_TTL)
+            return redirect(url)
+        except Exception as e:
+            print("R2 label presign failed:",e,flush=True); return ("",404)
+    p=os.path.join(_labels_dir(),fn)
+    real=os.path.realpath(p)
+    if not real.startswith(os.path.realpath(_labels_dir())+os.sep): return ("",404)
+    return send_file(real,mimetype=mt) if os.path.exists(real) else ("",404)
+
 # ══════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════════
 # GIVEAWAY ROUTES (Phase A - manual entry, no AI/Shippo yet)
@@ -8378,9 +8600,18 @@ def _easypost_rates(to, frm, weight, dims):
 @app.route("/api/ship/carriers")
 @req_role("admin","cs")
 def api_ship_carriers():
-    """Diagnostic: which carriers your ShipStation key can see (for rate/label)."""
+    """Diagnostic: which carriers are available for rate/label. UPS direct takes priority."""
+    if UPS_ENABLED:
+        # UPS direct — verify the OAuth credentials actually work by fetching a token.
+        try:
+            _ups_token()
+            return jsonify({"ok":True,"provider":"ups","count":1,
+                "carriers":[{"carrier_id":UPS_ACCOUNT_NUMBER,"carrier_code":"ups",
+                             "name":"UPS (direct account "+UPS_ACCOUNT_NUMBER+")","services":len(UPS_SERVICE_NAMES)}]})
+        except Exception as e:
+            return jsonify({"ok":False,"provider":"ups","error":str(e)})
     if not SHIPSTATION_ENABLED:
-        return jsonify({"ok":False,"error":"ShipStation not configured — set SHIPSTATION_API_KEY."})
+        return jsonify({"ok":False,"error":"No carrier configured — set UPS_CLIENT_ID/SECRET/ACCOUNT_NUMBER (or SHIPSTATION_API_KEY)."})
     try:
         r=_ss("GET","/v2/carriers")
         cs=[{"carrier_id":c.get("carrier_id"),"carrier_code":c.get("carrier_code"),
