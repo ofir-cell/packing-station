@@ -9885,6 +9885,7 @@ th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
 .pill{font-size:11px;font-weight:700;padding:3px 10px;border-radius:50px}
 .pill.on{background:rgba(52,211,153,.16);color:#059669}.pill.off{background:rgba(244,63,94,.14);color:#e11d48}
 .ucard{border:1px solid rgba(17,24,39,.09);border-radius:12px;padding:15px 17px;margin-bottom:12px;background:#fff}
+.ucard.internal{border-color:rgba(99,102,241,.35);background:#fbfbff}
 .uhead{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:11px}
 .uhead code{background:rgba(17,24,39,.06);padding:1px 7px;border-radius:5px;font-size:11.5px}
 .ubar-row{display:flex;align-items:center;gap:11px;margin:6px 0}
@@ -9988,25 +9989,33 @@ function loadUsage(){
     document.getElementById('usageList').innerHTML=d.usage.map(function(u){
       var sp=STATE_PILL[u.state]||['#6b7280',u.state];
       var quiet=(!u.orders_30d)?'<span class="warnchip">⚠︎ no orders in 30 days</span>':'';
-      var hot=(u.usage_pct!=null&&u.usage_pct>=80)?'<span class="hotchip">▲ near cap — upsell</span>':'';
-      var until=u.sub_status==='trialing'
-        ? ('trial ends '+String(u.trial_ends_at||'').slice(0,10))
-        : (u.current_period_end?('paid through '+String(u.current_period_end).slice(0,10)):'no end date');
-      return '<div class="ucard">'+
+      var hot=(!u.internal&&u.usage_pct!=null&&u.usage_pct>=80)?'<span class="hotchip">▲ near cap — upsell</span>':'';
+      var until=u.internal?'not billed'
+        :(u.sub_status==='trialing'
+          ? ('trial ends '+String(u.trial_ends_at||'').slice(0,10))
+          : (u.current_period_end?('paid through '+String(u.current_period_end).slice(0,10)):'no end date'));
+      var badge=u.internal
+        ? '<span class="pill" style="background:rgba(99,102,241,.15);color:#4f46e5">🏠 INTERNAL</span>'
+        : '<span class="pill" style="background:'+sp[0]+'22;color:'+sp[0]+'">'+sp[1]+'</span>';
+      return '<div class="ucard'+(u.internal?' internal':'')+'">'+
         '<div class="uhead"><div><b>'+esc(u.company_name||u.org_id)+'</b> <code>'+esc(u.org_id)+'</code></div>'+
-        '<div><span class="pill" style="background:'+sp[0]+'22;color:'+sp[0]+'">'+sp[1]+'</span> '+
-        '<span class="muted">'+esc(u.plan_label||'')+' · '+esc(until)+'</span></div></div>'+
+        '<div>'+badge+' '+
+        '<span class="muted">'+(u.internal?'':esc(u.plan_label||'')+' · ')+esc(until)+'</span></div></div>'+
         bar(u.users,u.users_limit,'Users')+
         bar(u.peak_day_30d,u.orders_limit,'Peak orders/day')+
         '<div class="ustats"><span>'+u.orders_today+' today</span><span>'+u.orders_7d+' last 7d</span>'+
         '<span>'+u.orders_30d+' last 30d</span><span>last activity: '+daysAgo(u.last_activity)+'</span>'+quiet+hot+'</div>'+
         '<div class="ustore" id="st-'+esc(u.org_id)+'"><span class="muted">storage…</span></div>'+
         '<div class="uacts">'+
-          '<button class="btn btn-s" data-pay="'+esc(u.org_id)+'" data-plan="'+esc(u.plan||'starter')+'">💵 Record payment</button> '+
-          '<button class="btn btn-s" data-trial="'+esc(u.org_id)+'">＋7 trial days</button> '+
-          '<select data-setplan="'+esc(u.org_id)+'">'+
-            ['starter','pro','enterprise'].map(function(p){return '<option value="'+p+'"'+(u.plan===p?' selected':'')+'>'+p+'</option>'}).join('')+
-          '</select>'+
+          (u.internal
+            ? '<span class="muted">Own / demo account — no plan caps, never billed or locked.</span> '+
+              '<button class="btn btn-s" data-intern="'+esc(u.org_id)+'" data-val="0">Make billable</button>'
+            : '<button class="btn btn-s" data-pay="'+esc(u.org_id)+'" data-plan="'+esc(u.plan||'starter')+'">💵 Record payment</button> '+
+              '<button class="btn btn-s" data-trial="'+esc(u.org_id)+'">＋7 trial days</button> '+
+              '<select data-setplan="'+esc(u.org_id)+'">'+
+                ['starter','pro','enterprise'].map(function(p){return '<option value="'+p+'"'+(u.plan===p?' selected':'')+'>'+p+'</option>'}).join('')+
+              '</select> '+
+              '<button class="btn btn-s" data-intern="'+esc(u.org_id)+'" data-val="1">🏠 Mark internal</button>')+
         '</div></div>';
     }).join('')||'<div class="muted">No tenants yet</div>';
     loadStorage(false);
@@ -10030,6 +10039,16 @@ function loadUsage(){
           headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'extend_trial',days:7})})
         .then(function(r){return r.json()}).then(function(d){
           if(d.ok){toast('Trial extended 7 days');loadUsage()}else toast(d.error||'Failed',1)});
+      });
+    });
+    document.querySelectorAll('#usageList button[data-intern]').forEach(function(b){
+      b.addEventListener('click',function(){
+        var on=b.getAttribute('data-val')==='1';
+        if(on&&!confirm('Mark this tenant as internal?\\n\\nIt will stop being billed, lose all plan caps, and never be locked out.'))return;
+        fetch('/api/orgs/'+encodeURIComponent(b.getAttribute('data-intern'))+'/subscription',{method:'POST',
+          headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'set_internal',internal:on})})
+        .then(function(r){return r.json()}).then(function(d){
+          if(d.ok){toast(on?'Marked internal':'Now billable');loadUsage()}else toast(d.error||'Failed',1)});
       });
     });
     document.querySelectorAll('#usageList select[data-setplan]').forEach(function(s){

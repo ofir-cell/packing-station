@@ -264,7 +264,7 @@ def pdb_init():
     _org_have={r[1] for r in c.execute("PRAGMA table_info(organizations)").fetchall()}
     for _col,_decl in (("trial_ends_at","TEXT"),("sub_status","TEXT DEFAULT 'none'"),
                        ("stripe_customer_id","TEXT"),("stripe_subscription_id","TEXT"),
-                       ("current_period_end","TEXT")):
+                       ("current_period_end","TEXT"),("internal","INTEGER DEFAULT 0")):
         if _col not in _org_have:
             c.execute("ALTER TABLE organizations ADD COLUMN %s %s" % (_col,_decl))
     # Manual billing ledger — one row per payment received (bank transfer, invoice,
@@ -315,9 +315,11 @@ def pdb_init():
                      VALUES(?,?,?,?,?)""",
                   (DEFAULT_ORG, "5 Second Beauty", "5 SEC", "Employee Hub", "#d9748f"))
     c.execute("UPDATE organizations SET brand_color='#d9748f' WHERE brand_color='#f3c9c4'")
-    # The founding tenant is the owner's own business — never gated behind billing.
+    # The founding tenant is the owner's own business — never gated, never billed,
+    # and not subject to plan caps.
     c.execute("UPDATE organizations SET sub_status='active' WHERE org_id=? AND COALESCE(sub_status,'none') IN ('none','')",
               (DEFAULT_ORG,))
+    c.execute("UPDATE organizations SET internal=1 WHERE org_id=?", (DEFAULT_ORG,))
     # Platform audit trail (super-admin actions: impersonation, org create/suspend).
     c.execute("""CREATE TABLE IF NOT EXISTS platform_audit(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1174,10 +1176,11 @@ def _org_user_count(org_id):
     return sum(1 for _,i in users.items() if (i.get("org") or DEFAULT_ORG)==org_id)
 
 def _plan_user_limit(org_id):
-    """Max users for this tenant's plan, or None for unlimited. Trials are unlimited
-    so a prospect can try the whole product; the cap applies once they're on a plan."""
+    """Max users for this tenant's plan, or None for unlimited. Internal accounts and
+    trials are unlimited — a prospect should be able to try the whole product."""
     b=_org_billing(org_id)
     if not b: return None
+    if b.get("internal"): return None
     if (b.get("sub_status") or "")=="trialing": return None
     return PLANS.get(b.get("plan") or "", PLANS["starter"]).get("max_users")
 
@@ -1185,6 +1188,7 @@ def _plan_orders_day_limit(org_id):
     """Max orders/day for this tenant's plan, or None for unlimited."""
     b=_org_billing(org_id)
     if not b: return None
+    if b.get("internal"): return None
     if (b.get("sub_status") or "")=="trialing": return None
     return PLANS.get(b.get("plan") or "", PLANS["starter"]).get("max_orders_day")
 
@@ -1192,7 +1196,8 @@ def _org_billing(org_id):
     """Raw billing fields for a tenant, or None."""
     c=pdb()
     r=c.execute("""SELECT org_id,company_name,plan,active,trial_ends_at,sub_status,
-                          stripe_customer_id,stripe_subscription_id,current_period_end
+                          stripe_customer_id,stripe_subscription_id,current_period_end,
+                          COALESCE(internal,0) AS internal
                    FROM organizations WHERE org_id=?""",(org_id,)).fetchone()
     c.close()
     return dict(r) if r else None
@@ -1208,6 +1213,8 @@ def org_access(org_id):
         return ((org_id or DEFAULT_ORG)==DEFAULT_ORG),"ok",{}
     if not b.get("active"):
         return False,"suspended",b
+    if b.get("internal"):
+        return True,"ok",b          # our own / demo accounts are never billed or gated
     st=(b.get("sub_status") or "none").lower()
     if st=="active":
         # Manual billing: access runs until the paid period ends. No period end set
@@ -7636,6 +7643,10 @@ def api_org_subscription(org_id):
             c.close(); return jsonify({"ok":False,"error":"Unknown plan"})
         c.execute("UPDATE organizations SET plan=? WHERE org_id=?",(plan,org_id))
         detail="plan=%s"%plan
+    elif action=="set_internal":
+        val=1 if d.get("internal") else 0
+        c.execute("UPDATE organizations SET internal=? WHERE org_id=?",(val,org_id))
+        detail="internal=%d"%val
     elif action=="set_status":
         st=(d.get("sub_status") or "").strip()
         if st not in ("active","trialing","past_due","canceled","none"):
@@ -7702,11 +7713,14 @@ def _org_storage(org, force=False):
 def api_orgs_storage():
     """Storage footprint + estimated R2 cost per tenant, with the margin impact."""
     force=bool(request.args.get("refresh"))
-    c=pdb(); orgs=[dict(r) for r in c.execute("SELECT org_id,plan FROM organizations").fetchall()]; c.close()
+    c=pdb(); orgs=[dict(r) for r in c.execute(
+        "SELECT org_id,plan,COALESCE(internal,0) AS internal FROM organizations").fetchall()]; c.close()
     out=[]; grand=0
     for o in orgs:
         s=_org_storage(o["org_id"],force=force)
-        price=(PLANS.get(o.get("plan") or "", PLANS["starter"]).get("price") or 0)
+        s["internal"]=bool(o.get("internal"))
+        # Internal accounts generate no revenue, so a margin % would be meaningless.
+        price=0 if o.get("internal") else (PLANS.get(o.get("plan") or "", PLANS["starter"]).get("price") or 0)
         s["plan_price"]=price
         s["cost_pct_of_revenue"]=round(100.0*s["cost_month"]/price,1) if price else None
         grand+=s["total_bytes"]
@@ -7732,9 +7746,10 @@ def api_orgs_usage():
         org=o["org_id"]
         plan=PLANS.get(o.get("plan") or "", PLANS["starter"])
         trialing=(o.get("sub_status") or "")=="trialing"
+        internal=bool(o.get("internal"))
         users=_org_user_count(org)
-        u_lim=None if trialing else plan.get("max_users")
-        o_lim=None if trialing else plan.get("max_orders_day")
+        u_lim=None if (trialing or internal) else plan.get("max_users")
+        o_lim=None if (trialing or internal) else plan.get("max_orders_day")
         today_n=w7=w30=0; last=None; peak=0
         try:
             sc=sdb(org)
@@ -7757,7 +7772,7 @@ def api_orgs_usage():
         pct=max(pcts) if pcts else None
         allowed,state,_=org_access(org)
         out.append({"org_id":org,"company_name":o.get("company_name"),
-            "plan":o.get("plan"),"plan_label":plan["label"],
+            "plan":o.get("plan"),"plan_label":plan["label"],"internal":internal,
             "sub_status":o.get("sub_status"),"state":state,"allowed":allowed,
             "trial_ends_at":o.get("trial_ends_at"),"current_period_end":o.get("current_period_end"),
             "users":users,"users_limit":u_lim,
