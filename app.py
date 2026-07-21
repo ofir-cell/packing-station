@@ -25,6 +25,7 @@ def _clean_name(s,maxlen=100):
     return s[:maxlen]
 # HTML templates and navbar helper live in templates.py for readability.
 from templates import (_navbar, _NAVBAR_CSS, _FONT,
+    BILLING_HTML, DEMO_HTML,
     LOGIN_HTML, STATION_HTML, WORKER_HTML, DASH_HTML, USERS_HTML,
     ANALYTICS_HTML, GIVEAWAY_DASH_HTML, GIVEAWAY_DETAIL_HTML,
     BADGE_LOGIN_HTML, USERS_BADGES_HTML,
@@ -252,7 +253,34 @@ def pdb_init():
         logo_url TEXT DEFAULT '',
         plan TEXT DEFAULT 'standard',
         active INTEGER DEFAULT 1,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        trial_ends_at TEXT,
+        sub_status TEXT DEFAULT 'none',
+        stripe_customer_id TEXT,
+        stripe_subscription_id TEXT,
+        current_period_end TEXT
+    )""")
+    # Backward-compatible: add subscription columns to existing platform DBs.
+    _org_have={r[1] for r in c.execute("PRAGMA table_info(organizations)").fetchall()}
+    for _col,_decl in (("trial_ends_at","TEXT"),("sub_status","TEXT DEFAULT 'none'"),
+                       ("stripe_customer_id","TEXT"),("stripe_subscription_id","TEXT"),
+                       ("current_period_end","TEXT")):
+        if _col not in _org_have:
+            c.execute("ALTER TABLE organizations ADD COLUMN %s %s" % (_col,_decl))
+    # Sales-led leads from the public "request a demo" form.
+    c.execute("""CREATE TABLE IF NOT EXISTS leads(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        company TEXT,
+        contact_name TEXT,
+        email TEXT,
+        phone TEXT,
+        platforms TEXT,
+        volume TEXT,
+        message TEXT,
+        status TEXT DEFAULT 'new',
+        notes TEXT,
+        converted_org TEXT
     )""")
     # Seed the founding tenant (5 Second Beauty) if the table is empty.
     if not c.execute("SELECT 1 FROM organizations WHERE org_id=?", (DEFAULT_ORG,)).fetchone():
@@ -260,6 +288,9 @@ def pdb_init():
                      VALUES(?,?,?,?,?)""",
                   (DEFAULT_ORG, "5 Second Beauty", "5 SEC", "Employee Hub", "#d9748f"))
     c.execute("UPDATE organizations SET brand_color='#d9748f' WHERE brand_color='#f3c9c4'")
+    # The founding tenant is the owner's own business — never gated behind billing.
+    c.execute("UPDATE organizations SET sub_status='active' WHERE org_id=? AND COALESCE(sub_status,'none') IN ('none','')",
+              (DEFAULT_ORG,))
     # Platform audit trail (super-admin actions: impersonation, org create/suspend).
     c.execute("""CREATE TABLE IF NOT EXISTS platform_audit(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -498,6 +529,18 @@ def _rate_load():
     except (FileNotFoundError,json.JSONDecodeError): return {}
 
 def _rate_key(ip,user): return (ip or "?")+"|"+(user or "?")
+
+# Generic in-process sliding-window limiter (used by the public lead form).
+_hits={}
+def _rate_ok(key, limit=5, window=3600):
+    """True if this key is still under `limit` hits inside `window` seconds."""
+    now=time.time()
+    arr=[t for t in _hits.get(key,[]) if now-t < window]
+    if len(arr)>=limit:
+        _hits[key]=arr
+        return False
+    arr.append(now); _hits[key]=arr
+    return True
 
 def _login_rate_check(ip,user):
     """Return (ok, limited). limited=True means block this attempt."""
@@ -1077,6 +1120,79 @@ def org_get(org_id):
     c.close()
     return dict(row) if row else {"org_id": DEFAULT_ORG, "company_name": "5 Second Beauty",
         "brand_mark": "5 SEC", "brand_sub": "Employee Hub", "brand_color": "#d9748f", "logo_url": ""}
+
+# ── PLANS / BILLING ───────────────────────────────────────────────────────────
+# Sales-led: a prospect leaves details, sales talks to them, then a super-admin opens
+# a 7-day trial. When the trial ends (or payment fails) the tenant is fully locked.
+TRIAL_DAYS=7
+PLANS={
+    "starter":   {"label":"Starter","price":149,"max_users":3,   "max_orders_day":None,
+                  "blurb":"Up to 3 users"},
+    "pro":       {"label":"Pro","price":399,"max_users":None,"max_orders_day":1000,
+                  "blurb":"Unlimited users · up to 1,000 orders/day"},
+    "enterprise":{"label":"Enterprise","price":None,"max_users":None,"max_orders_day":None,
+                  "blurb":"Custom — over 1,000 orders/day"},
+}
+def plan_of(org_row):
+    """Plan config for an org row/dict; unknown or legacy plans fall back to starter."""
+    p=(org_row or {}).get("plan") or ""
+    return PLANS.get(p, PLANS["starter"])
+
+def _org_user_count(org_id):
+    """How many user accounts belong to a tenant."""
+    try:
+        users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    except Exception:
+        return 0
+    return sum(1 for _,i in users.items() if (i.get("org") or DEFAULT_ORG)==org_id)
+
+def _plan_user_limit(org_id):
+    """Max users for this tenant's plan, or None for unlimited. Trials are unlimited
+    so a prospect can try the whole product; the cap applies once they're on a plan."""
+    b=_org_billing(org_id)
+    if not b: return None
+    if (b.get("sub_status") or "")=="trialing": return None
+    return PLANS.get(b.get("plan") or "", PLANS["starter"]).get("max_users")
+
+def _plan_orders_day_limit(org_id):
+    """Max orders/day for this tenant's plan, or None for unlimited."""
+    b=_org_billing(org_id)
+    if not b: return None
+    if (b.get("sub_status") or "")=="trialing": return None
+    return PLANS.get(b.get("plan") or "", PLANS["starter"]).get("max_orders_day")
+
+def _org_billing(org_id):
+    """Raw billing fields for a tenant, or None."""
+    c=pdb()
+    r=c.execute("""SELECT org_id,company_name,plan,active,trial_ends_at,sub_status,
+                          stripe_customer_id,stripe_subscription_id,current_period_end
+                   FROM organizations WHERE org_id=?""",(org_id,)).fetchone()
+    c.close()
+    return dict(r) if r else None
+
+def org_access(org_id):
+    """(allowed, state, info) — is this tenant allowed to USE the app right now?
+    state: 'ok' | 'suspended' | 'trial_expired' | 'unpaid' | 'no_subscription'."""
+    if org_id==PLATFORM_ORG:
+        return True,"ok",{}
+    b=_org_billing(org_id)
+    if not b:
+        # Unknown org: only the founding tenant is tolerated (matches org_is_active).
+        return ((org_id or DEFAULT_ORG)==DEFAULT_ORG),"ok",{}
+    if not b.get("active"):
+        return False,"suspended",b
+    st=(b.get("sub_status") or "none").lower()
+    if st=="active":
+        return True,"ok",b
+    if st=="trialing":
+        end=_parse_dt(b.get("trial_ends_at"))
+        if end and datetime.now()<end:
+            b["trial_days_left"]=max(0,(end-datetime.now()).days)
+            return True,"ok",b
+        return False,"trial_expired",b
+    if st in ("past_due","unpaid","canceled"):
+        return False,"unpaid",b
+    return False,"no_subscription",b
 
 def org_is_active(org_id):
     """True if the tenant is active (allowed to log in). Unknown org => only the
@@ -2505,6 +2621,38 @@ def _csrf_protect():
     if not ck or not hd or not secrets.compare_digest(str(ck),str(hd)):
         return jsonify({"ok":False,"error":"CSRF validation failed — please refresh the page and try again."}),403
 
+# ── Billing gate (full lock) ──────────────────────────────────────────────────
+# When a tenant's trial has expired or its subscription isn't active, everything is
+# blocked except logging out, the billing screen, and the public/lead pages. The
+# platform owner (super-admin) is never gated.
+_BILLING_OPEN_PATHS={"/login","/logout","/billing","/api/billing/status","/healthz",
+                     "/demo","/api/lead","/favicon.ico"}
+_BILLING_OPEN_PREFIXES=("/static/","/api/billing/","/guide-asset/")
+
+@app.before_request
+def _billing_gate():
+    p=request.path or "/"
+    if p in _BILLING_OPEN_PATHS or p.startswith(_BILLING_OPEN_PREFIXES):
+        return
+    if not session.get("user") and not session.get("name"):
+        return                      # not logged in — the auth decorators handle it
+    if is_super():
+        return                      # platform owner is never gated
+    allowed,state,info=org_access(current_org())
+    if allowed:
+        return
+    if p.startswith("/api/"):
+        return jsonify({"ok":False,"error":"billing","state":state,
+                        "message":_BILLING_MSG.get(state,"Your subscription is not active.")}),402
+    return redirect("/billing")
+
+_BILLING_MSG={
+    "trial_expired":"Your 7-day trial has ended. Choose a plan to keep using LiveOpsHub.",
+    "unpaid":"We couldn't process your payment. Update your billing details to restore access.",
+    "suspended":"This account has been suspended. Contact support.",
+    "no_subscription":"This account doesn't have an active subscription yet.",
+}
+
 # Injected into every HTML page so all fetch()/XHR mutating calls carry the token.
 _CSRF_SHIM=("<script>(function(){function t(){var m=document.cookie.match(/(?:^|;\\s*)"
     +CSRF_COOKIE+"=([^;]+)/);return m?decodeURIComponent(m[1]):\"\";}"
@@ -3826,6 +3974,23 @@ def api_shipments_import():
 
     if not by_pkg:
         return jsonify({"ok": False, "error": "No usable shipments found in CSV (all rows skipped or cancelled)"})
+
+    # Plan limit: Pro is capped at 1,000 orders/day. Count what's already imported today
+    # plus what this file would add.
+    _od_lim=_plan_orders_day_limit(current_org())
+    if _od_lim:
+        _today=datetime.now().strftime("%Y-%m-%d")
+        _c=sdb()
+        try:
+            _already=_c.execute("SELECT COUNT(*) FROM shipments WHERE substr(COALESCE(show_date,''),1,10)=?",
+                                (_today,)).fetchone()[0]
+        except Exception:
+            _already=0
+        _c.close()
+        if _already+len(by_pkg) > _od_lim:
+            return jsonify({"ok":False,"upgrade":True,"error":
+                "Your plan allows %d orders per day. This import would bring today to %d. "
+                "Contact us to move to an Enterprise plan."%(_od_lim,_already+len(by_pkg))})
 
     c = sdb()
     # Faster bulk writes on slow (network-volume) disks — safe for a re-runnable import.
@@ -7158,6 +7323,14 @@ def api_add():
     # Extra roles let one person do several jobs (e.g. picker + host).
     _valid_extra={"worker","picker","cs","host","assistant"}
     extra=[r for r in (d.get("extra_roles") or []) if r in _valid_extra and r!=role]
+    # Plan limit: Starter is capped at 3 users per tenant.
+    _lim=_plan_user_limit(current_org())
+    if _lim is not None:
+        _cur=_org_user_count(current_org())
+        if _cur>=_lim:
+            return jsonify({"ok":False,"error":
+                "Your plan allows %d users and you already have %d. Upgrade to Pro for unlimited users."%(_lim,_cur),
+                "upgrade":True})
     with update_json(USERS_FILE) as users:
         if u in users: return jsonify({"ok":False,"error":"Already exists"})
         users[u]={"password":_h(p),"role":role,"name":n,"org":session.get("org",DEFAULT_ORG)}
@@ -7280,6 +7453,158 @@ def users_badges_page():
     return USERS_BADGES_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("badges")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 # ══════════════════════════════════════════════════════════
+# BILLING — paywall, subscription status, and the public lead form
+# ══════════════════════════════════════════════════════════
+SALES_EMAIL=os.environ.get("SALES_EMAIL","sales@liveopshub.com")
+
+_BILLING_HEADLINE={
+    "trial_expired":"Your trial has ended",
+    "unpaid":"There's a problem with your payment",
+    "suspended":"Account suspended",
+    "no_subscription":"Choose a plan to get started",
+    "ok":"Your subscription",
+}
+_BILLING_STATE_LABEL={
+    "trial_expired":("warn","TRIAL ENDED"),
+    "unpaid":("bad","PAYMENT FAILED"),
+    "suspended":("bad","SUSPENDED"),
+    "no_subscription":("warn","NO PLAN"),
+    "ok":("ok","ACTIVE"),
+}
+
+@app.route("/billing")
+@req_login
+def billing_page():
+    """Paywall / plan chooser. Reachable even when the tenant is locked."""
+    allowed,state,info=org_access(current_org())
+    if allowed: state="ok"
+    cls,label=_BILLING_STATE_LABEL.get(state,("warn",state.upper()))
+    msg=_BILLING_MSG.get(state,"")
+    if state=="ok":
+        b=info or {}
+        if (b.get("sub_status") or "")=="trialing" and b.get("trial_days_left") is not None:
+            msg="You're on a free trial — %d day(s) left. Pick a plan any time to continue without interruption." % b["trial_days_left"]
+        else:
+            msg="Your subscription is active. Thanks for using LiveOpsHub!"
+    return (BILLING_HTML.replace("__FONT__",_FONT)
+            .replace("__STATE_CLS__",cls).replace("__STATE_LABEL__",label)
+            .replace("__HEADLINE__",esc(_BILLING_HEADLINE.get(state,"Billing")))
+            .replace("__MESSAGE__",esc(msg))
+            .replace("__SALES_EMAIL__",esc(SALES_EMAIL)))
+
+@app.route("/api/billing/status")
+@req_login
+def api_billing_status():
+    allowed,state,info=org_access(current_org())
+    b=info or {}
+    return jsonify({"ok":True,"allowed":allowed,"state":state,
+        "plan":b.get("plan"),"sub_status":b.get("sub_status"),
+        "trial_ends_at":b.get("trial_ends_at"),
+        "trial_days_left":b.get("trial_days_left"),
+        "current_period_end":b.get("current_period_end"),
+        "plans":PLANS})
+
+# ── Public lead capture (no auth) ─────────────────────────────────────────────
+@app.route("/demo")
+def demo_page():
+    return DEMO_HTML.replace("__FONT__",_FONT)
+
+_LEAD_MAX=2000
+@app.route("/api/lead",methods=["POST"])
+def api_lead():
+    """Public 'request a demo' submission. Rate-limited by IP to stop spam."""
+    d=request.get_json(silent=True) or {}
+    company=(d.get("company") or "").strip()[:120]
+    name=(d.get("contact_name") or "").strip()[:120]
+    email=(d.get("email") or "").strip()[:160]
+    if not company or not name or not email or "@" not in email:
+        return jsonify({"ok":False,"error":"Company, name and a valid email are required."})
+    ip=request.remote_addr or "?"
+    if not _rate_ok("lead:"+ip, limit=5, window=3600):
+        return jsonify({"ok":False,"error":"Too many requests — please try again later."})
+    c=pdb()
+    c.execute("""INSERT INTO leads(company,contact_name,email,phone,platforms,volume,message)
+                 VALUES(?,?,?,?,?,?,?)""",
+              (company,name,email,(d.get("phone") or "").strip()[:60],
+               (d.get("platforms") or "").strip()[:60],(d.get("volume") or "").strip()[:60],
+               (d.get("message") or "").strip()[:_LEAD_MAX]))
+    c.commit();c.close()
+    print("NEW LEAD: %s / %s / %s" % (company,name,email),flush=True)
+    return jsonify({"ok":True})
+
+@app.route("/api/leads")
+@req_super
+def api_leads_list():
+    c=pdb();rows=[dict(r) for r in c.execute(
+        "SELECT * FROM leads ORDER BY created_at DESC LIMIT 500").fetchall()];c.close()
+    return jsonify({"ok":True,"leads":rows})
+
+@app.route("/api/leads/<int:lid>",methods=["POST"])
+@req_super
+def api_lead_update(lid):
+    """Update a lead's status/notes as sales works it."""
+    d=request.get_json() or {}
+    st=(d.get("status") or "").strip()
+    if st and st not in ("new","contacted","trial","won","lost"):
+        return jsonify({"ok":False,"error":"Invalid status"})
+    c=pdb()
+    if st: c.execute("UPDATE leads SET status=? WHERE id=?",(st,lid))
+    if d.get("notes") is not None:
+        c.execute("UPDATE leads SET notes=? WHERE id=?",((d.get("notes") or "")[:_LEAD_MAX],lid))
+    if d.get("converted_org"):
+        c.execute("UPDATE leads SET converted_org=?, status='trial' WHERE id=?",
+                  ((d.get("converted_org") or "")[:40],lid))
+    c.commit();c.close()
+    plog(session.get("user"),"lead_update","","lead #%d"%lid)
+    return jsonify({"ok":True})
+
+# ── Super-admin subscription controls ─────────────────────────────────────────
+@app.route("/api/orgs/<org_id>/subscription",methods=["POST"])
+@req_super
+def api_org_subscription(org_id):
+    """Start/extend a trial, change plan, or mark a tenant active/unpaid by hand.
+    Sales-led flow: this is how a trial gets opened after the sales call."""
+    d=request.get_json() or {}
+    c=pdb()
+    if not c.execute("SELECT 1 FROM organizations WHERE org_id=?",(org_id,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"Unknown org"})
+    action=(d.get("action") or "").strip()
+    if action=="start_trial":
+        try: days=max(1,min(90,int(d.get("days",TRIAL_DAYS))))
+        except Exception: days=TRIAL_DAYS
+        ends=(datetime.now()+timedelta(days=days)).isoformat(timespec="seconds")
+        c.execute("UPDATE organizations SET sub_status='trialing', trial_ends_at=? WHERE org_id=?",(ends,org_id))
+        detail="trial %d days (until %s)"%(days,ends[:10])
+    elif action=="extend_trial":
+        try: days=max(1,min(90,int(d.get("days",7))))
+        except Exception: days=7
+        row=c.execute("SELECT trial_ends_at FROM organizations WHERE org_id=?",(org_id,)).fetchone()
+        base=_parse_dt(row["trial_ends_at"]) or datetime.now()
+        if base<datetime.now(): base=datetime.now()
+        ends=(base+timedelta(days=days)).isoformat(timespec="seconds")
+        c.execute("UPDATE organizations SET sub_status='trialing', trial_ends_at=? WHERE org_id=?",(ends,org_id))
+        detail="extended %d days (until %s)"%(days,ends[:10])
+    elif action=="set_plan":
+        plan=(d.get("plan") or "").strip()
+        if plan not in PLANS:
+            c.close(); return jsonify({"ok":False,"error":"Unknown plan"})
+        c.execute("UPDATE organizations SET plan=? WHERE org_id=?",(plan,org_id))
+        detail="plan=%s"%plan
+    elif action=="set_status":
+        st=(d.get("sub_status") or "").strip()
+        if st not in ("active","trialing","past_due","canceled","none"):
+            c.close(); return jsonify({"ok":False,"error":"Invalid status"})
+        c.execute("UPDATE organizations SET sub_status=? WHERE org_id=?",(st,org_id))
+        detail="sub_status=%s"%st
+    else:
+        c.close(); return jsonify({"ok":False,"error":"Unknown action"})
+    c.commit()
+    row=dict(c.execute("SELECT * FROM organizations WHERE org_id=?",(org_id,)).fetchone())
+    c.close()
+    plog("org.subscription","%s: %s"%(org_id,detail),org_id)
+    return jsonify({"ok":True,"org":row})
+
+# ══════════════════════════════════════════════════════════
 # PLATFORM / TENANT MANAGEMENT — super-admin only (control plane)
 # ══════════════════════════════════════════════════════════
 _ORG_ID_RE=re.compile(r'^[a-z0-9][a-z0-9\-]{1,30}$')
@@ -7325,11 +7650,19 @@ def api_orgs_create():
     if admin_user in users:
         c.close(); return jsonify({"ok":False,"error":"That admin username is already taken (usernames are global)"})
     # 1) register the tenant
-    c.execute("""INSERT INTO organizations(org_id,company_name,brand_mark,brand_sub,brand_color,logo_url,plan)
-                 VALUES(?,?,?,?,?,?,?)""",
+    # New tenants start on a 7-day trial (sales-led: opened after the sales call).
+    _plan=(d.get("plan") or "starter")
+    if _plan not in PLANS: _plan="starter"
+    try: _tdays=max(0,min(90,int(d.get("trial_days",TRIAL_DAYS))))
+    except Exception: _tdays=TRIAL_DAYS
+    _tends=(datetime.now()+timedelta(days=_tdays)).isoformat(timespec="seconds")
+    c.execute("""INSERT INTO organizations(org_id,company_name,brand_mark,brand_sub,brand_color,logo_url,plan,
+                                           sub_status,trial_ends_at)
+                 VALUES(?,?,?,?,?,?,?,?,?)""",
               (org_id,company,(d.get("brand_mark") or company[:12] or "BRAND").upper(),
                (d.get("brand_sub") or "Employee Hub"),(d.get("brand_color") or "#d9748f"),
-               (d.get("logo_url") or ""),(d.get("plan") or "standard")))
+               (d.get("logo_url") or ""),_plan,
+               ("trialing" if _tdays>0 else "none"), (_tends if _tdays>0 else None)))
     c.commit(); c.close()
     # 2) provision its isolated data folders/DBs + seed defaults
     try:

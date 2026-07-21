@@ -9984,3 +9984,178 @@ document.getElementById('createBtn').addEventListener('click',function(){
 function val(id){return (document.getElementById(id).value||'').trim()}
 load();
 </script></body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# BILLING / PAYWALL — shown when a tenant's trial ended or
+# its subscription isn't active (full lock).
+# ══════════════════════════════════════════════════════════
+BILLING_HTML = '''<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Billing · LiveOpsHub</title>
+__FONT__
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f6f7fb;color:#141b26;font-family:'Inter',-apple-system,'Segoe UI',sans-serif}
+.wrap{max-width:1000px;margin:0 auto;padding:48px 24px 60px}
+.hero{text-align:center;margin-bottom:36px}
+.hero h1{font-size:30px;font-weight:900;margin:0 0 10px}
+.state{display:inline-block;padding:8px 18px;border-radius:50px;font-weight:800;font-size:13px;margin-bottom:16px}
+.state.warn{background:rgba(245,158,11,.16);color:#b45309}
+.state.bad{background:rgba(244,63,94,.14);color:#e11d48}
+.state.ok{background:rgba(16,185,129,.14);color:#059669}
+.msg{color:#5b6474;font-size:15px;max-width:620px;margin:0 auto;line-height:1.6}
+.plans{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:34px}
+@media(max-width:860px){.plans{grid-template-columns:1fr}}
+.plan{background:#fff;border:2px solid rgba(17,24,39,.08);border-radius:16px;padding:26px 22px;display:flex;flex-direction:column}
+.plan.featured{border-color:#6366f1;box-shadow:0 10px 40px rgba(99,102,241,.14)}
+.plan .tag{font-size:11px;font-weight:900;letter-spacing:.8px;text-transform:uppercase;color:#6366f1;margin-bottom:8px;min-height:14px}
+.plan h3{margin:0 0 6px;font-size:20px;font-weight:900}
+.price{font-size:38px;font-weight:900;letter-spacing:-1px}
+.price small{font-size:14px;font-weight:700;color:#8b93a5}
+.blurb{color:#5b6474;font-size:14px;margin:10px 0 18px;line-height:1.5;flex:1}
+.btn{display:block;text-align:center;border:none;border-radius:11px;padding:13px 20px;font-size:15px;font-weight:800;cursor:pointer;text-decoration:none;
+     background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
+.btn.sec{background:#fff;color:#4f46e5;border:2px solid rgba(79,70,229,.35)}
+.foot{text-align:center;margin-top:34px;color:#8b93a5;font-size:13px}
+.foot a{color:#4f46e5;font-weight:700}
+.logout{position:absolute;top:20px;right:24px;color:#8b93a5;font-size:13px;font-weight:700;text-decoration:none}
+</style></head><body>
+<a class="logout" href="/logout">Log out</a>
+<div class="wrap">
+  <div class="hero">
+    <div class="state __STATE_CLS__">__STATE_LABEL__</div>
+    <h1>__HEADLINE__</h1>
+    <div class="msg">__MESSAGE__</div>
+  </div>
+  <div class="plans">
+    <div class="plan">
+      <div class="tag"></div>
+      <h3>Starter</h3>
+      <div class="price">$149<small>/mo</small></div>
+      <div class="blurb">Up to 3 users. The full warehouse workflow — imports, picking, packing with video proof, inventory and analytics.</div>
+      <button class="btn sec" onclick="choose('starter')">Choose Starter</button>
+    </div>
+    <div class="plan featured">
+      <div class="tag">Most popular</div>
+      <h3>Pro</h3>
+      <div class="price">$399<small>/mo</small></div>
+      <div class="blurb">Unlimited users, up to 1,000 orders per day. Everything in Starter plus the full team roster and multi-channel scheduling.</div>
+      <button class="btn" onclick="choose('pro')">Choose Pro</button>
+    </div>
+    <div class="plan">
+      <div class="tag"></div>
+      <h3>Enterprise</h3>
+      <div class="price">Custom</div>
+      <div class="blurb">More than 1,000 orders per day, multiple warehouses, or custom integrations. Let's build the right package for you.</div>
+      <a class="btn sec" href="mailto:__SALES_EMAIL__?subject=LiveOpsHub%20Enterprise">Talk to sales</a>
+    </div>
+  </div>
+  <div class="foot">Questions about billing? <a href="mailto:__SALES_EMAIL__">__SALES_EMAIL__</a></div>
+</div>
+<script>
+function choose(plan){
+  var b=event.target;var old=b.textContent;b.disabled=true;b.textContent='Opening checkout…';
+  fetch('/api/billing/checkout',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({plan:plan})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(d.ok&&d.url){location.href=d.url;return}
+     b.disabled=false;b.textContent=old;
+     alert(d.error||'Checkout is not available yet — please contact sales.');
+   }).catch(function(){b.disabled=false;b.textContent=old;alert('Network error')});
+}
+</script></body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# PUBLIC LEAD CAPTURE — "request a demo" (no auth).
+# Sales talks to the prospect, then a super-admin opens the trial.
+# ══════════════════════════════════════════════════════════
+DEMO_HTML = '''<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Request a demo · LiveOpsHub</title>
+__FONT__
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0c0f16;color:#e9edf6;font-family:'Inter',-apple-system,'Segoe UI',sans-serif}
+.wrap{max-width:1040px;margin:0 auto;padding:56px 24px 70px;display:grid;grid-template-columns:1.05fr .95fr;gap:52px}
+@media(max-width:900px){.wrap{grid-template-columns:1fr;gap:34px;padding-top:36px}}
+.brand{font-weight:900;font-size:20px;letter-spacing:-.3px;margin-bottom:30px}
+.brand span{color:#818cf8}
+h1{font-size:38px;line-height:1.12;font-weight:900;margin:0 0 16px;letter-spacing:-1px}
+.sub{color:#9aa4b8;font-size:16px;line-height:1.65;margin-bottom:26px}
+.pts{list-style:none;padding:0;margin:0}
+.pts li{padding:9px 0 9px 30px;position:relative;color:#c8cfdd;font-size:15px}
+.pts li:before{content:'✓';position:absolute;left:0;color:#34d399;font-weight:900}
+.card{background:#141a25;border:1px solid rgba(255,255,255,.09);border-radius:18px;padding:30px}
+.card h2{margin:0 0 6px;font-size:20px;font-weight:900}
+.card p{margin:0 0 20px;color:#9aa4b8;font-size:13.5px}
+label{display:block;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:#8b93a5;margin:14px 0 6px}
+input,select,textarea{width:100%;padding:12px 14px;border-radius:10px;border:1px solid rgba(255,255,255,.12);
+  background:#0c0f16;color:#e9edf6;font-size:14.5px;font-family:inherit}
+input:focus,select:focus,textarea:focus{outline:none;border-color:#6366f1}
+textarea{min-height:78px;resize:vertical}
+.btn{width:100%;margin-top:22px;border:none;border-radius:11px;padding:14px;font-size:15.5px;font-weight:800;cursor:pointer;
+  background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
+.btn:disabled{opacity:.6;cursor:default}
+.note{margin-top:14px;color:#6b7488;font-size:12px;text-align:center;line-height:1.5}
+.done{text-align:center;padding:34px 10px}
+.done .ic{font-size:46px}
+.done h2{margin:14px 0 8px}
+.err{background:rgba(244,63,94,.12);color:#fb7185;padding:11px 13px;border-radius:9px;font-size:13.5px;margin-top:14px;display:none}
+</style></head><body>
+<div class="wrap">
+  <div>
+    <div class="brand">LiveOps<span>Hub</span></div>
+    <h1>Run your live-selling warehouse without the chaos.</h1>
+    <div class="sub">Built by a live-selling operation, for live-selling operations. Import your TikTok or Whatnot orders and every step after that is handled.</div>
+    <ul class="pts">
+      <li>Import orders straight from TikTok Shop &amp; Whatnot</li>
+      <li>iPad picking and packing with video proof of every box</li>
+      <li>Inventory, purchase orders and supplier receiving</li>
+      <li>Host &amp; assistant scheduling across all your channels</li>
+      <li>Per-show profit, packer and picker analytics</li>
+    </ul>
+  </div>
+  <div class="card" id="card">
+    <h2>Request a demo</h2>
+    <p>Tell us about your operation and we'll set up a 7-day trial on a quick call.</p>
+    <div id="form">
+      <label>Company *</label><input id="company" placeholder="Your business name">
+      <label>Your name *</label><input id="contact" placeholder="First and last name">
+      <label>Email *</label><input id="email" type="email" placeholder="you@company.com">
+      <label>Phone</label><input id="phone" placeholder="Optional">
+      <label>Where do you sell?</label>
+      <select id="platforms">
+        <option value="">— select —</option>
+        <option>TikTok Shop</option><option>Whatnot</option>
+        <option>Both TikTok &amp; Whatnot</option><option>Other</option>
+      </select>
+      <label>Roughly how many orders a day?</label>
+      <select id="volume">
+        <option value="">— select —</option>
+        <option>Under 100</option><option>100–500</option>
+        <option>500–1,000</option><option>Over 1,000</option>
+      </select>
+      <label>Anything else?</label><textarea id="message" placeholder="What's slowing you down today?"></textarea>
+      <button class="btn" id="send">Request my demo</button>
+      <div class="err" id="err"></div>
+      <div class="note">We'll only use your details to contact you about LiveOpsHub.</div>
+    </div>
+  </div>
+</div>
+<script>
+function v(id){return (document.getElementById(id).value||'').trim()}
+document.getElementById('send').addEventListener('click',function(){
+  var e=document.getElementById('err');e.style.display='none';
+  if(!v('company')||!v('contact')||!v('email')){e.textContent='Company, name and email are required.';e.style.display='block';return}
+  if(v('email').indexOf('@')<0){e.textContent='Please enter a valid email address.';e.style.display='block';return}
+  var b=this;b.disabled=true;b.textContent='Sending…';
+  fetch('/api/lead',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    company:v('company'),contact_name:v('contact'),email:v('email'),phone:v('phone'),
+    platforms:v('platforms'),volume:v('volume'),message:v('message')})})
+  .then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){b.disabled=false;b.textContent='Request my demo';e.textContent=d.error||'Something went wrong.';e.style.display='block';return}
+    document.getElementById('card').innerHTML='<div class="done"><div class="ic">🎉</div><h2>Thanks — we got it!</h2>'+
+      '<p>One of us will reach out within one business day to set up your trial.</p></div>';
+  }).catch(function(){b.disabled=false;b.textContent='Request my demo';e.textContent='Network error — please try again.';e.style.display='block'});
+});
+</script></body></html>'''
