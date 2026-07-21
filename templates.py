@@ -9,15 +9,15 @@ from flask import session
 
 
 def _brand():
-    """Resolve the current tenant's branding. Defaults to 5 Second Beauty but
-    every value can be overridden per-organization (SaaS white-labeling).
-    app.py populates session['brand'] at login from the org config."""
+    """Resolve the current tenant's branding. Every value is per-organization
+    (SaaS white-labeling); app.py populates session['brand'] at login from the org
+    config. The fallbacks are deliberately neutral — never another tenant's brand."""
     b = session.get("brand") or {}
     return {
-        "mark": b.get("mark", "5 SEC"),
-        "sub": b.get("sub", "Employee Hub"),
+        "mark": b.get("mark") or "LiveOpsHub",
+        "sub": b.get("sub") or "Employee Hub",
         "logo_url": b.get("logo_url", ""),
-        "color": b.get("color", "#d9748f"),
+        "color": b.get("color") or "#4f46e5",
     }
 
 def _brand_style():
@@ -273,7 +273,7 @@ _FONT = '<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;5
 LOGIN_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>5 SEC — Employee Hub</title>
+<title>__BRANDMARK__ — Employee Hub</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'DM Sans',sans-serif;background:#ffffff;color:#1a2130;display:flex;align-items:center;justify-content:center;min-height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased}
@@ -312,7 +312,7 @@ body{font-family:'DM Sans',sans-serif;background:#ffffff;color:#1a2130;display:f
 <div class="err" id="e"></div>
 <a href="/badge-login" class="back-to-badge">🎫 Back to badge scan</a>
 </div>
-<div class="foot">5 SECOND BEAUTY &copy; 2026</div>
+<div class="foot">__BRANDNAME_UC__ &copy; 2026</div>
 </div>
 <script>
 document.getElementById('p').addEventListener('keydown',function(e){if(e.key==='Enter')login()});
@@ -381,7 +381,7 @@ fetch('/api/stations').then(function(r){return r.json()}).then(function(d){
 WORKER_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 ''' + _FONT + '''
-<title>5 SEC — Packing</title>
+<title>__BRANDMARK__ — Packing</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;overflow:hidden}
@@ -2704,7 +2704,7 @@ fetch('/api/announcements?limit=2').then(function(r){return r.json()}).then(func
 DOCUMENTS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>Documents — 5 SEC Employee Hub</title>
+<title>Documents — __BRANDMARK__ Employee Hub</title>
 __NAVBAR_CSS__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -2974,7 +2974,7 @@ load();
 WELCOME_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>Welcome — 5 SEC</title>
+<title>Welcome — __BRANDMARK__</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:#1a2130;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px 24px;-webkit-font-smoothing:antialiased;position:relative;overflow:hidden}
@@ -3071,7 +3071,7 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(900px 
 ONBOARDING_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>Onboarding — 5 SEC</title>
+<title>Onboarding — __BRANDMARK__</title>
 __NAVBAR_CSS__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -3159,7 +3159,7 @@ __NAVBAR__
   <div class="hero">
     <div class="hero-eyebrow">Onboarding</div>
     <div class="hero-title">Your checklist</div>
-    <div class="hero-sub">Complete these steps to get fully set up at 5 Second Beauty.</div>
+    <div class="hero-sub">Complete these steps to get fully set up at __BRANDNAME__.</div>
     <div class="progress-row">
       <div class="progress-bar"><div class="progress-fill" id="progFill" style="width:0%"></div></div>
       <div class="progress-text"><b id="progDone">0</b> / <span id="progTotal">0</span> complete</div>
@@ -3276,7 +3276,7 @@ loadTeam();
 ANNOUNCEMENTS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>News — 5 SEC</title>
+<title>News — __BRANDMARK__</title>
 __NAVBAR_CSS__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -3496,7 +3496,7 @@ load();
 SHIPMENTS_ADMIN_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>Shipments — 5 SEC Admin</title>
+<title>Shipments — __BRANDMARK__ Admin</title>
 __NAVBAR_CSS__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -3837,7 +3837,7 @@ loadShipments();
 CUSTOMERS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>Customers — 5 SEC</title>
+<title>Customers — __BRANDMARK__</title>
 __NAVBAR_CSS__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -4054,7 +4054,7 @@ showEmpty('Start typing to search','Type a username or partial name above');
 SKU_LOOKUP_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>SKU Lookup — 5 SEC</title>
+<title>SKU Lookup — __BRANDMARK__</title>
 __NAVBAR_CSS__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -4241,7 +4241,7 @@ doSearch();  // initial empty state
 SHOWS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>Shows — 5 SEC</title>
+<title>Shows — __BRANDMARK__</title>
 __NAVBAR_CSS__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -4418,7 +4418,7 @@ function toggleDone(ev,name,done){
 PICK_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 ''' + _FONT + '''
-<title>Pick · 5 SEC</title>
+<title>Pick · __BRANDMARK__</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'DM Sans',-apple-system,sans-serif;-webkit-font-smoothing:antialiased;transition:background .25s,color .25s}
@@ -5215,7 +5215,7 @@ setInterval(refreshMyStats,30000);
 ISSUES_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>Picking issues — 5 SEC</title>
+<title>Picking issues — __BRANDMARK__</title>
 __NAVBAR_CSS__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -5389,7 +5389,7 @@ setInterval(load,30000);
 CLEANUP_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>Table Cleanup — 5 SEC</title>
+<title>Table Cleanup — __BRANDMARK__</title>
 __NAVBAR_CSS__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -5669,7 +5669,7 @@ loadShows();
 HIRES_ADMIN_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>New Hires — 5 SEC</title>
+<title>New Hires — __BRANDMARK__</title>
 __NAVBAR_CSS__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -5864,7 +5864,7 @@ document.getElementById('copyBtn').addEventListener('click',function(){
 HIRE_DETAIL_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>__HIRE_NAME__ — 5 SEC</title>
+<title>__HIRE_NAME__ — __BRANDMARK__</title>
 __NAVBAR_CSS__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -6021,7 +6021,7 @@ document.getElementById('regenBtn').addEventListener('click',function(){
 HIRE_ONBOARDING_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>Welcome — 5 SEC Onboarding</title>
+<title>Welcome — __BRANDMARK__ Onboarding</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:#1a2130;min-height:100vh;padding-bottom:80px;-webkit-font-smoothing:antialiased}
@@ -6608,7 +6608,7 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#e9e9ec;color:var
   <div class="cover">
     <div class="cover-top">
       <div>
-        <div class="cover-brand">5 SECOND BEAUTY</div>
+        <div class="cover-brand">__BRANDNAME_UC__</div>
         <div class="cover-brand-sub">Employee File</div>
       </div>
       <div class="cover-meta">
@@ -6638,7 +6638,7 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#e9e9ec;color:var
   __STEPS_HTML__
 
   <div class="footer">
-    This document is an official Employee File generated by the 5 Second Beauty HR system.<br>
+    This document is an official Employee File generated by the __BRANDNAME__ HR system.<br>
     All signatures are recorded with timestamps and IP addresses for compliance with the ESIGN Act.<br>
     Confidential — for HR use only.
   </div>
@@ -8739,9 +8739,9 @@ __NAVBAR__
   <h2>🎨 Branding &amp; white-label</h2>
   <div class="desc">Your organization's identity across the app — shown in the top bar and login.</div>
   <div class="grid2" style="max-width:560px">
-    <div><label>Company name</label><input id="bCompany" maxlength="80" placeholder="5 Second Beauty"></div>
+    <div><label>Company name</label><input id="bCompany" maxlength="80" placeholder="Your company name"></div>
     <div><label>Brand color</label><input id="bColor" type="color" value="#d9748f" style="height:44px;padding:4px"></div>
-    <div><label>Wordmark (top-left)</label><input id="bMark" maxlength="24" placeholder="5 SEC"></div>
+    <div><label>Wordmark (top-left)</label><input id="bMark" maxlength="24" placeholder="Short brand mark"></div>
     <div><label>Sub-label</label><input id="bSub" maxlength="40" placeholder="Employee Hub"></div>
   </div>
   <div style="max-width:560px"><label>Logo URL (https only, optional)</label><input id="bLogo" maxlength="500" placeholder="https://…/logo.png"></div>

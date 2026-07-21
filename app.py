@@ -655,7 +655,25 @@ else:
 # ══════════════════════════════════════════════════════════
 # GIVEAWAY MODULE - SQLite database
 # ══════════════════════════════════════════════════════════
-GIVEAWAY_BRANDS=["5 Sec Beauty","Hera Beauty","Peach Beauty"]
+# Seeded only for the founding tenant. Every other tenant defines their own in
+# Settings → Company setup (stored per-org), so nobody sees another brand's names.
+_FOUNDING_GIVEAWAY_BRANDS=["5 Sec Beauty","Hera Beauty","Peach Beauty"]
+
+def giveaway_brands(org=None):
+    """This tenant's giveaway brand list. Falls back to their own channel names, so a
+    new customer gets something sensible instead of somebody else's brands."""
+    try:
+        raw=_get_setting("giveaway_brands")
+        if raw:
+            v=json.loads(raw)
+            if isinstance(v,list): return [str(x)[:60] for x in v if str(x).strip()]
+    except Exception: pass
+    if _org_or_current(org)==DEFAULT_ORG:
+        return list(_FOUNDING_GIVEAWAY_BRANDS)
+    try:
+        return [c["name"] for c in _channels()]
+    except Exception:
+        return []
 # A giveaway winner with no order yet waits this many days for an order to appear in a
 # CSV import before we give up and it moves to "need to create a label".
 GIVEAWAY_NO_ORDER_DAYS=4
@@ -1153,8 +1171,9 @@ def org_get(org_id):
     if not row and org_id != DEFAULT_ORG:
         row = c.execute("SELECT * FROM organizations WHERE org_id=?", (DEFAULT_ORG,)).fetchone()
     c.close()
-    return dict(row) if row else {"org_id": DEFAULT_ORG, "company_name": "5 Second Beauty",
-        "brand_mark": "5 SEC", "brand_sub": "Employee Hub", "brand_color": "#d9748f", "logo_url": ""}
+    return dict(row) if row else {"org_id": org_id or DEFAULT_ORG,
+        "company_name": (org_id or DEFAULT_ORG), "brand_mark": (org_id or "BRAND")[:12].upper(),
+        "brand_sub": "Employee Hub", "brand_color": "#4f46e5", "logo_url": ""}
 
 # ── PLANS / BILLING ───────────────────────────────────────────────────────────
 # Sales-led: a prospect leaves details, sales talks to them, then a super-admin opens
@@ -1256,11 +1275,14 @@ def brand_for_session(org_id):
         return {"mark":"LiveOpsHub","sub":"Platform","color":"#6366f1","logo_url":"",
                 "company":"LiveOpsHub","org_id":PLATFORM_ORG}
     o = org_get(org_id)
-    return {"mark": o.get("brand_mark") or "5 SEC",
+    # Fallbacks are derived from the tenant's OWN company name — never another
+    # tenant's brand.
+    _co = o.get("company_name") or (org_id or DEFAULT_ORG)
+    return {"mark": o.get("brand_mark") or _co[:12].upper(),
             "sub": o.get("brand_sub") or "Employee Hub",
-            "color": o.get("brand_color") or "#d9748f",
+            "color": o.get("brand_color") or "#4f46e5",
             "logo_url": o.get("logo_url") or "",
-            "company": o.get("company_name") or "5 Second Beauty",
+            "company": _co,
             "org_id": o.get("org_id") or DEFAULT_ORG}
 
 
@@ -2206,13 +2228,13 @@ def _seed_default_workflow_if_missing(org=None):
     # ES entries are placeholders ready to be replaced when the user sends their
     # official translated content.
     default_steps = [
-        ("info", "Welcome to 5 Second Beauty",
+        ("info", "Welcome to {company}",
          "A quick intro to the team and what your first week looks like.",
          "Welcome aboard! Over the next 30 minutes you'll work through a short series of forms and policies. "
          "Each step is saved automatically — you can pause and resume from the same link anytime. "
          "When you finish, your warehouse manager gets notified and your badge becomes active.",
          None,
-         "Bienvenido a 5 Second Beauty",
+         "Bienvenido a {company}",
          "Una breve introducción al equipo y a tu primera semana.",
          "¡Bienvenido a bordo! Durante los próximos 30 minutos completarás una serie corta de formularios y políticas. "
          "Cada paso se guarda automáticamente — puedes pausar y continuar desde el mismo enlace cuando quieras. "
@@ -2246,13 +2268,13 @@ def _seed_default_workflow_if_missing(org=None):
          ']}'),
         ("ack", "Employee Handbook",
          "Read and acknowledge our company policies.",
-         "By signing below you confirm you have read and agree to follow the 5 Second Beauty Employee Handbook, "
+         "By signing below you confirm you have read and agree to follow the {company} Employee Handbook, "
          "including policies on attendance, conduct, dress code, breaks, and workplace safety. You understand "
          "that violation of these policies may result in disciplinary action up to and including termination.",
          None,
          "Manual del Empleado",
          "Lee y reconoce nuestras políticas de la empresa.",
-         "Al firmar abajo confirmas que has leído y aceptas seguir el Manual del Empleado de 5 Second Beauty, "
+         "Al firmar abajo confirmas que has leído y aceptas seguir el Manual del Empleado de {company}, "
          "incluyendo las políticas de asistencia, conducta, código de vestimenta, descansos y seguridad en el lugar de trabajo. "
          "Entiendes que la violación de estas políticas puede resultar en medidas disciplinarias hasta e incluyendo el despido.",
          None),
@@ -2324,7 +2346,7 @@ def _seed_default_workflow_if_missing(org=None):
          '{"accept":"image/*,.pdf","max_mb":15,"fields":[{"name":"id_front","label":"Frente del ID","required":true},{"name":"id_back","label":"Reverso del ID (si aplica)","required":false}]}'),
         ("sign", "Anti-harassment policy acknowledgment",
          "We take a zero-tolerance stance on harassment.",
-         "5 Second Beauty is committed to a workplace free of harassment and discrimination. By signing below I confirm "
+         "{company} is committed to a workplace free of harassment and discrimination. By signing below I confirm "
          "I have read the Anti-Harassment Policy, understand my responsibilities, and will not engage in any conduct "
          "that creates a hostile work environment based on race, gender, religion, sexual orientation, disability, age, "
          "or any other protected category. I understand how to report concerns to my manager or HR, and that retaliation "
@@ -2332,7 +2354,7 @@ def _seed_default_workflow_if_missing(org=None):
          None,
          "Reconocimiento de la política antiacoso",
          "Tenemos una postura de cero tolerancia hacia el acoso.",
-         "5 Second Beauty está comprometido con un lugar de trabajo libre de acoso y discriminación. Al firmar abajo confirmo "
+         "{company} está comprometido con un lugar de trabajo libre de acoso y discriminación. Al firmar abajo confirmo "
          "que he leído la Política Antiacoso, entiendo mis responsabilidades, y no participaré en ninguna conducta "
          "que cree un ambiente de trabajo hostil basado en raza, género, religión, orientación sexual, discapacidad, edad, "
          "o cualquier otra categoría protegida. Entiendo cómo reportar inquietudes a mi gerente o a Recursos Humanos, y que la represalia "
@@ -2353,7 +2375,16 @@ def _seed_default_workflow_if_missing(org=None):
          "de mis responsabilidades laborales.",
          None),
     ]
+    # Policy text must name THIS tenant — a handbook or harassment policy that a new
+    # hire signs must not carry another company's name.
+    try:
+        _co=(org_get(_org_or_current(org)).get("company_name") or "the company")
+    except Exception:
+        _co="the company"
+    def _sub(v):
+        return v.replace("{company}", _co) if isinstance(v, str) else v
     for order, row in enumerate(default_steps, start=1):
+        row = tuple(_sub(v) for v in row)
         # Bilingual rows are 9-tuples; legacy 5-tuples still work (ES left NULL)
         if len(row) == 9:
             stype, title, desc, body, cfg, t_es, d_es, b_es, cfg_es = row
@@ -2739,13 +2770,22 @@ def _security_headers(resp):
     if not request.cookies.get(CSRF_COOKIE):
         resp.set_cookie(CSRF_COOKIE,secrets.token_urlsafe(32),max_age=7*24*3600,
                         secure=True,httponly=False,samesite="Lax")
-    # Inject the token-forwarding shim into HTML pages (not JSON/file responses).
+    # Inject the token-forwarding shim into HTML pages (not JSON/file responses),
+    # and resolve the brand tokens so no page ever shows another tenant's name.
     try:
         ct=resp.headers.get("Content-Type","")
         if ct.startswith("text/html") and not resp.direct_passthrough:
             body=resp.get_data(as_text=True)
             if "</body>" in body and "__m=" not in body:
-                resp.set_data(body.replace("</body>",_CSRF_SHIM+"</body>",1))
+                body=body.replace("</body>",_CSRF_SHIM+"</body>",1)
+            if "__BRAND" in body:
+                b=session.get("brand") or {}
+                mark=b.get("mark") or "LiveOpsHub"
+                name=b.get("company") or mark
+                body=(body.replace("__BRANDNAME_UC__",esc(name).upper())
+                          .replace("__BRANDNAME__",esc(name))
+                          .replace("__BRANDMARK__",esc(mark)))
+            resp.set_data(body)
     except Exception:
         pass
     return resp
@@ -6172,14 +6212,20 @@ def api_org_branding_set():
     sub = _clean_name(d.get("brand_sub"), 40)
     color = (d.get("brand_color") or "").strip()
     logo = (d.get("logo_url") or "").strip()
-    if not re.match(r'^#[0-9a-fA-F]{6}$', color): color = "#d9748f"
+    if not re.match(r'^#[0-9a-fA-F]{6}$', color): color = "#4f46e5"
     # Only allow https logo URLs (or empty) to avoid mixed-content / javascript: URIs.
     if logo and not re.match(r'^https://', logo): logo = ""
     if len(logo) > 500: logo = logo[:500]
-    c = sdb()
+    # `organizations` is the control plane and lives in platform.db — writing it via
+    # sdb() silently targeted a table that doesn't exist there.
+    cur = org_get(org_id) or {}
+    _cur_company = cur.get("company_name") or org_id
+    company = company or _cur_company
+    c = pdb()
     c.execute("""UPDATE organizations SET company_name=?, brand_mark=?, brand_sub=?,
                     brand_color=?, logo_url=? WHERE org_id=?""",
-              (company or "5 Second Beauty", mark or "5 SEC", sub or "Employee Hub", color, logo, org_id))
+              (company, mark or company[:12].upper(),
+               sub or (cur.get("brand_sub") or "Employee Hub"), color, logo, org_id))
     c.commit(); c.close()
     # Refresh the live session so the navbar updates immediately for this admin.
     session["brand"] = brand_for_session(org_id)
@@ -8496,7 +8542,9 @@ def api_badge_label4x6(u):
         c.roundRect(0.15*inch, 3*inch - 0.15*inch - stripe_h, page_w - 0.3*inch, stripe_h, 8, stroke=0, fill=1)
         # Stripe text
         c.setFillColorRGB(0.10, 0.06, 0.05)
-        c.setFont("Helvetica-Bold", 22); c.drawCentredString(page_w/2, 3*inch - 0.40*inch, "5 SEC")
+        _bmark=((session.get("brand") or {}).get("mark") or "").strip() or \
+               (org_get(current_org()).get("brand_mark") or "STAFF")
+        c.setFont("Helvetica-Bold", 22); c.drawCentredString(page_w/2, 3*inch - 0.40*inch, _bmark[:14])
         c.setFont("Helvetica-Bold", 9); c.drawCentredString(page_w/2, 3*inch - 0.60*inch, "EMPLOYEE BADGE")
         # Worker name (big, centered)
         c.setFillColorRGB(0, 0, 0); c.setFont("Helvetica-Bold", 24)
@@ -8914,7 +8962,7 @@ def api_giveaway_list():
             age=max(0,(datetime.now()-created).days) if created else 0
             d["days_left"]=max(0, min(GIVEAWAY_NO_ORDER_DAYS, GIVEAWAY_NO_ORDER_DAYS-age))
         grouped[st].append(d)
-    return jsonify({"groups":grouped,"brands":GIVEAWAY_BRANDS})
+    return jsonify({"groups":grouped,"brands":giveaway_brands()})
 
 @app.route("/api/giveaway/customer")
 @req_role("admin","cs")
@@ -8986,7 +9034,7 @@ def api_giveaway_get(gid):
     r=c.execute("SELECT * FROM giveaways WHERE id=?",(gid,)).fetchone()
     c.close()
     if not r: return jsonify({"ok":False,"error":"Not found"}),404
-    return jsonify({"ok":True,"giveaway":dict(r),"brands":GIVEAWAY_BRANDS})
+    return jsonify({"ok":True,"giveaway":dict(r),"brands":giveaway_brands()})
 
 @app.route("/api/giveaway",methods=["POST"])
 @req_role("admin","cs")
@@ -8998,7 +9046,7 @@ def api_giveaway_create():
     platform=(d.get("platform") or "tiktok").strip()
     if not winner or not prize:
         return jsonify({"ok":False,"error":"Winner and prize are required"})
-    if brand and brand not in GIVEAWAY_BRANDS:
+    if brand and brand not in giveaway_brands():
         return jsonify({"ok":False,"error":"Invalid brand"})
     if platform not in ("tiktok","whatnot"):
         return jsonify({"ok":False,"error":"Invalid platform"})
@@ -9200,7 +9248,7 @@ def api_giveaway_attach():
     if not prize:
         return jsonify({"ok":False,"error":"Prize name required"})
     brand=(d.get("brand") or "").strip() or None
-    if brand and brand not in GIVEAWAY_BRANDS:
+    if brand and brand not in giveaway_brands():
         return jsonify({"ok":False,"error":"Invalid brand"})
     username=(d.get("username") or "").strip()
     sid=(d.get("shipment_id") or "").strip()
@@ -9787,7 +9835,7 @@ def api_giveaway_parse_address():
 
 if __name__=="__main__":
     print("="*50)
-    print("5 Second Beauty - Packing Station")
+    print("LiveOpsHub — Packing Station")
     print("="*50)
     print("Data:",DATA_DIR)
     print("URL: http://localhost:"+str(PORT))
