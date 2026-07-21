@@ -4111,6 +4111,11 @@ def api_shipments_import():
     show_windows = _load_show_windows(c, label, show_start_dt)
     win_start = dict(show_windows)  # label -> start datetime
 
+    # Could we read a price anywhere in this file? If not, the export's price column
+    # isn't one we recognise — surfaced in the response so it gets fixed rather than
+    # silently mis-classifying orders.
+    revenue_parsed = any((n.get("revenue") or 0) > 0 for n in norm)
+
     inserted = 0; updated = 0; items_inserted = 0
     unique_skus = set()
     try:
@@ -4127,7 +4132,11 @@ def api_shipments_import():
             # Giveaway orders ship free (stamp/envelope) with no scannable tracking —
             # flag them so they don't sit forever in the "pending / to pack" pipeline.
             group_rev = sum((n.get("revenue") or 0) for n in group)
-            is_gv = (platform == "whatnot" and group_rev == 0) or \
+            # A Whatnot order with no revenue is normally a giveaway — BUT only trust
+            # that when this file actually had a price column we could read. If nothing
+            # in the whole export parsed, revenue is UNKNOWN, not zero, and treating it
+            # as zero would dump an entire import into the giveaway pile.
+            is_gv = (platform == "whatnot" and revenue_parsed and group_rev == 0) or \
                     any(_looks_giveaway(n.get("product_name"), n.get("ship_method")) for n in group)
             new_status = "giveaway" if is_gv else "pending"
             # Shipping fee is per order (repeated across a package's item rows) — count once per order.
@@ -4219,6 +4228,11 @@ def api_shipments_import():
     alog("shipments.import","%s '%s': %d new, %d updated"%(platform,label,inserted,updated))
     # A winner who was waiting for an order may now have one in this import — attach it.
     gv_attached=_autoattach_giveaways()
+    warnings=[]
+    if platform=="whatnot" and not revenue_parsed:
+        warnings.append("No prices could be read from this file, so revenue is 0 for every "
+                        "order and profit reporting will be blank. Orders were still imported "
+                        "normally (not as giveaways). Check that your export includes a price column.")
     return jsonify({
         "ok": True,
         "format": fmt,
@@ -4228,6 +4242,8 @@ def api_shipments_import():
         "shipments_new": inserted,
         "shipments_updated": updated,
         "giveaways_attached": gv_attached,
+        "revenue_parsed": revenue_parsed,
+        "warnings": warnings,
         "items": items_inserted,
         "skipped_rows": skipped,
         "cancelled_inline": len(cancelled_inline),
@@ -5013,6 +5029,33 @@ def _receive_stock(c, sku, qty, cost, po_id=None, note=None, name=None, barcode=
     c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,po_id,note,moved_by) VALUES(?,?,?,?,?,?)",
               (sku,qty,cost,po_id,note,session.get("name","")[:60]))
     return new_oh, round(new_avg,4)
+
+@app.route("/api/shipments/fix-giveaway-status",methods=["POST"])
+@req_role("admin")
+def api_fix_giveaway_status():
+    """Repair a show where real orders were mis-flagged as giveaways.
+
+    This happens when an export's price column isn't recognised: every order reads as
+    $0, which used to look like a giveaway. Only touches rows still sitting in
+    'giveaway' — anything already picked, packed or shipped is left alone."""
+    d=request.get_json(silent=True) or {}
+    show=(d.get("show") or "").strip()
+    if not show: return jsonify({"ok":False,"error":"Pick a show to repair"})
+    c=sdb()
+    n=c.execute("""SELECT COUNT(*) FROM shipments
+                   WHERE import_label=? AND status='giveaway'""",(show,)).fetchone()[0]
+    if not n:
+        c.close(); return jsonify({"ok":False,"error":"No giveaway-flagged orders in that show"})
+    if d.get("preview"):
+        rows=[dict(r) for r in c.execute(
+            """SELECT shipment_id,buyer_name,tracking_code FROM shipments
+               WHERE import_label=? AND status='giveaway' LIMIT 5""",(show,)).fetchall()]
+        c.close(); return jsonify({"ok":True,"preview":True,"count":n,"sample":rows})
+    c.execute("""UPDATE shipments SET status='pending'
+                 WHERE import_label=? AND status='giveaway'""",(show,))
+    c.commit(); c.close()
+    alog("shipments.fix_giveaway","%s: %d orders giveaway → pending"%(show,n))
+    return jsonify({"ok":True,"fixed":n,"show":show})
 
 @app.route("/api/shipment/<sid>/revert",methods=["POST"])
 @req_role("admin")
