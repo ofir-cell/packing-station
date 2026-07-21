@@ -164,6 +164,31 @@ if any(_r2_vars):
 else:
     print("R2 not configured - using local file storage at "+DATA_DIR,flush=True)
 
+# ── Per-tenant object keys ────────────────────────────────────────────────────
+# Media used to be stored at bare prefixes ("videos/<station>_<tracking>.webm"),
+# which are guessable AND shared across tenants — one customer could fetch another
+# customer's packing video. Every media key is now namespaced by org.
+def _r2_media_key(kind, name, org=None):
+    """Per-tenant R2 key, e.g. '5sec/videos/S1_TRK_120000.webm'."""
+    return "%s/%s/%s" % (_org_or_current(org), kind, name)
+
+def _r2_resolve(kind, name, org=None):
+    """Key to READ from: prefer the per-org key, else fall back to the pre-namespacing
+    legacy key — but only for the original tenant, which owns all legacy objects.
+    Other tenants can never resolve to a legacy (un-namespaced) key."""
+    org=_org_or_current(org)
+    k="%s/%s/%s" % (org, kind, name)
+    if not r2: return k
+    try:
+        r2.head_object(Bucket=R2_BUCKET, Key=k); return k
+    except Exception: pass
+    if org==DEFAULT_ORG:
+        legacy="%s/%s" % (kind, name)
+        try:
+            r2.head_object(Bucket=R2_BUCKET, Key=legacy); return legacy
+        except Exception: pass
+    return k
+
 os.makedirs(DATA_DIR,exist_ok=True)
 os.makedirs(ORGS_DIR,exist_ok=True)
 
@@ -1592,7 +1617,7 @@ def _store_label(data, ext):
     if r2:
         try:
             ct={"gif":"image/gif","png":"image/png","pdf":"application/pdf"}.get(ext,"application/octet-stream")
-            r2.put_object(Bucket=R2_BUCKET,Key="labels/"+fn,Body=data,ContentType=ct)
+            r2.put_object(Bucket=R2_BUCKET,Key=_r2_media_key("labels",fn),Body=data,ContentType=ct)
             return "/label/file/"+fn
         except Exception as e:
             print("R2 label put failed:",e,flush=True)
@@ -3010,7 +3035,7 @@ def api_upload():
             # R2 mode: always include timestamp to ensure uniqueness without an existence check
             vn=fn+"_"+now.strftime('%H%M%S')+".webm"
             try:
-                r2.put_object(Bucket=R2_BUCKET,Key="videos/"+vn,Body=vdata,
+                r2.put_object(Bucket=R2_BUCKET,Key=_r2_media_key("videos",vn),Body=vdata,
                     ContentType='video/webm')
             except Exception as e:
                 print("R2 video upload failed:",e,flush=True)
@@ -3024,7 +3049,7 @@ def api_upload():
         if r2:
             pn=fn+"_"+now.strftime('%H%M%S')+".jpg"
             try:
-                r2.upload_fileobj(pf.stream,R2_BUCKET,"photos/"+pn,
+                r2.upload_fileobj(pf.stream,R2_BUCKET,_r2_media_key("photos",pn),
                     ExtraArgs={'ContentType':'image/jpeg'})
             except Exception as e:
                 print("R2 photo upload failed:",e,flush=True)
@@ -3334,10 +3359,10 @@ def api_documents_upload():
     stored = did + "_" + fn
     if r2:
         try:
-            r2.upload_fileobj(f.stream, R2_BUCKET, "documents/" + stored)
+            r2.upload_fileobj(f.stream, R2_BUCKET, _r2_media_key("documents", stored))
             # Get size by HEAD request after upload
             try:
-                head = r2.head_object(Bucket=R2_BUCKET, Key="documents/" + stored)
+                head = r2.head_object(Bucket=R2_BUCKET, Key=_r2_media_key("documents", stored))
                 size = head.get('ContentLength', 0)
             except: size = 0
         except Exception as e:
@@ -3381,7 +3406,7 @@ def documents_download(doc_id):
     if r2:
         try:
             url = r2.generate_presigned_url('get_object',
-                Params={'Bucket': R2_BUCKET, 'Key': 'documents/' + stored,
+                Params={'Bucket': R2_BUCKET, 'Key': _r2_resolve("documents", stored),
                         'ResponseContentDisposition': 'attachment; filename="' + d.get('filename','file') + '"'},
                 ExpiresIn=R2_PRESIGN_TTL)
             return redirect(url)
@@ -6471,7 +6496,9 @@ def _hire_upload_storage_key(hire_id, step_id, field_name, filename):
     hire can re-upload to fix a blurry photo."""
     safe_field = re.sub(r'[^A-Za-z0-9_\-]', '_', field_name)[:40] or "file"
     safe_fn = secure_filename(filename) or "file"
-    return f"hire_uploads/{hire_id}/{step_id}/{safe_field}_{safe_fn}"
+    # Org-scoped: hire_id is a per-tenant autoincrement, so a bare key would collide
+    # (and overwrite) across tenants.
+    return f"{current_org()}/hire_uploads/{hire_id}/{step_id}/{safe_field}_{safe_fn}"
 
 @app.route("/api/hire/<token>/step/<int:step_id>/upload", methods=["POST"])
 def api_public_hire_upload(token, step_id):
@@ -6798,7 +6825,7 @@ def api_documents_delete(doc_id):
     stored = d.get("stored_filename", "")
     if stored:
         if r2:
-            try: r2.delete_object(Bucket=R2_BUCKET, Key="documents/" + stored)
+            try: r2.delete_object(Bucket=R2_BUCKET, Key=_r2_resolve("documents", stored))
             except Exception as e: print("R2 doc delete failed:", e, flush=True)
         else:
             path = os.path.join(docs_dir(), stored)
@@ -7961,7 +7988,12 @@ def api_storage():
         oldest=None;newest=None
         try:
             paginator=r2.get_paginator('list_objects_v2')
-            for prefix,is_v in [('videos/',True),('photos/',False)]:
+            # Per-tenant prefixes; the original tenant also owns the legacy bare prefixes.
+            _org=current_org()
+            _prefixes=[(_org+'/videos/',True),(_org+'/photos/',False)]
+            if _org==DEFAULT_ORG:
+                _prefixes+=[('videos/',True),('photos/',False)]
+            for prefix,is_v in _prefixes:
                 for page in paginator.paginate(Bucket=R2_BUCKET,Prefix=prefix):
                     for obj in page.get('Contents',[]):
                         sz=obj['Size'];mt=obj['LastModified'].timestamp()
@@ -8038,7 +8070,9 @@ def api_repair_videos():
     except Exception: page_size=40
     cursor=_p("cursor",None)
     scanned=0;corrupt=0;repaired=0;errors=0;no_header=0;samples=[]
-    kw={"Bucket":R2_BUCKET,"Prefix":"videos/","MaxKeys":page_size}
+    # Scan every tenant's videos (keys are now '<org>/videos/…'; legacy ones are 'videos/…').
+    # The .webm filter below skips anything that isn't a recording.
+    kw={"Bucket":R2_BUCKET,"Prefix":_p("prefix",""),"MaxKeys":page_size}
     if cursor: kw["ContinuationToken"]=cursor
     try:
         resp=r2.list_objects_v2(**kw)
@@ -8091,7 +8125,7 @@ def serve_v(fn):
     if r2:
         try:
             url=r2.generate_presigned_url('get_object',
-                Params={'Bucket':R2_BUCKET,'Key':'videos/'+fn},
+                Params={'Bucket':R2_BUCKET,'Key':_r2_resolve("videos",fn)},
                 ExpiresIn=R2_PRESIGN_TTL)
             return redirect(url)
         except Exception as e:
@@ -8111,7 +8145,7 @@ def serve_p(fn):
     if r2:
         try:
             url=r2.generate_presigned_url('get_object',
-                Params={'Bucket':R2_BUCKET,'Key':'photos/'+fn},
+                Params={'Bucket':R2_BUCKET,'Key':_r2_resolve("photos",fn)},
                 ExpiresIn=R2_PRESIGN_TTL)
             return redirect(url)
         except Exception as e:
@@ -8133,7 +8167,7 @@ def serve_label(fn):
     if r2:
         try:
             url=r2.generate_presigned_url("get_object",
-                Params={"Bucket":R2_BUCKET,"Key":"labels/"+fn}, ExpiresIn=R2_PRESIGN_TTL)
+                Params={"Bucket":R2_BUCKET,"Key":_r2_resolve("labels",fn)}, ExpiresIn=R2_PRESIGN_TTL)
             return redirect(url)
         except Exception as e:
             print("R2 label presign failed:",e,flush=True); return ("",404)
