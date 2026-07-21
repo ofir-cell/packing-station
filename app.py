@@ -7650,6 +7650,74 @@ def api_org_subscription(org_id):
     plog("org.subscription","%s: %s"%(org_id,detail),org_id)
     return jsonify({"ok":True,"org":row})
 
+# ── Storage cost per tenant ───────────────────────────────────────────────────
+# Cloudflare R2: $0.015 per GB-month, no egress charge, 10 GB free per account.
+R2_GB_MONTH_USD=float(os.environ.get("R2_GB_MONTH_USD","0.015"))
+R2_FREE_GB=float(os.environ.get("R2_FREE_GB","10"))
+_STORAGE_KINDS=("videos","photos","labels","documents","invoices","hire_uploads")
+_storage_cache={}   # org -> (ts, payload)
+_STORAGE_TTL=int(os.environ.get("STORAGE_CACHE_SECONDS","1800"))
+
+def _org_storage(org, force=False):
+    """Bytes stored per tenant, broken down by kind. Listing costs a Class A op and
+    is slow with many objects, so results are cached for 30 minutes."""
+    hit=_storage_cache.get(org)
+    if hit and not force and time.time()-hit[0]<_STORAGE_TTL:
+        return hit[1]
+    by={k:{"count":0,"bytes":0} for k in _STORAGE_KINDS}
+    if r2:
+        prefixes=[(k, "%s/%s/"%(org,k)) for k in _STORAGE_KINDS]
+        # The founding tenant also owns the pre-namespacing bare prefixes.
+        if org==DEFAULT_ORG:
+            prefixes+=[(k,"%s/"%k) for k in ("videos","photos","documents","labels")]
+        try:
+            pg=r2.get_paginator("list_objects_v2")
+            for kind,pref in prefixes:
+                for page in pg.paginate(Bucket=R2_BUCKET,Prefix=pref):
+                    for obj in page.get("Contents",[]):
+                        by[kind]["count"]+=1; by[kind]["bytes"]+=obj["Size"]
+        except Exception as e:
+            print("storage list failed for %s: %s"%(org,e),flush=True)
+    else:
+        # Local storage mode — walk the tenant's folders.
+        for kind in _STORAGE_KINDS:
+            d=org_path(org,kind)
+            if not os.path.isdir(d): continue
+            for root,_dirs,files in os.walk(d):
+                for f in files:
+                    try:
+                        by[kind]["count"]+=1
+                        by[kind]["bytes"]+=os.path.getsize(os.path.join(root,f))
+                    except Exception: pass
+    total=sum(v["bytes"] for v in by.values())
+    gb=total/(1024.0**3)
+    payload={"org_id":org,"by_kind":by,"total_bytes":total,"total_gb":round(gb,3),
+             "video_bytes":by["videos"]["bytes"],"video_count":by["videos"]["count"],
+             "cost_month":round(gb*R2_GB_MONTH_USD,2),"rate":R2_GB_MONTH_USD}
+    _storage_cache[org]=(time.time(),payload)
+    return payload
+
+@app.route("/api/orgs/storage")
+@req_super
+def api_orgs_storage():
+    """Storage footprint + estimated R2 cost per tenant, with the margin impact."""
+    force=bool(request.args.get("refresh"))
+    c=pdb(); orgs=[dict(r) for r in c.execute("SELECT org_id,plan FROM organizations").fetchall()]; c.close()
+    out=[]; grand=0
+    for o in orgs:
+        s=_org_storage(o["org_id"],force=force)
+        price=(PLANS.get(o.get("plan") or "", PLANS["starter"]).get("price") or 0)
+        s["plan_price"]=price
+        s["cost_pct_of_revenue"]=round(100.0*s["cost_month"]/price,1) if price else None
+        grand+=s["total_bytes"]
+        out.append(s)
+    gb=grand/(1024.0**3)
+    billable=max(0.0, gb-R2_FREE_GB)
+    return jsonify({"ok":True,"storage":out,"rate":R2_GB_MONTH_USD,"free_gb":R2_FREE_GB,
+        "total_gb":round(gb,2),"billable_gb":round(billable,2),
+        "total_cost_month":round(billable*R2_GB_MONTH_USD,2),
+        "cached_seconds":_STORAGE_TTL})
+
 @app.route("/api/orgs/usage")
 @req_super
 def api_orgs_usage():

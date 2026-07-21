@@ -9894,6 +9894,8 @@ th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
 .ubar-num{width:118px;text-align:right;font-size:12px;font-weight:800}
 .ubar-none{flex:1;font-size:12px;color:#9ca3af}
 .ustats{display:flex;gap:16px;flex-wrap:wrap;margin-top:11px;font-size:11.5px;color:#6b7280}
+.ustore{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;padding-top:9px;border-top:1px dashed rgba(17,24,39,.12);font-size:11.5px;color:#6b7280}
+.storetotal{background:#f7f8fc;border:1px solid rgba(17,24,39,.07);border-radius:10px;padding:11px 14px;margin-bottom:14px;font-size:12.5px;display:flex;align-items:center;flex-wrap:wrap}
 .warnchip{background:rgba(245,158,11,.16);color:#b45309;padding:1px 9px;border-radius:50px;font-weight:800}
 .hotchip{background:rgba(16,185,129,.16);color:#059669;padding:1px 9px;border-radius:50px;font-weight:800}
 .uacts{margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -9922,6 +9924,8 @@ __NAVBAR__
 <div class="card">
   <h2>Usage &amp; billing</h2>
   <div class="desc">How hard each customer is leaning on their plan. <b>Near the cap</b> = upsell. <b>Quiet</b> = churn risk.</div>
+  <div class="storetotal"><span id="storeTotal" class="muted">Calculating storage…</span>
+    <button class="btn btn-s" id="refreshStore" style="margin-left:10px">↻ Recount</button></div>
   <div id="usageList"><div class="muted">Loading…</div></div>
 </div>
 
@@ -9996,6 +10000,7 @@ function loadUsage(){
         bar(u.peak_day_30d,u.orders_limit,'Peak orders/day')+
         '<div class="ustats"><span>'+u.orders_today+' today</span><span>'+u.orders_7d+' last 7d</span>'+
         '<span>'+u.orders_30d+' last 30d</span><span>last activity: '+daysAgo(u.last_activity)+'</span>'+quiet+hot+'</div>'+
+        '<div class="ustore" id="st-'+esc(u.org_id)+'"><span class="muted">storage…</span></div>'+
         '<div class="uacts">'+
           '<button class="btn btn-s" data-pay="'+esc(u.org_id)+'" data-plan="'+esc(u.plan||'starter')+'">💵 Record payment</button> '+
           '<button class="btn btn-s" data-trial="'+esc(u.org_id)+'">＋7 trial days</button> '+
@@ -10004,6 +10009,7 @@ function loadUsage(){
           '</select>'+
         '</div></div>';
     }).join('')||'<div class="muted">No tenants yet</div>';
+    loadStorage(false);
     document.querySelectorAll('#usageList button[data-pay]').forEach(function(b){
       b.addEventListener('click',function(){
         var org=b.getAttribute('data-pay');
@@ -10034,6 +10040,28 @@ function loadUsage(){
           if(d.ok){toast('Plan updated');loadUsage();load()}else toast(d.error||'Failed',1)});
       });
     });
+  });
+}
+function gb(b){if(!b)return '0 MB';var m=b/1048576;return m<1024?(m.toFixed(m<10?1:0)+' MB'):((m/1024).toFixed(2)+' GB')}
+function loadStorage(refresh){
+  fetch('/api/orgs/storage'+(refresh?'?refresh=1':'')).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;
+    d.storage.forEach(function(s){
+      var el=document.getElementById('st-'+s.org_id); if(!el)return;
+      var vid=s.by_kind&&s.by_kind.videos?s.by_kind.videos:{count:0,bytes:0};
+      var margin='';
+      if(s.cost_pct_of_revenue!=null){
+        var c=s.cost_pct_of_revenue>=10?'#e11d48':(s.cost_pct_of_revenue>=5?'#b45309':'#059669');
+        margin='<span style="color:'+c+';font-weight:800">'+s.cost_pct_of_revenue+'% of their $'+s.plan_price+'</span>';
+      }
+      el.innerHTML='<span>🎬 <b>'+gb(vid.bytes)+'</b> video ('+vid.count+' files)</span>'+
+        '<span>💾 '+gb(s.total_bytes)+' total</span>'+
+        '<span>💵 <b>'+(s.cost_month<0.01&&s.total_bytes>0?'&lt;$0.01':'$'+s.cost_month.toFixed(2))+'</b>/mo R2</span>'+margin;
+    });
+    var tot=document.getElementById('storeTotal');
+    if(tot)tot.innerHTML='Across all tenants: <b>'+d.total_gb+' GB</b> stored · '+
+      'first '+d.free_gb+' GB free · billable <b>'+d.billable_gb+' GB</b> = <b>$'+d.total_cost_month.toFixed(2)+'/mo</b> '+
+      '<span class="muted">at $'+d.rate+'/GB, no egress fees. Figures cached ~30 min.</span>';
   });
 }
 function loadReqs(){
@@ -10113,6 +10141,7 @@ document.getElementById('createBtn').addEventListener('click',function(){
 });
 function val(id){return (document.getElementById(id).value||'').trim()}
 load();loadUsage();loadReqs();loadLeads();
+document.getElementById('refreshStore').addEventListener('click',function(){document.getElementById('storeTotal').textContent='Recounting…';loadStorage(true)});
 setInterval(loadUsage,60000);
 </script></body></html>'''
 
