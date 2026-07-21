@@ -267,6 +267,33 @@ def pdb_init():
                        ("current_period_end","TEXT")):
         if _col not in _org_have:
             c.execute("ALTER TABLE organizations ADD COLUMN %s %s" % (_col,_decl))
+    # Manual billing ledger — one row per payment received (bank transfer, invoice,
+    # PayPal, whatever). Recording a payment is what extends a tenant's access.
+    c.execute("""CREATE TABLE IF NOT EXISTS payments(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        org_id TEXT NOT NULL,
+        amount REAL,
+        currency TEXT DEFAULT 'USD',
+        plan TEXT,
+        months INTEGER,
+        period_start TEXT,
+        period_end TEXT,
+        method TEXT,
+        reference TEXT,
+        notes TEXT,
+        recorded_by TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_payments_org ON payments(org_id, created_at DESC)")
+    # A tenant asking to start/upgrade a plan from the billing screen.
+    c.execute("""CREATE TABLE IF NOT EXISTS billing_requests(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        org_id TEXT NOT NULL,
+        plan TEXT,
+        requested_by TEXT,
+        handled INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
     # Sales-led leads from the public "request a demo" form.
     c.execute("""CREATE TABLE IF NOT EXISTS leads(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1183,6 +1210,13 @@ def org_access(org_id):
         return False,"suspended",b
     st=(b.get("sub_status") or "none").lower()
     if st=="active":
+        # Manual billing: access runs until the paid period ends. No period end set
+        # means open-ended (the founding tenant / a grandfathered account).
+        pe=_parse_dt(b.get("current_period_end"))
+        if pe and datetime.now()>=pe:
+            return False,"period_ended",b
+        if pe:
+            b["days_left"]=max(0,(pe-datetime.now()).days)
         return True,"ok",b
     if st=="trialing":
         end=_parse_dt(b.get("trial_ends_at"))
@@ -2647,10 +2681,11 @@ def _billing_gate():
     return redirect("/billing")
 
 _BILLING_MSG={
-    "trial_expired":"Your 7-day trial has ended. Choose a plan to keep using LiveOpsHub.",
-    "unpaid":"We couldn't process your payment. Update your billing details to restore access.",
+    "trial_expired":"Your 7-day trial has ended. Choose a plan and we'll send you an invoice to keep going.",
+    "period_ended":"Your paid period has ended. Once we receive your renewal payment, access is restored immediately.",
+    "unpaid":"There's an outstanding balance on this account. Get in touch and we'll sort it out right away.",
     "suspended":"This account has been suspended. Contact support.",
-    "no_subscription":"This account doesn't have an active subscription yet.",
+    "no_subscription":"This account doesn't have an active plan yet.",
 }
 
 # Injected into every HTML page so all fetch()/XHR mutating calls carry the token.
@@ -7459,18 +7494,23 @@ SALES_EMAIL=os.environ.get("SALES_EMAIL","sales@liveopshub.com")
 
 _BILLING_HEADLINE={
     "trial_expired":"Your trial has ended",
-    "unpaid":"There's a problem with your payment",
+    "period_ended":"Time to renew",
+    "unpaid":"Outstanding balance",
     "suspended":"Account suspended",
     "no_subscription":"Choose a plan to get started",
-    "ok":"Your subscription",
+    "ok":"Your plan",
 }
 _BILLING_STATE_LABEL={
     "trial_expired":("warn","TRIAL ENDED"),
-    "unpaid":("bad","PAYMENT FAILED"),
+    "period_ended":("warn","RENEWAL DUE"),
+    "unpaid":("bad","PAYMENT DUE"),
     "suspended":("bad","SUSPENDED"),
     "no_subscription":("warn","NO PLAN"),
     "ok":("ok","ACTIVE"),
 }
+# Shown on the billing screen so customers know how to actually pay you.
+PAYMENT_INSTRUCTIONS=os.environ.get("PAYMENT_INSTRUCTIONS",
+    "Pick a plan below and we'll email you an invoice. Access is restored the moment payment clears.")
 
 @app.route("/billing")
 @req_login
@@ -7483,13 +7523,19 @@ def billing_page():
     if state=="ok":
         b=info or {}
         if (b.get("sub_status") or "")=="trialing" and b.get("trial_days_left") is not None:
-            msg="You're on a free trial — %d day(s) left. Pick a plan any time to continue without interruption." % b["trial_days_left"]
+            msg="You're on a free trial — %d day(s) left. Pick a plan any time and we'll invoice you." % b["trial_days_left"]
+            label="TRIAL · %d DAYS LEFT" % b["trial_days_left"]; cls="warn"
+        elif b.get("current_period_end"):
+            msg="Your %s plan is active through %s." % (
+                PLANS.get(b.get("plan") or "", PLANS["starter"])["label"],
+                (b.get("current_period_end") or "")[:10])
         else:
-            msg="Your subscription is active. Thanks for using LiveOpsHub!"
+            msg="Your plan is active. Thanks for using LiveOpsHub!"
     return (BILLING_HTML.replace("__FONT__",_FONT)
             .replace("__STATE_CLS__",cls).replace("__STATE_LABEL__",label)
             .replace("__HEADLINE__",esc(_BILLING_HEADLINE.get(state,"Billing")))
             .replace("__MESSAGE__",esc(msg))
+            .replace("__PAY_INSTRUCTIONS__",esc(PAYMENT_INSTRUCTIONS))
             .replace("__SALES_EMAIL__",esc(SALES_EMAIL)))
 
 @app.route("/api/billing/status")
@@ -7603,6 +7649,77 @@ def api_org_subscription(org_id):
     c.close()
     plog("org.subscription","%s: %s"%(org_id,detail),org_id)
     return jsonify({"ok":True,"org":row})
+
+# ── Manual billing: record a payment, which is what grants access ─────────────
+@app.route("/api/orgs/<org_id>/payment",methods=["POST"])
+@req_super
+def api_org_payment(org_id):
+    """Record a payment received (bank transfer / invoice / whatever) and extend the
+    tenant's paid period. This is the manual-billing equivalent of a Stripe webhook."""
+    d=request.get_json() or {}
+    c=pdb()
+    row=c.execute("SELECT plan,current_period_end FROM organizations WHERE org_id=?",(org_id,)).fetchone()
+    if not row:
+        c.close(); return jsonify({"ok":False,"error":"Unknown org"})
+    try: months=max(1,min(36,int(d.get("months",1))))
+    except Exception: months=1
+    plan=(d.get("plan") or row["plan"] or "starter")
+    if plan not in PLANS: plan="starter"
+    try: amount=float(d.get("amount") or 0) or float(PLANS[plan].get("price") or 0)*months
+    except Exception: amount=0.0
+    # Extend from the current period end when it's still in the future, else from today.
+    base=_parse_dt(row["current_period_end"]) or datetime.now()
+    if base<datetime.now(): base=datetime.now()
+    start=datetime.now().isoformat(timespec="seconds")
+    end=(base+timedelta(days=30*months)).isoformat(timespec="seconds")
+    c.execute("""INSERT INTO payments(org_id,amount,currency,plan,months,period_start,period_end,
+                                      method,reference,notes,recorded_by)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+              (org_id,amount,(d.get("currency") or "USD")[:8],plan,months,start,end,
+               (d.get("method") or "manual")[:40],(d.get("reference") or "")[:80],
+               (d.get("notes") or "")[:500],session.get("user","")[:60]))
+    c.execute("""UPDATE organizations SET sub_status='active', plan=?, current_period_end=?
+                 WHERE org_id=?""",(plan,end,org_id))
+    c.execute("UPDATE billing_requests SET handled=1 WHERE org_id=? AND handled=0",(org_id,))
+    c.commit()
+    org=dict(c.execute("SELECT * FROM organizations WHERE org_id=?",(org_id,)).fetchone())
+    c.close()
+    plog(session.get("user"),"payment_recorded",org_id,
+         "%s %.2f for %d month(s) → paid until %s"%(plan,amount,months,end[:10]))
+    return jsonify({"ok":True,"org":org,"period_end":end})
+
+@app.route("/api/orgs/<org_id>/payments")
+@req_super
+def api_org_payments(org_id):
+    c=pdb();rows=[dict(r) for r in c.execute(
+        "SELECT * FROM payments WHERE org_id=? ORDER BY created_at DESC LIMIT 200",(org_id,)).fetchall()];c.close()
+    return jsonify({"ok":True,"payments":rows})
+
+@app.route("/api/billing/request-plan",methods=["POST"])
+@req_login
+def api_billing_request_plan():
+    """A locked/trialing tenant asks for a plan; super-admin sees it and invoices them."""
+    d=request.get_json() or {}
+    plan=(d.get("plan") or "").strip()
+    if plan not in PLANS:
+        return jsonify({"ok":False,"error":"Unknown plan"})
+    org=current_org()
+    c=pdb()
+    c.execute("INSERT INTO billing_requests(org_id,plan,requested_by) VALUES(?,?,?)",
+              (org,plan,session.get("user","")[:60]))
+    c.commit();c.close()
+    print("PLAN REQUEST: org=%s plan=%s by=%s"%(org,plan,session.get("user","")),flush=True)
+    plog(session.get("user"),"plan_requested",org,plan)
+    return jsonify({"ok":True,"plan":plan,"sales_email":SALES_EMAIL})
+
+@app.route("/api/billing/requests")
+@req_super
+def api_billing_requests():
+    c=pdb();rows=[dict(r) for r in c.execute(
+        """SELECT b.*, o.company_name FROM billing_requests b
+           LEFT JOIN organizations o ON o.org_id=b.org_id
+           ORDER BY b.handled, b.created_at DESC LIMIT 200""").fetchall()];c.close()
+    return jsonify({"ok":True,"requests":rows})
 
 # ══════════════════════════════════════════════════════════
 # PLATFORM / TENANT MANAGEMENT — super-admin only (control plane)

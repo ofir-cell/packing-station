@@ -10016,6 +10016,10 @@ body{margin:0;background:#f6f7fb;color:#141b26;font-family:'Inter',-apple-system
 .btn{display:block;text-align:center;border:none;border-radius:11px;padding:13px 20px;font-size:15px;font-weight:800;cursor:pointer;text-decoration:none;
      background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
 .btn.sec{background:#fff;color:#4f46e5;border:2px solid rgba(79,70,229,.35)}
+.howto{margin-top:30px;background:#fff;border:1px solid rgba(17,24,39,.08);border-radius:14px;
+  padding:20px 24px;color:#5b6474;font-size:14px;line-height:1.65;text-align:center}
+.howto b{color:#141b26}
+.howto a{color:#4f46e5;font-weight:700}
 .foot{text-align:center;margin-top:34px;color:#8b93a5;font-size:13px}
 .foot a{color:#4f46e5;font-weight:700}
 .logout{position:absolute;top:20px;right:24px;color:#8b93a5;font-size:13px;font-weight:700;text-decoration:none}
@@ -10050,17 +10054,22 @@ body{margin:0;background:#f6f7fb;color:#141b26;font-family:'Inter',-apple-system
       <a class="btn sec" href="mailto:__SALES_EMAIL__?subject=LiveOpsHub%20Enterprise">Talk to sales</a>
     </div>
   </div>
+  <div class="howto" id="howto">__PAY_INSTRUCTIONS__</div>
   <div class="foot">Questions about billing? <a href="mailto:__SALES_EMAIL__">__SALES_EMAIL__</a></div>
 </div>
 <script>
 function choose(plan){
-  var b=event.target;var old=b.textContent;b.disabled=true;b.textContent='Opening checkout…';
-  fetch('/api/billing/checkout',{method:'POST',headers:{'Content-Type':'application/json'},
+  var b=event.target;var old=b.textContent;b.disabled=true;b.textContent='Sending…';
+  fetch('/api/billing/request-plan',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({plan:plan})})
    .then(function(r){return r.json()}).then(function(d){
-     if(d.ok&&d.url){location.href=d.url;return}
-     b.disabled=false;b.textContent=old;
-     alert(d.error||'Checkout is not available yet — please contact sales.');
+     if(!d.ok){b.disabled=false;b.textContent=old;alert(d.error||'Could not send the request.');return}
+     document.getElementById('howto').innerHTML=
+       '<b>Thanks — request received.</b><br>We\\'ll email your invoice for the <b>'+plan+'</b> plan shortly. '+
+       'Your access opens as soon as the payment clears. Questions? <a href="mailto:__SALES_EMAIL__">__SALES_EMAIL__</a>';
+     document.getElementById('howto').scrollIntoView({behavior:'smooth',block:'center'});
+     document.querySelectorAll('.plan button').forEach(function(x){x.disabled=true});
+     b.textContent='Requested ✓';
    }).catch(function(){b.disabled=false;b.textContent=old;alert('Network error')});
 }
 </script></body></html>'''
