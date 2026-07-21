@@ -2690,9 +2690,16 @@ CSRF_COOKIE="csrf_token"
 CSRF_HEADER="X-CSRF-Token"
 _CSRF_SAFE=("GET","HEAD","OPTIONS","TRACE")
 
+# The public lead form is unauthenticated — there is no session for a forged request
+# to ride on, so CSRF adds nothing, and it must be POSTable from the marketing site
+# on a different origin. It is rate-limited by IP instead.
+_CSRF_EXEMPT={"/api/lead"}
+
 @app.before_request
 def _csrf_protect():
     if request.method in _CSRF_SAFE:
+        return
+    if request.path in _CSRF_EXEMPT:
         return
     ck=request.cookies.get(CSRF_COOKIE)
     hd=request.headers.get(CSRF_HEADER) or (request.form.get("_csrf") if request.form else None)
@@ -7660,12 +7667,27 @@ def demo_page():
     return DEMO_HTML.replace("__FONT__",_FONT)
 
 _LEAD_MAX=2000
-@app.route("/api/lead",methods=["POST"])
+MARKETING_ORIGIN=os.environ.get("MARKETING_ORIGIN","")   # e.g. https://liveopshub.com
+
+@app.route("/api/lead",methods=["POST","OPTIONS"])
 def api_lead():
+    # CORS preflight/response so the static marketing site can submit the form.
+    if request.method=="OPTIONS":
+        r=Response("",204)
+        if MARKETING_ORIGIN:
+            r.headers["Access-Control-Allow-Origin"]=MARKETING_ORIGIN
+            r.headers["Access-Control-Allow-Headers"]="Content-Type"
+            r.headers["Access-Control-Allow-Methods"]="POST, OPTIONS"
+            r.headers["Access-Control-Max-Age"]="86400"
+        return r
+    return _api_lead_create()
+
+def _api_lead_create():
     """Public 'request a demo' submission. Rate-limited by IP to stop spam."""
     d=request.get_json(silent=True) or {}
     company=(d.get("company") or "").strip()[:120]
-    name=(d.get("contact_name") or "").strip()[:120]
+    # The marketing site posts `name`; the in-app form posts `contact_name`.
+    name=(d.get("contact_name") or d.get("name") or "").strip()[:120]
     email=(d.get("email") or "").strip()[:160]
     if not company or not name or not email or "@" not in email:
         return jsonify({"ok":False,"error":"Company, name and a valid email are required."})
@@ -7680,7 +7702,10 @@ def api_lead():
                (d.get("message") or "").strip()[:_LEAD_MAX]))
     c.commit();c.close()
     print("NEW LEAD: %s / %s / %s" % (company,name,email),flush=True)
-    return jsonify({"ok":True})
+    resp=jsonify({"ok":True})
+    if MARKETING_ORIGIN:
+        resp.headers["Access-Control-Allow-Origin"]=MARKETING_ORIGIN
+    return resp
 
 @app.route("/api/leads")
 @req_super
