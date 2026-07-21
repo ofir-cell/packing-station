@@ -3928,7 +3928,9 @@ def _derive_delivery(n):
         return ("IN_TRANSIT", ("Shipped "+st).strip()+" · per TikTok", None)
     return (None, None, None)
 
-_GV_KW = ("giveaway", "give away", "give-away", "freebie", "free item")
+# "givvy" / "givy" are how live sellers actually write it on air — matching only the
+# formal spelling meant a priced giveaway slipped through as a normal order.
+_GV_KW = ("giveaway", "give away", "give-away", "givvy", "givy", "freebie", "free item")
 _STAMP_KW = ("stamp", "envelope", "letter", "first class mail", "non-machinable", "non machinable")
 def _looks_giveaway(name, ship_method):
     """A row looks like a giveaway if the product name says so, or it ships by a
@@ -3950,12 +3952,21 @@ def _norm_whatnot(row):
     placed = s("placed_at", "placed at", "created_at", "created at", "order_date", "date")
     cancelled = s("cancelled_or_failed", "cancelled or failed", "status", "order_status")
     # Revenue — Whatnot exports vary; try many common price column names.
-    rev_raw = s("price", "sold_price", "sold price", "sale_price", "sale price", "sold_for", "sold for",
+    # `original_item_price` is what current Whatnot live exports use — it must stay first
+    # in this list. Without it every row reads as $0, which blanks profit reporting.
+    rev_raw = s("original_item_price", "original item price",
+                "price", "sold_price", "sold price", "sale_price", "sale price", "sold_for", "sold for",
                 "amount", "item_price", "item price", "price_paid", "price paid", "buyer_paid",
                 "gross_sales", "gross sales", "gross", "total", "subtotal", "sale_amount",
                 "product_price", "product price", "line_total", "line total")
-    try: revenue = float(str(rev_raw).replace("$", "").replace(",", "").strip()) if rev_raw else 0.0
-    except Exception: revenue = 0.0
+    def _money(v):
+        try: return float(str(v).replace("$", "").replace(",", "").strip()) if str(v or "").strip() else 0.0
+        except Exception: return 0.0
+    revenue = _money(rev_raw)
+    # A coupon column holds the DISCOUNT, not the price paid — subtract it when present.
+    disc = _money(s("coupon_price", "coupon price", "discount", "discount_amount"))
+    if disc > 0:
+        revenue = max(0.0, revenue - disc)
     return {
         "order_id":   s("order_id", "order id", "order_number", "order number"),
         "package_id": pkg,
@@ -3975,6 +3986,9 @@ def _norm_whatnot(row):
         "state":      s("state", "province"),
         "city":       s("city", "town"),
         "revenue":    revenue,
+        # Whatnot marks a gifted item with the recipient's handle — a far more reliable
+        # giveaway signal than guessing from a $0 price.
+        "gifted_to":  s("gifted_to", "gifted to", "gift_recipient"),
         "ship_method": s("shipping_method", "shipping method", "ship method", "label_type",
                          "label type", "shipping service", "mail class", "carrier service",
                          "shipping option", "service"),
@@ -4136,8 +4150,16 @@ def api_shipments_import():
             # that when this file actually had a price column we could read. If nothing
             # in the whole export parsed, revenue is UNKNOWN, not zero, and treating it
             # as zero would dump an entire import into the giveaway pile.
-            is_gv = (platform == "whatnot" and revenue_parsed and group_rev == 0) or \
-                    any(_looks_giveaway(n.get("product_name"), n.get("ship_method")) for n in group)
+            # A box that contains ANY paid item is a real order — even if a free prize
+            # rides along inside it. Only a box where nothing was paid for is a giveaway.
+            # (Bundled orders are common: someone buys $120 of product and wins a prize;
+            # calling that a giveaway would pull a paid order out of the pick queue.)
+            has_paid = group_rev > 0
+            is_gv = (not has_paid) and (
+                any((n.get("gifted_to") or "").strip() for n in group)
+                or (platform == "whatnot" and revenue_parsed)
+                or any(_looks_giveaway(n.get("product_name"), n.get("ship_method")) for n in group)
+            )
             new_status = "giveaway" if is_gv else "pending"
             # Shipping fee is per order (repeated across a package's item rows) — count once per order.
             _ord_ship = {}
