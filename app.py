@@ -25,7 +25,7 @@ def _clean_name(s,maxlen=100):
     return s[:maxlen]
 # HTML templates and navbar helper live in templates.py for readability.
 from templates import (_navbar, _NAVBAR_CSS, _FONT,
-    BILLING_HTML, DEMO_HTML,
+    BILLING_HTML, DEMO_HTML, SETUP_HTML,
     LOGIN_HTML, STATION_HTML, WORKER_HTML, DASH_HTML, USERS_HTML,
     ANALYTICS_HTML, GIVEAWAY_DASH_HTML, GIVEAWAY_DETAIL_HTML,
     BADGE_LOGIN_HTML, USERS_BADGES_HTML,
@@ -8963,6 +8963,57 @@ def api_giveaway_list():
             d["days_left"]=max(0, min(GIVEAWAY_NO_ORDER_DAYS, GIVEAWAY_NO_ORDER_DAYS-age))
         grouped[st].append(d)
     return jsonify({"groups":grouped,"brands":giveaway_brands()})
+
+@app.route("/api/giveaway/brands",methods=["POST"])
+@req_role("admin")
+def api_giveaway_brands_set():
+    """This tenant's own giveaway brand list (replaces the old hardcoded one)."""
+    d=request.get_json() or {}
+    brands=[str(x).strip()[:60] for x in (d.get("brands") or []) if str(x).strip()]
+    if len(brands)>30: return jsonify({"ok":False,"error":"Too many brands (max 30)"})
+    _set_setting("giveaway_brands", json.dumps(brands))
+    alog("settings.giveaway_brands", ", ".join(brands)[:200])
+    return jsonify({"ok":True,"brands":giveaway_brands()})
+
+# ── Company setup: one screen a new tenant works through on day one ───────────
+@app.route("/setup")
+@req_role("admin")
+def setup_page():
+    return (SETUP_HTML.replace("__NAME__",esc(session.get("name","")))
+            .replace("__NAVBAR__",_navbar("setup")).replace("__NAVBAR_CSS__",_NAVBAR_CSS))
+
+@app.route("/api/setup/status")
+@req_role("admin")
+def api_setup_status():
+    """Drives the setup checklist — what's configured and what's still missing."""
+    org=current_org()
+    o=org_get(org) or {}
+    addr=_ship_from() or {}
+    try: chans=_channels()
+    except Exception: chans=[]
+    users=_org_user_count(org)
+    brands=giveaway_brands()
+    steps=[
+        {"key":"company","label":"Name your company and set your brand",
+         "done":bool(o.get("company_name") and o.get("brand_mark")),
+         "hint":"Shown in the top-left of every screen and on staff badges."},
+        {"key":"address","label":"Add your warehouse address",
+         "done":bool(addr.get("street1") and addr.get("zip")),
+         "hint":"Used as the ship-from/ship-to when buying shipping labels."},
+        {"key":"channels","label":"Add the channels you sell on",
+         "done":bool(chans),"count":len(chans),
+         "hint":"Needed before you can schedule hosts on the roster."},
+        {"key":"brands","label":"Set your giveaway brands",
+         "done":bool(brands),"count":len(brands),
+         "hint":"The brand options when logging a giveaway winner."},
+        {"key":"team","label":"Invite your team",
+         "done":users>1,"count":users,
+         "hint":"Pickers, packers and hosts each get their own login."},
+    ]
+    return jsonify({"ok":True,"org":{k:o.get(k) for k in
+        ("org_id","company_name","brand_mark","brand_sub","brand_color","logo_url")},
+        "address":addr,"channels":chans,"brands":brands,"users":users,
+        "steps":steps,"done":sum(1 for s in steps if s["done"]),"total":len(steps)})
 
 @app.route("/api/giveaway/customer")
 @req_role("admin","cs")

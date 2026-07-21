@@ -123,6 +123,7 @@ def _navbar(active_page=""):
             # Users / Badges / Permissions live *inside* Settings now, so they're
             # not repeated here — Settings is the single entry point for org config.
             user_sections.append(("Team & Admin", [
+                ("setup", "/setup", "🚀 Company setup"),
                 ("hires", "/admin/hires", "🧑‍💼 New Hires"),
                 ("settings", "/admin/settings", "⚙️ Settings"),
                 ("audit", "/admin/audit", "🧾 Audit log"),
@@ -10480,4 +10481,216 @@ document.getElementById('send').addEventListener('click',function(){
       '<p>One of us will reach out within one business day to set up your trial.</p></div>';
   }).catch(function(){b.disabled=false;b.textContent='Request my demo';e.textContent='Network error — please try again.';e.style.display='block'});
 });
+</script></body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# COMPANY SETUP — the screen a new tenant works through on
+# day one. Everything they must configure, in one place.
+# ══════════════════════════════════════════════════════════
+SETUP_HTML = '''<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Company setup — __BRANDMARK__</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f6f7fb;color:#141b26;font-family:'Inter',-apple-system,'Segoe UI',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:26px 20px 70px}
+.page-hdr{padding:22px 0 6px}
+.page-title{font-size:26px;font-weight:900}
+.page-title span{color:var(--brand,#4f46e5);font-size:14px;font-weight:700;margin-left:8px}
+.card{background:#fff;border:1px solid rgba(17,24,39,.08);border-radius:14px;padding:20px 22px;margin-bottom:16px}
+.card h2{margin:0 0 4px;font-size:17px;font-weight:900}
+.desc{color:#6b7280;font-size:13px;margin-bottom:14px;line-height:1.55}
+label{display:block;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;margin:12px 0 5px}
+input,select{width:100%;padding:10px 12px;border:1px solid rgba(17,24,39,.15);border-radius:9px;font-size:14px;font-family:inherit}
+input:focus,select:focus{outline:none;border-color:#4f46e5}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
+@media(max-width:700px){.grid2{grid-template-columns:1fr}}
+.btn{border:none;border-radius:10px;padding:10px 18px;font-size:14px;font-weight:800;cursor:pointer;
+     background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;margin-top:16px}
+.btn.s{background:#fff;color:#4f46e5;border:1.5px solid rgba(79,70,229,.35);padding:8px 14px;font-size:13px;margin-top:0}
+.btn:disabled{opacity:.55;cursor:default}
+/* progress */
+.prog{background:linear-gradient(135deg,#eef0fb,#f6f7fb);border:1px solid rgba(79,70,229,.18)}
+.ptrack{height:10px;background:rgba(17,24,39,.08);border-radius:50px;overflow:hidden;margin:12px 0 16px}
+.pfill{height:100%;background:linear-gradient(90deg,#4f46e5,#7c3aed);border-radius:50px;transition:width .4s}
+.chk{display:flex;align-items:flex-start;gap:11px;padding:9px 0}
+.dot{width:22px;height:22px;border-radius:50%;border:2.5px solid rgba(17,24,39,.18);flex-shrink:0;margin-top:1px;
+     display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:900;color:transparent}
+.chk.on .dot{background:#10b981;border-color:#10b981;color:#fff}
+.chk.on .dot::before{content:'✓'}
+.ctxt b{font-size:14px}
+.chk.on .ctxt b{color:#6b7280;text-decoration:line-through}
+.ctxt div{font-size:12px;color:#8b93a5;margin-top:2px}
+/* colour picker */
+.colorpick{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+.colorpick input[type=color]{width:52px;height:40px;padding:2px;border:1px solid rgba(17,24,39,.15);border-radius:9px;background:#fff;cursor:pointer}
+.colorpick input[type=text]{max-width:130px}
+.swatches{display:flex;gap:7px;flex-wrap:wrap}
+.sw{width:28px;height:28px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:transform .1s}
+.sw:hover{transform:scale(1.12)} .sw.on{border-color:#141b26;box-shadow:0 0 0 2px #fff inset}
+.cprev{margin-left:auto;padding:9px 16px;border-radius:10px;color:#fff;font-weight:900;letter-spacing:.5px}
+/* brand list */
+.brow{display:flex;gap:9px;align-items:center;margin-bottom:8px}
+.brow input{flex:1}
+.brow button{background:none;border:none;color:#e11d48;font-weight:800;cursor:pointer;font-size:13px}
+.muted{color:#9ca3af;font-size:13px}
+.link{color:#4f46e5;font-weight:700;text-decoration:none}
+.toast{position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:13px 20px;border-radius:10px;font-weight:700;z-index:100;display:none}
+.toast.err{background:#f43f5e}
+</style></head><body>
+__NAVBAR__
+<div class="wrap">
+<div class="page-hdr"><div class="page-title">🚀 Company setup <span>__NAME__</span></div></div>
+
+<div class="card prog">
+  <h2>Getting started</h2>
+  <div class="desc">Work through these once and your warehouse is ready to run.</div>
+  <div class="ptrack"><div class="pfill" id="pfill" style="width:0%"></div></div>
+  <div id="checks"><div class="muted">Loading…</div></div>
+</div>
+
+<div class="card">
+  <h2>1 · Your company</h2>
+  <div class="desc">This is what your team sees in the top-left of every screen, and what gets printed on staff badges.</div>
+  <div class="grid2">
+    <div><label>Company name</label><input id="company" maxlength="80" placeholder="Glam Co"></div>
+    <div><label>Wordmark (short)</label><input id="mark" maxlength="24" placeholder="GLAM"></div>
+    <div><label>Subtitle</label><input id="sub" maxlength="40" placeholder="Employee Hub"></div>
+    <div><label>Logo URL (https, optional)</label><input id="logo" maxlength="500" placeholder="https://…/logo.png"></div>
+  </div>
+  <label>Brand colour</label>
+  <div class="colorpick">
+    <input type="color" id="colorPick" value="#4f46e5">
+    <input type="text" id="color" maxlength="7" placeholder="#4f46e5">
+    <div class="swatches" id="swatches"></div>
+    <div class="cprev" id="cprev">BRAND</div>
+  </div>
+  <button class="btn" id="saveCompany">Save company</button>
+</div>
+
+<div class="card">
+  <h2>2 · Warehouse address</h2>
+  <div class="desc">Where your parcels ship from — and where supplier deliveries are sent. Used every time you buy a label.</div>
+  <div class="grid2">
+    <div><label>Name / company</label><input id="aName" placeholder="Glam Co Warehouse"></div>
+    <div><label>Phone</label><input id="aPhone" placeholder="+1 555 123 4567"></div>
+    <div><label>Street</label><input id="aStreet1" placeholder="123 Main St"></div>
+    <div><label>Street 2</label><input id="aStreet2" placeholder="Suite 4"></div>
+    <div><label>City</label><input id="aCity"></div>
+    <div><label>State</label><input id="aState" placeholder="FL" maxlength="2"></div>
+    <div><label>ZIP</label><input id="aZip" placeholder="33101"></div>
+    <div><label>Country</label><input id="aCountry" value="US" maxlength="2"></div>
+  </div>
+  <button class="btn" id="saveAddr">Save address</button>
+</div>
+
+<div class="card">
+  <h2>3 · Giveaway brands</h2>
+  <div class="desc">The brand options you pick from when logging a giveaway winner. Add one per line.</div>
+  <div id="brandRows"></div>
+  <button class="btn s" id="addBrand">+ Add brand</button>
+  <div><button class="btn" id="saveBrands">Save brands</button></div>
+</div>
+
+<div class="card">
+  <h2>4 · Channels &amp; team</h2>
+  <div class="desc">Your live-selling accounts and the people who run them.</div>
+  <div id="chSummary" class="muted">Loading…</div>
+  <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+    <a class="btn s" href="/admin/roster">📺 Manage channels</a>
+    <a class="btn s" href="/users">👥 Manage team</a>
+  </div>
+</div>
+</div>
+<div class="toast" id="t"></div>
+<script>
+function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},2800)}
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+function v(id){return (document.getElementById(id).value||'').trim()}
+var SW=['#d9748f','#e11d48','#f59e0b','#f97316','#10b981','#059669','#0891b2','#2563eb','#4f46e5','#7c3aed','#a855f7','#141b26'];
+function setColor(hex,skip){
+  if(!/^#[0-9a-fA-F]{6}$/.test(hex||''))return; hex=hex.toLowerCase();
+  if(skip!=='text')document.getElementById('color').value=hex;
+  if(skip!=='pick')document.getElementById('colorPick').value=hex;
+  var p=document.getElementById('cprev');p.style.background=hex;
+  p.textContent=(v('mark')||v('company')||'BRAND').toUpperCase().slice(0,14);
+  document.querySelectorAll('.sw').forEach(function(s){s.classList.toggle('on',s.dataset.c===hex)});
+}
+document.getElementById('swatches').innerHTML=SW.map(function(c){
+  return '<span class="sw" data-c="'+c+'" style="background:'+c+'"></span>'}).join('');
+document.querySelectorAll('.sw').forEach(function(s){s.addEventListener('click',function(){setColor(s.dataset.c)})});
+document.getElementById('colorPick').addEventListener('input',function(){setColor(this.value,'pick')});
+document.getElementById('color').addEventListener('input',function(){setColor(this.value,'text')});
+['mark','company'].forEach(function(id){document.getElementById(id).addEventListener('input',function(){setColor(v('color')||'#4f46e5')})});
+
+var BRANDS=[];
+function renderBrands(){
+  document.getElementById('brandRows').innerHTML=BRANDS.map(function(b,i){
+    return '<div class="brow"><input value="'+esc(b)+'" data-i="'+i+'" maxlength="60" placeholder="Brand name">'+
+           '<button data-x="'+i+'">Remove</button></div>'}).join('')
+    ||'<div class="muted">No brands yet — add the brands you give away.</div>';
+  document.querySelectorAll('#brandRows input').forEach(function(el){
+    el.addEventListener('input',function(){BRANDS[+el.dataset.i]=el.value})});
+  document.querySelectorAll('#brandRows button[data-x]').forEach(function(b){
+    b.addEventListener('click',function(){BRANDS.splice(+b.dataset.x,1);renderBrands()})});
+}
+document.getElementById('addBrand').addEventListener('click',function(){BRANDS.push('');renderBrands()});
+
+function load(){
+  fetch('/api/setup/status').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;
+    var o=d.org||{};
+    document.getElementById('company').value=o.company_name||'';
+    document.getElementById('mark').value=o.brand_mark||'';
+    document.getElementById('sub').value=o.brand_sub||'';
+    document.getElementById('logo').value=o.logo_url||'';
+    setColor(o.brand_color||'#4f46e5');
+    var a=d.address||{};
+    [['aName','name'],['aPhone','phone'],['aStreet1','street1'],['aStreet2','street2'],
+     ['aCity','city'],['aState','state'],['aZip','zip'],['aCountry','country']].forEach(function(p){
+       document.getElementById(p[0]).value=a[p[1]]||(p[1]==='country'?'US':'')});
+    BRANDS=(d.brands||[]).slice(); renderBrands();
+    document.getElementById('pfill').style.width=(d.total?100*d.done/d.total:0)+'%';
+    document.getElementById('checks').innerHTML=d.steps.map(function(s){
+      var cnt=(s.count!=null&&s.count>0)?(' · '+s.count):'';
+      return '<div class="chk'+(s.done?' on':'')+'"><div class="dot"></div><div class="ctxt"><b>'+esc(s.label)+cnt+'</b><div>'+esc(s.hint)+'</div></div></div>';
+    }).join('')+'<div style="margin-top:10px;font-weight:800;color:#4f46e5">'+d.done+' of '+d.total+' complete</div>';
+    document.getElementById('chSummary').innerHTML=(d.channels||[]).length
+      ? 'Channels: <b>'+d.channels.map(function(c){return esc(c.name)}).join('</b>, <b>')+'</b> · Team: <b>'+d.users+'</b> user(s)'
+      : 'No channels yet · Team: <b>'+d.users+'</b> user(s)';
+  });
+}
+document.getElementById('saveCompany').addEventListener('click',function(){
+  var b=this;b.disabled=true;
+  fetch('/api/org/branding',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({company_name:v('company'),brand_mark:v('mark'),brand_sub:v('sub'),
+                         brand_color:v('color'),logo_url:v('logo')})})
+  .then(function(r){return r.json()}).then(function(d){
+    b.disabled=false;
+    if(d.ok===false){toast(d.error||'Failed',1);return}
+    toast('Saved — reloading to apply your brand');setTimeout(function(){location.reload()},700);
+  }).catch(function(){b.disabled=false;toast('Network error',1)});
+});
+document.getElementById('saveAddr').addEventListener('click',function(){
+  var b=this;b.disabled=true;
+  fetch('/api/ship-from',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:v('aName'),company:v('aName'),phone:v('aPhone'),street1:v('aStreet1'),
+      street2:v('aStreet2'),city:v('aCity'),state:v('aState').toUpperCase(),zip:v('aZip'),
+      country:(v('aCountry')||'US').toUpperCase()})})
+  .then(function(r){return r.json()}).then(function(d){
+    b.disabled=false; if(d.ok===false){toast(d.error||'Failed',1);return}
+    toast('Address saved');load();
+  }).catch(function(){b.disabled=false;toast('Network error',1)});
+});
+document.getElementById('saveBrands').addEventListener('click',function(){
+  var b=this;b.disabled=true;
+  fetch('/api/giveaway/brands',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({brands:BRANDS.filter(function(x){return (x||'').trim()})})})
+  .then(function(r){return r.json()}).then(function(d){
+    b.disabled=false; if(!d.ok){toast(d.error||'Failed',1);return}
+    BRANDS=d.brands||[];renderBrands();toast('Brands saved');load();
+  }).catch(function(){b.disabled=false;toast('Network error',1)});
+});
+load();
 </script></body></html>'''
