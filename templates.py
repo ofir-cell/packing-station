@@ -3731,8 +3731,8 @@ function renderTable(){
       if(detail.dataset.loaded){return}
       window.revertShipment=window.revertShipment||function(sid,to,btn){
         var msg=(to==='pending')
-          ? 'Reset this order to PENDING?\n\nIt goes back to the top of the queue and all item ticks are cleared, so it must be picked and packed again.'
-          : 'Undo the packing on this order?\n\nIt returns to PICKED — the pick stands, only the packing is undone.';
+          ? 'Reset this order to PENDING?\\n\\nIt goes back to the top of the queue and all item ticks are cleared, so it must be picked and packed again.'
+          : 'Undo the packing on this order?\\n\\nIt returns to PICKED — the pick stands, only the packing is undone.';
         if(!confirm(msg))return;
         btn.disabled=true;var old=btn.textContent;btn.textContent='Working…';
         function send(force){
@@ -3742,7 +3742,7 @@ function renderTable(){
         }
         send(false).then(function(d){
           if(d.needs_confirm){
-            if(confirm(d.error+'\n\nContinue anyway?'))return send(true);
+            if(confirm(d.error+'\\n\\nContinue anyway?'))return send(true);
             btn.disabled=false;btn.textContent=old;return null;
           }
           return d;
