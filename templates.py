@@ -9884,6 +9884,21 @@ th,td{padding:12px 10px;font-size:13px;border-bottom:1px solid rgba(17,24,39,0.0
 th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
 .pill{font-size:11px;font-weight:700;padding:3px 10px;border-radius:50px}
 .pill.on{background:rgba(52,211,153,.16);color:#059669}.pill.off{background:rgba(244,63,94,.14);color:#e11d48}
+.ucard{border:1px solid rgba(17,24,39,.09);border-radius:12px;padding:15px 17px;margin-bottom:12px;background:#fff}
+.uhead{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:11px}
+.uhead code{background:rgba(17,24,39,.06);padding:1px 7px;border-radius:5px;font-size:11.5px}
+.ubar-row{display:flex;align-items:center;gap:11px;margin:6px 0}
+.ubar-lbl{width:128px;font-size:11.5px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.4px}
+.ubar-track{flex:1;height:9px;background:rgba(17,24,39,.08);border-radius:50px;overflow:hidden}
+.ubar-fill{display:block;height:100%;border-radius:50px;transition:width .3s}
+.ubar-num{width:118px;text-align:right;font-size:12px;font-weight:800}
+.ubar-none{flex:1;font-size:12px;color:#9ca3af}
+.ustats{display:flex;gap:16px;flex-wrap:wrap;margin-top:11px;font-size:11.5px;color:#6b7280}
+.warnchip{background:rgba(245,158,11,.16);color:#b45309;padding:1px 9px;border-radius:50px;font-weight:800}
+.hotchip{background:rgba(16,185,129,.16);color:#059669;padding:1px 9px;border-radius:50px;font-weight:800}
+.uacts{margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.uacts select{padding:6px 9px;border-radius:8px;border:1px solid rgba(17,24,39,.15);font-size:12.5px}
+.reqrow{padding:10px 12px;border:1px solid rgba(245,158,11,.3);background:rgba(245,158,11,.06);border-radius:9px;margin-bottom:8px;font-size:13.5px}
 .swatch{display:inline-block;width:14px;height:14px;border-radius:4px;vertical-align:middle;margin-right:6px;border:1px solid rgba(0,0,0,.1)}
 .cred{background:#eef2ff;border:1px solid #c7d2fe;border-radius:12px;padding:16px;margin-top:14px;display:none}
 .cred b{color:#4338ca}
@@ -9902,6 +9917,25 @@ __NAVBAR__
   <div class="desc">Every company using the platform. Each tenant's data is fully isolated.</div>
   <table><thead><tr><th>Company</th><th>Org ID</th><th>Brand</th><th>Plan</th><th>Users</th><th>Status</th><th></th></tr></thead>
   <tbody id="orgRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody></table>
+</div>
+
+<div class="card">
+  <h2>Usage &amp; billing</h2>
+  <div class="desc">How hard each customer is leaning on their plan. <b>Near the cap</b> = upsell. <b>Quiet</b> = churn risk.</div>
+  <div id="usageList"><div class="muted">Loading…</div></div>
+</div>
+
+<div class="card">
+  <h2>Plan requests</h2>
+  <div class="desc">Customers who picked a plan on their billing screen — send them an invoice, then record the payment above.</div>
+  <div id="reqList"><div class="muted">Loading…</div></div>
+</div>
+
+<div class="card">
+  <h2>Leads</h2>
+  <div class="desc">Submissions from the public demo form at <code>/demo</code>.</div>
+  <table><thead><tr><th>When</th><th>Company</th><th>Contact</th><th>Volume</th><th>Status</th></tr></thead>
+  <tbody id="leadRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table>
 </div>
 
 <div class="card">
@@ -9928,6 +9962,102 @@ __NAVBAR__
 <script>
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3200)}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+
+// ── Usage & billing ─────────────────────────────────────────────
+var STATE_PILL={ok:['#059669','ACTIVE'],trial_expired:['#e11d48','TRIAL ENDED'],
+  period_ended:['#b45309','RENEWAL DUE'],unpaid:['#e11d48','PAYMENT DUE'],
+  suspended:['#e11d48','SUSPENDED'],no_subscription:['#b45309','NO PLAN']};
+function bar(used,limit,label){
+  if(!limit) return '<div class="ubar-row"><span class="ubar-lbl">'+label+'</span>'+
+    '<span class="ubar-none">'+used+' · unlimited</span></div>';
+  var pct=Math.min(100,Math.round(100*used/limit));
+  var col=pct>=100?'#e11d48':(pct>=80?'#f59e0b':'#10b981');
+  return '<div class="ubar-row"><span class="ubar-lbl">'+label+'</span>'+
+    '<span class="ubar-track"><span class="ubar-fill" style="width:'+pct+'%;background:'+col+'"></span></span>'+
+    '<span class="ubar-num" style="color:'+col+'">'+used+'/'+limit+' · '+pct+'%</span></div>';
+}
+function daysAgo(d){if(!d)return 'never';var n=Math.floor((Date.now()-new Date(d).getTime())/86400000);
+  return n<=0?'today':(n===1?'yesterday':n+'d ago')}
+function loadUsage(){
+  fetch('/api/orgs/usage').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){document.getElementById('usageList').innerHTML='<div class="muted">Failed to load</div>';return}
+    document.getElementById('usageList').innerHTML=d.usage.map(function(u){
+      var sp=STATE_PILL[u.state]||['#6b7280',u.state];
+      var quiet=(!u.orders_30d)?'<span class="warnchip">⚠︎ no orders in 30 days</span>':'';
+      var hot=(u.usage_pct!=null&&u.usage_pct>=80)?'<span class="hotchip">▲ near cap — upsell</span>':'';
+      var until=u.sub_status==='trialing'
+        ? ('trial ends '+String(u.trial_ends_at||'').slice(0,10))
+        : (u.current_period_end?('paid through '+String(u.current_period_end).slice(0,10)):'no end date');
+      return '<div class="ucard">'+
+        '<div class="uhead"><div><b>'+esc(u.company_name||u.org_id)+'</b> <code>'+esc(u.org_id)+'</code></div>'+
+        '<div><span class="pill" style="background:'+sp[0]+'22;color:'+sp[0]+'">'+sp[1]+'</span> '+
+        '<span class="muted">'+esc(u.plan_label||'')+' · '+esc(until)+'</span></div></div>'+
+        bar(u.users,u.users_limit,'Users')+
+        bar(u.peak_day_30d,u.orders_limit,'Peak orders/day')+
+        '<div class="ustats"><span>'+u.orders_today+' today</span><span>'+u.orders_7d+' last 7d</span>'+
+        '<span>'+u.orders_30d+' last 30d</span><span>last activity: '+daysAgo(u.last_activity)+'</span>'+quiet+hot+'</div>'+
+        '<div class="uacts">'+
+          '<button class="btn btn-s" data-pay="'+esc(u.org_id)+'" data-plan="'+esc(u.plan||'starter')+'">💵 Record payment</button> '+
+          '<button class="btn btn-s" data-trial="'+esc(u.org_id)+'">＋7 trial days</button> '+
+          '<select data-setplan="'+esc(u.org_id)+'">'+
+            ['starter','pro','enterprise'].map(function(p){return '<option value="'+p+'"'+(u.plan===p?' selected':'')+'>'+p+'</option>'}).join('')+
+          '</select>'+
+        '</div></div>';
+    }).join('')||'<div class="muted">No tenants yet</div>';
+    document.querySelectorAll('#usageList button[data-pay]').forEach(function(b){
+      b.addEventListener('click',function(){
+        var org=b.getAttribute('data-pay');
+        var months=prompt('Record payment for '+org+'\\n\\nHow many months?','1');
+        if(!months)return;
+        var ref=prompt('Invoice / reference number (optional):','')||'';
+        fetch('/api/orgs/'+encodeURIComponent(org)+'/payment',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({months:parseInt(months)||1,plan:b.getAttribute('data-plan'),method:'manual',reference:ref})})
+        .then(function(r){return r.json()}).then(function(d){
+          if(d.ok){toast('Payment recorded — paid through '+String(d.period_end).slice(0,10));loadUsage();load();loadReqs()}
+          else toast(d.error||'Failed',1)});
+      });
+    });
+    document.querySelectorAll('#usageList button[data-trial]').forEach(function(b){
+      b.addEventListener('click',function(){
+        fetch('/api/orgs/'+encodeURIComponent(b.getAttribute('data-trial'))+'/subscription',{method:'POST',
+          headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'extend_trial',days:7})})
+        .then(function(r){return r.json()}).then(function(d){
+          if(d.ok){toast('Trial extended 7 days');loadUsage()}else toast(d.error||'Failed',1)});
+      });
+    });
+    document.querySelectorAll('#usageList select[data-setplan]').forEach(function(s){
+      s.addEventListener('change',function(){
+        fetch('/api/orgs/'+encodeURIComponent(s.getAttribute('data-setplan'))+'/subscription',{method:'POST',
+          headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'set_plan',plan:s.value})})
+        .then(function(r){return r.json()}).then(function(d){
+          if(d.ok){toast('Plan updated');loadUsage();load()}else toast(d.error||'Failed',1)});
+      });
+    });
+  });
+}
+function loadReqs(){
+  fetch('/api/billing/requests').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;
+    var open=d.requests.filter(function(x){return !x.handled});
+    document.getElementById('reqList').innerHTML=open.length?open.map(function(x){
+      return '<div class="reqrow"><span><b>'+esc(x.company_name||x.org_id)+'</b> wants <b>'+esc(x.plan)+'</b>'+
+        ' <span class="muted">· requested by '+esc(x.requested_by||'')+' · '+String(x.created_at||'').slice(0,16)+'</span></span></div>';
+    }).join(''):'<div class="muted">No open requests</div>';
+  });
+}
+function loadLeads(){
+  fetch('/api/leads').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;
+    document.getElementById('leadRows').innerHTML=d.leads.length?d.leads.map(function(l){
+      return '<tr><td class="muted">'+String(l.created_at||'').slice(0,16)+'</td>'+
+        '<td><b>'+esc(l.company)+'</b></td>'+
+        '<td>'+esc(l.contact_name)+'<br><span class="muted">'+esc(l.email)+(l.phone?' · '+esc(l.phone):'')+'</span></td>'+
+        '<td>'+esc(l.volume||'')+'<br><span class="muted">'+esc(l.platforms||'')+'</span></td>'+
+        '<td>'+esc(l.status||'new')+'</td></tr>';
+    }).join(''):'<tr><td colspan=5 class=muted>No leads yet</td></tr>';
+  });
+}
 function load(){
   fetch('/api/orgs').then(function(r){return r.json()}).then(function(d){
     if(!d.ok){document.getElementById('orgRows').innerHTML='<tr><td colspan=7 class=muted>Failed to load</td></tr>';return}
@@ -9978,11 +10108,12 @@ document.getElementById('createBtn').addEventListener('click',function(){
         'Username: <code>'+esc(d.admin_username)+'</code><br>'+
         'Password: <code>'+esc(d.admin_password)+'</code>';
       ['company','org_id','brand_mark','brand_sub','brand_color','admin_username','admin_name','admin_password'].forEach(function(id){document.getElementById(id).value=''});
-      toast('Organization created');load();
+      toast('Organization created');load();loadUsage();
     }).catch(function(){btn.disabled=false;toast('Network error',1)});
 });
 function val(id){return (document.getElementById(id).value||'').trim()}
-load();
+load();loadUsage();loadReqs();loadLeads();
+setInterval(loadUsage,60000);
 </script></body></html>'''
 
 

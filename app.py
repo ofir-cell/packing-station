@@ -7650,6 +7650,54 @@ def api_org_subscription(org_id):
     plog("org.subscription","%s: %s"%(org_id,detail),org_id)
     return jsonify({"ok":True,"org":row})
 
+@app.route("/api/orgs/usage")
+@req_super
+def api_orgs_usage():
+    """Per-tenant usage against plan limits — powers the usage bars in the console.
+    Shows who's near their cap (upsell) and who's barely active (churn risk)."""
+    today=datetime.now().strftime("%Y-%m-%d")
+    d7=(datetime.now()-timedelta(days=7)).strftime("%Y-%m-%d")
+    d30=(datetime.now()-timedelta(days=30)).strftime("%Y-%m-%d")
+    c=pdb(); orgs=[dict(r) for r in c.execute("SELECT * FROM organizations ORDER BY company_name").fetchall()]; c.close()
+    out=[]
+    for o in orgs:
+        org=o["org_id"]
+        plan=PLANS.get(o.get("plan") or "", PLANS["starter"])
+        trialing=(o.get("sub_status") or "")=="trialing"
+        users=_org_user_count(org)
+        u_lim=None if trialing else plan.get("max_users")
+        o_lim=None if trialing else plan.get("max_orders_day")
+        today_n=w7=w30=0; last=None; peak=0
+        try:
+            sc=sdb(org)
+            today_n=sc.execute("SELECT COUNT(*) FROM shipments WHERE substr(COALESCE(show_date,''),1,10)=?",(today,)).fetchone()[0]
+            w7  =sc.execute("SELECT COUNT(*) FROM shipments WHERE substr(COALESCE(show_date,''),1,10)>=?",(d7,)).fetchone()[0]
+            w30 =sc.execute("SELECT COUNT(*) FROM shipments WHERE substr(COALESCE(show_date,''),1,10)>=?",(d30,)).fetchone()[0]
+            r=sc.execute("SELECT MAX(substr(COALESCE(show_date,''),1,10)) FROM shipments").fetchone()
+            last=r[0] if r else None
+            pk=sc.execute("""SELECT MAX(n) FROM (SELECT COUNT(*) n FROM shipments
+                             WHERE substr(COALESCE(show_date,''),1,10)>=?
+                             GROUP BY substr(COALESCE(show_date,''),1,10))""",(d30,)).fetchone()
+            peak=(pk[0] or 0) if pk else 0
+            sc.close()
+        except Exception as e:
+            print("usage read failed for %s: %s"%(org,e),flush=True)
+        # Headline % = the binding constraint (whichever cap they're closest to).
+        pcts=[]
+        if u_lim: pcts.append(round(100.0*users/u_lim))
+        if o_lim: pcts.append(round(100.0*peak/o_lim))
+        pct=max(pcts) if pcts else None
+        allowed,state,_=org_access(org)
+        out.append({"org_id":org,"company_name":o.get("company_name"),
+            "plan":o.get("plan"),"plan_label":plan["label"],
+            "sub_status":o.get("sub_status"),"state":state,"allowed":allowed,
+            "trial_ends_at":o.get("trial_ends_at"),"current_period_end":o.get("current_period_end"),
+            "users":users,"users_limit":u_lim,
+            "orders_today":today_n,"orders_limit":o_lim,
+            "orders_7d":w7,"orders_30d":w30,"peak_day_30d":peak,
+            "last_activity":last,"usage_pct":pct})
+    return jsonify({"ok":True,"usage":out})
+
 # ── Manual billing: record a payment, which is what grants access ─────────────
 @app.route("/api/orgs/<org_id>/payment",methods=["POST"])
 @req_super
