@@ -5014,6 +5014,52 @@ def _receive_stock(c, sku, qty, cost, po_id=None, note=None, name=None, barcode=
               (sku,qty,cost,po_id,note,session.get("name","")[:60]))
     return new_oh, round(new_avg,4)
 
+@app.route("/api/shipment/<sid>/revert",methods=["POST"])
+@req_role("admin")
+def api_shipment_revert(sid):
+    """Undo a mistaken pick/pack on ONE order and send it back into the pipeline.
+
+    Deliberately does NOT delete the packing recording — that footage is the proof
+    you rely on in a dispute, and a status mistake is no reason to destroy evidence.
+    Stock is untouched because depletion happens at match time, not at pack time."""
+    if not re.match(r'^[A-Za-z0-9_\-]{1,64}$', sid):
+        return jsonify({"ok":False,"error":"Invalid id"})
+    d=request.get_json(silent=True) or {}
+    to=(d.get("to") or "pending").strip().lower()
+    if to not in ("pending","picked"):
+        return jsonify({"ok":False,"error":"Revert target must be 'pending' or 'picked'"})
+    c=sdb()
+    row=c.execute("SELECT shipment_id,status,picked_by,packed_by,tracking_code FROM shipments WHERE shipment_id=?",(sid,)).fetchone()
+    if not row:
+        c.close(); return jsonify({"ok":False,"error":"Order not found"})
+    was=(row["status"] or "").lower()
+    if was=="cancelled":
+        c.close(); return jsonify({"ok":False,"error":"This order is cancelled — reverting it would put a cancelled order back on the floor."})
+    if was=="shipped" and not d.get("force"):
+        c.close(); return jsonify({"ok":False,"needs_confirm":True,
+            "error":"This order is already marked shipped. Reverting it will put it back in the pick/pack queue — only do this if the shipment really didn't go out."})
+    if to=="picked":
+        # Undo just the packing step; the pick stands.
+        c.execute("""UPDATE shipments SET status='picked', packed_at=NULL, packed_by=NULL
+                     WHERE shipment_id=?""",(sid,))
+    else:
+        # Full reset: back to the top of the queue, all item ticks cleared.
+        c.execute("""UPDATE shipments SET status='pending', packed_at=NULL, packed_by=NULL,
+                        picked_at=NULL, picked_by=NULL WHERE shipment_id=?""",(sid,))
+        c.execute("UPDATE shipment_items SET picked=0, picked_at=NULL WHERE shipment_id=?",(sid,))
+    c.commit(); c.close()
+    # Any prize attached to this order goes back to "waiting to be added" too.
+    try:
+        g=gdb()
+        g.execute("""UPDATE giveaways SET attach_status='pending', attach_added_at=NULL, attach_added_by=NULL
+                     WHERE linked_shipment_id=? AND attach_mode='piggyback'""",(sid,))
+        g.commit(); g.close()
+    except Exception as e:
+        print("giveaway revert failed for",sid,":",e,flush=True)
+    alog("shipment.revert","%s: %s → %s%s"%(sid,was,to,
+         (" (was packed by %s)"%row["packed_by"]) if row["packed_by"] else ""))
+    return jsonify({"ok":True,"shipment_id":sid,"was":was,"now":to})
+
 def _deplete_stock_for(c, shipment_id):
     """No-op. Stock depletion now happens at MATCH time (api_preshow_map), keyed to
     the real catalog product — not the generic sticker number, which isn't a product

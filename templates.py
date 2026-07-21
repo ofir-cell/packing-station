@@ -3539,6 +3539,16 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
 .detail-inner h4{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;font-weight:700}
 .detail-table{width:100%;font-size:12px}
 .detail-table td{padding:6px 0;border:none;color:var(--text-muted)}
+.undo-note{font-size:12.5px;color:var(--text-muted);margin-bottom:10px;line-height:1.5}
+.undo-who{display:block;font-size:11px;color:var(--text-dim);margin-top:3px}
+.undo-row{display:flex;gap:9px;flex-wrap:wrap}
+.undo-btn{border:1.5px solid rgba(79,70,229,.35);background:#fff;color:#4f46e5;border-radius:9px;
+  padding:8px 14px;font-size:12.5px;font-weight:800;cursor:pointer}
+.undo-btn:hover{background:rgba(79,70,229,.06)}
+.undo-btn.danger{border-color:rgba(244,63,94,.4);color:#e11d48}
+.undo-btn.danger:hover{background:rgba(244,63,94,.06)}
+.undo-btn:disabled{opacity:.5;cursor:default}
+.undo-fine{font-size:11px;color:var(--text-dim);margin-top:9px}
 .detail-table td.lbl{color:var(--text-dim);text-transform:uppercase;font-size:10px;letter-spacing:.5px;font-weight:700;width:140px;vertical-align:top}
 .items-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:6px;margin-top:8px}
 .item-pill{background:rgba(17,24,39,0.064);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--text);display:flex;justify-content:space-between;gap:8px}
@@ -3719,6 +3729,30 @@ function renderTable(){
       detail.style.display='table-row';
       var s=view[i];
       if(detail.dataset.loaded){return}
+      window.revertShipment=window.revertShipment||function(sid,to,btn){
+        var msg=(to==='pending')
+          ? 'Reset this order to PENDING?\n\nIt goes back to the top of the queue and all item ticks are cleared, so it must be picked and packed again.'
+          : 'Undo the packing on this order?\n\nIt returns to PICKED — the pick stands, only the packing is undone.';
+        if(!confirm(msg))return;
+        btn.disabled=true;var old=btn.textContent;btn.textContent='Working…';
+        function send(force){
+          return fetch('/api/shipment/'+encodeURIComponent(sid)+'/revert',{method:'POST',
+            headers:{'Content-Type':'application/json'},body:JSON.stringify({to:to,force:!!force})})
+            .then(function(r){return r.json()});
+        }
+        send(false).then(function(d){
+          if(d.needs_confirm){
+            if(confirm(d.error+'\n\nContinue anyway?'))return send(true);
+            btn.disabled=false;btn.textContent=old;return null;
+          }
+          return d;
+        }).then(function(d){
+          if(!d)return;
+          if(!d.ok){btn.disabled=false;btn.textContent=old;alert(d.error||'Could not revert');return}
+          alert('Done — order '+sid+' moved from '+d.was.toUpperCase()+' back to '+d.now.toUpperCase()+'.');
+          location.reload();
+        }).catch(function(){btn.disabled=false;btn.textContent=old;alert('Network error')});
+      };
       fetch('/api/shipment/'+encodeURIComponent(s.shipment_id)).then(function(r){return r.json()}).then(function(d){
         if(!d.ok){document.getElementById('detail-'+i).innerHTML='<div style="color:#e11d48">Failed</div>';return}
         var box=document.getElementById('detail-'+i);
@@ -3726,9 +3760,27 @@ function renderTable(){
         var itemsHtml=d.items.map(function(it){
           return '<div class="item-pill'+(it.item_weight_g==null?' no-weight':'')+'"><span>'+escapeHtml(it.product_name||it.sku||'?')+'</span><span class="qty">×'+it.quantity+'</span></div>';
         }).join('');
+        var st=(d.shipment.status||'').toLowerCase();
+        var who=(d.shipment.packed_by?(' · packed by '+escapeHtml(d.shipment.packed_by)):'')+
+                (d.shipment.picked_by?(' · picked by '+escapeHtml(d.shipment.picked_by)):'');
+        var undo='';
+        if(st!=='cancelled'){
+          undo='<h4 style="margin-top:18px">Fix a mistake</h4>'+
+            '<div class="undo-note">Sent this one down the line by accident? Put it back in the queue.'+
+            (who?'<span class="undo-who">'+who+'</span>':'')+'</div>'+
+            '<div class="undo-row">'+
+              ((st==='packed'||st==='shipped')
+                ? '<button class="undo-btn" data-rev="picked" data-sid="'+escapeHtml(s.shipment_id)+'">↩︎ Undo packing — back to picked</button>' : '')+
+              '<button class="undo-btn danger" data-rev="pending" data-sid="'+escapeHtml(s.shipment_id)+'">⟲ Reset to pending — re-pick &amp; re-pack</button>'+
+            '</div>'+
+            '<div class="undo-fine">The packing video is kept either way — it is your proof if a customer disputes.</div>';
+        }
         box.innerHTML='<h4>Address</h4><div style="color:var(--text);margin-bottom:14px">'+escapeHtml(addr)+'</div>'+
           (d.shipment.delivery_detail?'<h4>USPS status</h4><div style="margin-bottom:14px;color:var(--text)">'+escapeHtml(d.shipment.delivery_detail)+'</div>':'')+
-          '<h4>Items ('+d.items.length+')</h4><div class="items-grid">'+itemsHtml+'</div>';
+          '<h4>Items ('+d.items.length+')</h4><div class="items-grid">'+itemsHtml+'</div>'+undo;
+        box.querySelectorAll('button[data-rev]').forEach(function(b){
+          b.addEventListener('click',function(){revertShipment(b.dataset.sid,b.dataset.rev,b)});
+        });
         detail.dataset.loaded='1';
       });
     });
