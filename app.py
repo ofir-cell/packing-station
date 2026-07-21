@@ -254,6 +254,8 @@ def pdb_init():
         plan TEXT DEFAULT 'standard',
         active INTEGER DEFAULT 1,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        contact_email TEXT,
+        contact_phone TEXT,
         trial_ends_at TEXT,
         sub_status TEXT DEFAULT 'none',
         stripe_customer_id TEXT,
@@ -264,7 +266,8 @@ def pdb_init():
     _org_have={r[1] for r in c.execute("PRAGMA table_info(organizations)").fetchall()}
     for _col,_decl in (("trial_ends_at","TEXT"),("sub_status","TEXT DEFAULT 'none'"),
                        ("stripe_customer_id","TEXT"),("stripe_subscription_id","TEXT"),
-                       ("current_period_end","TEXT"),("internal","INTEGER DEFAULT 0")):
+                       ("current_period_end","TEXT"),("internal","INTEGER DEFAULT 0"),
+                       ("contact_email","TEXT"),("contact_phone","TEXT")):
         if _col not in _org_have:
             c.execute("ALTER TABLE organizations ADD COLUMN %s %s" % (_col,_decl))
     # Manual billing ledger — one row per payment received (bank transfer, invoice,
@@ -7888,7 +7891,17 @@ def api_orgs_create():
         return jsonify({"ok":False,"error":"Company name is required"})
     if not re.match(r'^[a-z0-9_\-]{2,32}$',admin_user):
         return jsonify({"ok":False,"error":"Admin username: lowercase letters, digits, _ -, 2-32 chars"})
-    if not admin_pw: admin_pw=_gen_pw()
+    # Contact details for the account owner (who we invoice and call).
+    contact_email=(d.get("contact_email") or "").strip()[:160]
+    contact_phone=(d.get("contact_phone") or "").strip()[:60]
+    if contact_email and "@" not in contact_email:
+        return jsonify({"ok":False,"error":"That contact email doesn't look valid"})
+    # This account can see every order and customer address in the tenant — don't let
+    # it be created with a throwaway password.
+    if not admin_pw:
+        admin_pw=_gen_pw()
+    elif len(admin_pw)<8:
+        return jsonify({"ok":False,"error":"Admin password must be at least 8 characters (or leave it blank to auto-generate a strong one)"})
     # org_id must be unique
     c=pdb()
     if c.execute("SELECT 1 FROM organizations WHERE org_id=?",(org_id,)).fetchone():
@@ -7905,12 +7918,13 @@ def api_orgs_create():
     except Exception: _tdays=TRIAL_DAYS
     _tends=(datetime.now()+timedelta(days=_tdays)).isoformat(timespec="seconds")
     c.execute("""INSERT INTO organizations(org_id,company_name,brand_mark,brand_sub,brand_color,logo_url,plan,
-                                           sub_status,trial_ends_at)
-                 VALUES(?,?,?,?,?,?,?,?,?)""",
+                                           sub_status,trial_ends_at,contact_email,contact_phone)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
               (org_id,company,(d.get("brand_mark") or company[:12] or "BRAND").upper(),
                (d.get("brand_sub") or "Employee Hub"),(d.get("brand_color") or "#d9748f"),
                (d.get("logo_url") or ""),_plan,
-               ("trialing" if _tdays>0 else "none"), (_tends if _tdays>0 else None)))
+               ("trialing" if _tdays>0 else "none"), (_tends if _tdays>0 else None),
+               contact_email or None, contact_phone or None))
     c.commit(); c.close()
     # 2) provision its isolated data folders/DBs + seed defaults
     try:

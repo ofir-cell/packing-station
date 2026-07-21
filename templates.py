@@ -9886,6 +9886,14 @@ th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
 .pill.on{background:rgba(52,211,153,.16);color:#059669}.pill.off{background:rgba(244,63,94,.14);color:#e11d48}
 .ucard{border:1px solid rgba(17,24,39,.09);border-radius:12px;padding:15px 17px;margin-bottom:12px;background:#fff}
 .ucard.internal{border-color:rgba(99,102,241,.35);background:#fbfbff}
+.hint{font-size:11px;color:#9ca3af;margin-top:4px;line-height:1.4}
+.colorpick{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+.colorpick input[type=color]{width:52px;height:40px;padding:2px;border:1px solid rgba(17,24,39,.15);border-radius:9px;background:#fff;cursor:pointer}
+.swatches{display:flex;gap:7px;flex-wrap:wrap}
+.sw{width:28px;height:28px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:transform .1s}
+.sw:hover{transform:scale(1.12)}
+.sw.on{border-color:#141b26;box-shadow:0 0 0 2px #fff inset}
+.cpreview{margin-left:auto;padding:9px 16px;border-radius:10px;color:#fff;font-weight:900;letter-spacing:.5px;font-size:14px}
 .uhead{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:11px}
 .uhead code{background:rgba(17,24,39,.06);padding:1px 7px;border-radius:5px;font-size:11.5px}
 .ubar-row{display:flex;align-items:center;gap:11px;margin:6px 0}
@@ -9951,11 +9959,27 @@ __NAVBAR__
     <div><label>Org ID * (lowercase, no spaces)</label><input type="text" id="org_id" placeholder="glamco"></div>
     <div><label>Brand mark (short)</label><input type="text" id="brand_mark" placeholder="GLAM"></div>
     <div><label>Brand subtitle</label><input type="text" id="brand_sub" placeholder="Employee Hub"></div>
-    <div><label>Brand color</label><input type="text" id="brand_color" placeholder="#d9748f"></div>
-    <div><label>Plan</label><select id="plan"><option value="standard">standard</option><option value="pro">pro</option><option value="enterprise">enterprise</option></select></div>
-    <div><label>First admin username *</label><input type="text" id="admin_username" placeholder="glamco_admin"></div>
+    <div><label>Contact email</label><input type="email" id="contact_email" placeholder="owner@glamco.com"></div>
+    <div><label>Contact phone</label><input type="text" id="contact_phone" placeholder="+1 555 123 4567"></div>
+    <div><label>Plan</label><select id="plan">
+      <option value="starter">Starter — $149/mo · up to 3 users</option>
+      <option value="pro">Pro — $399/mo · unlimited users, 1,000 orders/day</option>
+      <option value="enterprise">Enterprise — custom</option>
+    </select></div>
+    <div><label>First admin username *</label><input type="text" id="admin_username" placeholder="glamco_admin" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <div class="hint">Lowercase letters, digits, _ and - only. Typed capitals are converted automatically.</div></div>
     <div><label>First admin name</label><input type="text" id="admin_name" placeholder="Admin"></div>
-    <div><label>Admin password (blank = auto-generate)</label><input type="text" id="admin_password" placeholder="leave blank to auto-generate"></div>
+    <div><label>Admin password (blank = auto-generate)</label><input type="text" id="admin_password" placeholder="leave blank to auto-generate">
+      <div class="hint">Minimum 8 characters. Blank is safest — we generate a strong one and show it once.</div></div>
+  </div>
+  <div style="margin-top:14px">
+    <label>Brand color</label>
+    <div class="colorpick">
+      <input type="color" id="brand_color_pick" value="#d9748f">
+      <input type="text" id="brand_color" placeholder="#d9748f" maxlength="7" style="max-width:130px">
+      <div class="swatches" id="swatches"></div>
+      <div class="cpreview" id="cpreview"><span id="cpmark">BRAND</span></div>
+    </div>
   </div>
   <div class="row" style="margin-top:16px"><button class="btn btn-p" id="createBtn">Create organization</button></div>
   <div class="cred" id="cred"></div>
@@ -10114,7 +10138,9 @@ function load(){
       var toggle=o.is_default?'<span class="muted">founding</span>':(o.active
         ?'<button class="btn btn-warn" data-o="'+esc(o.org_id)+'" data-a="0">Suspend</button>'
         :'<button class="btn btn-ok" data-o="'+esc(o.org_id)+'" data-a="1">Reactivate</button>');
-      return '<tr><td><b>'+esc(o.company_name)+'</b></td><td><code>'+esc(o.org_id)+'</code></td>'+
+      var contact=(o.contact_email||o.contact_phone)
+        ? '<br><span class="muted" style="font-size:11px">'+esc(o.contact_email||'')+(o.contact_phone?' · '+esc(o.contact_phone):'')+'</span>' : '';
+      return '<tr><td><b>'+esc(o.company_name)+'</b>'+contact+'</td><td><code>'+esc(o.org_id)+'</code></td>'+
         '<td><span class="swatch" style="background:'+esc(o.brand_color||'#ccc')+'"></span>'+esc(o.brand_mark||'')+'</td>'+
         '<td>'+esc(o.plan||'')+'</td><td>'+o.user_count+'</td><td>'+status+'</td><td>'+enter+toggle+'</td></tr>';
     }).join('');
@@ -10143,7 +10169,8 @@ document.getElementById('createBtn').addEventListener('click',function(){
   var btn=this;btn.disabled=true;
   var body={company_name:val('company'),org_id:val('org_id'),brand_mark:val('brand_mark'),
     brand_sub:val('brand_sub'),brand_color:val('brand_color'),plan:val('plan'),
-    admin_username:val('admin_username'),admin_name:val('admin_name'),admin_password:val('admin_password')};
+    contact_email:val('contact_email'),contact_phone:val('contact_phone'),
+    admin_username:val('admin_username').toLowerCase(),admin_name:val('admin_name'),admin_password:val('admin_password')};
   fetch('/api/orgs/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json()}).then(function(d){
       btn.disabled=false;
@@ -10154,11 +10181,42 @@ document.getElementById('createBtn').addEventListener('click',function(){
         'Login URL: <code>'+location.origin+'/login</code><br>'+
         'Username: <code>'+esc(d.admin_username)+'</code><br>'+
         'Password: <code>'+esc(d.admin_password)+'</code>';
-      ['company','org_id','brand_mark','brand_sub','brand_color','admin_username','admin_name','admin_password'].forEach(function(id){document.getElementById(id).value=''});
+      ['company','org_id','brand_mark','brand_sub','brand_color','contact_email','contact_phone','admin_username','admin_name','admin_password'].forEach(function(id){document.getElementById(id).value=''});
+      setColor('#d9748f');
       toast('Organization created');load();loadUsage();
     }).catch(function(){btn.disabled=false;toast('Network error',1)});
 });
 function val(id){return (document.getElementById(id).value||'').trim()}
+
+// ── Brand colour picker: swatches + native picker + hex, all kept in sync ──
+var SWATCHES=['#d9748f','#e11d48','#f43f5e','#f59e0b','#f97316','#10b981','#059669',
+              '#0891b2','#2563eb','#4f46e5','#7c3aed','#a855f7','#141b26','#64748b'];
+function setColor(hex,skip){
+  hex=(hex||'').trim();
+  if(!/^#[0-9a-fA-F]{6}$/.test(hex))return;
+  hex=hex.toLowerCase();
+  if(skip!=='text')document.getElementById('brand_color').value=hex;
+  if(skip!=='pick')document.getElementById('brand_color_pick').value=hex;
+  var pv=document.getElementById('cpreview');pv.style.background=hex;
+  document.getElementById('cpmark').textContent=(val('brand_mark')||val('company')||'BRAND').toUpperCase().slice(0,14);
+  document.querySelectorAll('.sw').forEach(function(s){s.classList.toggle('on',s.dataset.c===hex)});
+}
+(function initColor(){
+  document.getElementById('swatches').innerHTML=SWATCHES.map(function(c){
+    return '<span class="sw" data-c="'+c+'" style="background:'+c+'" title="'+c+'"></span>'}).join('');
+  document.querySelectorAll('.sw').forEach(function(s){
+    s.addEventListener('click',function(){setColor(s.dataset.c)})});
+  document.getElementById('brand_color_pick').addEventListener('input',function(){setColor(this.value,'pick')});
+  document.getElementById('brand_color').addEventListener('input',function(){setColor(this.value,'text')});
+  ['brand_mark','company'].forEach(function(id){
+    document.getElementById(id).addEventListener('input',function(){setColor(val('brand_color')||'#d9748f')})});
+  // usernames are lowercase-only server-side — normalise as they type
+  document.getElementById('admin_username').addEventListener('input',function(){
+    var p=this.selectionStart;this.value=this.value.toLowerCase().replace(/[^a-z0-9_\\-]/g,'');this.setSelectionRange(p,p)});
+  document.getElementById('org_id').addEventListener('input',function(){
+    var p=this.selectionStart;this.value=this.value.toLowerCase().replace(/[^a-z0-9\\-]/g,'');this.setSelectionRange(p,p)});
+  setColor('#d9748f');
+})();
 load();loadUsage();loadReqs();loadLeads();
 document.getElementById('refreshStore').addEventListener('click',function(){document.getElementById('storeTotal').textContent='Recounting…';loadStorage(true)});
 setInterval(loadUsage,60000);
