@@ -7247,6 +7247,30 @@ __NAVBAR__
 </div>
 
 <div class="card">
+  <h2 style="margin-bottom:2px">📺 Your channels</h2>
+  <style>
+  .chrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(17,24,39,.07)}
+  .chrow input{flex:1;padding:8px 11px;border:1px solid rgba(17,24,39,.15);border-radius:8px;font-size:14px}
+  .chplat{font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.5px;padding:3px 9px;border-radius:50px}
+  .chplat.tiktok{background:rgba(244,63,94,.15);color:#e11d48}
+  .chplat.whatnot{background:rgba(245,158,11,.15);color:#b45309}
+  .chlang{font-size:11px;color:#6b7280;text-transform:uppercase;font-weight:800}
+  .chadd{display:flex;gap:9px;margin-top:14px;flex-wrap:wrap}
+  .chadd input,.chadd select{padding:9px 12px;border:1px solid rgba(17,24,39,.15);border-radius:9px;font-size:14px}
+  .chadd input:first-child{flex:1;min-width:220px}
+  .emptych{padding:22px;text-align:center;color:#6b7280;background:rgba(99,102,241,.05);border:1px dashed rgba(99,102,241,.3);border-radius:12px;line-height:1.7}
+  </style>
+  <div class="muted" style="font-size:12.5px;margin-bottom:10px">The accounts you go live on. Add one row per channel — these are what you schedule hosts onto.</div>
+  <div id="chList"><div class="muted">Loading…</div></div>
+  <div class="chadd">
+    <input id="chName" placeholder="Channel name (e.g. Glam Beauty Live)" maxlength="60">
+    <select id="chPlat"><option value="">— platform —</option><option value="tiktok">TikTok</option><option value="whatnot">Whatnot</option></select>
+    <input id="chLang" placeholder="Lang (en)" maxlength="8" style="max-width:110px">
+    <button class="btn btn-p" id="chAdd">+ Add channel</button>
+  </div>
+</div>
+
+<div class="card">
   <h2>👥 Who can run which channel</h2>
   <div class="muted" style="font-size:12.5px;margin-bottom:10px">Tick the channels each host/assistant is allowed on. Unticked = never scheduled there.</div>
   <div id="staff"><div class="muted">Loading…</div></div>
@@ -7256,6 +7280,16 @@ __NAVBAR__
 <script>
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+// Date-only values must never round-trip through UTC — that shifts the day for
+// anyone west of Greenwich. Parse and format the week strictly by components.
+function weekBase(){
+  var v=(document.getElementById('week').value||'').split('-');
+  if(v.length!==3)return new Date();
+  return new Date(+v[0],+v[1]-1,+v[2]);
+}
+function fmtISO(d){
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
 var CH=[],STAFF={host:[],assistant:[]},WEEK=[],DAYSEL=0,RANGES={};
 function monday(){var d=new Date();var g=(d.getDay()+6)%7;d.setDate(d.getDate()-g);return d.toISOString().slice(0,10)}
 document.getElementById('week').value=monday();
@@ -7263,7 +7297,47 @@ function tmin(t){if(!t)return null;if(t==='24:00')return 1440;var m=t.split(':')
 function eligibleCh(p,chId){return !p.allowed_channels.length||p.allowed_channels.indexOf(chId)>=0}
 function covers(u,day,s,e){var rs=RANGES[u]||[];return rs.some(function(r){return r.date===day&&tmin(r.start)<=tmin(s)&&tmin(r.end)>=tmin(e)})}
 function isFree(u,day,s,e,exceptId){return !WEEK.some(function(sh){return sh.shift_date===day&&sh.id!==exceptId&&(sh.host_user===u||sh.assistant_user===u)&&tmin(s)<tmin(sh.end_time)&&tmin(sh.start_time)<tmin(e)})}
-function loadStaff(){fetch('/api/roster/staff').then(function(r){return r.json()}).then(function(d){CH=d.channels;STAFF=d.staff;renderStaff()})}
+function loadStaff(){fetch('/api/roster/staff').then(function(r){return r.json()}).then(function(d){CH=d.channels;STAFF=d.staff;renderStaff();renderChannelList()})}
+// ── Channel setup (each tenant defines their own) ──
+function renderChannelList(){
+  var el=document.getElementById('chList'); if(!el)return;
+  if(!CH.length){
+    el.innerHTML='<div class="emptych">👋 <b>No channels yet.</b><br>Add the accounts you go live on below — then you can build the week and set who may host each one.</div>';
+    return;
+  }
+  el.innerHTML=CH.map(function(c){
+    var badge=c.platform?('<span class="chplat '+esc(c.platform)+'">'+esc(c.platform)+'</span>'):'';
+    return '<div class="chrow"><input value="'+esc(c.name)+'" data-ren="'+c.id+'" maxlength="60">'+badge+
+      (c.language?'<span class="chlang">'+esc(c.language)+'</span>':'')+
+      '<button class="btn btn-s" data-del="'+c.id+'">Remove</button></div>';
+  }).join('');
+  el.querySelectorAll('input[data-ren]').forEach(function(i){
+    i.addEventListener('change',function(){
+      fetch('/api/roster/channels/'+i.dataset.ren,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name:i.value})}).then(function(r){return r.json()}).then(function(d){
+          if(d.ok){toast('Renamed');CH=d.channels;loadWeek()}else{toast(d.error||'Failed',1);loadStaff()}});
+    });
+  });
+  el.querySelectorAll('button[data-del]').forEach(function(b){
+    b.addEventListener('click',function(){
+      if(!confirm('Remove this channel? Existing shifts stay in history, but you can no longer schedule onto it.'))return;
+      fetch('/api/roster/channels/'+b.dataset.del,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({active:false})}).then(function(r){return r.json()}).then(function(d){
+          if(d.ok){toast('Removed');loadStaff();loadWeek()}else toast(d.error||'Failed',1)});
+    });
+  });
+}
+function addChannel(){
+  var n=document.getElementById('chName').value.trim();
+  if(!n){toast('Enter a channel name',1);return}
+  fetch('/api/roster/channels',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:n,platform:document.getElementById('chPlat').value,language:document.getElementById('chLang').value.trim()})})
+  .then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){toast(d.error||'Failed',1);return}
+    document.getElementById('chName').value='';document.getElementById('chLang').value='';
+    toast('Channel added');loadStaff();loadWeek();
+  });
+}
 function renderStaff(){
   var el=document.getElementById('staff');var all=STAFF.host.concat(STAFF.assistant);
   if(!all.length){el.innerHTML='<div class="muted">No hosts or assistants yet. Create them in Settings → Users (role: host / assistant).</div>';return}
@@ -7303,8 +7377,8 @@ function loadWeek(){
   });
 }
 function renderWeekGrid(){
-  var base=new Date(document.getElementById('week').value);var days=[];
-  for(var i=0;i<7;i++){var d=new Date(base);d.setDate(d.getDate()+i);days.push(d.toISOString().slice(0,10))}
+  var base=weekBase();var days=[];
+  for(var i=0;i<7;i++){var d=new Date(base);d.setDate(d.getDate()+i);days.push(fmtISO(d))}
   var names=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
   if(!CH.length){document.getElementById('weekgrid').innerHTML='<div class="muted">No channels.</div>';return}
   var head='<tr><th>Channel</th>'+names.map(function(n,i){var d=new Date(days[i]+'T00:00');return '<th>'+n+' '+(d.getMonth()+1)+'/'+d.getDate()+'</th>'}).join('')+'</tr>';
@@ -7323,13 +7397,13 @@ function renderWeekGrid(){
   document.getElementById('weekgrid').innerHTML='<div style="overflow-x:auto"><table style="min-width:920px">'+head+body+'</table></div>';
 }
 function renderDays(){
-  var names=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];var base=new Date(document.getElementById('week').value);
+  var names=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];var base=weekBase();
   document.getElementById('days').innerHTML=names.map(function(n,i){
     var dt=new Date(base);dt.setDate(dt.getDate()+i);
     return '<div class="day'+(i===DAYSEL?' on':'')+'" onclick="DAYSEL='+i+';renderDays();renderChannels()">'+n+' '+(dt.getMonth()+1)+'/'+dt.getDate()+'</div>';
   }).join('');
 }
-function dateForSel(){var b=new Date(document.getElementById('week').value);b.setDate(b.getDate()+DAYSEL);return b.toISOString().slice(0,10)}
+function dateForSel(){var b=weekBase();b.setDate(b.getDate()+DAYSEL);return fmtISO(b)}
 function personSel(role,chId,day,sh,which){
   var cur=which==='host'?sh.host_user:sh.assistant_user;
   var pool=STAFF[role].filter(function(p){return eligibleCh(p,chId)&&covers(p.username,day,sh.start_time,sh.end_time)&&(p.username===cur||isFree(p.username,day,sh.start_time,sh.end_time,sh.id))});
@@ -7378,6 +7452,8 @@ document.getElementById('apprBtn').addEventListener('click',function(){
     .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Approved ✓');loadWeek()}else toast(d.error||'Failed',1)});
 });
 document.getElementById('week').addEventListener('change',function(){DAYSEL=0;loadWeek()});
+document.getElementById('chAdd').addEventListener('click',addChannel);
+document.getElementById('chName').addEventListener('keydown',function(e){if(e.key==='Enter')addChannel()});
 loadStaff();loadWeek();
 </script></body></html>'''
 

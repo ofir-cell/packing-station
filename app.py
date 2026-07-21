@@ -1091,7 +1091,10 @@ def sdb_init(org):
         active INTEGER DEFAULT 1,
         sort INTEGER DEFAULT 0
     )""")
-    if not c.execute("SELECT 1 FROM channels LIMIT 1").fetchone():
+    # Seed the founding tenant's real channels. Every OTHER tenant starts with an empty
+    # list and adds their own — seeding these names would show one customer another
+    # customer's brands.
+    if org==DEFAULT_ORG and not c.execute("SELECT 1 FROM channels LIMIT 1").fetchone():
         for i,(nm,pf,lg) in enumerate([
             ("Peach Beauty Live","tiktok","en"),
             ("Peach Beauty Español","tiktok","es"),
@@ -7106,6 +7109,51 @@ def _roster_staff():
 @app.route("/api/roster/channels")
 @req_role("admin","cs","host","assistant")
 def api_roster_channels():
+    return jsonify({"ok":True,"channels":_channels()})
+
+@app.route("/api/roster/channels",methods=["POST"])
+@req_role("admin")
+def api_roster_channel_add():
+    """Create one of this tenant's selling channels (their own brands/accounts)."""
+    d=request.get_json() or {}
+    name=(d.get("name") or "").strip()[:60]
+    if not name: return jsonify({"ok":False,"error":"Channel name is required"})
+    platform=(d.get("platform") or "").strip().lower()
+    if platform not in ("tiktok","whatnot",""): platform=""
+    lang=(d.get("language") or "").strip()[:8]
+    c=sdb()
+    if c.execute("SELECT 1 FROM channels WHERE LOWER(name)=LOWER(?)",(name,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"You already have a channel with that name"})
+    nxt=(c.execute("SELECT COALESCE(MAX(sort),-1)+1 FROM channels").fetchone()[0]) or 0
+    cur=c.execute("INSERT INTO channels(name,platform,language,sort) VALUES(?,?,?,?)",(name,platform,lang,nxt))
+    cid=cur.lastrowid; c.commit(); c.close()
+    alog("roster.channel_add",name)
+    return jsonify({"ok":True,"id":cid,"channels":_channels()})
+
+@app.route("/api/roster/channels/<int:cid>",methods=["POST"])
+@req_role("admin")
+def api_roster_channel_update(cid):
+    """Rename, re-platform, or deactivate a channel. Deactivating keeps history intact."""
+    d=request.get_json() or {}
+    c=sdb()
+    row=c.execute("SELECT * FROM channels WHERE id=?",(cid,)).fetchone()
+    if not row:
+        c.close(); return jsonify({"ok":False,"error":"Channel not found"})
+    if d.get("name") is not None:
+        nm=(d.get("name") or "").strip()[:60]
+        if not nm: c.close(); return jsonify({"ok":False,"error":"Name cannot be empty"})
+        if c.execute("SELECT 1 FROM channels WHERE LOWER(name)=LOWER(?) AND id!=?",(nm,cid)).fetchone():
+            c.close(); return jsonify({"ok":False,"error":"Another channel already uses that name"})
+        c.execute("UPDATE channels SET name=? WHERE id=?",(nm,cid))
+    if d.get("platform") is not None:
+        pf=(d.get("platform") or "").strip().lower()
+        if pf in ("tiktok","whatnot",""): c.execute("UPDATE channels SET platform=? WHERE id=?",(pf,cid))
+    if d.get("language") is not None:
+        c.execute("UPDATE channels SET language=? WHERE id=?",((d.get("language") or "").strip()[:8],cid))
+    if d.get("active") is not None:
+        c.execute("UPDATE channels SET active=? WHERE id=?",(1 if d.get("active") else 0,cid))
+    c.commit(); c.close()
+    alog("roster.channel_update","channel #%d"%cid)
     return jsonify({"ok":True,"channels":_channels()})
 
 @app.route("/api/roster/staff")
