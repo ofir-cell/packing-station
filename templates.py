@@ -5133,10 +5133,10 @@ function openDetail(sid){
             showToast(t('alreadypicked')+' '+who+(when?(' · '+when):''),true);
             return;
         }
-        // Optional: warn if from a different show than the one currently selected
-        if(currentShow && s.import_label && s.import_label!==currentShow){
-            if(!confirm('This order is from "'+s.import_label+'" but you are picking "'+currentShow+'". Continue anyway?'))return;
-        }
+        // The scanned tracking number uniquely identifies this exact order in the
+        // database — no guessing needed. We pick whatever the label in hand points
+        // to, regardless of which show was selected. (Show attribution can be wrong
+        // for TikTok, whose one CSV mixes many shows; the tracking never is.)
         currentDetail=sid;
         currentItems=items;
         currentGiveaways=(d.giveaways||[]).map(function(g){return {id:g.id,prize_name:g.prize_name,winner_username:g.winner_username,brand:g.brand,added:(g.attach_status==='added')}});
