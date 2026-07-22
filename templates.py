@@ -977,12 +977,14 @@ function loadPOTM(){
         document.getElementById('potmWrap').style.display='block';
     });
 }
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
 function filterByWorkerDay(){
     var p=new URLSearchParams(location.search);
     var w=p.get('worker'),dt=p.get('date');
     if(!w&&!dt)return false;
     document.getElementById('res').innerHTML='<div class="ld"><div class="spn"></div>Loading recordings…</div>';
     fetch('/api/recordings?worker='+encodeURIComponent(w||'')+'&date='+encodeURIComponent(dt||'')).then(function(r){return r.json()}).then(function(d){
+        if(!d||!d.ok){document.getElementById('res').innerHTML='<div class="empty"><div class="ei">⚠️</div><div class="et">Could not load recordings</div></div>';return}
         var head='<div class="rc" style="animation:none"><div class="rc-h"><span class="rc-t">🎥 '+esc(w||'All')+(dt?(' · '+esc(dt)):'')+'</span><div class="rc-m"><span>'+d.count+' recordings</span><a href="/dashboard" style="font-size:12px;color:#4f46e5;font-weight:700;text-decoration:none">✕ Clear filter</a></div></div></div>';
         if(!d.items.length){document.getElementById('res').innerHTML=head+'<div class="empty"><div class="ei">📭</div><div class="et">No recordings for this packer on this day</div></div>';return}
         var h=head;
@@ -993,10 +995,11 @@ function filterByWorkerDay(){
         });
         document.getElementById('res').innerHTML=h;
         var st=document.querySelector('.sec-t');if(st)st.textContent='🕐 All recent recordings';
-    });
+    }).catch(function(){document.getElementById('res').innerHTML='<div class="empty"><div class="ei">⚠️</div><div class="et">Could not load recordings</div></div>';});
     return true;
 }
-if(!filterByWorkerDay()){loadRecent();}
+filterByWorkerDay();
+loadRecent();
 loadStats();loadPOTM();
 </script></body></html>'''
 
