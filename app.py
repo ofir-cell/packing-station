@@ -4297,9 +4297,10 @@ def api_shipments_import():
         for pkg_id, group in by_pkg.items():
             first = group[0]
             tracking = first["tracking"] or None
-            # Which show does this order really belong to? (window contains the sale time)
-            _created_dt = _parse_dt(first.get("created_time"))
-            owner_label = _owning_show(_created_dt, show_windows, label)
+            # Attribute the order to the SHOW = the CSV it was uploaded in (matched by
+            # its tracking/package number). Deterministic, no time-window guessing:
+            # the tracking number is in exactly one show's export, and that's the show.
+            owner_label = label
             _owner_start = win_start.get(owner_label)
             owner_show_date = _owner_start.date().isoformat() if _owner_start else first["created_at"]
             dvs, dvd, dva = _derive_delivery(first)
