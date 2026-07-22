@@ -3429,6 +3429,27 @@ def api_stats():
     tp=len(os.listdir(photo_dir())) if os.path.exists(photo_dir()) else 0
     return jsonify({"total_videos":tv,"total_photos":tp,"total_size_mb":round(ts/(1024*1024),1)})
 
+def _org_staff_names(*want):
+    """Display names of everyone in THIS org whose roles include any of `want`
+    (e.g. 'worker','picker','packer','host'). Analytics screens use this to list
+    new hires with zero activity, instead of only showing people who already have
+    packing/picking log data. Names match what packing/picking records store
+    (session display name)."""
+    try:
+        users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    except Exception:
+        return []
+    org=session.get("org",DEFAULT_ORG)
+    wants=set(want); out=[]
+    for un,info in users.items():
+        if not isinstance(info,dict): continue
+        if info.get("org",DEFAULT_ORG)!=org: continue
+        roles=set(_effective_roles(info))
+        if wants and not (roles & wants): continue
+        nm=(info.get("name") or un or "").strip()
+        if nm: out.append(nm)
+    return out
+
 @app.route("/api/analytics")
 @req_role("admin","cs")
 def api_analytics():
@@ -3466,6 +3487,14 @@ def api_analytics():
         avg_today=round(td["total_dur"]/td["count"],1) if td["count"]>0 else 0
         worker_list.append({"name":w,"total":d["count"],"avg_seconds":avg,
             "today":td["count"],"avg_today":avg_today,"days_worked":len(d["dates"])})
+    # Seed the roster with every packer-capable employee, so new hires show up
+    # (at zero) even before they've packed anything.
+    seen={w["name"] for w in worker_list}
+    for nm in _org_staff_names("worker","packer"):
+        if nm not in seen:
+            worker_list.append({"name":nm,"total":0,"avg_seconds":0,
+                "today":0,"avg_today":0,"days_worked":0})
+            seen.add(nm)
     worker_list.sort(key=lambda x:x["today"],reverse=True)
     station_list=[{"id":k,"count":v["count"]} for k,v in stations.items()]
     # Daily totals (last 14 days)
@@ -6065,6 +6094,15 @@ def api_packer_analytics():
     W={}
     for r in rows: W.setdefault(r["worker"],[]).append(r)
     workers=[dict({"worker":w},**agg(v)) for w,v in W.items()]
+    # Every packer-capable employee belongs in the dropdown, and (when no single
+    # worker is selected) in the table at zero — so new hires appear immediately.
+    staff=_org_staff_names("worker","packer")
+    for nm in staff: all_workers.add(nm)
+    if not worker:
+        seen={x["worker"] for x in workers}
+        for nm in staff:
+            if nm not in seen:
+                workers.append(dict({"worker":nm},**agg([]))); seen.add(nm)
     workers.sort(key=lambda x:x["packages"],reverse=True)
     D={}
     for r in rows: D.setdefault(r["date"],[]).append(r)
@@ -6262,6 +6300,14 @@ def api_picker_analytics():
         return {"picker":g["picker"],"orders":g["orders"],"items":g["items"],
                 "avg_sec_order":round(avg,1),"orders_per_hr":round(3600.0/avg,1) if avg else 0,
                 "active_hours":round(g["active_sec"]/3600,2)}
+    # Seed with every picker-capable employee: dropdown always, table (at zero)
+    # when no single picker is selected — so new hires show up right away.
+    staff=_org_staff_names("picker","worker")
+    for nm in staff: all_pickers.add(nm)
+    if not picker:
+        for nm in staff:
+            if nm not in perp:
+                perp[nm]={"picker":nm,"orders":0,"items":0,"active_sec":0.0,"timed":0}
     pickers=sorted([fin(g) for g in perp.values()],key=lambda x:x["orders"],reverse=True)
     tot={"orders":sum(g["orders"] for g in perp.values()),"items":sum(g["items"] for g in perp.values()),
          "active_sec":sum(g["active_sec"] for g in perp.values()),"timed":sum(g["timed"] for g in perp.values())}
