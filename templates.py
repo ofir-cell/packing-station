@@ -8514,6 +8514,10 @@ __NAVBAR__
   <h2>📅 Orders picked per day</h2>
   <div class="chart-wrap"><div id="chart"></div></div>
 </div>
+<div class="card" id="shiftCard">
+  <h2>🕑 Shift timeline — pick vs pack &amp; idle time</h2>
+  <div id="shiftBody"><div class="muted">Select a single picker above to see their day-by-day shift: first vs last scan, the pick-vs-pack split, and the idle time in between.</div></div>
+</div>
 </div>
 <div class="toast" id="t" style="position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:700;z-index:100;display:none"></div>
 <script>
@@ -8540,7 +8544,39 @@ function load(){
         '<td class="'+cls+'">'+secFmt(w.avg_sec_order)+'</td><td>'+w.orders_per_hr+'</td><td>'+w.active_hours+'</td></tr>';
     }).join(''):'<tr><td colspan="6" class="muted">No picking records for this filter</td></tr>');
     renderChart(d.days);
+    renderShift(d.shift, !!document.getElementById('fPicker').value);
   });
+}
+function hms(s){s=Math.round(Number(s||0));if(s<=0)return '—';var h=Math.floor(s/3600),m=Math.round((s%3600)/60);return (h?h+'h ':'')+m+'m'}
+function renderShift(shift,hasWorker){
+  var b=document.getElementById('shiftBody');
+  if(!hasWorker){b.innerHTML='<div class="muted">Select a single picker above to see their day-by-day shift: first vs last scan, the pick-vs-pack split, and the idle time in between.</div>';return}
+  if(!shift||!shift.length){b.innerHTML='<div class="muted">No pick or pack activity for this person in the selected range.</div>';return}
+  var legend='<div style="display:flex;gap:18px;margin-bottom:12px;font-size:12px;font-weight:700">'+
+    '<span><span style="display:inline-block;width:11px;height:11px;background:#4f46e5;border-radius:3px;margin-right:5px;vertical-align:-1px"></span>Picked</span>'+
+    '<span><span style="display:inline-block;width:11px;height:11px;background:#10b981;border-radius:3px;margin-right:5px;vertical-align:-1px"></span>Packed</span></div>';
+  var n=shift.length,bw=Math.max(22,Math.min(60,Math.floor(1100/n))),gap=10,W=n*(bw+gap)+50,H=230,top=16,bot=44;
+  var max=Math.max.apply(null,shift.map(function(d){return d.picked+d.packed}))||1;
+  var bars='',lbls='';
+  shift.forEach(function(d,i){
+    var x=44+i*(bw+gap),base=H-bot;
+    var ph=Math.round((H-top-bot)*(d.picked/max)),kh=Math.round((H-top-bot)*(d.packed/max)),tot=d.picked+d.packed;
+    bars+='<rect x="'+x+'" y="'+(base-ph)+'" width="'+bw+'" height="'+Math.max(0,ph)+'" fill="#4f46e5" rx="2"><title>'+esc(d.date)+': '+d.picked+' picked</title></rect>';
+    bars+='<rect x="'+x+'" y="'+(base-ph-kh)+'" width="'+bw+'" height="'+Math.max(0,kh)+'" fill="#10b981" rx="2"><title>'+esc(d.date)+': '+d.packed+' packed</title></rect>';
+    lbls+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(H-bot+14)+'" text-anchor="middle">'+esc((d.date||'').slice(5))+'</text>';
+    if(ph+kh>14)bars+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(base-ph-kh-4)+'" text-anchor="middle" style="fill:#64748b">'+tot+'</text>';
+  });
+  var grid='';for(var g=0;g<=4;g++){var gy=top+(H-top-bot)*g/4;grid+='<line class="axis" x1="40" y1="'+gy+'" x2="'+W+'" y2="'+gy+'"/><text class="axtx" x="0" y="'+(gy+3)+'">'+Math.round(max*(4-g)/4)+'</text>';}
+  var chart='<div class="chart-wrap"><svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+grid+bars+lbls+'</svg></div>';
+  var rows=shift.map(function(d){
+    var idleCls=(d.idle_sec>d.active_sec&&d.active_sec>0)?' style="color:#b45309;font-weight:800"':'';
+    return '<tr><td><b>'+esc(d.date)+'</b></td><td>'+d.picked+'</td><td>'+d.packed+'</td>'+
+      '<td>'+esc(d.first||'—')+'</td><td>'+esc(d.last||'—')+'</td>'+
+      '<td>'+hms(d.span_sec)+'</td><td>'+hms(d.active_sec)+'</td><td'+idleCls+'>'+hms(d.idle_sec)+'</td></tr>';
+  }).join('');
+  var table='<table style="margin-top:16px"><thead><tr><th>Date</th><th>Picked</th><th>Packed</th><th>First log</th><th>Last log</th><th>On-clock span</th><th>Active</th><th>Idle</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  var note='<div style="font-size:12px;color:#6b7280;margin-top:8px">On-clock span = first scan → last scan. Active = measured packing + estimated picking. Idle = span − active (paid-but-idle time). Times shown in the server/show timezone.</div>';
+  b.innerHTML=legend+chart+table+note;
 }
 function renderChart(days){
   if(!days||!days.length){document.getElementById('chart').innerHTML='<div class="muted">No data</div>';return}
@@ -8691,6 +8727,10 @@ __NAVBAR__
   <h2>📅 Packages per day <span class="muted" id="dayNote"></span></h2>
   <div class="chart-wrap"><div id="chart"></div></div>
 </div>
+<div class="card" id="shiftCard">
+  <h2>🕑 Shift timeline — pick vs pack &amp; idle time</h2>
+  <div id="shiftBody"><div class="muted">Select a single worker above to see their day-by-day shift: first vs last scan, the pick-vs-pack split, and the idle time in between.</div></div>
+</div>
 </div>
 <div class="toast" id="t" style="position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:14px 22px;border-radius:10px;font-weight:700;z-index:100;display:none"></div>
 <script>
@@ -8720,7 +8760,39 @@ function load(){
         '<td>'+w.pkgs_per_hr+'</td><td>'+w.active_hours+'</td></tr>';
     }).join(''):'<tr><td colspan="7" class="muted">No packing records for this filter</td></tr>');
     renderChart(d.days);
+    renderShift(d.shift, !!document.getElementById('fWorker').value);
   });
+}
+function hms(s){s=Math.round(Number(s||0));if(s<=0)return '—';var h=Math.floor(s/3600),m=Math.round((s%3600)/60);return (h?h+'h ':'')+m+'m'}
+function renderShift(shift,hasWorker){
+  var b=document.getElementById('shiftBody');
+  if(!hasWorker){b.innerHTML='<div class="muted">Select a single worker above to see their day-by-day shift: first vs last scan, the pick-vs-pack split, and the idle time in between.</div>';return}
+  if(!shift||!shift.length){b.innerHTML='<div class="muted">No pick or pack activity for this person in the selected range.</div>';return}
+  var legend='<div style="display:flex;gap:18px;margin-bottom:12px;font-size:12px;font-weight:700">'+
+    '<span><span style="display:inline-block;width:11px;height:11px;background:#4f46e5;border-radius:3px;margin-right:5px;vertical-align:-1px"></span>Picked</span>'+
+    '<span><span style="display:inline-block;width:11px;height:11px;background:#10b981;border-radius:3px;margin-right:5px;vertical-align:-1px"></span>Packed</span></div>';
+  var n=shift.length,bw=Math.max(22,Math.min(60,Math.floor(1100/n))),gap=10,W=n*(bw+gap)+50,H=230,top=16,bot=44;
+  var max=Math.max.apply(null,shift.map(function(d){return d.picked+d.packed}))||1;
+  var bars='',lbls='';
+  shift.forEach(function(d,i){
+    var x=44+i*(bw+gap),base=H-bot;
+    var ph=Math.round((H-top-bot)*(d.picked/max)),kh=Math.round((H-top-bot)*(d.packed/max)),tot=d.picked+d.packed;
+    bars+='<rect x="'+x+'" y="'+(base-ph)+'" width="'+bw+'" height="'+Math.max(0,ph)+'" fill="#4f46e5" rx="2"><title>'+esc(d.date)+': '+d.picked+' picked</title></rect>';
+    bars+='<rect x="'+x+'" y="'+(base-ph-kh)+'" width="'+bw+'" height="'+Math.max(0,kh)+'" fill="#10b981" rx="2"><title>'+esc(d.date)+': '+d.packed+' packed</title></rect>';
+    lbls+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(H-bot+14)+'" text-anchor="middle">'+esc((d.date||'').slice(5))+'</text>';
+    if(ph+kh>14)bars+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(base-ph-kh-4)+'" text-anchor="middle" style="fill:#64748b">'+tot+'</text>';
+  });
+  var grid='';for(var g=0;g<=4;g++){var gy=top+(H-top-bot)*g/4;grid+='<line class="axis" x1="40" y1="'+gy+'" x2="'+W+'" y2="'+gy+'"/><text class="axtx" x="0" y="'+(gy+3)+'">'+Math.round(max*(4-g)/4)+'</text>';}
+  var chart='<div class="chart-wrap"><svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+grid+bars+lbls+'</svg></div>';
+  var rows=shift.map(function(d){
+    var idleCls=(d.idle_sec>d.active_sec&&d.active_sec>0)?' style="color:#b45309;font-weight:800"':'';
+    return '<tr><td><b>'+esc(d.date)+'</b></td><td>'+d.picked+'</td><td>'+d.packed+'</td>'+
+      '<td>'+esc(d.first||'—')+'</td><td>'+esc(d.last||'—')+'</td>'+
+      '<td>'+hms(d.span_sec)+'</td><td>'+hms(d.active_sec)+'</td><td'+idleCls+'>'+hms(d.idle_sec)+'</td></tr>';
+  }).join('');
+  var table='<table style="margin-top:16px"><thead><tr><th>Date</th><th>Picked</th><th>Packed</th><th>First log</th><th>Last log</th><th>On-clock span</th><th>Active</th><th>Idle</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  var note='<div style="font-size:12px;color:#6b7280;margin-top:8px">On-clock span = first scan → last scan. Active = measured packing + estimated picking. Idle = span − active (paid-but-idle time). Times shown in the server/show timezone.</div>';
+  b.innerHTML=legend+chart+table+note;
 }
 function renderChart(days){
   if(!days||!days.length){document.getElementById('chart').innerHTML='<div class="muted">No data</div>';return}

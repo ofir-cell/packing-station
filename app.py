@@ -6054,6 +6054,75 @@ def api_host_override():
 def hosts_page():
     return HOSTS_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("hosts")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
+def _worker_shift_days(name, frm="", to=""):
+    """Per-day shift picture for ONE worker, fusing the two work logs:
+      • packing events (packing_log.csv: date/time/duration, worker=name)
+      • picking events (shipments.picked_at, picked_by=name)
+    Returns, per day: packed & picked counts, first/last activity clock time,
+    on-clock span (first→last), hands-on active time (measured packing +
+    gap-estimated picking), and idle = span − active. Idle is the 'dead time'
+    between the first and last scan relative to the hours actually worked."""
+    if not name: return []
+    days={}
+    def slot(day):
+        return days.setdefault(day,{"date":day,"packed":0,"picked":0,
+            "pack_sec":0.0,"pick_sec":0.0,"events":[]})
+    # packing log
+    try:
+        if os.path.exists(log_file()):
+            with open(log_file()) as f:
+                for row in csv.DictReader(f):
+                    if (row.get("worker") or "")!=name: continue
+                    day=(row.get("date") or "")[:10]
+                    if not day: continue
+                    if frm and day<frm: continue
+                    if to and day>to: continue
+                    g=slot(day); g["packed"]+=1
+                    try: dur=float(row.get("duration_seconds") or 0)
+                    except Exception: dur=0
+                    if 0<dur<=3600: g["pack_sec"]+=dur
+                    t=(row.get("time") or "").strip()
+                    dt=_parse_sale_dt(day+" "+t) if t else None
+                    if dt: g["events"].append(dt)
+    except Exception:
+        pass
+    # picking log (shipments)
+    try:
+        c=sdb()
+        rows=c.execute("""SELECT picked_at FROM shipments
+                          WHERE picked_by=? AND picked_at IS NOT NULL AND picked_at!=''
+                          ORDER BY picked_at""",(name,)).fetchall()
+        c.close()
+    except Exception:
+        rows=[]
+    prev=None  # (day, datetime) for same-day gap estimate
+    for r in rows:
+        pa=r["picked_at"]; day=(pa or "")[:10]
+        if not day: continue
+        if frm and day<frm: continue
+        if to and day>to: continue
+        g=slot(day); g["picked"]+=1
+        dt=_parse_sale_dt(pa)
+        if dt:
+            g["events"].append(dt)
+            if prev and prev[0]==day:
+                gap=(dt-prev[1]).total_seconds()
+                if 0<gap<=1200: g["pick_sec"]+=gap
+            prev=(day,dt)
+    out=[]
+    for day in sorted(days):
+        g=days[day]; ev=sorted(g["events"])
+        first=ev[0] if ev else None; last=ev[-1] if ev else None
+        span=(last-first).total_seconds() if (first and last) else 0
+        active=g["pack_sec"]+g["pick_sec"]
+        idle=span-active
+        if idle<0: idle=0
+        out.append({"date":day,"packed":g["packed"],"picked":g["picked"],
+            "first":first.strftime("%H:%M") if first else "",
+            "last":last.strftime("%H:%M") if last else "",
+            "span_sec":round(span),"active_sec":round(active),"idle_sec":round(idle)})
+    return out
+
 # ── PACKER ANALYTICS — pack speed per worker from the recording log ──
 @app.route("/api/packer-analytics")
 @req_role("admin","cs")
@@ -6108,7 +6177,8 @@ def api_packer_analytics():
     for r in rows: D.setdefault(r["date"],[]).append(r)
     days=[dict({"date":d},**agg(v)) for d,v in sorted(D.items())]
     return jsonify({"ok":True,"overall":agg(rows),"workers":workers,"days":days,
-                    "worker_list":sorted(all_workers),"station_list":sorted(all_stations)})
+                    "worker_list":sorted(all_workers),"station_list":sorted(all_stations),
+                    "shift":_worker_shift_days(worker,frm,to)})
 
 @app.route("/admin/packer-analytics")
 @req_role("admin","cs")
@@ -6313,7 +6383,9 @@ def api_picker_analytics():
          "active_sec":sum(g["active_sec"] for g in perp.values()),"timed":sum(g["timed"] for g in perp.values())}
     ov=fin({"picker":"","orders":tot["orders"],"items":tot["items"],"active_sec":tot["active_sec"],"timed":tot["timed"]})
     days=[perday[k] for k in sorted(perday)]
-    return jsonify({"ok":True,"overall":ov,"pickers":pickers,"days":days,"picker_list":sorted(all_pickers)})
+    return jsonify({"ok":True,"overall":ov,"pickers":pickers,"days":days,
+                    "picker_list":sorted(all_pickers),
+                    "shift":_worker_shift_days(picker,frm,to)})
 
 @app.route("/admin/picker-analytics")
 @req_role("admin","cs")
