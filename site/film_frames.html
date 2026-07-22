@@ -1,0 +1,44 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LiveOpsHub film — frames in order</title>
+<style>
+  body{margin:0;background:#0c0f16;color:#e9edf6;font-family:-apple-system,'Segoe UI',sans-serif;padding:28px}
+  h1{font-size:22px;font-weight:900;margin:0 0 4px}
+  .sub{color:#9aa4b8;font-size:14px;margin-bottom:24px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:18px}
+  .card{background:#141a25;border:1px solid rgba(255,255,255,.09);border-radius:14px;overflow:hidden}
+  .card.hero{border-color:#f59e0b}
+  .card img{width:100%;display:block;aspect-ratio:16/9;object-fit:cover;background:#000}
+  .meta{padding:11px 14px}
+  .num{font-size:12px;font-weight:900;color:#818cf8;letter-spacing:.5px}
+  .num .hero-tag{color:#f59e0b;margin-left:6px}
+  .name{font-size:14px;font-weight:700;margin-top:2px}
+  .role{font-size:12px;color:#8b93a5;margin-top:3px;line-height:1.4}
+</style></head><body>
+<h1>🎬 LiveOpsHub hero film — 15 frames, in story order</h1>
+<div class="sub">Chaos → system → proof → numbers. ⭐ = hero shot (gets extra takes when we animate). If any frame is wrong, tell me its number and I'll regenerate it (2 credits each).</div>
+<div class="grid" id="grid"></div>
+<script>
+var B="https://d8j0ntlcm91z4.cloudfront.net/user_3GpHyj559zalbm6KUC8NTxT2Jbt/";
+var shots=[
+ {n:"01",name:"Drone arrival",role:"Aerial descent into the warehouse — the opening.",img:"hf_20260721_201943_d0892374-76f1-416a-b13b-788b322b385f.png"},
+ {n:"02",name:"The live show — glass room",role:"Host selling in the glass studio, warehouse visible behind. This is the character reference.",img:"hf_20260721_201702_31de012c-0ca6-4ec9-9876-c45d2e99272f.png"},
+ {n:"03",name:"The chaos",role:"Messy table, papers & stickers, overwhelmed workers.",img:"hf_20260721_202004_c1fc8700-6b4a-4b9b-b136-8d3e3ae4b27a.png"},
+ {n:"05",name:"Order arrives",role:"Calm transformed warehouse, four workers with iPads.",img:"hf_20260721_202224_64ff79e3-8115-44f4-aa6a-c3f8a9321fbe.png"},
+ {n:"07",name:"Picking",role:"Product into the basket, tablet glow.",hero:true,img:"hf_20260721_202035_39228b7b-f6fd-4257-a023-483d39690afb.png"},
+ {n:"08",name:"The scan",role:"Barcode laser macro.",hero:true,img:"hf_20260721_202050_a0cbacbc-d2c1-4ed2-801e-8b9da397d7f2.png"},
+ {n:"09",name:"Basket to bench",role:"Full basket lands on the packing bench.",img:"hf_20260721_233709_671194f5-eb0d-4d59-9e70-8dd91759f965.png"},
+ {n:"10",name:"Packing station",role:"Scanning the label, overhead camera recording.",hero:true,img:"hf_20260721_202105_b3def401-931c-4940-98bf-1b2732c2fed1.png"},
+ {n:"11",name:"Filmed from above",role:"Overhead: products into the box — the hero mechanic.",hero:true,img:"hf_20260721_202120_c35e32f7-90bb-478d-a1db-ec557cd27f6f.png"},
+ {n:"12",name:"The complaint",role:"Customer at home, unopened parcel, frowning.",img:"hf_20260721_202137_80cab90b-19de-4906-92cd-5576f692ac3b.png"},
+ {n:"13",name:"The proof",role:"Playing the packing video back on a laptop.",img:"hf_20260721_202153_ffef847d-d4e7-4aae-927b-bd12887526c5.png"},
+ {n:"14",name:"The numbers",role:"Analytics as glowing light — bars rising.",img:"hf_20260721_202206_9ca94426-78fb-40e7-8410-31b4dc1ac085.png"},
+ {n:"15",name:"Closing wide",role:"Calm warehouse at end of day, boxes ready.",img:"hf_20260721_202256_a3952f1b-8570-4060-869c-4c9d06ae3c20.png"}
+];
+document.getElementById('grid').innerHTML=shots.map(function(s){
+ return '<div class="card'+(s.hero?' hero':'')+'">'+
+   '<a href="'+B+s.img+'" target="_blank"><img src="'+B+s.img+'" alt="'+s.name+'"></a>'+
+   '<div class="meta"><div class="num">SHOT '+s.n+(s.hero?'<span class="hero-tag">★ HERO</span>':'')+'</div>'+
+   '<div class="name">'+s.name+'</div><div class="role">'+s.role+'</div></div></div>';
+}).join('');
+</script></body></html>

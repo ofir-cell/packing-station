@@ -1,0 +1,73 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Download all film clips — in order</title>
+<style>
+  body{margin:0;background:#0c0f16;color:#e9edf6;font-family:-apple-system,'Segoe UI',sans-serif;padding:28px;max-width:760px;margin:0 auto}
+  h1{font-size:22px;font-weight:900;margin:0 0 6px}
+  .sub{color:#9aa4b8;font-size:14px;margin-bottom:20px;line-height:1.55}
+  .allbtn{background:linear-gradient(135deg,#4f46e5,#7c3aed);border:none;color:#fff;font-weight:800;font-size:16px;
+    padding:14px 26px;border-radius:12px;cursor:pointer;margin-bottom:6px}
+  .allbtn:disabled{opacity:.6;cursor:default}
+  .hint{color:#6b7488;font-size:12px;margin:8px 0 22px}
+  .row{display:flex;align-items:center;gap:12px;padding:9px 12px;border:1px solid rgba(255,255,255,.08);
+    border-radius:9px;margin-bottom:7px;font-size:14px}
+  .row .n{font-weight:800;color:#818cf8;width:210px}
+  .row a{color:#a5b4fc;text-decoration:none;font-weight:700;margin-left:auto}
+  .st{width:20px;text-align:center}
+  .ok{color:#34d399}.err{color:#fb7185}
+</style></head><body>
+<h1>⬇ Download all 18 clips — in film order</h1>
+<div class="sub">Click the big button. Each clip downloads with a numbered name (01, 02, 03…) so they sort correctly. Then in CapCut: New Project → import this folder → drag them onto the timeline top to bottom.</div>
+<button class="allbtn" id="all">⬇ Download all 18 clips</button>
+<div class="hint">If your browser asks "allow multiple downloads?", click Allow. If the button doesn't work (some browsers block it), use the individual links below instead — right-click → Save Link As.</div>
+<div id="list"></div>
+<script>
+var B="https://d8j0ntlcm91z4.cloudfront.net/user_3GpHyj559zalbm6KUC8NTxT2Jbt/";
+var clips=[
+ ["01_drone.mp4","hf_20260721_234024_b5178e95-9331-40b3-8c93-edc588f7aa42.mp4"],
+ ["02_liveshow.mp4","hf_20260721_234043_c8584312-74f8-4dad-84fe-083880fbe1cf.mp4"],
+ ["03_chaos.mp4","hf_20260721_234057_3e257f8a-b328-43b4-ad82-f9474f2d0c8e.mp4"],
+ ["04_orderarrives.mp4","hf_20260721_234114_1e81866b-b145-4e92-a708-6d994c3bf73e.mp4"],
+ ["05_team.mp4","hf_20260721_234131_7609b98f-b874-43e2-975e-5c367079da95.mp4"],
+ ["06a_picking_take1.mp4","hf_20260721_233931_5cf18a5b-b6e8-400f-a0a2-33c4f31a5e6c.mp4"],
+ ["06b_picking_take2.mp4","hf_20260721_233931_38e2c1f3-2542-4d5c-89f1-7c142b80daac.mp4"],
+ ["07a_scan_take1.mp4","hf_20260721_233948_d10c28bf-6212-4fd5-b50e-8af8deac91ed.mp4"],
+ ["07b_scan_take2.mp4","hf_20260721_233948_72174e31-7c92-4f62-9fb3-de7169a65a03.mp4"],
+ ["08_baskettobench.mp4","hf_20260721_234300_14a4fdd0-1ab3-4d12-8939-ebb0b3fd0281.mp4"],
+ ["09a_packing_take1.mp4","hf_20260721_234007_7a2c61a7-d8e0-4211-898c-2455cb49118b.mp4"],
+ ["09b_packing_take2.mp4","hf_20260721_234007_94bcfdb8-f72e-432a-9b23-5ee457074ffd.mp4"],
+ ["10a_overhead_take1.mp4","hf_20260721_233918_0d94a5a7-1fe4-4dce-b242-6183d79f554e.mp4"],
+ ["10b_overhead_take2.mp4","hf_20260721_233918_0b887dc3-dde6-4cd1-b38f-29e6fe48ecd1.mp4"],
+ ["11_complaint.mp4","hf_20260721_234210_7c1fdbbc-27a6-4751-8a53-7c4b57b4287b.mp4"],
+ ["12_proof.mp4","hf_20260721_234226_d630a212-2a7d-4ef4-ad79-6789767a1ac2.mp4"],
+ ["13_numbers.mp4","hf_20260721_234242_92fe5bc1-4eaf-4b15-b6a7-7813c5e802b7.mp4"],
+ ["14_closing.mp4","hf_20260721_234716_665eda08-26eb-40ea-9720-6672e52f81e8.mp4"]
+];
+var list=document.getElementById('list');
+list.innerHTML=clips.map(function(c,i){
+ return '<div class="row" id="row'+i+'"><span class="st" id="st'+i+'">•</span>'+
+   '<span class="n">'+c[0]+'</span>'+
+   '<a href="'+B+c[1]+'" download="'+c[0]+'">save individually</a></div>';
+}).join('');
+
+// Try blob download (correct filename). Falls back to a plain anchor if CORS blocks it.
+function grab(i){
+ return fetch(B+clips[i][1]).then(function(r){if(!r.ok)throw 0;return r.blob()}).then(function(b){
+   var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download=clips[i][0];
+   document.body.appendChild(a);a.click();a.remove();setTimeout(function(){URL.revokeObjectURL(u)},4000);
+   document.getElementById('st'+i).textContent='✓';document.getElementById('st'+i).className='st ok';
+ }).catch(function(){
+   // fallback: trigger the anchor (filename may be the CDN name, but it still downloads)
+   var a=document.querySelector('#row'+i+' a');a.click();
+   document.getElementById('st'+i).textContent='↓';document.getElementById('st'+i).className='st';
+ });
+}
+document.getElementById('all').addEventListener('click',function(){
+ var b=this;b.disabled=true;b.textContent='Downloading…';
+ var i=0;
+ (function next(){
+   if(i>=clips.length){b.textContent='✓ Done — check your Downloads folder';return}
+   grab(i).then(function(){i++;setTimeout(next,700)});
+ })();
+});
+</script></body></html>

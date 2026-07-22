@@ -1,106 +1,40 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Log in · LiveOpsHub</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='.5' stop-color='%238b5cf6'/%3E%3Cstop offset='1' stop-color='%23ec4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='96' height='96' rx='22' fill='url(%23g)'/%3E%3Cpath d='M20 28 L20 64 L34 64' fill='none' stroke='%23fff' stroke-width='6.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='48' cy='46' r='11' fill='none' stroke='%23fff' stroke-width='6.5'/%3E%3Ccircle cx='48' cy='46' r='3' fill='%23fff'/%3E%3Cpath d='M63 28 L63 64 M79 28 L79 64 M63 46 L79 46' fill='none' stroke='%23fff' stroke-width='6.5' stroke-linecap='round'/%3E%3C/svg%3E">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-<style>
-:root{--ink:#0f1222;--text:#111827;--muted:#6b7280;--line:#e6e8ee;--brand:#6366f1;--soft:#f7f8fb;--grad:linear-gradient(120deg,#6366f1,#8b5cf6 45%,#ec4899)}
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Inter',system-ui,sans-serif;color:var(--text);-webkit-font-smoothing:antialiased}
-.split{display:grid;grid-template-columns:1.05fr 1fr;min-height:100vh}
-@media(max-width:840px){.split{grid-template-columns:1fr}.brandside{display:none}}
-a{color:inherit;text-decoration:none}
-.logo{display:flex;align-items:center;gap:10px;font-weight:900;font-size:20px}
-.logomark{width:34px;height:34px}
-
-/* left brand panel */
-.brandside{background:radial-gradient(900px 500px at 20% 10%,rgba(236,72,153,.25),transparent 55%),var(--ink);color:#fff;padding:56px 60px;display:flex;flex-direction:column;justify-content:space-between}
-.brandside .logo{color:#fff}
-.brandside h1{font-size:38px;font-weight:900;line-height:1.1;letter-spacing:-1px;margin-top:auto}
-.brandside p{color:#c3c7d6;font-size:17px;margin-top:16px;max-width:400px}
-.blist{margin-top:30px;list-style:none;display:flex;flex-direction:column;gap:13px}
-.blist li{display:flex;gap:11px;align-items:center;color:#d7dae6;font-size:15px}
-.blist .c{width:22px;height:22px;border-radius:50%;background:rgba(139,92,246,.25);color:#c4b5fd;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:900}
-.quote{margin-top:34px;font-size:14px;color:#9aa0b6}
-
-/* right form panel */
-.formside{display:flex;align-items:center;justify-content:center;padding:40px 24px;background:#fff}
-.card{width:100%;max-width:400px}
-.card .logo{margin-bottom:34px;color:var(--ink)}
-.card h2{font-size:26px;font-weight:800;letter-spacing:-.5px}
-.card .sub{color:var(--muted);font-size:15px;margin-top:6px;margin-bottom:28px}
-.field{margin-bottom:16px}
-label{display:block;font-size:13px;font-weight:700;color:#374151;margin-bottom:7px}
-input{width:100%;border:2px solid var(--line);border-radius:12px;padding:13px 15px;font-size:15px;font-family:inherit;color:var(--text);outline:none;transition:.15s}
-input:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(99,102,241,.12)}
-.rowb{display:flex;justify-content:space-between;align-items:center;margin:4px 0 22px;font-size:13.5px}
-.rowb label{display:flex;align-items:center;gap:7px;margin:0;font-weight:600;color:var(--muted)}
-.rowb a{color:var(--brand);font-weight:700}
-.btn{width:100%;border:none;border-radius:12px;padding:14px;font-family:inherit;font-size:15px;font-weight:800;color:#fff;background:var(--grad);cursor:pointer;box-shadow:0 8px 24px rgba(99,102,241,.32);transition:.15s}
-.btn:hover{transform:translateY(-1px)}
-.divider{display:flex;align-items:center;gap:14px;margin:26px 0;color:#9aa1b2;font-size:13px}
-.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line)}
-.foot{text-align:center;font-size:14px;color:var(--muted)}
-.foot a{color:var(--brand);font-weight:700}
-.note{margin-top:22px;font-size:12px;color:#9aa1b2;text-align:center;background:var(--soft);border:1px solid var(--line);border-radius:10px;padding:9px 12px}
-.backhome{position:absolute;top:24px;left:24px;font-size:14px;font-weight:700;color:#c3c7d6}
-@media(max-width:840px){.backhome{color:var(--muted)}}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in · LiveOpsHub</title>
+  <!-- The real, secure login lives inside the app (same origin as your data, with CSRF
+       protection and the session cookie). This page just forwards you there — so there is
+       exactly one login, and it always works. Set APP_URL to your deployed app. -->
+  <script>
+    var APP_URL = "https://app.liveopshub.com";   // ← your live app origin (e.g. https://getwhatnot.com)
+    // Preserve a ?next= deep link if present.
+    var qs = new URLSearchParams(location.search);
+    var dest = APP_URL + "/login" + (qs.get("next") ? ("?next=" + encodeURIComponent(qs.get("next"))) : "");
+    location.replace(dest);
+  </script>
+  <meta http-equiv="refresh" content="1;url=https://app.liveopshub.com/login">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
+      background:#0c0f16;color:#e9edf6;font-family:'Inter',-apple-system,'Segoe UI',sans-serif;text-align:center}
+    .box{max-width:380px;padding:24px}
+    .brand{font-weight:900;font-size:22px;margin-bottom:14px}
+    .brand span{color:#818cf8}
+    p{color:#9aa4b8;font-size:15px;line-height:1.6}
+    a{color:#818cf8;font-weight:700}
+    .spin{width:26px;height:26px;border:3px solid rgba(255,255,255,.15);border-top-color:#8b5cf6;
+      border-radius:50%;margin:18px auto;animation:s .8s linear infinite}
+    @keyframes s{to{transform:rotate(360deg)}}
+  </style>
 </head>
 <body>
-<a class="backhome" href="index.html">← Back to site</a>
-<div class="split">
-  <!-- BRAND -->
-  <aside class="brandside">
-    <a class="logo" href="index.html">
-      <svg class="logomark" viewBox="0 0 96 96"><use href="#loh-mark"/></svg> LiveOpsHub
-    </a>
-    <div>
-      <h1>Welcome back.<br>Let's run the show.</h1>
-      <p>Log in to your company's operations hub — orders, picking, packing, shipping and the numbers behind every live.</p>
-      <ul class="blist">
-        <li><span class="c">✓</span> Every package on camera</li>
-        <li><span class="c">✓</span> Real profit per show</li>
-        <li><span class="c">✓</span> Works offline in the warehouse</li>
-      </ul>
-    </div>
-    <div class="quote">“We stopped losing chargebacks the week we switched.” — placeholder testimonial</div>
-  </aside>
-
-  <!-- FORM -->
-  <main class="formside">
-    <div class="card">
-      <a class="logo" href="index.html"><svg class="logomark" viewBox="0 0 96 96"><use href="#loh-mark"/></svg> LiveOpsHub</a>
-      <h2>Log in to your company</h2>
-      <div class="sub">Use the credentials your team admin gave you.</div>
-      <form action="#" method="post" onsubmit="return false">
-        <div class="field"><label for="email">Work email or username</label><input id="email" type="text" placeholder="you@yourcompany.com" autocomplete="username"></div>
-        <div class="field"><label for="pw">Password</label><input id="pw" type="password" placeholder="••••••••" autocomplete="current-password"></div>
-        <div class="rowb"><label><input type="checkbox" style="width:auto"> Keep me signed in</label><a href="#">Forgot password?</a></div>
-        <button class="btn" type="submit">Log in →</button>
-      </form>
-      <div class="divider">workers</div>
-      <div class="foot">Packing station or picker? <a href="#">Scan your badge instead →</a></div>
-      <div class="divider">new here</div>
-      <div class="foot">Don't have an account yet? <a href="index.html#demo">Book a demo →</a></div>
-      <div class="note">🔒 Mockup — will connect to <b>app.liveopshub.com/login</b> when the site goes live.</div>
-    </div>
-  </main>
-</div>
-
-<!-- LOH mark -->
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
-  <linearGradient id="lohgrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset=".5" stop-color="#8b5cf6"/><stop offset="1" stop-color="#ec4899"/></linearGradient>
-  <symbol id="loh-mark" viewBox="0 0 96 96">
-    <rect width="96" height="96" rx="22" fill="url(#lohgrad)"/>
-    <path d="M20 28 L20 64 L34 64" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
-    <circle cx="48" cy="46" r="11" fill="none" stroke="#fff" stroke-width="6.5"/><circle cx="48" cy="46" r="3" fill="#fff"/>
-    <circle cx="48" cy="35" r="2.4" fill="#fff"/><circle cx="58" cy="52" r="2.4" fill="#fff"/><circle cx="38" cy="52" r="2.4" fill="#fff"/>
-    <path d="M63 28 L63 64 M79 28 L79 64 M63 46 L79 46" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round"/>
-  </symbol>
-</defs></svg>
+  <div class="box">
+    <div class="brand">LiveOps<span>Hub</span></div>
+    <div class="spin"></div>
+    <p>Taking you to your company's secure login…<br>
+       If nothing happens, <a href="https://app.liveopshub.com/login">click here to log in</a>.</p>
+  </div>
 </body>
 </html>
