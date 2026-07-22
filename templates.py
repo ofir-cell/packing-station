@@ -279,39 +279,41 @@ LOGIN_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'DM Sans',sans-serif;background:#ffffff;color:#1a2130;display:flex;align-items:center;justify-content:center;min-height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased}
 .glow{position:fixed;border-radius:50%;filter:blur(120px);opacity:.18;pointer-events:none}
-.g1{width:640px;height:640px;top:-220px;right:-160px;background:#d9748f}
+.g1{width:640px;height:640px;top:-220px;right:-160px;background:#4f46e5}
 .g2{width:480px;height:480px;bottom:-140px;left:-120px;background:#7c3aed}
 .wrap{position:relative;z-index:1;width:100%;max-width:440px;padding:24px}
-.logo{text-align:center;margin-bottom:36px}
-.brand-mark-big{font-size:54px;font-weight:900;color:#d9748f;letter-spacing:4px;line-height:1;margin-bottom:12px;text-shadow:0 8px 32px rgba(217,116,143,.25)}
-.brand-sub-big{font-size:11px;font-weight:700;color:#6b7280;letter-spacing:4px;text-transform:uppercase}
-.card{background:#ffffff;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid rgba(17,24,39,0.096);border-radius:22px;padding:40px 36px}
+.logo{display:flex;align-items:center;justify-content:center;gap:13px;margin-bottom:34px}
+.brand-tile{width:48px;height:48px;border-radius:13px;background:linear-gradient(135deg,#4f46e5,#7c3aed);display:flex;align-items:center;justify-content:center;box-shadow:0 10px 26px rgba(79,70,229,.34);flex:none}
+.brand-txt{text-align:left}
+.brand-mark-big{font-size:26px;font-weight:800;color:#141b26;letter-spacing:-.5px;line-height:1}
+.brand-sub-big{font-size:9px;font-weight:700;color:#8a93a5;letter-spacing:2.6px;text-transform:uppercase;margin-top:5px}
+.card{background:#ffffff;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid rgba(17,24,39,0.096);border-radius:22px;padding:40px 36px;box-shadow:0 24px 60px rgba(79,70,229,.10)}
 .card h2{font-size:24px;font-weight:800;margin-bottom:4px;color:#141b26}
 .card .sub{font-size:13px;color:#586274;margin-bottom:28px}
 .field{margin-bottom:18px}
 .field label{display:block;font-size:11px;font-weight:700;color:#586274;margin-bottom:8px;text-transform:uppercase;letter-spacing:.8px}
 .field input{width:100%;background:#ffffff;border:2px solid rgba(17,24,39,0.096);border-radius:12px;padding:15px 18px;font-size:16px;color:#1a2130;font-family:inherit;outline:none;transition:all .2s}
-.field input:focus{border-color:#d9748f;box-shadow:0 0 0 3px rgba(217,116,143,.12)}
+.field input:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(79,70,229,.12)}
 .field input::placeholder{color:#6b7280}
 .btn{width:100%;border:none;border-radius:12px;padding:16px;font-size:15px;font-weight:800;cursor:pointer;font-family:inherit;transition:all .15s;letter-spacing:.5px}
-.btn-primary{background:#d9748f;color:#1a0e0b;margin-top:8px;box-shadow:0 8px 28px rgba(217,116,143,.22)}
-.btn-primary:hover{background:#c25c79;transform:translateY(-1px);box-shadow:0 10px 36px rgba(217,116,143,.32)}
+.btn-primary{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#ffffff;margin-top:8px;box-shadow:0 8px 28px rgba(79,70,229,.28)}
+.btn-primary:hover{filter:brightness(1.06);transform:translateY(-1px);box-shadow:0 10px 36px rgba(79,70,229,.36)}
 .btn-primary:active{transform:scale(.98)}
 .err{color:#f43f5e;font-size:13px;margin-top:14px;text-align:center;min-height:18px}
-.back-to-badge{display:block;margin-top:22px;padding:14px;text-align:center;background:rgba(217,116,143,.08);border:1px solid rgba(217,116,143,.22);border-radius:12px;color:#d9748f;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:.3px;transition:background .15s}
-.back-to-badge:hover{background:rgba(217,116,143,.16)}
-.foot{text-align:center;margin-top:28px;font-size:11px;color:#6b7280;letter-spacing:1.5px}
+.back-to-badge{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:22px;padding:14px;text-align:center;background:#f4f5fb;border:1px solid #e6e8f5;border-radius:12px;color:#586274;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:.2px;transition:all .15s}
+.back-to-badge:hover{background:#eef0fb;color:#4f46e5;border-color:rgba(79,70,229,.28)}
+.foot{text-align:center;margin-top:28px;font-size:11px;color:#8a93a5;letter-spacing:1.5px}
 </style></head><body>
 <div class="glow g1"></div><div class="glow g2"></div>
 <div class="wrap">
-<div class="logo"><div class="brand-mark-big">5&nbsp;SEC</div><div class="brand-sub-big">Employee Hub</div></div>
+<div class="logo"><span class="brand-tile"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg></span><span class="brand-txt"><span class="brand-mark-big">__BRANDMARK__</span><span class="brand-sub-big">Employee Sign-In</span></span></div>
 <div class="card">
 <h2>Sign in with password</h2><p class="sub">For admin or when no badge is available</p>
 <div class="field"><label>Username</label><input type="text" id="u" placeholder="Enter your username" autofocus></div>
 <div class="field"><label>Password</label><input type="password" id="p" placeholder="Enter your password"></div>
 <button class="btn btn-primary" id="loginBtn">Sign In</button>
 <div class="err" id="e"></div>
-<a href="/badge-login" class="back-to-badge">🎫 Back to badge scan</a>
+<a href="/badge-login" class="back-to-badge"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9v6M11 9v6M15 9v6"/></svg> Back to badge scan</a>
 </div>
 <div class="foot">__BRANDNAME_UC__ &copy; 2026</div>
 </div>
