@@ -1784,52 +1784,56 @@ load();
 BADGE_LOGIN_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>Scan Your Badge</title>
+<title>Scan Your Badge — __BRANDMARK__</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'DM Sans',sans-serif;background:radial-gradient(900px 600px at 20% 0%, rgba(217,116,143,.06), transparent 60%),radial-gradient(800px 600px at 80% 100%, rgba(99,102,241,.04), transparent 60%),#ffffff;color:#1a2130;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+body{font-family:'DM Sans',sans-serif;background:radial-gradient(760px 520px at 20% 0%, rgba(79,70,229,.10), transparent 60%),radial-gradient(700px 520px at 80% 100%, rgba(124,58,237,.07), transparent 60%),#fbfcff;color:#141b26;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
 .box{max-width:500px;width:100%;text-align:center}
-.brand-line{margin-bottom:32px;line-height:1}
-.brand-mark-page{display:block;font-size:30px;font-weight:900;color:#d9748f;letter-spacing:2.4px;text-shadow:0 4px 18px rgba(217,116,143,.2)}
-.brand-sub-page{display:block;font-size:9px;font-weight:700;color:#6b7280;letter-spacing:3px;text-transform:uppercase;margin-top:6px}
-.logo{font-size:120px;margin-bottom:20px;animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
-h1{font-size:36px;font-weight:800;margin-bottom:12px}
-.sub{color:#d9748f;font-size:18px;margin-bottom:40px;font-weight:500}
-.scan-area{background:rgba(17,24,39,0.064);border:2px dashed rgba(217,116,143,.3);border-radius:24px;padding:50px 30px;margin-bottom:24px;transition:all .3s}
-.scan-area.focus{border-color:#d9748f;background:rgba(217,116,143,.08)}
-.scan-area.success{border-color:#10b981;background:rgba(16,185,129,.08)}
-.scan-area.error{border-color:#f43f5e;background:rgba(244,63,94,.08);animation:shake .4s}
+.brand-line{display:flex;align-items:center;justify-content:center;gap:13px;margin-bottom:38px;line-height:1}
+.brand-tile{width:48px;height:48px;border-radius:13px;background:linear-gradient(135deg,#4f46e5,#7c3aed);display:flex;align-items:center;justify-content:center;box-shadow:0 10px 26px rgba(79,70,229,.34);flex:none}
+.brand-txt{text-align:left}
+.brand-mark-page{display:block;font-size:25px;font-weight:800;color:#141b26;letter-spacing:-.5px}
+.brand-mark-page .hl{color:#4f46e5}
+.brand-sub-page{display:block;font-size:9px;font-weight:700;color:#8a93a5;letter-spacing:2.6px;text-transform:uppercase;margin-top:5px}
+h1{font-size:36px;font-weight:800;letter-spacing:-.8px;margin-bottom:12px}
+.sub{color:#4f46e5;font-size:18px;margin-bottom:38px;font-weight:600}
+.scan-area{background:#ffffff;border:2px dashed rgba(79,70,229,.32);border-radius:24px;padding:46px 30px;margin-bottom:24px;transition:all .3s;box-shadow:0 18px 50px rgba(79,70,229,.08)}
+.scan-area.focus{border-color:#6366f1;background:#ffffff}
+.scan-area.success{border-color:#10b981;background:rgba(16,185,129,.05)}
+.scan-area.error{border-color:#f43f5e;background:rgba(244,63,94,.05);animation:shake .4s}
 @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-10px)}75%{transform:translateX(10px)}}
-.scan-icon{font-size:64px;margin-bottom:16px}
-.scan-text{font-size:20px;font-weight:600;margin-bottom:8px}
-.scan-hint{color:#6b7280;font-size:14px}
+.scan-graphic{position:relative;width:154px;height:80px;margin:0 auto 22px}
+.scan-graphic svg{display:block}
+.scan-beam{position:absolute;top:4px;left:0;width:100%;height:3px;background:linear-gradient(90deg,transparent,#4f46e5,transparent);box-shadow:0 0 12px 3px rgba(79,70,229,.6);border-radius:3px;animation:sweep 2.2s ease-in-out infinite}
+@keyframes sweep{0%{top:4px}50%{top:70px}100%{top:4px}}
+.scan-area.success .scan-beam,.scan-area.error .scan-beam{display:none}
+.scan-text{font-size:20px;font-weight:700;margin-bottom:8px}
+.scan-hint{color:#7b8494;font-size:14px}
 input{position:absolute;opacity:0;pointer-events:none}
-.alt-link{display:inline-block;margin-top:24px;padding:14px 28px;border-radius:12px;background:rgba(17,24,39,0.064);border:1px solid rgba(17,24,39,0.128);color:#586274;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:.3px;transition:all .15s}
-.alt-link:hover{color:#d9748f;background:rgba(217,116,143,.06);border-color:rgba(217,116,143,.22)}
+.alt-link{display:inline-flex;align-items:center;gap:8px;margin-top:24px;padding:14px 28px;border-radius:12px;background:#f4f5fb;border:1px solid #e6e8f5;color:#586274;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:.2px;transition:all .15s}
+.alt-link:hover{color:#4f46e5;background:#eef0fb;border-color:rgba(79,70,229,.28)}
 .toast{position:fixed;top:24px;left:50%;transform:translateX(-50%);background:#10b981;color:white;padding:14px 28px;border-radius:50px;font-weight:700;font-size:15px;box-shadow:0 10px 40px rgba(16,185,129,.4);z-index:100;display:none}
 .toast.err{background:#f43f5e;box-shadow:0 10px 40px rgba(244,63,94,.4)}
 
 /* Welcome overlay shown after a successful badge scan, before redirect */
-.welcome-ov{position:fixed;inset:0;background:radial-gradient(800px 600px at 50% 30%, rgba(217,116,143,.18), transparent 60%),#ffffff;z-index:200;display:none;align-items:center;justify-content:center;flex-direction:column;padding:30px;animation:fadeIn .25s ease}
+.welcome-ov{position:fixed;inset:0;background:radial-gradient(800px 600px at 50% 30%, rgba(79,70,229,.16), transparent 60%),#fbfcff;z-index:200;display:none;align-items:center;justify-content:center;flex-direction:column;padding:30px;animation:fadeIn .25s ease}
 .welcome-ov.on{display:flex}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-.welcome-avatar{width:160px;height:160px;border-radius:50%;background:linear-gradient(135deg,#d9748f,#c25c79);display:flex;align-items:center;justify-content:center;font-size:78px;font-weight:900;color:#1a0e0b;margin-bottom:32px;box-shadow:0 24px 80px rgba(217,116,143,.35),0 0 0 8px rgba(217,116,143,.08);animation:pop .5s cubic-bezier(.175,.885,.32,1.275)}
+.welcome-avatar{width:160px;height:160px;border-radius:50%;background:linear-gradient(135deg,#4f46e5,#7c3aed);display:flex;align-items:center;justify-content:center;font-size:78px;font-weight:900;color:#ffffff;margin-bottom:32px;box-shadow:0 24px 80px rgba(79,70,229,.35),0 0 0 8px rgba(79,70,229,.08);animation:pop .5s cubic-bezier(.175,.885,.32,1.275)}
 @keyframes pop{from{transform:scale(.4);opacity:0}to{transform:scale(1);opacity:1}}
-.welcome-eyebrow{font-size:13px;font-weight:800;color:#d9748f;letter-spacing:2.5px;text-transform:uppercase;margin-bottom:8px}
+.welcome-eyebrow{font-size:13px;font-weight:800;color:#4f46e5;letter-spacing:2.5px;text-transform:uppercase;margin-bottom:8px}
 .welcome-name{font-size:46px;font-weight:900;color:#141b26;letter-spacing:-1px;line-height:1.05;text-align:center;margin-bottom:28px}
 .welcome-loading{display:flex;align-items:center;gap:10px;color:#586274;font-size:14px;font-weight:600}
-.welcome-loading .sp{width:14px;height:14px;border:2px solid rgba(17,24,39,0.16);border-top-color:#d9748f;border-radius:50%;animation:sp 1s linear infinite}
+.welcome-loading .sp{width:14px;height:14px;border:2px solid rgba(17,24,39,0.16);border-top-color:#4f46e5;border-radius:50%;animation:sp 1s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
 </style></head><body>
-<button id="langBtn" onclick="toggleLang()" style="position:fixed;top:14px;right:14px;z-index:200;background:rgba(17,24,39,0.128);border:1px solid rgba(17,24,39,0.16);color:#1a2130;border-radius:10px;padding:8px 14px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit">ES</button>
+<button id="langBtn" onclick="toggleLang()" style="position:fixed;top:14px;right:14px;z-index:200;background:#f4f5fb;border:1px solid #e6e8f5;color:#141b26;border-radius:10px;padding:8px 14px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit">ES</button>
 <div class="box">
-<div class="brand-line"><span class="brand-mark-page">5&nbsp;SEC</span><span class="brand-sub-page">Employee Hub</span></div>
-<div class="logo">🎫</div>
+<div class="brand-line"><span class="brand-tile"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg></span><span class="brand-txt"><span class="brand-mark-page">__BRANDMARK__</span><span class="brand-sub-page">Employee Sign-In</span></span></div>
 <h1 data-i18n="welcome">Welcome!</h1>
 <div class="sub" data-i18n="sub">Scan your employee badge to begin</div>
 <div class="scan-area focus" id="sa">
-<div class="scan-icon">📡</div>
+<div class="scan-graphic"><svg width="154" height="80" viewBox="0 0 154 80"><g fill="#141b26"><rect x="8" y="11" width="4" height="58"/><rect x="16" y="11" width="2" height="58"/><rect x="22" y="11" width="6" height="58"/><rect x="32" y="11" width="3" height="58"/><rect x="39" y="11" width="2" height="58"/><rect x="45" y="11" width="5" height="58"/><rect x="54" y="11" width="2" height="58"/><rect x="60" y="11" width="4" height="58"/><rect x="68" y="11" width="6" height="58"/><rect x="78" y="11" width="2" height="58"/><rect x="84" y="11" width="4" height="58"/><rect x="92" y="11" width="3" height="58"/><rect x="99" y="11" width="5" height="58"/><rect x="108" y="11" width="2" height="58"/><rect x="114" y="11" width="4" height="58"/><rect x="122" y="11" width="6" height="58"/><rect x="132" y="11" width="2" height="58"/><rect x="138" y="11" width="4" height="58"/></g></svg><div class="scan-beam" id="beam"></div></div>
 <div class="scan-text" id="st" data-i18n="ready">Ready to scan</div>
 <div class="scan-hint" data-i18n="hold">Hold your badge under the scanner</div>
 </div>
