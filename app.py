@@ -3420,6 +3420,32 @@ def api_recent():
     recs.reverse()
     return jsonify(recs[:100])
 
+@app.route("/api/recordings")
+@req_role("admin","cs")
+def api_recordings():
+    """Recordings filtered by worker and/or date — powers the click-through from
+    the Shift timeline ('show me the videos this packer packed that day')."""
+    worker=(request.args.get("worker") or "").strip()
+    date=(request.args.get("date") or "").strip()[:10]
+    items=[]
+    if os.path.exists(log_file()):
+        with open(log_file()) as f:
+            for row in csv.DictReader(f):
+                if worker and (row.get("worker") or "")!=worker: continue
+                if date and (row.get("date") or "")[:10]!=date: continue
+                vf=(row.get("video_file") or "").strip()
+                pf=(row.get("photo_file") or "").strip()
+                items.append({
+                    "tracking":row.get("tracking_number",""),
+                    "station":row.get("station",""),
+                    "date":row.get("date",""),"time":row.get("time",""),
+                    "duration_seconds":row.get("duration_seconds",""),
+                    "worker":row.get("worker",""),
+                    "video_url":("/media/video/"+vf) if vf and vf!="None" else "",
+                    "photo_url":("/media/photo/"+pf) if pf and pf!="None" else ""})
+    items.reverse()
+    return jsonify({"ok":True,"worker":worker,"date":date,"count":len(items),"items":items})
+
 @app.route("/api/stats")
 @req_role("admin","cs")
 def api_stats():
@@ -3563,6 +3589,57 @@ def api_potm():
     """Compact info for the dashboard widget."""
     p = _packer_of_the_month()
     return jsonify(p or {})
+
+def _picker_of_the_month():
+    """Top picker by orders picked this calendar month, or None."""
+    ym = datetime.now().strftime("%Y-%m")
+    c = sdb()
+    r = c.execute("""SELECT picked_by nm, COUNT(*) c,
+                            COUNT(DISTINCT substr(picked_at,1,10)) d
+                     FROM shipments
+                     WHERE picked_by IS NOT NULL AND picked_by!=''
+                       AND substr(picked_at,1,7)=?
+                     GROUP BY picked_by ORDER BY c DESC LIMIT 1""", (ym,)).fetchone()
+    c.close()
+    if not r or not r["nm"]: return None
+    return {"name": r["nm"], "count": r["c"], "days": r["d"]}
+
+def _host_of_the_month():
+    """Top host by (non-cancelled) revenue among shows dated this month, or None."""
+    ym = datetime.now().strftime("%Y-%m")
+    c = sdb()
+    rows = c.execute("""SELECT s.import_label lbl, s.show_date sd,
+                               COALESCE(SUM(CASE WHEN COALESCE(i.cancelled,0)=0 THEN i.revenue ELSE 0 END),0) rev,
+                               COUNT(DISTINCT CASE WHEN COALESCE(i.cancelled,0)=0 THEN i.shipment_id END) orders
+                        FROM shipments s JOIN shipment_items i ON i.shipment_id=s.shipment_id
+                        WHERE s.import_label IS NOT NULL AND s.import_label!=''
+                        GROUP BY s.import_label""").fetchall()
+    c.close()
+    ov = _host_overrides()
+    hosts = {}
+    for r in rows:
+        if (r["sd"] or "")[:7] != ym: continue
+        host = ov.get(r["lbl"]) or _host_from_label(r["lbl"]) or "Unknown"
+        h = hosts.setdefault(host, {"name": host, "revenue": 0.0, "shows": 0, "orders": 0})
+        h["revenue"] += r["rev"] or 0; h["shows"] += 1; h["orders"] += r["orders"] or 0
+    if not hosts: return None
+    top = max(hosts.values(), key=lambda x: x["revenue"])
+    top["revenue"] = round(top["revenue"], 2)
+    return top
+
+@app.route("/api/picker-of-month")
+@req_login
+def api_pickotm():
+    return jsonify(_picker_of_the_month() or {})
+
+@app.route("/api/host-of-month")
+@req_login
+def api_hostotm():
+    # Ranked by revenue server-side, but we DON'T expose the dollar figure —
+    # only who the top seller is + show count. So it's safe for everyone.
+    h = _host_of_the_month() or {}
+    h.pop("revenue", None)
+    return jsonify(h)
 
 
 # ══════════════════════════════════════════════════════════
@@ -4023,6 +4100,55 @@ def _norm_whatnot(row):
                          "shipping option", "service"),
     }
 
+@app.route("/api/shipments/preview", methods=["POST"])
+@req_role("admin", "cs")
+def api_shipments_preview():
+    """Peek at a chosen CSV and suggest the show name, start time, and host — so
+    the import form pre-fills instead of the user re-typing what's in the file.
+      • start  = earliest sale time in the file
+      • label  = a livestream/show/title column if the export has one, else
+                 'Platform MM/DD'
+      • host   = pulled out of the label when it embeds the host's name"""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "no file"})
+    try:
+        raw = f.stream.read().decode("utf-8-sig", errors="replace")
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+    import io
+    from collections import Counter
+    reader = csv.DictReader(io.StringIO(raw))
+    fmt = _detect_csv_format(reader.fieldnames)
+    rows = list(reader)
+    fn = reader.fieldnames or []
+    # Optional show/livestream column (mostly Whatnot exports).
+    show_keys = ("livestream", "live stream", "stream title", "show name", "show title",
+                 "event name", "content name", "campaign", "live title", "show", "event")
+    show_col = None
+    for h in fn:
+        hl = (h or "").strip().lower()
+        if any(k in hl for k in show_keys):
+            show_col = h; break
+    label = ""
+    if show_col:
+        vals = [(r.get(show_col) or "").strip() for r in rows if (r.get(show_col) or "").strip()]
+        if vals:
+            label = Counter(vals).most_common(1)[0][0][:80]
+    def _ct(r):
+        return (r.get("Created Time") or r.get("created_time") or r.get("Paid Time")
+                or r.get("placed_at") or r.get("Placed At") or r.get("order_date")
+                or r.get("Date") or r.get("date") or "")
+    times = [d for d in (_parse_dt(_ct(r)) for r in rows) if d]
+    start = min(times) if times else None
+    plat = "TikTok" if fmt == "tiktok" else ("Whatnot" if fmt == "whatnot" else "")
+    if not label:
+        label = (plat + " " + (start.strftime("%m/%d") if start else "")).strip()
+    host = _host_from_label(label) if label else ""
+    return jsonify({"ok": True, "platform": fmt or "", "label": label,
+                    "start": start.strftime("%Y-%m-%dT%H:%M") if start else "",
+                    "host": host, "rows": len(rows)})
+
 @app.route("/api/shipments/import", methods=["POST"])
 @req_role("admin", "cs")
 def api_shipments_import():
@@ -4151,6 +4277,12 @@ def api_shipments_import():
         c.execute("""INSERT INTO show_state(import_label, show_start) VALUES(?,?)
                      ON CONFLICT(import_label) DO UPDATE SET show_start=excluded.show_start""",
                   (label, show_start_dt.isoformat(timespec="seconds")))
+    # Host typed on the import form → save it as this show's host, so Host Analytics
+    # is pre-filled (no manual entry afterward). Same idea as naming the show.
+    host_name = (request.form.get("host") or "").strip()[:60]
+    if host_name:
+        _ov = _host_overrides(); _ov[label] = host_name
+        _set_setting("host_overrides", json.dumps(_ov))
     show_windows = _load_show_windows(c, label, show_start_dt)
     win_start = dict(show_windows)  # label -> start datetime
 
@@ -5003,6 +5135,31 @@ def api_show_done():
                session.get("name","")[:60] if done else None))
     c.commit(); c.close()
     return jsonify({"ok": True, "done": bool(done)})
+
+@app.route("/api/shows/delete", methods=["POST"])
+@req_role("admin","cs")
+def api_show_delete():
+    """Permanently delete a show's data (all its shipments + items + state).
+    For fixing a wrong/duplicate CSV import. ALWAYS gated by the manager PIN
+    because it is destructive."""
+    d = request.get_json() or {}
+    label = (d.get("label") or "").strip()
+    if not label:
+        return jsonify({"ok": False, "error": "label required"})
+    if not _manager_pin_set():
+        return jsonify({"ok": False, "error": "Manager PIN not set yet — set it in Permissions.", "need_pin_setup": True}), 400
+    if not _verify_manager_pin(d.get("pin","")):
+        return jsonify({"ok": False, "error": "Wrong manager PIN.", "pin_required": True}), 401
+    c = sdb()
+    n = c.execute("SELECT COUNT(*) FROM shipments WHERE import_label=?", (label,)).fetchone()[0]
+    c.execute("""DELETE FROM shipment_items WHERE shipment_id IN
+                 (SELECT shipment_id FROM shipments WHERE import_label=?)""", (label,))
+    c.execute("DELETE FROM shipments WHERE import_label=?", (label,))
+    try: c.execute("DELETE FROM show_state WHERE import_label=?", (label,))
+    except Exception: pass
+    c.commit(); c.close()
+    alog("show.delete", "%s (%d shipments)" % (label, n))
+    return jsonify({"ok": True, "deleted": n})
 
 @app.route("/admin/permissions")
 @req_role("admin")
@@ -6009,7 +6166,14 @@ def api_host_analytics():
                           "cancel_rate":round(100.0*g["canc_units"]/tot,1) if tot else 0,
                           "commission":_compute_commission(rev,cfg),
                           "auto_host":_host_from_label(g["label"]) or ""})
-    show_list.sort(key=lambda x:((x["show_date"] or ""), x["label"]))
+    # Sort chronologically newest-first. show_date formats are mixed
+    # ('2026-07-19' and '07/16/2026'), so parse to a real date instead of
+    # string-sorting (which grouped the two formats apart).
+    def _show_dkey(x):
+        sd=(x.get("show_date") or "").strip()
+        return _parse_sale_dt(sd+" 00:00:00") or datetime.min
+    # Ascending chronological here; the table view reverses to show newest first.
+    show_list.sort(key=lambda x:(_show_dkey(x), x["label"]))
     hosts={}
     for s in show_list:
         h=hosts.setdefault(s["host"],{"host":s["host"],"shows":0,"revenue":0.0,"shipping":0.0,"gross":0.0,"units":0,"orders":0,"commission":0.0})
@@ -6210,8 +6374,7 @@ OPS_GROUPS = [
         ("🎁", "Giveaways", "Winners, addresses & label printing", "/giveaway", False),
     ]),
     ("insights", "📊 Insights & Money", [
-        ("⏱️", "Packer Analytics", "Speed & volume per packer", "/admin/packer-analytics", False),
-        ("🧺", "Picker Analytics", "Speed & volume per picker", "/admin/picker-analytics", False),
+        ("📊", "Warehouse Analytics", "Pack + pick speed, volume & shifts", "/admin/packer-analytics", False),
         ("🗺️", "Geography", "Where orders ship, by state", "/admin/geo-analytics", False),
         ("🔁", "Repeat Customers", "Returning buyers & loyalty", "/admin/repeat-customers", False),
         ("🎤", "Host Analytics", "Sales & commission by host", "/admin/hosts", True),
@@ -6390,7 +6553,9 @@ def api_picker_analytics():
 @app.route("/admin/picker-analytics")
 @req_role("admin","cs")
 def picker_analytics_page():
-    return PICKER_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("pickeran")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    # Picker + Packer analytics were merged into one "Warehouse Analytics" screen.
+    # Keep this route alive so old links/bookmarks land on the unified page.
+    return redirect("/admin/packer-analytics")
 
 # ── REPEAT CUSTOMERS — buyers with more than one order ──
 @app.route("/api/repeat-customers")
@@ -6587,6 +6752,13 @@ def api_shows_recent():
                         ORDER BY last DESC""", (cutoff_dt,)).fetchall()
     c.close()
     return jsonify([r["name"] for r in rows])
+
+@app.route("/api/hosts/recent")
+@req_role("admin","cs")
+def api_hosts_recent():
+    """Distinct host names used before — for the import form's host autocomplete."""
+    names=sorted({(v or "").strip() for v in _host_overrides().values() if (v or "").strip()})
+    return jsonify(names)
 
 
 @app.route("/admin/shipments")

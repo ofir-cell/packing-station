@@ -977,7 +977,27 @@ function loadPOTM(){
         document.getElementById('potmWrap').style.display='block';
     });
 }
-loadRecent();loadStats();loadPOTM();
+function filterByWorkerDay(){
+    var p=new URLSearchParams(location.search);
+    var w=p.get('worker'),dt=p.get('date');
+    if(!w&&!dt)return false;
+    document.getElementById('res').innerHTML='<div class="ld"><div class="spn"></div>Loading recordings…</div>';
+    fetch('/api/recordings?worker='+encodeURIComponent(w||'')+'&date='+encodeURIComponent(dt||'')).then(function(r){return r.json()}).then(function(d){
+        var head='<div class="rc" style="animation:none"><div class="rc-h"><span class="rc-t">🎥 '+esc(w||'All')+(dt?(' · '+esc(dt)):'')+'</span><div class="rc-m"><span>'+d.count+' recordings</span><a href="/dashboard" style="font-size:12px;color:#4f46e5;font-weight:700;text-decoration:none">✕ Clear filter</a></div></div></div>';
+        if(!d.items.length){document.getElementById('res').innerHTML=head+'<div class="empty"><div class="ei">📭</div><div class="et">No recordings for this packer on this day</div></div>';return}
+        var h=head;
+        d.items.forEach(function(v){
+            h+='<div class="rc"><div class="rc-h"><span class="rc-t">'+esc(v.tracking||'—')+'</span><div class="rc-m"><span>'+esc(v.time||'')+'</span><span>'+esc(v.duration_seconds||'0')+'s</span>'+(v.station?('<span class="tag tag-s">'+esc(v.station)+'</span>'):'')+'</div></div>';
+            if(v.video_url){h+='<div class="rc-b"><div class="mb"><video controls preload="metadata"><source src="'+esc(v.video_url)+'" type="video/webm"></video><div class="ml"><span>🎥 Video</span><a href="'+esc(v.video_url)+'" download class="dl-btn">⬇ Download</a></div></div>'+(v.photo_url?('<div class="mb"><img src="'+esc(v.photo_url)+'"><div class="ml">📸 Photo</div></div>'):'')+'</div>';}
+            h+='</div>';
+        });
+        document.getElementById('res').innerHTML=h;
+        var st=document.querySelector('.sec-t');if(st)st.textContent='🕐 All recent recordings';
+    });
+    return true;
+}
+if(!filterByWorkerDay()){loadRecent();}
+loadStats();loadPOTM();
 </script></body></html>'''
 
 # ── USERS MANAGEMENT ──────────────────────────────────────
@@ -2352,17 +2372,27 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(900px 
 .qs.brand{background:linear-gradient(135deg,rgba(217,116,143,.12),rgba(217,116,143,.03));border-color:rgba(217,116,143,.22)}
 .qs.brand .val{color:var(--brand)}
 
-/* Packer of the Month banner */
-.potm{display:none;align-items:center;gap:20px;padding:22px 26px;margin-bottom:40px;background:linear-gradient(135deg,rgba(251,191,36,.12),rgba(245,158,11,.04));border:1px solid rgba(251,191,36,.22);border-radius:18px;text-decoration:none;color:inherit;transition:transform .2s,border-color .2s}
+/* Champions of the Month — packer / picker / host */
+.champs{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:40px}
+@media(max-width:900px){.champs{grid-template-columns:1fr}}
+.potm{display:none;align-items:center;gap:16px;padding:20px 22px;background:linear-gradient(135deg,rgba(251,191,36,.12),rgba(245,158,11,.04));border:1px solid rgba(251,191,36,.22);border-radius:18px;text-decoration:none;color:inherit;transition:transform .2s,border-color .2s}
 .potm.show{display:flex}
 .potm:hover{transform:translateY(-2px);border-color:rgba(251,191,36,.4)}
-.potm-icon{font-size:52px;line-height:1;filter:drop-shadow(0 6px 12px rgba(251,191,36,.3))}
-.potm-text{flex:1}
-.potm-lbl{font-size:11px;color:#b45309;text-transform:uppercase;letter-spacing:1.5px;font-weight:700;margin-bottom:3px}
-.potm-name{font-size:22px;font-weight:800;color:#141b26;margin-bottom:3px}
-.potm-stats{font-size:13px;color:var(--text-muted)}
+.potm-icon{font-size:44px;line-height:1;filter:drop-shadow(0 6px 12px rgba(251,191,36,.3))}
+.potm-text{flex:1;min-width:0}
+.potm-lbl{font-size:11px;color:#b45309;text-transform:uppercase;letter-spacing:1.2px;font-weight:700;margin-bottom:3px}
+.potm-name{font-size:20px;font-weight:800;color:#141b26;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.potm-stats{font-size:12px;color:var(--text-muted)}
 .potm-stats b{color:var(--text);font-weight:700}
 .potm-arrow{font-size:18px;color:#b45309;font-weight:700}
+.potm.pick{background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(99,102,241,.04));border-color:rgba(99,102,241,.22)}
+.potm.pick:hover{border-color:rgba(99,102,241,.42)}
+.potm.pick .potm-lbl,.potm.pick .potm-arrow{color:#4f46e5}
+.potm.pick .potm-icon{filter:drop-shadow(0 6px 12px rgba(99,102,241,.3))}
+.potm.host{background:linear-gradient(135deg,rgba(124,58,237,.12),rgba(124,58,237,.04));border-color:rgba(124,58,237,.22)}
+.potm.host:hover{border-color:rgba(124,58,237,.42)}
+.potm.host .potm-lbl,.potm.host .potm-arrow{color:#7c3aed}
+.potm.host .potm-icon{filter:drop-shadow(0 6px 12px rgba(124,58,237,.3))}
 
 /* Fulfillment widget (admin/cs) — orders still to pick/pack by show */
 .fulfil{display:none;margin-bottom:40px}
@@ -2493,16 +2523,36 @@ __NAVBAR__
     <div id="newsList"></div>
   </div>
 
-  <!-- Packer of the Month -->
+  <!-- Champions of the Month -->
+  <div class="champs">
   <a href="/leaderboard" class="potm" id="potm">
     <div class="potm-icon">👑</div>
     <div class="potm-text">
       <div class="potm-lbl">Packer of the Month</div>
       <div class="potm-name" id="potmName">—</div>
-      <div class="potm-stats"><b id="potmCount">0</b> packages · avg <b id="potmAvg">0s</b> · <b id="potmDays">0</b> active days</div>
+      <div class="potm-stats"><b id="potmCount">0</b> packages · avg <b id="potmAvg">0s</b></div>
     </div>
     <div class="potm-arrow">→</div>
   </a>
+  <a href="/admin/packer-analytics" class="potm pick" id="pickotm">
+    <div class="potm-icon">🧺</div>
+    <div class="potm-text">
+      <div class="potm-lbl">Picker of the Month</div>
+      <div class="potm-name" id="pickotmName">—</div>
+      <div class="potm-stats"><b id="pickotmCount">0</b> orders · <b id="pickotmDays">0</b> active days</div>
+    </div>
+    <div class="potm-arrow">→</div>
+  </a>
+  <a href="/admin/hosts" class="potm host" id="hostotm">
+    <div class="potm-icon">🎤</div>
+    <div class="potm-text">
+      <div class="potm-lbl">Top Seller of the Month</div>
+      <div class="potm-name" id="hostotmName">—</div>
+      <div class="potm-stats"><b id="hostotmShows">0</b> shows this month</div>
+    </div>
+    <div class="potm-arrow">→</div>
+  </a>
+  </div>
 
   <!-- Fulfillment widget (admin/cs) — orders still to pick/pack, by show -->
   <div class="fulfil hub-section-ops" id="fulfil">
@@ -2665,15 +2715,27 @@ fetch('/api/me/stats').then(function(r){return r.json()}).then(function(d){
     '<div class="qs"><div class="lbl">All time</div><div class="val">'+(d.all_time?d.all_time.count:0)+'</div></div>';
 });
 
-// Load Packer of the Month
+// Champions of the Month — packer / picker / host
 fetch('/api/packer-of-month').then(function(r){return r.json()}).then(function(d){
   if(!d||!d.name)return;
   document.getElementById('potmName').textContent=d.name;
   document.getElementById('potmCount').textContent=d.count;
   document.getElementById('potmAvg').textContent=(d.avg_dur||0)+'s';
-  document.getElementById('potmDays').textContent=d.days;
   document.getElementById('potm').classList.add('show');
 });
+fetch('/api/picker-of-month').then(function(r){return r.json()}).then(function(d){
+  if(!d||!d.name)return;
+  document.getElementById('pickotmName').textContent=d.name;
+  document.getElementById('pickotmCount').textContent=(d.count||0).toLocaleString();
+  document.getElementById('pickotmDays').textContent=d.days||0;
+  document.getElementById('pickotm').classList.add('show');
+});
+fetch('/api/host-of-month').then(function(r){return r.ok?r.json():null}).then(function(d){
+  if(!d||!d.name)return;
+  document.getElementById('hostotmName').textContent=d.name;
+  document.getElementById('hostotmShows').textContent=d.shows||0;
+  document.getElementById('hostotm').classList.add('show');
+}).catch(function(){});
 
 // Load latest news (top 2)
 function homeEscapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
@@ -3635,6 +3697,12 @@ __NAVBAR__
       <div class="fld-hint">Required. Same name for all uploads of the same show (orders + cancellations). Recent shows appear as you type.</div>
     </div>
     <div class="fld">
+      <label>Host name <span class="muted" style="font-weight:400">(optional)</span></label>
+      <input type="text" id="hostName" list="recentHostsList" placeholder="e.g. Tali" maxlength="60" autocomplete="off">
+      <datalist id="recentHostsList"></datalist>
+      <div class="fld-hint">Who hosted this live. Fills the Host column in Host Analytics automatically — no need to type it in later.</div>
+    </div>
+    <div class="fld">
       <label>Show start <span class="muted" style="font-weight:400">(optional)</span></label>
       <input type="datetime-local" id="showStart" autocomplete="off">
       <div class="fld-hint">When the live show began. Sales after midnight are matched to this show — not the next day's. Leave blank to auto-use the earliest sale time in the file.</div>
@@ -3827,12 +3895,29 @@ document.querySelectorAll('.import-btn[data-kind]').forEach(function(btn){
       var dl=document.getElementById('recentShowsList');
       dl.innerHTML=(names||[]).map(function(n){return '<option value="'+n.replace(/"/g,'&quot;')+'"></option>'}).join('');
     });
+    fetch('/api/hosts/recent').then(function(r){return r.ok?r.json():[]}).then(function(names){
+      var dl=document.getElementById('recentHostsList');if(!dl)return;
+      dl.innerHTML=(names||[]).map(function(n){return '<option value="'+String(n).replace(/"/g,'&quot;')+'"></option>'}).join('');
+    }).catch(function(){});
     modal.classList.add('show');
     setTimeout(function(){document.getElementById('showName').focus()},80);
   });
 });
 document.getElementById('cancelImport').addEventListener('click',function(){modal.classList.remove('show')});
 modal.addEventListener('click',function(e){if(e.target===modal)modal.classList.remove('show')});
+// Auto-fill show name / start / host straight from the chosen CSV — no re-typing.
+document.getElementById('csvFile').addEventListener('change',function(){
+  var f=this.files&&this.files[0];if(!f)return;
+  var fd=new FormData();fd.append('file',f);
+  fetch('/api/shipments/preview',{method:'POST',body:fd}).then(function(r){return r.ok?r.json():null}).then(function(d){
+    if(!d||!d.ok)return;
+    var sn=document.getElementById('showName');if(sn&&!sn.value.trim()&&d.label)sn.value=d.label;
+    var ss=document.getElementById('showStart');if(ss&&!ss.value&&d.start)ss.value=d.start;
+    var hn=document.getElementById('hostName');if(hn&&!hn.value.trim()&&d.host)hn.value=d.host;
+    var res=document.getElementById('modalResult');
+    if(res&&(d.label||d.start)){res.className='modal-result show';res.textContent='✓ Auto-filled from the file — edit anything before importing.';}
+  }).catch(function(){});
+});
 
 function runImport(force){
   var f=document.getElementById('csvFile').files[0];
@@ -3842,6 +3927,7 @@ function runImport(force){
   if(!f){res.className='modal-result err show';res.textContent='Pick a CSV file';return}
   var fd=new FormData();fd.append('file',f);fd.append('label',label);
   var ss=document.getElementById('showStart');if(ss&&ss.value)fd.append('show_start',ss.value);
+  var hn=document.getElementById('hostName');if(hn&&hn.value.trim())fd.append('host',hn.value.trim());
   if(force)fd.append('force','1');
   var btn=document.getElementById('doImport');btn.disabled=true;btn.textContent='Importing…';
   res.className='modal-result show';res.textContent='Importing… large shows can take up to a minute, please wait.';
@@ -4385,17 +4471,27 @@ __NAVBAR__
 function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function fmtDateShort(s){if(!s)return '';try{return new Date(s).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}catch(e){return s}}
 
-fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){
-  // KPI rollup across all visible shows
+var SHOWS=[];
+function loadShows(){fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){SHOWS=shows||[];renderKpis();renderGrid();});}
+function renderKpis(){
   var t=0,p=0,d=0,s=0,x=0;
-  shows.forEach(function(sh){t+=sh.shipments;p+=sh.pending||0;d+=sh.packed||0;s+=sh.shipped||0;x+=sh.cancelled||0});
+  SHOWS.forEach(function(sh){t+=sh.shipments;p+=sh.pending||0;d+=sh.packed||0;s+=sh.shipped||0;x+=sh.cancelled||0});
   document.getElementById('kpis').innerHTML=
-    '<div class="kpi brand"><div class="lbl">Active shows</div><div class="val">'+shows.length+'</div></div>'+
+    '<div class="kpi brand"><div class="lbl">Active shows</div><div class="val">'+SHOWS.length+'</div></div>'+
     '<div class="kpi"><div class="lbl">Total shipments</div><div class="val">'+t+'</div></div>'+
     '<div class="kpi warn"><div class="lbl">Pending</div><div class="val">'+p+'</div></div>'+
     '<div class="kpi good"><div class="lbl">Packed</div><div class="val">'+(d+s)+'</div></div>'+
     '<div class="kpi bad"><div class="lbl">Cancelled</div><div class="val">'+x+'</div></div>';
-
+}
+function dropCard(name){
+  var el=document.querySelector('.show-card[data-show="'+encodeURIComponent(name)+'"]');
+  if(el)el.remove();
+  SHOWS=SHOWS.filter(function(s){return s.name!==name});
+  renderKpis();
+  if(!SHOWS.length)renderGrid();
+}
+function renderGrid(){
+  var shows=SHOWS;
   var grid=document.getElementById('grid');
   if(!shows||shows.length===0){
     grid.innerHTML='<div class="empty"><div class="empty-icon">📺</div><div class="empty-title">No active shows</div><div class="empty-sub">No CSVs have been imported in the last 5 days.</div><a href="/admin/shipments" class="go-import-btn">＋ Import your first show</a></div>';
@@ -4425,7 +4521,7 @@ fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){
       cardStyle+='border:2px solid rgba(96,165,250,.65);box-shadow:0 0 0 1px rgba(96,165,250,.25),0 0 24px rgba(96,165,250,.12);';
       banner='<div style="background:linear-gradient(90deg,rgba(96,165,250,.28),rgba(96,165,250,.12));color:#2563eb;font-weight:900;text-align:center;padding:8px;border-radius:10px;margin-bottom:12px;letter-spacing:2px;font-size:14px">● NEW · not started</div>';
     }
-    return '<a href="/admin/shipments?show='+encodeURIComponent(sh.name)+'" class="show-card" style="'+cardStyle+'">'+
+    return '<a href="/admin/shipments?show='+encodeURIComponent(sh.name)+'" class="show-card" data-show="'+encodeURIComponent(sh.name)+'" style="'+cardStyle+'">'+
       banner+
       '<div class="show-card-head">'+
         '<div class="show-card-name">'+escapeHtml(sh.name)+'</div>'+
@@ -4446,19 +4542,38 @@ fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){
       '</div>'+
       '<div class="show-footer">'+
         '<div class="when">Last import <b>'+fmtDateShort(sh.last_import)+'</b>'+(sh.done&&sh.done_by?'<br><span style="color:#059669">✓ done by '+escapeHtml(sh.done_by)+'</span>':'')+'</div>'+
-        '<button onclick="toggleDone(event,\\''+encodeURIComponent(sh.name)+'\\','+(sh.done?'false':'true')+')" style="background:'+(sh.done?'rgba(17,24,39,0.128)':'rgba(52,211,153,.15)')+';color:'+(sh.done?'#586274':'#059669')+';border:1px solid '+(sh.done?'rgba(17,24,39,0.16)':'rgba(52,211,153,.35)')+';border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">'+(sh.done?'↩︎ Undo':'✓ Mark DONE')+'</button>'+
+        '<div style="display:flex;gap:6px;align-items:center">'+
+          '<button onclick="toggleDone(event,\\''+encodeURIComponent(sh.name)+'\\','+(sh.done?'false':'true')+')" style="background:'+(sh.done?'rgba(17,24,39,0.128)':'rgba(52,211,153,.15)')+';color:'+(sh.done?'#586274':'#059669')+';border:1px solid '+(sh.done?'rgba(17,24,39,0.16)':'rgba(52,211,153,.35)')+';border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">'+(sh.done?'↩︎ Undo':'✓ Mark DONE')+'</button>'+
+          '<button onclick="deleteShow(event,\\''+encodeURIComponent(sh.name)+'\\')" title="Delete this show (manager PIN)" style="background:rgba(244,63,94,.1);color:#e11d48;border:1px solid rgba(244,63,94,.25);border-radius:8px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">🗑</button>'+
+        '</div>'+
       '</div>'+
     '</a>';
   }).join('')+'</div>';
-});
+}
+loadShows();
 function toggleDone(ev,name,done){
   ev.preventDefault();ev.stopPropagation();
+  var nm=decodeURIComponent(name);
   var pin=prompt(done?'Enter Manager PIN to mark this show DONE:':'Enter Manager PIN to undo DONE:');
   if(pin===null)return;
   fetch('/api/shows/done',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({label:decodeURIComponent(name),done:done,pin:pin})})
+    body:JSON.stringify({label:nm,done:done,pin:pin})})
    .then(function(r){return r.json()}).then(function(d){
-     if(d.ok){location.reload();return}
+     if(d.ok){if(done){dropCard(nm);}else{loadShows();}return}
+     if(d.need_pin_setup){alert('No Manager PIN set yet. An admin must set it in Team → Permissions.');return}
+     alert(d.error||'Failed');
+   }).catch(function(){alert('Request failed')});
+}
+function deleteShow(ev,name){
+  ev.preventDefault();ev.stopPropagation();
+  var nm=decodeURIComponent(name);
+  if(!confirm('Permanently DELETE the show "'+nm+'" and all of its shipments? This cannot be undone — use it only to remove a wrong CSV import.'))return;
+  var pin=prompt('Enter Manager PIN to delete this show:');
+  if(pin===null)return;
+  fetch('/api/shows/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({label:nm,pin:pin})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(d.ok){dropCard(nm);return}
      if(d.need_pin_setup){alert('No Manager PIN set yet. An admin must set it in Team → Permissions.');return}
      alert(d.error||'Failed');
    }).catch(function(){alert('Request failed')});
@@ -8511,8 +8626,9 @@ __NAVBAR__
   <div class="note">⏱️ Time-per-order is estimated from the gap between consecutive completed picks (gaps over 20 min are treated as breaks and excluded).</div>
 </div>
 <div class="card">
-  <h2>📅 Orders picked per day</h2>
-  <div class="chart-wrap"><div id="chart"></div></div>
+  <h2>👥 Team comparison — all pickers</h2>
+  <div id="teamCmp"><div class="muted">Loading…</div></div>
+  <div class="note">Ranked by orders picked. Click any picker to open their shift timeline.</div>
 </div>
 <div class="card" id="shiftCard">
   <h2>🕑 Shift timeline — pick vs pack &amp; idle time</h2>
@@ -8543,40 +8659,55 @@ function load(){
       return '<tr><td><b>'+esc(w.picker)+'</b></td><td>'+w.orders+'</td><td>'+w.items+'</td>'+
         '<td class="'+cls+'">'+secFmt(w.avg_sec_order)+'</td><td>'+w.orders_per_hr+'</td><td>'+w.active_hours+'</td></tr>';
     }).join(''):'<tr><td colspan="6" class="muted">No picking records for this filter</td></tr>');
-    renderChart(d.days);
-    renderShift(d.shift, !!document.getElementById('fPicker').value);
+    renderTeam(d.pickers,'picker','orders','orders','orders_per_hr','fPicker');
+    renderShift(d.shift, document.getElementById('fPicker').value);
+  });
+}
+function renderTeam(list,nameKey,valKey,unit,hrKey,selId){
+  var el=document.getElementById('teamCmp');
+  if(!list||!list.length){el.innerHTML='<div class="muted">No pickers yet</div>';return}
+  var srt=list.slice().sort(function(a,b){return (b[valKey]||0)-(a[valKey]||0)});
+  var max=Math.max.apply(null,srt.map(function(w){return w[valKey]||0}))||1;
+  el.innerHTML=srt.map(function(w){
+    var nm=w[nameKey]||'',val=w[valKey]||0,pct=Math.max(2,Math.round(100*val/max));
+    return '<div class="cmpRow" data-w="'+esc(nm)+'" style="display:flex;align-items:center;gap:10px;padding:5px 0;cursor:pointer">'+
+      '<div style="width:120px;font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+esc(nm)+'">'+esc(nm)+'</div>'+
+      '<div style="flex:1;background:rgba(79,70,229,.08);border-radius:6px;height:22px"><div style="width:'+pct+'%;background:linear-gradient(90deg,#818cf8,#4f46e5);height:100%;border-radius:6px;min-width:4px"></div></div>'+
+      '<div style="width:130px;text-align:right;font-size:12px;color:#586274">'+val.toLocaleString()+' '+unit+' · '+(w[hrKey]||0)+'/hr</div></div>';
+  }).join('');
+  Array.prototype.forEach.call(el.querySelectorAll('.cmpRow'),function(r){
+    r.addEventListener('click',function(){var s=document.getElementById(selId);if(s){s.value=this.getAttribute('data-w');load();window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});}});
   });
 }
 function hms(s){s=Math.round(Number(s||0));if(s<=0)return '—';var h=Math.floor(s/3600),m=Math.round((s%3600)/60);return (h?h+'h ':'')+m+'m'}
-function renderShift(shift,hasWorker){
+function renderShift(shift,workerName){
   var b=document.getElementById('shiftBody');
-  if(!hasWorker){b.innerHTML='<div class="muted">Select a single picker above to see their day-by-day shift: first vs last scan, the pick-vs-pack split, and the idle time in between.</div>';return}
+  if(!workerName){b.innerHTML='<div class="muted">Select a single picker above to see their day-by-day shift: first vs last scan, the pick-vs-pack split, and the idle time in between.</div>';return}
   if(!shift||!shift.length){b.innerHTML='<div class="muted">No pick or pack activity for this person in the selected range.</div>';return}
   var legend='<div style="display:flex;gap:18px;margin-bottom:12px;font-size:12px;font-weight:700">'+
-    '<span><span style="display:inline-block;width:11px;height:11px;background:#4f46e5;border-radius:3px;margin-right:5px;vertical-align:-1px"></span>Picked</span>'+
-    '<span><span style="display:inline-block;width:11px;height:11px;background:#10b981;border-radius:3px;margin-right:5px;vertical-align:-1px"></span>Packed</span></div>';
+    '<span><span style="display:inline-block;width:11px;height:11px;background:#a5b4fc;border-radius:3px;margin-right:5px;vertical-align:-1px"></span>Picked</span>'+
+    '<span><span style="display:inline-block;width:11px;height:11px;background:#4f46e5;border-radius:3px;margin-right:5px;vertical-align:-1px"></span>Packed</span></div>';
   var n=shift.length,bw=Math.max(22,Math.min(60,Math.floor(1100/n))),gap=10,W=n*(bw+gap)+50,H=230,top=16,bot=44;
   var max=Math.max.apply(null,shift.map(function(d){return d.picked+d.packed}))||1;
   var bars='',lbls='';
   shift.forEach(function(d,i){
     var x=44+i*(bw+gap),base=H-bot;
     var ph=Math.round((H-top-bot)*(d.picked/max)),kh=Math.round((H-top-bot)*(d.packed/max)),tot=d.picked+d.packed;
-    bars+='<rect x="'+x+'" y="'+(base-ph)+'" width="'+bw+'" height="'+Math.max(0,ph)+'" fill="#4f46e5" rx="2"><title>'+esc(d.date)+': '+d.picked+' picked</title></rect>';
-    bars+='<rect x="'+x+'" y="'+(base-ph-kh)+'" width="'+bw+'" height="'+Math.max(0,kh)+'" fill="#10b981" rx="2"><title>'+esc(d.date)+': '+d.packed+' packed</title></rect>';
+    bars+='<rect x="'+x+'" y="'+(base-ph)+'" width="'+bw+'" height="'+Math.max(0,ph)+'" fill="#a5b4fc" rx="2"><title>'+esc(d.date)+': '+d.picked+' picked</title></rect>';
+    bars+='<rect class="packedBar" data-day="'+esc(d.date)+'" x="'+x+'" y="'+(base-ph-kh)+'" width="'+bw+'" height="'+Math.max(0,kh)+'" fill="#4f46e5" rx="2" style="cursor:pointer"><title>'+esc(d.date)+': '+d.packed+' packed — click to see the videos packed this day</title></rect>';
     lbls+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(H-bot+14)+'" text-anchor="middle">'+esc((d.date||'').slice(5))+'</text>';
     if(ph+kh>14)bars+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(base-ph-kh-4)+'" text-anchor="middle" style="fill:#64748b">'+tot+'</text>';
   });
   var grid='';for(var g=0;g<=4;g++){var gy=top+(H-top-bot)*g/4;grid+='<line class="axis" x1="40" y1="'+gy+'" x2="'+W+'" y2="'+gy+'"/><text class="axtx" x="0" y="'+(gy+3)+'">'+Math.round(max*(4-g)/4)+'</text>';}
   var chart='<div class="chart-wrap"><svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+grid+bars+lbls+'</svg></div>';
-  var rows=shift.map(function(d){
-    var idleCls=(d.idle_sec>d.active_sec&&d.active_sec>0)?' style="color:#b45309;font-weight:800"':'';
-    return '<tr><td><b>'+esc(d.date)+'</b></td><td>'+d.picked+'</td><td>'+d.packed+'</td>'+
-      '<td>'+esc(d.first||'—')+'</td><td>'+esc(d.last||'—')+'</td>'+
-      '<td>'+hms(d.span_sec)+'</td><td>'+hms(d.active_sec)+'</td><td'+idleCls+'>'+hms(d.idle_sec)+'</td></tr>';
-  }).join('');
-  var table='<table style="margin-top:16px"><thead><tr><th>Date</th><th>Picked</th><th>Packed</th><th>First log</th><th>Last log</th><th>On-clock span</th><th>Active</th><th>Idle</th></tr></thead><tbody>'+rows+'</tbody></table>';
-  var note='<div style="font-size:12px;color:#6b7280;margin-top:8px">On-clock span = first scan → last scan. Active = measured packing + estimated picking. Idle = span − active (paid-but-idle time). Times shown in the server/show timezone.</div>';
-  b.innerHTML=legend+chart+table+note;
+  var hint='<div style="font-size:12px;color:#6b7280;margin-top:6px">Tip: click the packed (dark) part of a bar to see the videos '+esc(workerName)+' packed that day.</div>';
+  b.innerHTML=legend+chart+hint;
+  Array.prototype.forEach.call(document.querySelectorAll('#shiftBody .packedBar'),function(el){
+    el.addEventListener('click',function(){
+      var day=this.getAttribute('data-day');
+      window.location.href='/dashboard?worker='+encodeURIComponent(workerName)+'&date='+encodeURIComponent(day);
+    });
+  });
 }
 function renderChart(days){
   if(!days||!days.length){document.getElementById('chart').innerHTML='<div class="muted">No data</div>';return}
@@ -8704,9 +8835,10 @@ th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
 .bar{fill:#4f46e5}.bar:hover{fill:#7c3aed}.axtx{fill:#6b7280;font-size:10px}.axis{stroke:rgba(17,24,39,0.16)}
 .muted{color:#6b7280;font-size:13px}.chart-wrap{overflow-x:auto}
 .fast{color:#059669;font-weight:700}.slow{color:#b45309;font-weight:700}
+.secLabel{font-size:13px;font-weight:800;color:#4f46e5;text-transform:uppercase;letter-spacing:.6px;margin:20px 0 2px;display:flex;align-items:center;gap:7px}
 </style></head><body>
 __NAVBAR__
-<div class="page-hdr"><div class="page-title">⏱️ Packer Analytics <span>__NAME__</span></div></div>
+<div class="page-hdr"><div class="page-title">📊 Warehouse Analytics <span>__NAME__</span></div></div>
 <div class="wrap">
 <div class="card">
   <div class="row">
@@ -8717,11 +8849,26 @@ __NAVBAR__
     <button class="btn" style="background:rgba(17,24,39,0.128);color:#1a2130;border:1px solid rgba(17,24,39,0.16);border-radius:10px;padding:11px 18px;font-weight:700;cursor:pointer;font-family:inherit" id="clr">Clear</button>
   </div>
 </div>
+<div class="secLabel">📦 Packing</div>
 <div class="cards" id="kpis"></div>
 <div class="card">
   <h2>👷 By worker</h2>
   <table><thead><tr><th>Worker</th><th>Packages</th><th>Items</th><th>Avg / package</th><th>Avg / item</th><th>Pkgs / hr</th><th>Active hrs</th></tr></thead>
   <tbody id="wrows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody></table>
+</div>
+<div class="secLabel">🧺 Picking</div>
+<div class="cards" id="kpisPick"></div>
+<div class="card">
+  <h2>🧑‍🌾 By picker</h2>
+  <table><thead><tr><th>Picker</th><th>Orders picked</th><th>Items</th><th>Avg / order</th><th>Orders / hr</th><th>Active hrs</th></tr></thead>
+  <tbody id="prows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody></table>
+  <div style="font-size:12px;color:#6b7280;margin-top:8px">⏱️ Time-per-order is estimated from the gap between consecutive picks (gaps over 20 min are treated as breaks).</div>
+</div>
+<div class="secLabel">👥 Team</div>
+<div class="card">
+  <h2>👥 Team comparison — all workers</h2>
+  <div id="teamCmp"><div class="muted">Loading…</div></div>
+  <div style="font-size:12px;color:#6b7280;margin-top:8px">Ranked by packages. Click any worker to open their shift timeline.</div>
 </div>
 <div class="card">
   <h2>📅 Packages per day <span class="muted" id="dayNote"></span></h2>
@@ -8759,40 +8906,75 @@ function load(){
         '<td class="'+cls+'">'+secFmt(w.avg_sec_pkg)+'</td><td>'+secFmt(w.avg_sec_item)+'</td>'+
         '<td>'+w.pkgs_per_hr+'</td><td>'+w.active_hours+'</td></tr>';
     }).join(''):'<tr><td colspan="7" class="muted">No packing records for this filter</td></tr>');
+    renderTeam(d.workers,'worker','packages','pkgs','pkgs_per_hr','fWorker');
     renderChart(d.days);
-    renderShift(d.shift, !!document.getElementById('fWorker').value);
+    renderShift(d.shift, document.getElementById('fWorker').value);
+    loadPick();
+  });
+}
+function qsPick(){var p=[];var w=document.getElementById('fWorker').value;if(w)p.push('picker='+encodeURIComponent(w));var f=document.getElementById('fFrom').value;if(f)p.push('from='+f);var t=document.getElementById('fTo').value;if(t)p.push('to='+t);return p.length?('?'+p.join('&')):''}
+function loadPick(){
+  fetch('/api/picker-analytics'+qsPick()).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;
+    var o=d.overall;
+    document.getElementById('kpisPick').innerHTML=
+      '<div class="kpi pk"><div class="l">Orders picked</div><div class="v">'+o.orders.toLocaleString()+'</div></div>'+
+      '<div class="kpi sp"><div class="l">Avg / order</div><div class="v">'+secFmt(o.avg_sec_order)+'</div></div>'+
+      '<div class="kpi it"><div class="l">Items picked</div><div class="v">'+o.items.toLocaleString()+'</div></div>'+
+      '<div class="kpi hr"><div class="l">Orders / hour</div><div class="v">'+o.orders_per_hr+'</div></div>'+
+      '<div class="kpi act"><div class="l">Active hours</div><div class="v">'+o.active_hours+'</div></div>';
+    var avg=o.avg_sec_order||0;
+    document.getElementById('prows').innerHTML=(d.pickers.length?d.pickers.map(function(w){
+      var cls=w.avg_sec_order<=avg?'fast':'slow';
+      return '<tr><td><b>'+esc(w.picker)+'</b></td><td>'+w.orders+'</td><td>'+w.items+'</td><td class="'+cls+'">'+secFmt(w.avg_sec_order)+'</td><td>'+w.orders_per_hr+'</td><td>'+w.active_hours+'</td></tr>';
+    }).join(''):'<tr><td colspan="6" class="muted">No picking records for this filter</td></tr>');
+  });
+}
+function renderTeam(list,nameKey,valKey,unit,hrKey,selId){
+  var el=document.getElementById('teamCmp');
+  if(!list||!list.length){el.innerHTML='<div class="muted">No workers yet</div>';return}
+  var srt=list.slice().sort(function(a,b){return (b[valKey]||0)-(a[valKey]||0)});
+  var max=Math.max.apply(null,srt.map(function(w){return w[valKey]||0}))||1;
+  el.innerHTML=srt.map(function(w){
+    var nm=w[nameKey]||'',val=w[valKey]||0,pct=Math.max(2,Math.round(100*val/max));
+    return '<div class="cmpRow" data-w="'+esc(nm)+'" style="display:flex;align-items:center;gap:10px;padding:5px 0;cursor:pointer">'+
+      '<div style="width:120px;font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+esc(nm)+'">'+esc(nm)+'</div>'+
+      '<div style="flex:1;background:rgba(79,70,229,.08);border-radius:6px;height:22px"><div style="width:'+pct+'%;background:linear-gradient(90deg,#818cf8,#4f46e5);height:100%;border-radius:6px;min-width:4px"></div></div>'+
+      '<div style="width:130px;text-align:right;font-size:12px;color:#586274">'+val.toLocaleString()+' '+unit+' · '+(w[hrKey]||0)+'/hr</div></div>';
+  }).join('');
+  Array.prototype.forEach.call(el.querySelectorAll('.cmpRow'),function(r){
+    r.addEventListener('click',function(){var s=document.getElementById(selId);if(s){s.value=this.getAttribute('data-w');load();window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});}});
   });
 }
 function hms(s){s=Math.round(Number(s||0));if(s<=0)return '—';var h=Math.floor(s/3600),m=Math.round((s%3600)/60);return (h?h+'h ':'')+m+'m'}
-function renderShift(shift,hasWorker){
+function renderShift(shift,workerName){
   var b=document.getElementById('shiftBody');
-  if(!hasWorker){b.innerHTML='<div class="muted">Select a single worker above to see their day-by-day shift: first vs last scan, the pick-vs-pack split, and the idle time in between.</div>';return}
+  if(!workerName){b.innerHTML='<div class="muted">Select a single worker above to see their day-by-day shift: first vs last scan, the pick-vs-pack split, and the idle time in between.</div>';return}
   if(!shift||!shift.length){b.innerHTML='<div class="muted">No pick or pack activity for this person in the selected range.</div>';return}
   var legend='<div style="display:flex;gap:18px;margin-bottom:12px;font-size:12px;font-weight:700">'+
-    '<span><span style="display:inline-block;width:11px;height:11px;background:#4f46e5;border-radius:3px;margin-right:5px;vertical-align:-1px"></span>Picked</span>'+
-    '<span><span style="display:inline-block;width:11px;height:11px;background:#10b981;border-radius:3px;margin-right:5px;vertical-align:-1px"></span>Packed</span></div>';
+    '<span><span style="display:inline-block;width:11px;height:11px;background:#a5b4fc;border-radius:3px;margin-right:5px;vertical-align:-1px"></span>Picked</span>'+
+    '<span><span style="display:inline-block;width:11px;height:11px;background:#4f46e5;border-radius:3px;margin-right:5px;vertical-align:-1px"></span>Packed</span></div>';
   var n=shift.length,bw=Math.max(22,Math.min(60,Math.floor(1100/n))),gap=10,W=n*(bw+gap)+50,H=230,top=16,bot=44;
   var max=Math.max.apply(null,shift.map(function(d){return d.picked+d.packed}))||1;
   var bars='',lbls='';
   shift.forEach(function(d,i){
     var x=44+i*(bw+gap),base=H-bot;
     var ph=Math.round((H-top-bot)*(d.picked/max)),kh=Math.round((H-top-bot)*(d.packed/max)),tot=d.picked+d.packed;
-    bars+='<rect x="'+x+'" y="'+(base-ph)+'" width="'+bw+'" height="'+Math.max(0,ph)+'" fill="#4f46e5" rx="2"><title>'+esc(d.date)+': '+d.picked+' picked</title></rect>';
-    bars+='<rect x="'+x+'" y="'+(base-ph-kh)+'" width="'+bw+'" height="'+Math.max(0,kh)+'" fill="#10b981" rx="2"><title>'+esc(d.date)+': '+d.packed+' packed</title></rect>';
+    bars+='<rect x="'+x+'" y="'+(base-ph)+'" width="'+bw+'" height="'+Math.max(0,ph)+'" fill="#a5b4fc" rx="2"><title>'+esc(d.date)+': '+d.picked+' picked</title></rect>';
+    bars+='<rect class="packedBar" data-day="'+esc(d.date)+'" x="'+x+'" y="'+(base-ph-kh)+'" width="'+bw+'" height="'+Math.max(0,kh)+'" fill="#4f46e5" rx="2" style="cursor:pointer"><title>'+esc(d.date)+': '+d.packed+' packed — click to see the videos packed this day</title></rect>';
     lbls+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(H-bot+14)+'" text-anchor="middle">'+esc((d.date||'').slice(5))+'</text>';
     if(ph+kh>14)bars+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(base-ph-kh-4)+'" text-anchor="middle" style="fill:#64748b">'+tot+'</text>';
   });
   var grid='';for(var g=0;g<=4;g++){var gy=top+(H-top-bot)*g/4;grid+='<line class="axis" x1="40" y1="'+gy+'" x2="'+W+'" y2="'+gy+'"/><text class="axtx" x="0" y="'+(gy+3)+'">'+Math.round(max*(4-g)/4)+'</text>';}
   var chart='<div class="chart-wrap"><svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">'+grid+bars+lbls+'</svg></div>';
-  var rows=shift.map(function(d){
-    var idleCls=(d.idle_sec>d.active_sec&&d.active_sec>0)?' style="color:#b45309;font-weight:800"':'';
-    return '<tr><td><b>'+esc(d.date)+'</b></td><td>'+d.picked+'</td><td>'+d.packed+'</td>'+
-      '<td>'+esc(d.first||'—')+'</td><td>'+esc(d.last||'—')+'</td>'+
-      '<td>'+hms(d.span_sec)+'</td><td>'+hms(d.active_sec)+'</td><td'+idleCls+'>'+hms(d.idle_sec)+'</td></tr>';
-  }).join('');
-  var table='<table style="margin-top:16px"><thead><tr><th>Date</th><th>Picked</th><th>Packed</th><th>First log</th><th>Last log</th><th>On-clock span</th><th>Active</th><th>Idle</th></tr></thead><tbody>'+rows+'</tbody></table>';
-  var note='<div style="font-size:12px;color:#6b7280;margin-top:8px">On-clock span = first scan → last scan. Active = measured packing + estimated picking. Idle = span − active (paid-but-idle time). Times shown in the server/show timezone.</div>';
-  b.innerHTML=legend+chart+table+note;
+  var hint='<div style="font-size:12px;color:#6b7280;margin-top:6px">Tip: click the packed (dark) part of a bar to see the videos '+esc(workerName)+' packed that day.</div>';
+  b.innerHTML=legend+chart+hint;
+  Array.prototype.forEach.call(document.querySelectorAll('#shiftBody .packedBar'),function(el){
+    el.addEventListener('click',function(){
+      var day=this.getAttribute('data-day');
+      window.location.href='/dashboard?worker='+encodeURIComponent(workerName)+'&date='+encodeURIComponent(day);
+    });
+  });
 }
 function renderChart(days){
   if(!days||!days.length){document.getElementById('chart').innerHTML='<div class="muted">No data</div>';return}
