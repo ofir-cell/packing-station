@@ -4293,6 +4293,7 @@ def api_shipments_import():
 
     inserted = 0; updated = 0; items_inserted = 0
     unique_skus = set()
+    _bn = 0   # commit in batches so a big file persists incrementally (no 120s mega-txn)
     try:
         for pkg_id, group in by_pkg.items():
             first = group[0]
@@ -4387,6 +4388,9 @@ def api_shipments_import():
                 items_inserted += 1
                 if sku: unique_skus.add(sku)
             _recompute_shipment_weight(c, pkg_id, overhead=_overhead)
+            _bn += 1
+            if _bn % 400 == 0:
+                c.commit()   # flush this batch so progress survives a slow/huge file
         c.commit()
     finally:
         c.close()
