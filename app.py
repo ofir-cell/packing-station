@@ -4258,7 +4258,11 @@ def api_shipments_import():
 
     c = sdb()
     # Faster bulk writes on slow (network-volume) disks — safe for a re-runnable import.
-    try: c.execute("PRAGMA synchronous=NORMAL"); c.execute("PRAGMA temp_store=MEMORY")
+    # busy_timeout: if a picker scan or the tracking scheduler is mid-write, WAIT up to
+    # 60s for the lock instead of erroring out — otherwise a live-session import 500s.
+    try:
+        c.execute("PRAGMA synchronous=NORMAL"); c.execute("PRAGMA temp_store=MEMORY")
+        c.execute("PRAGMA busy_timeout=60000")
     except Exception: pass
     sku_map = {r["sku"]: r["weight_g"] for r in c.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
     _cfgrow = c.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
