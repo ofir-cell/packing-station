@@ -4277,12 +4277,6 @@ def api_shipments_import():
         c.execute("""INSERT INTO show_state(import_label, show_start) VALUES(?,?)
                      ON CONFLICT(import_label) DO UPDATE SET show_start=excluded.show_start""",
                   (label, show_start_dt.isoformat(timespec="seconds")))
-    # Host typed on the import form → save it as this show's host, so Host Analytics
-    # is pre-filled (no manual entry afterward). Same idea as naming the show.
-    host_name = (request.form.get("host") or "").strip()[:60]
-    if host_name:
-        _ov = _host_overrides(); _ov[label] = host_name
-        _set_setting("host_overrides", json.dumps(_ov))
     show_windows = _load_show_windows(c, label, show_start_dt)
     win_start = dict(show_windows)  # label -> start datetime
 
@@ -4394,6 +4388,17 @@ def api_shipments_import():
         c.commit()
     finally:
         c.close()
+
+    # Host typed on the import form → save it as this show's host, so Host Analytics
+    # is pre-filled. Done AFTER the import connection is closed — writing settings on a
+    # second connection while the import transaction was open caused "database is locked".
+    host_name = (request.form.get("host") or "").strip()[:60]
+    if host_name:
+        try:
+            _ov = _host_overrides(); _ov[label] = host_name
+            _set_setting("host_overrides", json.dumps(_ov))
+        except Exception as e:
+            print("host override save error:", e, flush=True)
 
     # SKUs missing weights
     c = sdb()
