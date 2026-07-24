@@ -6,3 +6,4 @@ anthropic==0.69.0
 python-barcode==0.15.1
 reportlab==4.2.5
 pillow==12.2.0
+pypdf==5.1.0

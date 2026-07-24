@@ -9985,6 +9985,78 @@ body{margin:0;background:#0c0f16;color:#e4e8f1;font-family:-apple-system,'Segoe 
 """+"".join(sheets)+"""
 </body></html>"""
 
+def _fetch_label_bytes(url, timeout=25):
+    import urllib.request
+    req=urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read(), (r.headers.get("Content-Type") or "").lower()
+
+def _merge_labels_to_pdf(items):
+    """Fetch each label (PDF or image) and combine into ONE 4x6 PDF. PDFs are
+    concatenated as-is; image labels are drawn onto a 4x6 page. Returns bytes or
+    None. A single merged PDF prints reliably — unlike a page full of PDF iframes."""
+    try:
+        from pypdf import PdfWriter, PdfReader
+    except Exception as e:
+        print("pypdf import failed:", e, flush=True); return None
+    import io
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.utils import ImageReader
+    w=PdfWriter(); ok=0
+    for it in items:
+        url=it.get("url") or ""
+        if not url: continue
+        try:
+            data,ct=_fetch_label_bytes(url)
+        except Exception as e:
+            print("label fetch failed:", url[:80], e, flush=True); continue
+        low=url.split("?")[0].lower()
+        try:
+            if low.endswith(".pdf") or "pdf" in ct:
+                for pg in PdfReader(io.BytesIO(data)).pages: w.add_page(pg)
+            else:
+                buf=io.BytesIO(); cv=canvas.Canvas(buf, pagesize=(4*72, 6*72))
+                cv.drawImage(ImageReader(io.BytesIO(data)), 0, 0, width=4*72, height=6*72,
+                             preserveAspectRatio=True, anchor='c')
+                cv.showPage(); cv.save(); buf.seek(0)
+                for pg in PdfReader(buf).pages: w.add_page(pg)
+            ok+=1
+        except Exception as e:
+            print("label merge failed:", url[:80], e, flush=True); continue
+    if not ok: return None
+    out=io.BytesIO(); w.write(out); return out.getvalue()
+
+def _labels_page_or_pdf(items, title, pdf_url):
+    """?pdf=1 → the merged PDF (inline; attachment when &dl=1). Otherwise → a viewer
+    page with the merged PDF embedded + 'Print all' and 'Save all' buttons."""
+    if request.args.get("pdf")=="1":
+        blob=_merge_labels_to_pdf(items)
+        if not blob:
+            return ("Could not build the combined label PDF — open labels individually.", 502)
+        resp=Response(blob, mimetype="application/pdf")
+        disp="attachment" if request.args.get("dl")=="1" else "inline"
+        resp.headers["Content-Disposition"]='%s; filename="labels.pdf"' % disp
+        return resp
+    save_url=pdf_url+"&dl=1"
+    t=esc(title)
+    return ("""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>"""+t+"""</title>
+<style>*{box-sizing:border-box}html,body{height:100%}
+body{margin:0;background:#0c0f16;color:#e4e8f1;font-family:-apple-system,'Segoe UI',sans-serif;display:flex;flex-direction:column}
+.bar{display:flex;gap:12px;align-items:center;padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.08)}
+.bar .ttl{font-weight:800;margin-right:auto}
+.btn{border:none;border-radius:10px;padding:11px 22px;font-size:15px;font-weight:800;cursor:pointer;color:#fff;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+.btn.print{background:linear-gradient(135deg,#4f46e5,#7c3aed)}
+.btn.save{background:#1f2733;border:1px solid rgba(255,255,255,.16)}
+iframe{flex:1;width:100%;border:0;background:#fff}
+</style></head><body>
+<div class="bar"><span class="ttl">🏷️ """+t+"""</span>
+<button class="btn print" onclick="pr()">🖨️ Print all</button>
+<a class="btn save" href=\""""+save_url+"""\" download="labels.pdf">⬇ Save all</a></div>
+<iframe id="lf" src=\""""+pdf_url+"""\"></iframe>
+<script>function pr(){var f=document.getElementById('lf');try{f.contentWindow.focus();f.contentWindow.print()}catch(e){window.open('"""+pdf_url+"""','_blank')}}</script>
+</body></html>""")
+
 @app.route("/label/giveaway/<int:gid>")
 @req_role("admin","cs")
 def giveaway_label_print(gid):
@@ -10230,7 +10302,8 @@ def inbound_batch_print(batch_id):
     items=[{"url":r["label_url"],"sub":r["tracking"] or ""} for r in rows if r["label_url"]]
     if not items: return ("No labels in this batch.",404)
     sup=rows[0]["supplier"] if rows else ""
-    return _multi_label_print_page(items,"Inbound · "+(sup or "")+" · "+str(len(items))+" labels")
+    return _labels_page_or_pdf(items,"Inbound · "+(sup or "")+" · "+str(len(items))+" labels",
+                               "/label/inbound/batch/"+batch_id+"?pdf=1")
 
 @app.route("/label/inbound/multi")
 @req_role("admin","cs")
@@ -10244,7 +10317,8 @@ def inbound_multi_print():
     c.close()
     items=[{"url":r["label_url"],"sub":r["tracking"] or ""} for r in rows if r["label_url"]]
     if not items: return ("No printable labels in selection.",404)
-    return _multi_label_print_page(items,"Selected labels · "+str(len(items)))
+    return _labels_page_or_pdf(items,"Selected labels · "+str(len(items)),
+                               "/label/inbound/multi?ids="+",".join(ids)+"&pdf=1")
 
 @app.route("/admin/inbound")
 @req_role("admin","cs")
