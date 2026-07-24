@@ -1547,6 +1547,16 @@ SHIPSTATION_API_KEY=os.environ.get("SHIPSTATION_API_KEY") or os.environ.get("SHI
 SHIPSTATION_ENABLED=bool(SHIPSTATION_API_KEY)
 SHIPSTATION_BASE=os.environ.get("SHIPSTATION_BASE","https://api.shipstation.com")
 
+def _rate_sort_key(r):
+    """Order carrier rates for label buying. The user's own UPS accounts come FIRST
+    (preferred over FedEx / USPS), then cheapest within each group. So the top of the
+    list — and any auto-pick — is always the cheapest UPS option when UPS is available."""
+    c=(r.get("carrier") or "").lower()
+    is_ups = ("ups" in c) and ("usps" not in c)   # 'usps' does not contain 'ups'
+    try: price=float(r.get("rate") if r.get("rate") is not None else 9999)
+    except Exception: price=9999
+    return (0 if is_ups else 1, price)
+
 # ── UPS DIRECT (own account, OAuth client-credentials) ─────────────────────────
 # When these three env vars are set, labels go straight to UPS — no middleman.
 # UPS takes priority over ShipStation; ShipStation stays as a fallback so nothing
@@ -1620,7 +1630,7 @@ def _ship_rates(to, frm, weight, dims):
                       "carrier":r.get("carrier_friendly_name") or r.get("carrier_code"),
                       "service":r.get("service_type") or r.get("service_code"),
                       "rate":amt,"days":r.get("delivery_days")})
-    rates.sort(key=lambda x: float(x["rate"] if x["rate"] is not None else 9999))
+    rates.sort(key=_rate_sort_key)   # UPS first, then cheapest
     return resp.get("shipment_id"), rates
 
 def _ship_buy(rate_id):
