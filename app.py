@@ -4479,13 +4479,14 @@ def _process_cancel_file(norm_rows, source, label):
             continue
         # Path B: never seen — insert a synthetic shipment so reconciliation can find it
         synthetic_id = "cancel_" + oid
+        _tot = sum(int(n.get("quantity") or 1) for n in group)   # real item count (was hard-coded 0)
         c.execute("""INSERT OR REPLACE INTO shipments
             (shipment_id, tracking_code, buyer_username, buyer_name, address_full,
              postal_code, show_date, status, platform, import_batch, import_label,
              total_items, expected_weight_g, missing_weights, flag_reason)
-            VALUES (?, NULL, ?, ?, ?, ?, ?, 'cancelled', ?, ?, ?, 0, 0, 0, ?)""",
+            VALUES (?, NULL, ?, ?, ?, ?, ?, 'cancelled', ?, ?, ?, ?, 0, 0, ?)""",
             (synthetic_id, first["buyer_username"], first["buyer_name"], first["address"],
-             first["postal"], first["created_at"], source, import_batch, label, reason))
+             first["postal"], first["created_at"], source, import_batch, label, _tot, reason))
         c.execute("DELETE FROM shipment_items WHERE shipment_id=?", (synthetic_id,))
         for n in group:
             c.execute("""INSERT INTO shipment_items
