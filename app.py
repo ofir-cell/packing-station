@@ -1587,16 +1587,43 @@ def _ss(method, path, payload=None):
         except Exception: msg="HTTP "+str(e.code)
         raise RuntimeError("ShipStation: "+str(msg))
 
-_ss_carriers={"ids":None,"ts":0}
-def _ship_carrier_ids(force=False):
-    """Carrier IDs connected in the ShipStation account (cached 10min). Rates need these.
-    Pass force=True to bust the cache after connecting a new carrier (e.g. UPS)."""
-    if not force and _ss_carriers["ids"] is not None and time.time()-_ss_carriers["ts"]<600:
-        return _ss_carriers["ids"]
+_ss_carriers={"list":None,"ts":0}
+def _ship_carriers_full(force=False):
+    """Full list of carriers connected in the ShipStation account (cached 10min):
+    [{id, code, name}]. Includes ShipStation's default carriers AND the user's own
+    connected accounts (e.g. their negotiated UPS)."""
+    if not force and _ss_carriers["list"] is not None and time.time()-_ss_carriers["ts"]<600:
+        return _ss_carriers["list"]
     r=_ss("GET","/v2/carriers")
-    ids=[c.get("carrier_id") for c in (r.get("carriers") or []) if c.get("carrier_id")]
-    _ss_carriers["ids"]=ids; _ss_carriers["ts"]=time.time()
-    return ids
+    lst=[{"id":c.get("carrier_id"),"code":(c.get("carrier_code") or ""),
+          "name":(c.get("friendly_name") or c.get("nickname") or c.get("carrier_code") or "Carrier")}
+         for c in (r.get("carriers") or []) if c.get("carrier_id")]
+    _ss_carriers["list"]=lst; _ss_carriers["ts"]=time.time()
+    return lst
+
+def _preferred_carrier_ids():
+    """The carrier IDs the tenant chose to rate against (setting → env → none).
+    When set, ONLY these carriers are used for buying labels."""
+    try:
+        raw=_get_setting("ship_carrier_ids")
+        if raw:
+            v=json.loads(raw)
+            if isinstance(v,list) and v: return [str(x).strip() for x in v if str(x).strip()]
+    except Exception: pass
+    env=os.environ.get("SHIP_CARRIER_IDS","").strip()
+    if env: return [x.strip() for x in env.split(",") if x.strip()]
+    return []
+
+def _ship_carrier_ids(force=False):
+    """Carrier IDs to request rates for. If the tenant picked a preferred subset
+    (e.g. their own UPS accounts), use ONLY those; otherwise use everything connected.
+    Pass force=True to bust the cache after connecting a new carrier."""
+    all_ids=[c["id"] for c in _ship_carriers_full(force)]
+    pref=_preferred_carrier_ids()
+    if pref:
+        chosen=[i for i in pref if i in all_ids]   # keep only still-connected ids
+        if chosen: return chosen
+    return all_ids
 
 def _ship_addr(a):
     out={"name":a.get("name") or "Recipient",
@@ -10122,17 +10149,30 @@ def api_ship_carriers():
     if not SHIPSTATION_ENABLED:
         return jsonify({"ok":False,"error":"No carrier configured — set UPS_CLIENT_ID/SECRET/ACCOUNT_NUMBER (or SHIPSTATION_API_KEY)."})
     try:
+        if request.args.get("refresh"):
+            _ship_carriers_full(force=True)   # rebuild cache after connecting a carrier
+        pref=set(_preferred_carrier_ids())
         r=_ss("GET","/v2/carriers")
         cs=[{"carrier_id":c.get("carrier_id"),"carrier_code":c.get("carrier_code"),
              "name":c.get("friendly_name") or c.get("nickname"),
-             "services":len(c.get("services") or [])} for c in (r.get("carriers") or [])]
-        # If the caller asked to refresh, rebuild the carrier-id cache used for rating
-        # so a just-connected carrier (e.g. UPS) is included in the next rate request.
-        if request.args.get("refresh"):
-            _ship_carrier_ids(force=True)
-        return jsonify({"ok":True,"count":len(cs),"carriers":cs})
+             "services":len(c.get("services") or []),
+             "selected":(c.get("carrier_id") in pref) if pref else False}
+            for c in (r.get("carriers") or [])]
+        return jsonify({"ok":True,"count":len(cs),"carriers":cs,
+                        "restricted":bool(pref),"preferred":sorted(pref)})
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)})
+
+@app.route("/api/ship/carriers/prefer",methods=["POST"])
+@req_role("admin")
+def api_ship_carriers_prefer():
+    """Save which carrier IDs to rate against. Empty list = use all connected carriers."""
+    d=request.get_json() or {}
+    ids=[str(x).strip() for x in (d.get("ids") or []) if str(x).strip()]
+    _set_setting("ship_carrier_ids", json.dumps(ids))
+    _ship_carriers_full(force=True)
+    alog("ship.carriers_prefer", ",".join(ids) or "(all)")
+    return jsonify({"ok":True,"preferred":ids,"restricted":bool(ids)})
 
 @app.route("/api/label/rates",methods=["POST"])
 @req_role("admin","cs")

@@ -9474,9 +9474,14 @@ __NAVBAR__
     <select id="wUnit"><option value="oz">Ounces (oz)</option><option value="lb">Pounds (lb)</option></select></div></div>
   <div id="carrierStrip" style="margin:6px 0 12px;padding:10px 12px;border:1px solid rgba(148,163,184,.35);border-radius:10px;background:rgba(148,163,184,.06)">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-      <b style="font-size:13px">🚚 Carriers connected to ShipStation:</b>
-      <span id="carrierChips" class="muted" style="font-size:13px">Checking…</span>
+      <b style="font-size:13px">🚚 Carriers used for rating</b>
       <button class="btn btn-s" id="refreshCarriers" style="padding:3px 10px;font-size:12px;margin-left:auto">↻ Refresh</button>
+    </div>
+    <div class="desc" style="font-size:12px;margin:4px 0 6px">Tick only the carriers you want to buy labels with. Leave all ticked to compare everything. Your own UPS accounts give your negotiated rates.</div>
+    <div id="carrierList" style="display:flex;flex-direction:column;gap:3px"><span class="muted" style="font-size:13px">Checking…</span></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+      <button class="btn btn-p" id="saveCarriers" style="padding:5px 14px;font-size:12px;display:none">💾 Save selection</button>
+      <span id="carrierSaved" class="muted" style="font-size:12px"></span>
     </div>
     <div id="carrierHint" class="muted" style="font-size:12px;margin-top:6px;display:none"></div>
   </div>
@@ -9577,24 +9582,41 @@ function carrierLabel(c){var code=(c.carrier_code||'').toLowerCase();
   if(code.indexOf('usps')>=0||code.indexOf('stamps')>=0)return 'USPS';
   if(code.indexOf('dhl')>=0)return 'DHL';return c.name||c.carrier_code||'Carrier';}
 function loadCarriers(refresh){
-  var chips=document.getElementById('carrierChips');var hint=document.getElementById('carrierHint');
-  chips.textContent='Checking…';
+  var list=document.getElementById('carrierList');var hint=document.getElementById('carrierHint');
+  list.innerHTML='<span class="muted" style="font-size:13px">Checking…</span>';
   fetch('/api/ship/carriers'+(refresh?'?refresh=1':'')).then(function(r){return r.json()}).then(function(d){
-    if(!d.ok){chips.innerHTML='<span style="color:#e11d48">'+esc(d.error||'ShipStation not reachable')+'</span>';return}
+    if(!d.ok){list.innerHTML='<span style="color:#e11d48">'+esc(d.error||'ShipStation not reachable')+'</span>';return}
     CARRIERS=d.carriers||[];
-    if(!CARRIERS.length){chips.innerHTML='<span style="color:#e11d48">None connected</span>';return}
-    var seen={};chips.innerHTML=CARRIERS.map(function(c){
-      var lbl=carrierLabel(c);if(seen[lbl])return '';seen[lbl]=1;
-      var up=lbl==='UPS';
-      return '<span style="display:inline-block;padding:2px 9px;margin:2px 3px 0 0;border-radius:999px;font-size:12px;font-weight:600;'+
-        (up?'background:#7c2d12;color:#fed7aa':'background:rgba(52,211,153,.15);color:#059669')+'">'+esc(lbl)+' ✓</span>';
+    if(!CARRIERS.length){list.innerHTML='<span style="color:#e11d48">None connected</span>';return}
+    var restricted=d.restricted;
+    list.innerHTML=CARRIERS.map(function(c){
+      var lbl=carrierLabel(c);var up=lbl==='UPS';
+      var checked = restricted ? c.selected : true;
+      return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">'+
+        '<input type="checkbox" class="carrierCk" data-id="'+esc(c.carrier_id)+'"'+(checked?' checked':'')+'>'+
+        '<span style="font-weight:700;'+(up?'color:#b45309':'')+'">'+esc(lbl)+'</span>'+
+        '<span class="muted" style="font-family:monospace;font-size:11px">'+esc(c.carrier_id)+'</span>'+
+        (c.services?'<span class="muted" style="font-size:11px">· '+c.services+' svc</span>':'')+'</label>';
     }).join('');
+    document.getElementById('saveCarriers').style.display='inline-block';
+    document.getElementById('carrierSaved').textContent = restricted ? ('✓ Restricted to '+(d.preferred||[]).length+' carrier(s)') : 'Using all connected carriers';
     var hasUPS=CARRIERS.some(function(c){return (c.carrier_code||'').toLowerCase().indexOf('ups')>=0});
     if(!hasUPS){hint.style.display='block';hint.innerHTML='⚠️ UPS is not connected in ShipStation. Add it in ShipStation → Settings → Carriers, then hit ↻ Refresh.';}
     else{hint.style.display='none';}
   });
 }
 document.getElementById('refreshCarriers').addEventListener('click',function(){loadCarriers(true)});
+document.getElementById('saveCarriers').addEventListener('click',function(){
+  var cks=document.querySelectorAll('.carrierCk');var ids=[],all=true;
+  cks.forEach(function(ck){if(ck.checked)ids.push(ck.getAttribute('data-id'));else all=false;});
+  if(!all&&!ids.length){toast('Pick at least one carrier',true);return}
+  var payload=all?[]:ids;  // all ticked => use everything
+  fetch('/api/ship/carriers/prefer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:payload})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(d.ok){toast(d.restricted?('Saved — rating uses '+d.preferred.length+' carrier(s)'):'Saved — using all carriers');loadCarriers(false);}
+     else toast('Save failed',true);
+   });
+});
 loadCarriers(false);
 
 document.getElementById('getRates').addEventListener('click',function(){
