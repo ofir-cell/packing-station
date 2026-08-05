@@ -3744,11 +3744,13 @@ function loadShipments(){
     var missing=rows.filter(function(s){return s.missing_weights>0}).length;
     var withTracking=rows.filter(function(s){return s.tracking_code}).length;
     var packed=rows.filter(function(s){return s.status==='packed'||s.status==='shipped'}).length;
+    var picked=rows.filter(function(s){return s.status==='picked'||s.status==='packed'||s.status==='shipped'}).length;
     document.getElementById('stats').innerHTML=
       '<div class="stat"><div class="lbl">Total</div><div class="val">'+total+'</div><div class="sub">shipments imported</div></div>'+
       '<div class="stat '+(withWeight===total?'good':'warn')+'"><div class="lbl">With expected weight</div><div class="val">'+withWeight+'</div><div class="sub">'+(total?Math.round(100*withWeight/total):0)+'% of total</div></div>'+
       '<div class="stat '+(missing===0?'good':'warn')+'"><div class="lbl">Missing weight data</div><div class="val">'+missing+'</div><div class="sub">need SKU weight set</div></div>'+
       '<div class="stat"><div class="lbl">With tracking</div><div class="val">'+withTracking+'</div><div class="sub">label generated</div></div>'+
+      '<div class="stat"><div class="lbl">Picked</div><div class="val">'+picked+'</div><div class="sub">collected off the table</div></div>'+
       '<div class="stat good"><div class="lbl">Packed</div><div class="val">'+packed+'</div><div class="sub">already weighed</div></div>';
 
     // Store rows and render with the current status filter.
