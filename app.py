@@ -37,7 +37,8 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     PICKER_HTML, REPEAT_HTML,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
-    HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML)
+    HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML,
+    SCANIT_HTML)
 from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
 
 
@@ -1148,6 +1149,78 @@ def sdb_init(org):
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_avail_week ON availability(week_start)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_avail_user ON availability(username,week_start)")
+    # ── PEACH BEAUTY SCANIT — live-selling product intelligence ──────────────
+    # Host scans/searches a product → sees exact variant/size, OFFICIAL (human-
+    # verified) MSRP, benefits/notes, and an AI-drafted selling script.
+    c.execute("""CREATE TABLE IF NOT EXISTS scanit_products(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        upc TEXT,
+        brand TEXT,
+        product_name TEXT,
+        variant TEXT,
+        category TEXT,
+        subcategory TEXT,
+        size TEXT,
+        size_unit TEXT,
+        size_ml REAL,
+        concentration TEXT,
+        msrp REAL,
+        currency TEXT DEFAULT 'USD',
+        msrp_source TEXT,
+        msrp_url TEXT,
+        msrp_verified_date TEXT,
+        verification_status TEXT DEFAULT 'unknown',   -- verified | check | unknown
+        image_url TEXT,
+        image_source TEXT,
+        image_verified_date TEXT,
+        benefits TEXT,          -- JSON array
+        key_points TEXT,        -- JSON array
+        ingredients TEXT,
+        notes_top TEXT,
+        notes_heart TEXT,
+        notes_base TEXT,
+        fragrance_family TEXT,
+        vibe TEXT,
+        best_for TEXT,
+        finish TEXT,
+        coverage TEXT,
+        skin_type TEXT,
+        hair_type TEXT,
+        how_to_use TEXT,
+        sell_script TEXT,
+        quick_script TEXT,
+        target_price REAL,
+        min_price REAL,
+        priority TEXT DEFAULT 'normal',   -- hot | push | normal | clearance
+        host_note TEXT,
+        catalog_sku TEXT,       -- optional link to inventory catalog
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_by TEXT,
+        active INTEGER DEFAULT 1
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_scanit_upc ON scanit_products(upc)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_scanit_brand ON scanit_products(brand)")
+    # Learned barcode → product map (a product can have several UPCs / packagings).
+    c.execute("""CREATE TABLE IF NOT EXISTS scanit_barcodes(
+        upc TEXT PRIMARY KEY,
+        product_id INTEGER,
+        added_by TEXT,
+        added_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS scanit_favorites(
+        username TEXT NOT NULL,
+        product_id INTEGER NOT NULL,
+        added_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (username, product_id)
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS scanit_recent(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        product_id INTEGER NOT NULL,
+        scanned_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_scanit_recent ON scanit_recent(username,scanned_at)")
     # NOTE: the `organizations` table is the cross-tenant control plane and now
     # lives in platform.db (see pdb_init), NOT here in a per-tenant shipments.db.
     c.commit(); c.close()
@@ -10447,6 +10520,205 @@ def api_giveaway_parse_address():
 # ══════════════════════════════════════════════════════════
 # END GIVEAWAY ROUTES
 # ══════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════
+# PEACH BEAUTY SCANIT — live-selling product intelligence
+# Barcode / manual / text-search → exact product → OFFICIAL (human-verified)
+# MSRP → benefits/notes → AI-drafted selling script. No paid external APIs.
+# ══════════════════════════════════════════════════════════
+_SCANIT_JSON_FIELDS=("benefits","key_points")
+def _scanit_row(r):
+    if not r: return None
+    d=dict(r)
+    for f in _SCANIT_JSON_FIELDS:
+        try: d[f]=json.loads(d.get(f) or "[]")
+        except Exception: d[f]=[]
+    return d
+
+@app.route("/scanit")
+@req_role("admin","cs","host")
+def scanit_page():
+    return SCANIT_HTML.replace("__NAME__",esc(session.get("name","")))\
+        .replace("__NAVBAR__",_navbar("scanit")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)\
+        .replace("__ISADMIN__","1" if session.get("role") in ("admin","cs") else "0")
+
+@app.route("/api/scanit/lookup")
+@req_role("admin","cs","host")
+def api_scanit_lookup():
+    upc=re.sub(r'[\s\-]','',(request.args.get("upc") or "")).strip()
+    if not upc: return jsonify({"ok":False,"error":"No barcode"})
+    c=sdb()
+    r=c.execute("SELECT * FROM scanit_products WHERE active=1 AND REPLACE(REPLACE(COALESCE(upc,''),' ',''),'-','')=? LIMIT 1",(upc,)).fetchone()
+    if not r:
+        m=c.execute("SELECT product_id FROM scanit_barcodes WHERE upc=?",(upc,)).fetchone()
+        if m: r=c.execute("SELECT * FROM scanit_products WHERE id=? AND active=1",(m["product_id"],)).fetchone()
+    c.close()
+    if not r: return jsonify({"ok":True,"found":False,"upc":upc})
+    return jsonify({"ok":True,"found":True,"product":_scanit_row(r)})
+
+@app.route("/api/scanit/search")
+@req_role("admin","cs","host")
+def api_scanit_search():
+    q=(request.args.get("q") or "").strip()
+    if not q: return jsonify({"ok":True,"results":[]})
+    # Forgiving match: strip spaces/punctuation from BOTH the query tokens and the
+    # concatenated product text, so "dior jadore 50ml" finds "Dior J'adore 50 ml".
+    def _norm_sql(col): return "lower(COALESCE(%s,''))"%col
+    concat="||".join(_norm_sql(x) for x in ("brand","product_name","variant","size","size_unit","concentration","category"))
+    norm_field="REPLACE(REPLACE(REPLACE(REPLACE("+concat+",' ',''),'''',''),'-',''),'.','')"
+    toks=[re.sub(r'[^a-z0-9]','',t.lower()) for t in re.split(r'\s+',q)]
+    toks=[t for t in toks if t][:6]
+    if not toks: return jsonify({"ok":True,"results":[]})
+    where="active=1"; params=[]
+    for t in toks:
+        where+=" AND "+norm_field+" LIKE ?"
+        params.append("%"+t+"%")
+    c=sdb()
+    rows=c.execute("SELECT * FROM scanit_products WHERE "+where+" ORDER BY brand,product_name LIMIT 40",params).fetchall()
+    c.close()
+    return jsonify({"ok":True,"results":[_scanit_row(r) for r in rows]})
+
+@app.route("/api/scanit/product/<int:pid>")
+@req_role("admin","cs","host")
+def api_scanit_product(pid):
+    c=sdb(); r=c.execute("SELECT * FROM scanit_products WHERE id=?",(pid,)).fetchone(); c.close()
+    if not r: return jsonify({"ok":False,"error":"Not found"})
+    return jsonify({"ok":True,"product":_scanit_row(r)})
+
+_SCANIT_COLS=("upc","brand","product_name","variant","category","subcategory","size","size_unit",
+    "size_ml","concentration","msrp","currency","msrp_source","msrp_url","msrp_verified_date",
+    "verification_status","image_url","image_source","ingredients","notes_top","notes_heart",
+    "notes_base","fragrance_family","vibe","best_for","finish","coverage","skin_type","hair_type",
+    "how_to_use","sell_script","quick_script","target_price","min_price","priority","host_note","catalog_sku")
+@app.route("/api/scanit/product",methods=["POST"])
+@req_role("admin","cs")
+def api_scanit_save():
+    d=request.get_json() or {}
+    pid=d.get("id")
+    if not (d.get("brand") or "").strip() and not (d.get("product_name") or "").strip():
+        return jsonify({"ok":False,"error":"Brand or product name is required"})
+    vals={k:d.get(k) for k in _SCANIT_COLS}
+    vals["benefits"]=json.dumps(d.get("benefits") or [])
+    vals["key_points"]=json.dumps(d.get("key_points") or [])
+    # If MSRP typed with a source URL, mark verified today unless caller said otherwise.
+    if vals.get("msrp") and vals.get("verification_status")=="verified" and not vals.get("msrp_verified_date"):
+        vals["msrp_verified_date"]=datetime.now().strftime("%Y-%m-%d")
+    cols=list(vals.keys())+["updated_at","updated_by"]
+    vals["updated_at"]=datetime.now().isoformat(timespec="seconds"); vals["updated_by"]=session.get("name","")
+    c=sdb()
+    if pid:
+        sets=",".join(k+"=?" for k in cols)
+        c.execute("UPDATE scanit_products SET "+sets+" WHERE id=?",[vals[k] for k in cols]+[pid])
+    else:
+        qm=",".join("?"*len(cols))
+        cur=c.execute("INSERT INTO scanit_products("+",".join(cols)+") VALUES("+qm+")",[vals[k] for k in cols])
+        pid=cur.lastrowid
+    # keep the learned-barcode map in sync
+    up=re.sub(r'[\s\-]','',(vals.get("upc") or ""))
+    if up: c.execute("INSERT OR REPLACE INTO scanit_barcodes(upc,product_id,added_by) VALUES(?,?,?)",(up,pid,session.get("name","")))
+    c.commit(); r=c.execute("SELECT * FROM scanit_products WHERE id=?",(pid,)).fetchone(); c.close()
+    alog("scanit.save","#%s %s %s"%(pid,vals.get("brand") or "",vals.get("product_name") or ""))
+    return jsonify({"ok":True,"product":_scanit_row(r)})
+
+@app.route("/api/scanit/product/<int:pid>/delete",methods=["POST"])
+@req_role("admin","cs")
+def api_scanit_delete(pid):
+    c=sdb(); c.execute("UPDATE scanit_products SET active=0 WHERE id=?",(pid,)); c.commit(); c.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/scanit/barcode/attach",methods=["POST"])
+@req_role("admin","cs")
+def api_scanit_barcode_attach():
+    d=request.get_json() or {}
+    upc=re.sub(r'[\s\-]','',(d.get("upc") or "")); pid=d.get("product_id")
+    if not (upc and pid): return jsonify({"ok":False,"error":"upc + product_id required"})
+    c=sdb(); c.execute("INSERT OR REPLACE INTO scanit_barcodes(upc,product_id,added_by) VALUES(?,?,?)",(upc,pid,session.get("name","")))
+    c.execute("UPDATE scanit_products SET upc=COALESCE(NULLIF(upc,''),?) WHERE id=?",(upc,pid))
+    c.commit(); c.close()
+    alog("scanit.barcode_attach","%s -> #%s"%(upc,pid))
+    return jsonify({"ok":True})
+
+@app.route("/api/scanit/product/<int:pid>/scripts",methods=["POST"])
+@req_role("admin","cs","host")
+def api_scanit_scripts(pid):
+    """Draft Sell It + Quick Sell from the product's VERIFIED facts only. Cached on
+    the product so we generate once, not on every scan."""
+    c=sdb(); r=c.execute("SELECT * FROM scanit_products WHERE id=?",(pid,)).fetchone()
+    if not r: c.close(); return jsonify({"ok":False,"error":"Not found"})
+    p=_scanit_row(r)
+    force=(request.get_json() or {}).get("force")
+    if p.get("sell_script") and p.get("quick_script") and not force:
+        c.close(); return jsonify({"ok":True,"sell":p["sell_script"],"quick":p["quick_script"],"cached":True})
+    if not anthropic_client:
+        c.close(); return jsonify({"ok":False,"error":"AI not configured (set ANTHROPIC_API_KEY)"})
+    facts={k:p.get(k) for k in ("brand","product_name","variant","size","size_unit","concentration",
+        "category","msrp","currency","benefits","key_points","notes_top","notes_heart","notes_base",
+        "fragrance_family","vibe","best_for","finish","coverage","skin_type","how_to_use")}
+    has_price = p.get("verification_status")=="verified" and p.get("msrp")
+    prompt=("You write short, energetic live-selling scripts for a beauty host on TikTok/Whatnot LIVE.\n"
+        "Use ONLY the verified facts below. NEVER invent benefits, notes, claims, or a price.\n"
+        + ("You MAY mention the retail price ($%s).\n"%p.get("msrp") if has_price else "Do NOT mention any price (it is not verified).\n")
+        + "Sound natural and excited, like a real host talking — not robotic. No hashtags, no emojis.\n"
+        "Return ONLY JSON: {\"sell\":\"<10-20 second script>\",\"quick\":\"<5-8 second one-liner>\"}\n\n"
+        "VERIFIED FACTS:\n"+json.dumps({k:v for k,v in facts.items() if v},ensure_ascii=False))
+    try:
+        msg=anthropic_client.messages.create(model="claude-haiku-4-5-20251001",max_tokens=600,
+            messages=[{"role":"user","content":prompt}])
+        raw=msg.content[0].text.strip()
+        if raw.startswith("```"): raw=re.sub(r'^```(?:json)?\s*','',raw); raw=re.sub(r'\s*```$','',raw)
+        out=json.loads(raw)
+        sell=(out.get("sell") or "").strip(); quick=(out.get("quick") or "").strip()
+        c.execute("UPDATE scanit_products SET sell_script=?,quick_script=? WHERE id=?",(sell,quick,pid))
+        c.commit(); c.close()
+        return jsonify({"ok":True,"sell":sell,"quick":quick,"cached":False})
+    except Exception as e:
+        c.close(); return jsonify({"ok":False,"error":"Script generation failed: "+str(e)[:120]})
+
+@app.route("/api/scanit/recent",methods=["GET","POST"])
+@req_role("admin","cs","host")
+def api_scanit_recent():
+    u=session.get("name","") or session.get("user","")
+    c=sdb()
+    if request.method=="POST":
+        pid=(request.get_json() or {}).get("product_id")
+        if pid:
+            c.execute("INSERT INTO scanit_recent(username,product_id) VALUES(?,?)",(u,pid))
+            # keep only the last 50 per user
+            c.execute("""DELETE FROM scanit_recent WHERE username=? AND id NOT IN
+                         (SELECT id FROM scanit_recent WHERE username=? ORDER BY scanned_at DESC LIMIT 50)""",(u,u))
+            c.commit()
+        c.close(); return jsonify({"ok":True})
+    rows=c.execute("""SELECT p.*, MAX(r.scanned_at) last_scan FROM scanit_recent r
+                      JOIN scanit_products p ON p.id=r.product_id
+                      WHERE r.username=? AND p.active=1 GROUP BY p.id
+                      ORDER BY last_scan DESC LIMIT 30""",(u,)).fetchall()
+    c.close()
+    return jsonify({"ok":True,"results":[_scanit_row(r) for r in rows]})
+
+@app.route("/api/scanit/favorites",methods=["GET"])
+@req_role("admin","cs","host")
+def api_scanit_favorites():
+    u=session.get("name","") or session.get("user","")
+    c=sdb()
+    rows=c.execute("""SELECT p.* FROM scanit_favorites f JOIN scanit_products p ON p.id=f.product_id
+                      WHERE f.username=? AND p.active=1 ORDER BY f.added_at DESC""",(u,)).fetchall()
+    c.close()
+    return jsonify({"ok":True,"results":[_scanit_row(r) for r in rows]})
+
+@app.route("/api/scanit/favorite",methods=["POST"])
+@req_role("admin","cs","host")
+def api_scanit_favorite_toggle():
+    u=session.get("name","") or session.get("user","")
+    pid=(request.get_json() or {}).get("product_id")
+    if not pid: return jsonify({"ok":False,"error":"product_id required"})
+    c=sdb()
+    ex=c.execute("SELECT 1 FROM scanit_favorites WHERE username=? AND product_id=?",(u,pid)).fetchone()
+    if ex:
+        c.execute("DELETE FROM scanit_favorites WHERE username=? AND product_id=?",(u,pid)); fav=False
+    else:
+        c.execute("INSERT INTO scanit_favorites(username,product_id) VALUES(?,?)",(u,pid)); fav=True
+    c.commit(); c.close()
+    return jsonify({"ok":True,"favorited":fav})
 
 
 if __name__=="__main__":

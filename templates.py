@@ -100,6 +100,8 @@ def _navbar(active_page=""):
         if has("host", "assistant"):
             entries.append(("myavail", "/my-availability", "🕒 My Availability"))
             entries.append(("myschedule", "/my-schedule", "🗓️ My Schedule"))
+        if has("host", "assistant", "admin", "cs"):
+            entries.append(("scanit", "/scanit", "🍑 Scanit"))
 
     # ── Avatar menu sections (personal + team/settings) ──
     # Each section: (title, [(key,url,label),...]). Titles of "" render with no header.
@@ -11032,4 +11034,338 @@ document.getElementById('saveBrands').addEventListener('click',function(){
   }).catch(function(){b.disabled=false;toast('Network error',1)});
 });
 load();
+</script></body></html>'''
+
+
+# ── PEACH BEAUTY SCANIT — live-selling product intelligence (mobile-first) ──
+SCANIT_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+''' + _FONT + '''
+<title>Peach Beauty Scanit</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--peach:#ff9e80;--blush:#ff6f91;--peachbg:#fff6f2;--card:#ffffff;--ink:#2b2230;--muted:#8a7f88;--line:#f0e2dc}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:var(--peachbg);color:var(--ink);min-height:100vh}
+.sc-wrap{max-width:520px;margin:0 auto;padding:14px 14px 96px}
+.sc-hero{display:flex;align-items:center;gap:10px;margin:6px 2px 16px}
+.sc-hero .logo{font-size:26px}
+.sc-hero .t{font-size:20px;font-weight:900;letter-spacing:-.4px}
+.sc-hero .t span{color:var(--blush)}
+.big-btn{display:flex;align-items:center;gap:14px;width:100%;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:20px;margin-bottom:12px;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 6px 18px rgba(255,111,145,.06);transition:transform .1s}
+.big-btn:active{transform:scale(.98)}
+.big-btn .ic{width:52px;height:52px;border-radius:15px;display:flex;align-items:center;justify-content:center;font-size:26px;flex:none;background:linear-gradient(135deg,#ffd9cc,#ffc2d1)}
+.big-btn .tx b{display:block;font-size:17px;font-weight:800}
+.big-btn .tx span{font-size:13px;color:var(--muted)}
+.entry{display:none;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;margin-bottom:12px}
+.entry.on{display:block}
+.entry input{width:100%;border:2px solid var(--line);border-radius:12px;padding:14px 16px;font-size:17px;font-family:inherit;outline:none;margin-bottom:10px}
+.entry input:focus{border-color:var(--blush)}
+.btn-p{background:linear-gradient(135deg,var(--peach),var(--blush));color:#fff;border:none;border-radius:12px;padding:13px 18px;font-size:15px;font-weight:800;cursor:pointer;font-family:inherit;width:100%}
+.btn-s{background:#fff;border:1px solid var(--line);border-radius:12px;padding:11px 16px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;color:var(--ink)}
+#viewResult,#viewList,#viewAdmin{display:none}
+.rimg{width:100%;height:230px;background:#fff center/contain no-repeat;border:1px solid var(--line);border-radius:20px;margin-bottom:14px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:40px}
+.rbrand{font-size:13px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:var(--blush)}
+.rname{font-size:23px;font-weight:900;line-height:1.15;margin:2px 0 3px}
+.rsize{font-size:15px;color:var(--muted);font-weight:600}
+.confirm{background:#fff;border:1px dashed var(--blush);border-radius:16px;padding:14px;margin:14px 0;text-align:center}
+.confirm .q{font-size:15px;font-weight:800;margin-bottom:10px}
+.confirm .row{display:flex;gap:10px}
+.msrp-card{background:linear-gradient(135deg,#fff,#fff6f2);border:1px solid var(--line);border-radius:20px;padding:18px;margin:14px 0;text-align:center}
+.msrp-lbl{font-size:12px;font-weight:800;letter-spacing:1px;color:var(--muted);text-transform:uppercase}
+.msrp-val{font-size:46px;font-weight:900;line-height:1;margin:4px 0 6px}
+.conf{display:inline-block;font-size:12px;font-weight:800;padding:4px 12px;border-radius:20px}
+.conf.verified{background:rgba(16,185,129,.14);color:#059669}
+.conf.check{background:rgba(245,158,11,.16);color:#b45309}
+.conf.unknown{background:rgba(148,163,184,.18);color:#64748b}
+.msrp-src{font-size:12px;color:var(--muted);margin-top:8px}
+.msrp-src a{color:var(--blush);font-weight:700}
+.internal{background:#2b2230;color:#fff;border-radius:18px;padding:16px;margin:14px 0}
+.internal .ihd{font-size:11px;font-weight:800;letter-spacing:1px;color:#ffb3c6;text-transform:uppercase;margin-bottom:10px}
+.internal .irow{display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:14px;border-top:1px solid rgba(255,255,255,.08)}
+.internal .irow:first-of-type{border-top:none}
+.internal .irow b{font-size:17px;font-weight:900}
+.prio{padding:3px 10px;border-radius:20px;font-size:12px;font-weight:800}
+.prio.hot{background:#ff4d6d;color:#fff}.prio.push{background:#ff9e80;color:#3a1e12}.prio.normal{background:rgba(255,255,255,.16);color:#fff}.prio.clearance{background:#64748b;color:#fff}
+.sell-btns{display:flex;gap:10px;margin:14px 0}
+.sell-btns button{flex:1;border:none;border-radius:16px;padding:16px;font-size:15px;font-weight:900;cursor:pointer;font-family:inherit;color:#fff}
+.b-quick{background:linear-gradient(135deg,#7c3aed,#a855f7)}
+.b-sell{background:linear-gradient(135deg,var(--peach),var(--blush))}
+.script{display:none;background:#fff;border:1px solid var(--line);border-left:4px solid var(--blush);border-radius:14px;padding:16px;margin-bottom:12px;font-size:17px;line-height:1.5;font-weight:600}
+.script.on{display:block}
+.sec{margin:16px 0}
+.sec h4{font-size:12px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.chips{display:flex;flex-wrap:wrap;gap:7px}
+.chip{background:#fff;border:1px solid var(--line);border-radius:20px;padding:6px 13px;font-size:14px;font-weight:700}
+.notecol{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.notecol .nc{background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px;text-align:center}
+.notecol .nc .l{font-size:10px;font-weight:800;color:var(--blush);letter-spacing:.5px}
+.notecol .nc .v{font-size:13px;font-weight:600;margin-top:3px}
+.howto{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;font-size:15px;line-height:1.5}
+.res-card{display:flex;gap:12px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:16px;padding:11px;margin-bottom:10px;cursor:pointer}
+.res-card .ri{width:56px;height:56px;border-radius:12px;background:#fff6f2 center/contain no-repeat;flex:none;border:1px solid var(--line)}
+.res-card .rb{font-size:11px;font-weight:800;color:var(--blush);text-transform:uppercase;letter-spacing:.5px}
+.res-card .rn{font-size:15px;font-weight:800;line-height:1.2}
+.res-card .rm{font-size:12px;color:var(--muted)}
+.res-card .rp{margin-left:auto;font-weight:900;font-size:16px;text-align:right;white-space:nowrap}
+.empty2{text-align:center;color:var(--muted);padding:50px 16px}
+.empty2 .e{font-size:40px;margin-bottom:8px}
+.topbar{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.topbar .back{background:#fff;border:1px solid var(--line);border-radius:12px;padding:9px 14px;font-weight:800;cursor:pointer;font-family:inherit;font-size:14px}
+.topbar .fav{margin-left:auto;background:#fff;border:1px solid var(--line);border-radius:12px;padding:9px 13px;cursor:pointer;font-size:18px}
+.searchbar{display:flex;gap:8px;margin-bottom:14px}
+.searchbar input{flex:1;border:2px solid var(--line);border-radius:12px;padding:13px 15px;font-size:16px;font-family:inherit;outline:none}
+.searchbar input:focus{border-color:var(--blush)}
+.botnav{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--line);display:flex;z-index:50;max-width:520px;margin:0 auto}
+.botnav button{flex:1;background:none;border:none;padding:10px 0 12px;font-family:inherit;font-size:11px;font-weight:700;color:var(--muted);cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px}
+.botnav button .bi{font-size:21px}
+.botnav button.on{color:var(--blush)}
+.cammodal{position:fixed;inset:0;background:#000;z-index:100;display:none;flex-direction:column}
+.cammodal.on{display:flex}
+.cammodal video{flex:1;width:100%;object-fit:cover}
+.cambar{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;color:#fff}
+.cambar button{background:rgba(255,255,255,.2);border:none;color:#fff;border-radius:10px;padding:9px 16px;font-weight:800;cursor:pointer;font-family:inherit}
+.camhint{position:absolute;bottom:30px;left:0;right:0;text-align:center;color:#fff;font-weight:700;text-shadow:0 1px 4px #000}
+#viewAdmin .fld{margin-bottom:10px}
+#viewAdmin label{display:block;font-size:12px;font-weight:800;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px}
+#viewAdmin input,#viewAdmin textarea,#viewAdmin select{width:100%;border:2px solid var(--line);border-radius:10px;padding:11px 13px;font-size:15px;font-family:inherit;outline:none}
+#viewAdmin input:focus,#viewAdmin textarea:focus{border-color:var(--blush)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.adminfab{position:fixed;bottom:78px;right:calc(50% - 250px);background:#2b2230;color:#fff;border:none;border-radius:50px;padding:12px 18px;font-weight:800;cursor:pointer;font-family:inherit;z-index:40;box-shadow:0 6px 18px rgba(0,0,0,.2)}
+@media(max-width:540px){.adminfab{right:16px}}
+.toast{position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:#2b2230;color:#fff;padding:12px 22px;border-radius:30px;font-weight:700;font-size:14px;z-index:120;display:none}
+</style></head><body>
+__NAVBAR__
+<div class="sc-wrap">
+  <div class="sc-hero"><span class="logo">🍑</span><div class="t">Peach Beauty <span>Scanit</span></div></div>
+  <div id="viewHome">
+    <button class="big-btn" onclick="openCam()"><span class="ic">▣</span><div class="tx"><b>Scan Barcode</b><span>Point your camera at the UPC / EAN</span></div></button>
+    <button class="big-btn" onclick="toggleEntry()"><span class="ic">⌨️</span><div class="tx"><b>Enter Barcode</b><span>Type or paste the number</span></div></button>
+    <div class="entry" id="entryBox"><input id="upcInput" inputmode="numeric" placeholder="Enter UPC / EAN" autocomplete="off"><button class="btn-p" onclick="lookupUpc()">Find product</button></div>
+    <button class="big-btn" onclick="showTab('search')"><span class="ic">🔎</span><div class="tx"><b>Search Product</b><span>No barcode? Search by name + size</span></div></button>
+  </div>
+  <div id="viewResult"></div>
+  <div id="viewList"></div>
+  <div id="viewAdmin"></div>
+</div>
+<button class="adminfab" id="adminFab" style="display:none" onclick="editProduct(null)">＋ Add product</button>
+<div class="botnav">
+  <button data-tab="scan" class="on" onclick="showTab('scan')"><span class="bi">▣</span>Scan</button>
+  <button data-tab="search" onclick="showTab('search')"><span class="bi">🔎</span>Search</button>
+  <button data-tab="recent" onclick="showTab('recent')"><span class="bi">🕘</span>Recent</button>
+  <button data-tab="fav" onclick="showTab('fav')"><span class="bi">⭐</span>Favorites</button>
+</div>
+<div class="cammodal" id="camModal">
+  <div class="cambar"><b>🍑 Scan a barcode</b><button onclick="closeCam()">✕ Close</button></div>
+  <video id="camVideo" playsinline muted></video>
+  <div class="camhint">Aim at the barcode…</div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+var ISADMIN=('__ISADMIN__'==='1');
+var CUR=null, FAVSET={}, camStream=null, detector=null, scanning=false;
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+function money(v){if(v==null||v==='')return '';return '$'+Number(v).toLocaleString(undefined,{maximumFractionDigits:0})}
+function toast(m){var t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(function(){t.style.display='none'},2200)}
+if(ISADMIN)document.getElementById('adminFab').style.display='block';
+function hideAll(){['viewHome','viewResult','viewList','viewAdmin'].forEach(function(id){document.getElementById(id).style.display='none'})}
+function setNav(tab){document.querySelectorAll('.botnav button').forEach(function(b){b.classList.toggle('on',b.dataset.tab===tab)})}
+function showTab(tab){
+  document.getElementById('adminFab').style.display=(ISADMIN&&(tab==='search'||tab==='scan'))?'block':'none';
+  if(tab==='scan'){hideAll();document.getElementById('viewHome').style.display='block';setNav('scan');return}
+  if(tab==='search'){renderSearch();setNav('search');return}
+  if(tab==='recent'){loadList('/api/scanit/recent','🕘 Recent scans','Nothing scanned yet');setNav('recent');return}
+  if(tab==='fav'){loadList('/api/scanit/favorites','⭐ Favorites','Star products you sell often');setNav('fav');return}
+}
+function toggleEntry(){var e=document.getElementById('entryBox');e.classList.toggle('on');if(e.classList.contains('on'))document.getElementById('upcInput').focus()}
+document.getElementById('upcInput').addEventListener('keydown',function(e){if(e.key==='Enter')lookupUpc()});
+function lookupUpc(){
+  var v=(document.getElementById('upcInput').value||'').replace(/[\\s\\-]/g,'').trim();
+  if(!v){toast('Enter a barcode');return}
+  fetch('/api/scanit/lookup?upc='+encodeURIComponent(v)).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){toast(d.error||'Lookup failed');return}
+    if(d.found){openProduct(d.product);}else notFound(v);
+  });
+}
+function notFound(upc){
+  hideAll();setNav('scan');var v=document.getElementById('viewResult');v.style.display='block';
+  v.innerHTML='<div class="topbar"><button class="back" onclick="showTab(\\'scan\\')">← Back</button></div>'+
+    '<div class="empty2"><div class="e">🍑</div><div style="font-size:18px;font-weight:800">We don\\'t know this barcode yet</div>'+
+    '<div style="font-family:monospace;color:var(--muted);margin:6px 0 16px">'+esc(upc)+'</div>'+
+    '<button class="btn-p" style="margin-bottom:10px" onclick="showTab(\\'search\\')">🔎 Search product manually</button>'+
+    (ISADMIN?'<button class="btn-s" onclick="editProduct(null,\\''+esc(upc)+'\\')">➕ Add new product</button>':'')+'</div>';
+}
+function openProduct(p){
+  CUR=p; hideAll(); setNav('scan');
+  fetch('/api/scanit/recent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_id:p.id})});
+  var v=document.getElementById('viewResult'); v.style.display='block';
+  var conf=(p.verification_status||'unknown');
+  var confTxt={verified:'✓ OFFICIAL BRAND PRICE',check:'⚠ CHECK — not fully confirmed',unknown:'⚠ OFFICIAL MSRP NOT VERIFIED'}[conf];
+  var msrp=(conf==='verified'&&p.msrp!=null&&p.msrp!=='')?money(p.msrp):null;
+  var img=p.image_url?('style="background-image:url(\\''+esc(p.image_url)+'\\')"'):'';
+  var fav=!!FAVSET[p.id];
+  var sizeline=[p.size,p.size_unit].filter(Boolean).join(' ');
+  var h='<div class="topbar"><button class="back" onclick="showTab(\\'scan\\')">← Back</button>'+
+        '<button class="fav" onclick="toggleFav('+p.id+',this)">'+(fav?'⭐':'☆')+'</button></div>';
+  h+='<div class="rimg" '+img+'>'+(p.image_url?'':'🍑')+'</div>';
+  h+='<div class="rbrand">'+esc(p.brand||'')+'</div><div class="rname">'+esc(p.product_name||'')+'</div>';
+  h+='<div class="rsize">'+esc([p.variant,sizeline,p.concentration].filter(Boolean).join(' · '))+'</div>';
+  h+='<div class="confirm"><div class="q">🍑 Is this the product in your hand?</div><div class="row">'+
+     '<button class="btn-p" onclick="confirmYes()">✅ Yes, that\\'s it</button>'+
+     '<button class="btn-s" style="flex:1" onclick="showTab(\\'search\\')">❌ No</button></div></div>';
+  h+='<div id="afterConfirm" style="display:none">';
+  h+='<div class="msrp-card"><div class="msrp-lbl">Official Retail / MSRP</div>'+
+     '<div class="msrp-val">'+(msrp||'—')+'</div>'+
+     '<span class="conf '+conf+'">'+confTxt+'</span>'+
+     (p.msrp_url?('<div class="msrp-src">Source: <a href="'+esc(p.msrp_url)+'" target="_blank" rel="noopener">official page ↗</a>'+(p.msrp_verified_date?(' · '+esc(p.msrp_verified_date)):'')+'</div>'):'')+
+     '</div>';
+  if(p.target_price||p.min_price||(p.priority&&p.priority!=='normal')||p.host_note){
+    h+='<div class="internal"><div class="ihd">🍑 Peach Beauty — internal</div>';
+    if(p.target_price)h+='<div class="irow"><span>🎯 Our target</span><b>'+money(p.target_price)+'+</b></div>';
+    if(p.min_price)h+='<div class="irow"><span>🚨 Do not clear below</span><b>'+money(p.min_price)+'</b></div>';
+    if(p.priority&&p.priority!=='normal')h+='<div class="irow"><span>🔥 Priority</span><span class="prio '+esc(p.priority)+'">'+esc(p.priority.toUpperCase())+'</span></div>';
+    if(p.host_note)h+='<div class="irow" style="display:block"><span>🎤 Host note</span><div style="margin-top:4px;font-weight:600">'+esc(p.host_note)+'</div></div>';
+    h+='</div>';
+  }
+  h+='<div class="sell-btns"><button class="b-quick" onclick="genScript('+p.id+',\\'quick\\')">⚡ Quick Sell</button>'+
+     '<button class="b-sell" onclick="genScript('+p.id+',\\'sell\\')">🎤 Sell It</button></div>';
+  h+='<div class="script" id="scriptBox"></div>';
+  h+=catInfo(p);
+  if(ISADMIN)h+='<button class="btn-s" style="width:100%;margin-top:8px" onclick="editProduct(CUR)">✏️ Edit product (admin)</button>';
+  h+='</div>';
+  v.innerHTML=h;
+}
+function confirmYes(){document.getElementById('afterConfirm').style.display='block';document.querySelector('.confirm').style.display='none'}
+function catInfo(p){
+  var h='';
+  function chips(arr,title){if(!arr||!arr.length)return '';return '<div class="sec"><h4>'+title+'</h4><div class="chips">'+arr.map(function(x){return '<span class="chip">'+esc(x)+'</span>'}).join('')+'</div></div>'}
+  h+=chips(p.benefits,'⭐ Why people love it');
+  h+=chips(p.key_points,'🍑 Key benefits');
+  if(p.notes_top||p.notes_heart||p.notes_base){
+    h+='<div class="sec"><h4>Fragrance notes</h4><div class="notecol">'+
+      '<div class="nc"><div class="l">TOP</div><div class="v">'+esc(p.notes_top||'—')+'</div></div>'+
+      '<div class="nc"><div class="l">HEART</div><div class="v">'+esc(p.notes_heart||'—')+'</div></div>'+
+      '<div class="nc"><div class="l">BASE</div><div class="v">'+esc(p.notes_base||'—')+'</div></div></div></div>';
+  }
+  var meta=[];
+  if(p.fragrance_family)meta.push(['Family',p.fragrance_family]);
+  if(p.vibe)meta.push(['Vibe',p.vibe]);
+  if(p.best_for)meta.push(['Best for',p.best_for]);
+  if(p.finish)meta.push(['Finish',p.finish]);
+  if(p.coverage)meta.push(['Coverage',p.coverage]);
+  if(p.skin_type)meta.push(['Skin type',p.skin_type]);
+  if(p.hair_type)meta.push(['Hair type',p.hair_type]);
+  if(meta.length)h+='<div class="sec"><div class="chips">'+meta.map(function(m){return '<span class="chip"><b style="color:var(--blush)">'+esc(m[0])+':</b> '+esc(m[1])+'</span>'}).join('')+'</div></div>';
+  if(p.how_to_use)h+='<div class="sec"><h4>How to use</h4><div class="howto">'+esc(p.how_to_use)+'</div></div>';
+  if(p.ingredients)h+='<div class="sec"><h4>Key ingredients</h4><div class="howto">'+esc(p.ingredients)+'</div></div>';
+  return h;
+}
+function genScript(pid,kind){
+  var box=document.getElementById('scriptBox');box.classList.add('on');box.textContent='Writing…';
+  fetch('/api/scanit/product/'+pid+'/scripts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})}).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){box.textContent=d.error||'Could not generate';return}
+    box.textContent=(kind==='quick'?d.quick:d.sell)||'(empty)';
+  });
+}
+function toggleFav(pid,btn){
+  fetch('/api/scanit/favorite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({product_id:pid})}).then(function(r){return r.json()}).then(function(d){
+    if(d.ok){FAVSET[pid]=d.favorited;if(btn)btn.textContent=d.favorited?'⭐':'☆';toast(d.favorited?'Added to favorites':'Removed')}
+  });
+}
+function renderSearch(){
+  hideAll();var v=document.getElementById('viewList');v.style.display='block';
+  v.innerHTML='<div class="searchbar"><input id="qIn" placeholder="e.g. Dior J\\'adore EDP 50ml" autocomplete="off"><button class="btn-p" style="width:auto" onclick="runSearch()">Find</button></div><div id="results"></div>';
+  var qi=document.getElementById('qIn');qi.focus();
+  var tmr;qi.addEventListener('input',function(){clearTimeout(tmr);tmr=setTimeout(runSearch,300)});
+  qi.addEventListener('keydown',function(e){if(e.key==='Enter')runSearch()});
+}
+function runSearch(){
+  var q=(document.getElementById('qIn').value||'').trim();var box=document.getElementById('results');
+  if(q.length<2){box.innerHTML='';return}
+  fetch('/api/scanit/search?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
+    box.innerHTML=(d.results&&d.results.length)?d.results.map(cardHtml).join(''):'<div class="empty2"><div class="e">🔎</div>No matches — try fewer words'+(ISADMIN?'<br><button class="btn-s" style="margin-top:12px" onclick="editProduct(null)">➕ Add this product</button>':'')+'</div>';
+  });
+}
+function loadList(url,title,emptyMsg){
+  hideAll();var v=document.getElementById('viewList');v.style.display='block';
+  v.innerHTML='<h4 style="font-size:13px;font-weight:800;text-transform:uppercase;color:var(--muted);margin:2px 2px 12px">'+title+'</h4><div id="results">Loading…</div>';
+  fetch(url).then(function(r){return r.json()}).then(function(d){
+    (d.results||[]).forEach(function(p){if(url.indexOf('favorites')>=0)FAVSET[p.id]=true});
+    document.getElementById('results').innerHTML=(d.results&&d.results.length)?d.results.map(cardHtml).join(''):'<div class="empty2"><div class="e">🍑</div>'+emptyMsg+'</div>';
+  });
+}
+function cardHtml(p){
+  var img=p.image_url?('style="background-image:url(\\''+esc(p.image_url)+'\\')"'):'';
+  var sizeline=[p.size,p.size_unit].filter(Boolean).join(' ');
+  var price=(p.verification_status==='verified'&&p.msrp)?money(p.msrp):'';
+  return '<div class="res-card" onclick="openById('+p.id+')"><div class="ri" '+img+'></div>'+
+    '<div style="min-width:0"><div class="rb">'+esc(p.brand||'')+'</div><div class="rn">'+esc(p.product_name||'')+'</div>'+
+    '<div class="rm">'+esc([p.variant,sizeline].filter(Boolean).join(' · '))+'</div></div>'+
+    '<div class="rp">'+price+'</div></div>';
+}
+function openById(id){fetch('/api/scanit/product/'+id).then(function(r){return r.json()}).then(function(d){if(d.ok)openProduct(d.product)})}
+function openCam(){
+  if(!('BarcodeDetector' in window)){toast('Camera scan not supported here — use Enter Barcode');toggleEntry();return}
+  var m=document.getElementById('camModal');m.classList.add('on');
+  try{detector=new window.BarcodeDetector({formats:['ean_13','ean_8','upc_a','upc_e','code_128']});}catch(e){detector=new window.BarcodeDetector();}
+  navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}}).then(function(s){
+    camStream=s;var vid=document.getElementById('camVideo');vid.srcObject=s;vid.play();scanning=true;scanLoop();
+  }).catch(function(){toast('Camera blocked — use Enter Barcode');closeCam();toggleEntry();});
+}
+function scanLoop(){
+  if(!scanning)return;var vid=document.getElementById('camVideo');
+  detector.detect(vid).then(function(codes){
+    if(codes&&codes.length){var raw=(codes[0].rawValue||'').replace(/[\\s\\-]/g,'');if(raw){scanning=false;closeCam();document.getElementById('upcInput').value=raw;lookupUpc();return}}
+    requestAnimationFrame(scanLoop);
+  }).catch(function(){requestAnimationFrame(scanLoop)});
+}
+function closeCam(){scanning=false;document.getElementById('camModal').classList.remove('on');if(camStream){camStream.getTracks().forEach(function(t){t.stop()});camStream=null}}
+var AF=['brand','product_name','variant','category','size','size_unit','concentration','upc','image_url','msrp','msrp_url','notes_top','notes_heart','notes_base','fragrance_family','vibe','best_for','finish','coverage','skin_type','hair_type','ingredients','how_to_use','host_note','target_price','min_price'];
+function editProduct(p,presetUpc){
+  if(!ISADMIN)return; p=p||{}; hideAll();var v=document.getElementById('viewAdmin');v.style.display='block';setNav('scan');
+  document.getElementById('adminFab').style.display='none';
+  function f(id,lbl,ph,val){return '<div class="fld"><label>'+lbl+'</label><input id="f_'+id+'" placeholder="'+(ph||'')+'" value="'+esc(val==null?'':val)+'"></div>'}
+  function ta(id,lbl,val){return '<div class="fld"><label>'+lbl+'</label><textarea id="f_'+id+'" rows="2">'+esc(val==null?'':val)+'</textarea></div>'}
+  var conf=p.verification_status||'unknown';
+  var x='<div class="topbar"><button class="back" onclick="showTab(\\'scan\\')">← Back</button><b style="font-size:16px">'+(p.id?'Edit product':'Add product')+'</b></div>';
+  x+='<div class="grid2">'+f('brand','Brand','Dior',p.brand)+f('product_name','Product name',"J'adore EDP",p.product_name)+'</div>';
+  x+='<div class="grid2">'+f('variant','Variant','Eau de Parfum',p.variant)+f('concentration','Concentration','EDP',p.concentration)+'</div>';
+  x+='<div class="grid2">'+f('size','Size','50',p.size)+f('size_unit','Unit','ml',p.size_unit)+'</div>';
+  x+='<div class="grid2">'+f('category','Category','fragrance',p.category)+f('upc','UPC / barcode','',(presetUpc||p.upc))+'</div>';
+  x+=f('image_url','Product image URL (official)','https://...',p.image_url);
+  x+='<div class="fld"><label>Official MSRP ($) — verified from brand site</label><div class="grid2"><input id="f_msrp" inputmode="decimal" placeholder="140" value="'+esc(p.msrp==null?'':p.msrp)+'"><select id="f_verification_status"><option value="unknown"'+(conf==='unknown'?' selected':'')+'>Not verified</option><option value="check"'+(conf==='check'?' selected':'')+'>Check</option><option value="verified"'+(conf==='verified'?' selected':'')+'>Official verified</option></select></div></div>';
+  x+=f('msrp_url','Official source URL','https://dior.com/...',p.msrp_url);
+  x+='<div class="grid2">'+f('target_price','Our target ($)','65',p.target_price)+f('min_price','Do not clear below ($)','55',p.min_price)+'</div>';
+  x+='<div class="fld"><label>Priority</label><select id="f_priority"><option value="normal">Normal</option><option value="hot">Hot</option><option value="push">Push</option><option value="clearance">Clearance</option></select></div>';
+  x+=ta('host_note','Host note',p.host_note);
+  x+=ta('benefits','Why people love it (one per line)',(p.benefits||[]).join('\\n'));
+  x+=ta('key_points','Key benefits (one per line)',(p.key_points||[]).join('\\n'));
+  x+='<div class="grid2">'+f('notes_top','Top notes','Pear • Bergamot',p.notes_top)+f('notes_heart','Heart notes','Jasmine • Rose',p.notes_heart)+'</div>';
+  x+='<div class="grid2">'+f('notes_base','Base notes','Vanilla • Musk',p.notes_base)+f('fragrance_family','Family','Floral',p.fragrance_family)+'</div>';
+  x+='<div class="grid2">'+f('vibe','Vibe','Elegant',p.vibe)+f('best_for','Best for','Date night',p.best_for)+'</div>';
+  x+='<div class="grid2">'+f('finish','Finish','Dewy',p.finish)+f('coverage','Coverage','Medium',p.coverage)+'</div>';
+  x+='<div class="grid2">'+f('skin_type','Skin type','All',p.skin_type)+f('hair_type','Hair type','',p.hair_type)+'</div>';
+  x+=ta('ingredients','Key ingredients',p.ingredients);
+  x+=ta('how_to_use','How to use',p.how_to_use);
+  x+='<button class="btn-p" style="margin:12px 0" onclick="saveProduct('+(p.id||'null')+')">💾 Save product</button>';
+  if(p.id)x+='<button class="btn-s" style="width:100%;color:#e11d48" onclick="delProduct('+p.id+')">Delete</button>';
+  v.innerHTML=x;
+  if(p.priority)document.getElementById('f_priority').value=p.priority;
+}
+function gv(id){var e=document.getElementById('f_'+id);return e?e.value.trim():''}
+function saveProduct(id){
+  var body={id:id||undefined};
+  AF.forEach(function(k){body[k]=gv(k)});
+  body.verification_status=gv('verification_status')||'unknown';
+  body.priority=gv('priority')||'normal';
+  body.benefits=gv('benefits').split('\\n').map(function(x){return x.trim()}).filter(Boolean);
+  body.key_points=gv('key_points').split('\\n').map(function(x){return x.trim()}).filter(Boolean);
+  ['msrp','target_price','min_price'].forEach(function(k){body[k]=body[k]?parseFloat(body[k]):null});
+  if(!body.brand&&!body.product_name){toast('Brand or product name required');return}
+  fetch('/api/scanit/product',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json()}).then(function(d){
+    if(d.ok){toast('Saved');openProduct(d.product)}else toast(d.error||'Save failed');
+  });
+}
+function delProduct(id){if(!confirm('Delete this product?'))return;fetch('/api/scanit/product/'+id+'/delete',{method:'POST'}).then(function(){toast('Deleted');showTab('search')})}
+showTab('scan');
 </script></body></html>'''
