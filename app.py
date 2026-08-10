@@ -7218,28 +7218,28 @@ def _send_hire_invite(to_email, full_name, invite_url, lang="en"):
         '<div style="font-size:14px;color:#4a5568;padding:6px 0;line-height:1.4">'
         '<span style="color:%s;font-weight:800;margin-right:8px">✓</span>%s</div>'%(esc(color),esc(it))
         for it in items)
-    html=("""<div style="background:#f4f5f7;padding:26px 12px;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
-  <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.06)">
-    <div style="background:%s;padding:30px 32px;text-align:center">
+    html=("""<div style="background:#fbf3ee;padding:26px 12px;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+  <div style="max-width:560px;margin:0 auto;background:#fffdfb;border-radius:18px;overflow:hidden;box-shadow:0 3px 16px rgba(214,120,110,.10)">
+    <div style="background:%s;background-image:linear-gradient(135deg,#ffb27a,#ff6f91);padding:32px;text-align:center">
       <div style="font-size:34px;line-height:1">🎉</div>
       <div style="color:#ffffff;font-size:21px;font-weight:800;letter-spacing:-.3px;margin-top:6px">%s</div>
     </div>
     <div style="padding:30px 32px">
-      <h1 style="margin:0 0 10px;font-size:24px;font-weight:800;color:#1a2130">%s</h1>
-      <p style="margin:0 0 20px;font-size:15px;line-height:1.65;color:#4a5568">%s</p>
-      <div style="background:#f8f7fb;border-radius:14px;padding:16px 18px;margin:0 0 24px">
+      <h1 style="margin:0 0 10px;font-size:24px;font-weight:800;color:#3a2b28">%s</h1>
+      <p style="margin:0 0 20px;font-size:15px;line-height:1.65;color:#6b5b56">%s</p>
+      <div style="background:#fdf2ec;border-radius:14px;padding:16px 18px;margin:0 0 24px">
         <div style="font-size:11px;font-weight:800;letter-spacing:.7px;text-transform:uppercase;color:%s;margin-bottom:6px">%s</div>
         %s
       </div>
       <div style="text-align:center;margin:8px 0 22px">
-        <a href="%s" style="background:%s;color:#ffffff;text-decoration:none;font-weight:700;font-size:16px;padding:15px 36px;border-radius:12px;display:inline-block">%s</a>
+        <a href="%s" style="background:%s;background-image:linear-gradient(135deg,#ff9e80,#ff6f91);color:#ffffff;text-decoration:none;font-weight:700;font-size:16px;padding:15px 36px;border-radius:12px;display:inline-block;box-shadow:0 6px 16px rgba(255,111,145,.28)">%s</a>
       </div>
-      <p style="font-size:13px;color:#8a93a5;text-align:center;margin:0 0 14px">%s</p>
-      <p style="font-size:12px;color:#a0aab8;text-align:center;margin:0">%s<br><a href="%s" style="color:%s;word-break:break-all">%s</a></p>
+      <p style="font-size:13px;color:#9a8b86;text-align:center;margin:0 0 14px">%s</p>
+      <p style="font-size:12px;color:#b3a49f;text-align:center;margin:0">%s<br><a href="%s" style="color:%s;word-break:break-all">%s</a></p>
     </div>
-    <div style="border-top:1px solid #eef0f3;padding:16px 32px;text-align:center">
-      <p style="font-size:12px;color:#a0aab8;margin:0">%s</p>
-      <p style="font-size:12px;color:#c2c9d2;margin:6px 0 0;font-weight:700">%s</p>
+    <div style="border-top:1px solid #f4e7e0;padding:16px 32px;text-align:center">
+      <p style="font-size:12px;color:#b3a49f;margin:0">%s</p>
+      <p style="font-size:12px;color:#cbbdb7;margin:6px 0 0;font-weight:700">%s</p>
     </div>
   </div>
 </div>"""%(esc(color),esc(company),esc(headline),intro,esc(color),esc(whatt),items_html,
