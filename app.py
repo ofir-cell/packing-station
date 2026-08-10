@@ -7253,6 +7253,30 @@ def _send_hire_invite(to_email, full_name, invite_url, lang="en"):
     text="%s\n\n%s\n\n%s\n\n%s\n%s"%(_hi, re.sub(r'<[^>]+>','',intro), btn+": "+invite_url, note, company)
     return _send_email(to_email, subject, html, text)
 
+@app.route("/api/email/test", methods=["POST"])
+@req_role("admin", "cs")
+def api_email_test():
+    """Send a test email to confirm SMTP is wired up correctly."""
+    d=request.get_json() or {}
+    to=(d.get("to") or "").strip() or SMTP_FROM
+    if not EMAIL_ENABLED:
+        return jsonify({"ok":False,"configured":False,
+            "error":"Email not set up — add SMTP_USER and SMTP_PASS in Railway → Variables, then redeploy."})
+    if not to:
+        return jsonify({"ok":False,"error":"Enter a recipient email address."})
+    b=session.get("brand") or {}
+    company=esc(b.get("company") or b.get("mark") or "your team")
+    html=("<div style=\"font-family:-apple-system,Segoe UI,sans-serif;max-width:480px\">"
+          "<h2 style=\"color:#059669\">✅ Email is working</h2>"
+          "<p style=\"font-size:15px;color:#3a4252;line-height:1.6\">This is a test from <b>%s</b>'s onboarding "
+          "system. If you received this, new-hire invite emails will send correctly.</p>"
+          "<p style=\"font-size:12px;color:#8a93a5\">Sent from %s · replies go to %s</p></div>"
+          %(company,esc(SMTP_FROM),esc(SMTP_REPLY_TO)))
+    ok,err=_send_email(to,"✅ Test email from %s"%company,html,"Email is working. New-hire invites will send correctly.")
+    if ok: alog("email.test","-> %s"%to)
+    return jsonify({"ok":ok,"error":err,"sent_to":(to if ok else None),
+                    "from":SMTP_FROM,"reply_to":SMTP_REPLY_TO})
+
 @app.route("/api/hires", methods=["POST"])
 @req_role("admin", "cs")
 def api_hires_create():

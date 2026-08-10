@@ -5919,7 +5919,10 @@ __NAVBAR__
       <div class="page-title">👥 New Hires</div>
       <div class="page-sub">Onboard new team members with paperwork, signatures, and ID verification — all in one link.</div>
     </div>
-    <button class="new-btn" id="newBtn">+ New Hire</button>
+    <div style="display:flex;gap:10px;align-items:center">
+      <button class="new-btn" id="testEmailBtn" style="background:#fff;color:#4f46e5;border:1px solid rgba(79,70,229,.3)">📧 Test email</button>
+      <button class="new-btn" id="newBtn">+ New Hire</button>
+    </div>
   </div>
 
   <div class="kpis">
@@ -6012,6 +6015,17 @@ document.getElementById('newBtn').addEventListener('click',function(){
     document.getElementById('fEmail').value='';
     document.getElementById('fPhone').value='';
     document.getElementById('fName').focus();
+});
+document.getElementById('testEmailBtn').addEventListener('click',function(){
+    var to=prompt('Send a test email to which address?\\n(Leave blank to send to your sending account)');
+    if(to===null)return;
+    var b=this;b.disabled=true;b.textContent='Sending…';
+    fetch('/api/email/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:to.trim()})})
+     .then(function(r){return r.json()}).then(function(d){
+        b.disabled=false;b.textContent='📧 Test email';
+        if(d.ok){alert('✅ Test email sent to '+d.sent_to+'\\n\\nFrom: '+d.from+'\\nReplies go to: '+d.reply_to+'\\n\\nCheck the inbox (and spam folder).');}
+        else{alert('⚠️ '+(d.error||'Failed to send')+(d.configured===false?'':'\\n\\nDouble-check SMTP_USER / SMTP_PASS (App Password, no spaces) in Railway.'));}
+     }).catch(function(){b.disabled=false;b.textContent='📧 Test email';alert('Request failed');});
 });
 document.getElementById('cBtn').addEventListener('click',function(){document.getElementById('modal').classList.remove('on')});
 document.getElementById('okBtn').addEventListener('click',function(){
