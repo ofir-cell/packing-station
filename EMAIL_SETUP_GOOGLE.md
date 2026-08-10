@@ -1,14 +1,17 @@
-# Invite emails the easy way — Google (no domain, no DNS)
+# Invite emails from @5secbeauty.com — Google, no DNS
 
-Railway blocks the normal email ports, so "Send invite email" timed out. This
-method sends through a tiny **Google Apps Script** that lives in your own Google
-account. Emails go out **from your Gmail**, replies come back **to you**, and
-there is **no domain or DNS to set up**.
+You have Google Workspace on **5secbeauty.com**, so this is the easiest path:
+a tiny **Google Apps Script** sends the mail through your Workspace account.
+Emails go out **from an @5secbeauty.com address**, replies come back **to you**,
+and there is **no domain verification or DNS to touch**.
 
 Total time: ~5 minutes. You only do this once.
 
+> Important: sign in to Google with your **@5secbeauty.com** account before you
+> start — the account you build the script under is the one that sends the mail.
+
 ## Step 1 — Create the script
-1. Go to **script.google.com** → **New project**.
+1. Signed in as **@5secbeauty.com**, go to **script.google.com** → **New project**.
 2. Delete whatever is there and paste this in:
 
 ```javascript
@@ -18,13 +21,13 @@ function doPost(e){
     if (p.secret !== 'CHANGE-ME-TO-A-SECRET') {
       return ContentService.createTextOutput('bad secret');
     }
-    MailApp.sendEmail({
-      to: p.to,
-      subject: p.subject,
+    var opts = {
       htmlBody: p.html,
-      replyTo: p.replyTo || '',
-      name: 'Peach Beauty'
-    });
+      replyTo:  p.replyTo  || '',
+      name:     p.fromName || '5 Sec Beauty'
+    };
+    if (p.from) opts.from = p.from;   // e.g. noreply@5secbeauty.com (send-as alias)
+    MailApp.sendEmail(p.to, p.subject, '', opts);
     return ContentService.createTextOutput('ok');
   } catch (err) {
     return ContentService.createTextOutput('error: ' + err);
@@ -33,9 +36,7 @@ function doPost(e){
 ```
 
 3. Change `CHANGE-ME-TO-A-SECRET` to any password you make up (e.g.
-   `peach-2026-xyz`). Remember it — you'll paste it into Railway in Step 4.
-4. (Optional) change `name: 'Peach Beauty'` to whatever name you want recipients
-   to see.
+   `5sec-2026-xyz`). Remember it — you'll paste it into Railway in Step 4.
 
 ## Step 2 — Deploy it as a Web App
 1. Top right → **Deploy → New deployment**.
@@ -51,7 +52,7 @@ function doPost(e){
    (project name) → Allow**. (It's your own script — this is safe.)
 3. Copy the **Web app URL** it gives you. It ends in **`/exec`**.
 
-## Step 4 — Add 2 variables in Railway
+## Step 4 — Add the variables in Railway
 Railway → your project → **Variables** → add:
 
 | Variable | Value |
@@ -59,25 +60,31 @@ Railway → your project → **Variables** → add:
 | `GAS_EMAIL_URL` | the Web app URL from Step 3 (ends in `/exec`) |
 | `GAS_EMAIL_SECRET` | the secret you set in Step 1 |
 
-Optional — where replies should land (defaults to your Gmail anyway):
+Optional but recommended for a clean look:
 
 | Variable | Value |
 |---|---|
-| `SMTP_REPLY_TO` | `ofirrashtty@gmail.com` |
+| `GAS_EMAIL_FROM` | `noreply@5secbeauty.com` — the address recipients see. Leave blank to use the account you deployed under. Must be that account's address or a "Send mail as" alias on it. |
+| `SMTP_FROM_NAME` | `5 Sec Beauty` — the sender name shown |
+| `SMTP_REPLY_TO` | `hr@5secbeauty.com` (or wherever you want replies) |
+
+> Using `noreply@5secbeauty.com`? In Gmail on the 5secbeauty.com account go to
+> **Settings → Accounts → Send mail as → Add another email address**, add
+> `noreply@5secbeauty.com`, and verify it. If you'd rather not, just leave
+> `GAS_EMAIL_FROM` blank and it sends from your normal @5secbeauty.com address.
 
 Save → Railway redeploys automatically.
 
 ## Step 5 — Test
 1. Open the **Hires** screen → **📧 Test email** → send yourself one.
-2. If it arrives, you're done. New-hire invites now send from your Gmail.
+2. If it arrives, you're done. Invites now send from **@5secbeauty.com**.
 
 ---
 
 ### Good to know
-- **Limits:** a normal Gmail sends up to ~100 emails/day; Google Workspace up to
-  ~1,500/day. Plenty for hire invites.
-- **From address:** your own Gmail. **Replies:** come straight to you.
-- **Security:** the `Anyone` access is fine because the secret blocks anyone who
+- **Limits:** Google Workspace sends up to ~1,500 emails/day. Plenty for invites.
+- **From address:** your @5secbeauty.com. **Replies:** come straight to you.
+- **Security:** `Anyone` access is fine because the secret blocks anyone who
   doesn't know it. Keep the secret private.
 - If you ever set up Resend or SMTP too, the system prefers Resend, then Google,
   then SMTP — but you only need this one.

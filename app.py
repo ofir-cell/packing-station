@@ -679,6 +679,10 @@ RESEND_ENABLED=bool(RESEND_API_KEY and RESEND_FROM)
 # No domain/DNS verification needed. Set GAS_EMAIL_URL (+ optional GAS_EMAIL_SECRET).
 GAS_EMAIL_URL=os.environ.get("GAS_EMAIL_URL","").strip()
 GAS_EMAIL_SECRET=os.environ.get("GAS_EMAIL_SECRET","").strip()
+# Optional: a specific send-as address (e.g. noreply@5secbeauty.com). Must be the
+# script account's own address or a verified "send mail as" alias on it. If unset,
+# mail comes from whichever Google account deployed the script.
+GAS_EMAIL_FROM=os.environ.get("GAS_EMAIL_FROM","").strip()
 GAS_ENABLED=bool(GAS_EMAIL_URL)
 _SMTP_OK=bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
 EMAIL_ENABLED=bool(RESEND_ENABLED or GAS_ENABLED or _SMTP_OK)
@@ -695,6 +699,8 @@ def _send_via_gas(to_addr, subject, html_body, text_body=None):
     payload={"to":to_addr,"subject":subject,"html":html_body}
     if EMAIL_REPLY_TO: payload["replyTo"]=EMAIL_REPLY_TO
     if text_body: payload["text"]=text_body
+    if GAS_EMAIL_FROM: payload["from"]=GAS_EMAIL_FROM
+    if SMTP_FROM_NAME: payload["fromName"]=SMTP_FROM_NAME
     if GAS_EMAIL_SECRET: payload["secret"]=GAS_EMAIL_SECRET
     data=_json.dumps(payload).encode("utf-8")
     req=urllib.request.Request(GAS_EMAIL_URL,data=data,method="POST",
