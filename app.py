@@ -674,14 +674,53 @@ SMTP_REPLY_TO=os.environ.get("SMTP_REPLY_TO","").strip() or SMTP_FROM
 RESEND_API_KEY=os.environ.get("RESEND_API_KEY","").strip()
 RESEND_FROM=os.environ.get("RESEND_FROM","").strip() or (SMTP_FROM if SMTP_FROM else "")
 RESEND_ENABLED=bool(RESEND_API_KEY and RESEND_FROM)
+# Google Apps Script webhook — the simplest option. A tiny script deployed as a
+# Web App sends mail from your own Gmail via MailApp; we POST to its URL over HTTPS.
+# No domain/DNS verification needed. Set GAS_EMAIL_URL (+ optional GAS_EMAIL_SECRET).
+GAS_EMAIL_URL=os.environ.get("GAS_EMAIL_URL","").strip()
+GAS_EMAIL_SECRET=os.environ.get("GAS_EMAIL_SECRET","").strip()
+GAS_ENABLED=bool(GAS_EMAIL_URL)
 _SMTP_OK=bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
-EMAIL_ENABLED=bool(RESEND_ENABLED or _SMTP_OK)
+EMAIL_ENABLED=bool(RESEND_ENABLED or GAS_ENABLED or _SMTP_OK)
 # Whatever address replies should go to (your inbox), independent of transport.
 EMAIL_REPLY_TO=SMTP_REPLY_TO or RESEND_FROM
-print(("Email enabled via %s (from %s)"%(
-        "Resend" if RESEND_ENABLED else "SMTP",
-        RESEND_FROM if RESEND_ENABLED else SMTP_FROM)) if EMAIL_ENABLED
+_EMAIL_VIA=("Resend" if RESEND_ENABLED else "Google Apps Script" if GAS_ENABLED else "SMTP" if _SMTP_OK else "none")
+print(("Email enabled via %s"%_EMAIL_VIA) if EMAIL_ENABLED
       else "Email not configured (invite links must be copied manually)",flush=True)
+
+
+def _send_via_gas(to_addr, subject, html_body, text_body=None):
+    """Send via a Google Apps Script Web App (sends from your Gmail). Returns (ok, error)."""
+    import json as _json, urllib.request, urllib.error, socket
+    payload={"to":to_addr,"subject":subject,"html":html_body}
+    if EMAIL_REPLY_TO: payload["replyTo"]=EMAIL_REPLY_TO
+    if text_body: payload["text"]=text_body
+    if GAS_EMAIL_SECRET: payload["secret"]=GAS_EMAIL_SECRET
+    data=_json.dumps(payload).encode("utf-8")
+    req=urllib.request.Request(GAS_EMAIL_URL,data=data,method="POST",
+        headers={"Content-Type":"application/json"})
+    _orig_gai=socket.getaddrinfo
+    def _gai_ipv4(host,port,family=0,type=0,proto=0,flags=0):
+        return _orig_gai(host,port,socket.AF_INET,type,proto,flags)
+    try:
+        socket.getaddrinfo=_gai_ipv4
+        with urllib.request.urlopen(req,timeout=20) as r:
+            body=r.read().decode("utf-8","replace")[:300]
+        if "ok" in body.lower():
+            return True, None
+        if "bad" in body.lower() or "secret" in body.lower():
+            return False, "Apps Script rejected the request — check GAS_EMAIL_SECRET matches."
+        return False, "Apps Script response: "+body[:120]
+    except urllib.error.HTTPError as e:
+        try: b=e.read().decode("utf-8")[:200]
+        except Exception: b=str(e)
+        print("gas send failed:",e.code,b,flush=True)
+        return False, "Apps Script %s: %s"%(e.code,b)
+    except Exception as e:
+        print("gas send failed:",e,flush=True)
+        return False, str(e)[:200]
+    finally:
+        socket.getaddrinfo=_orig_gai
 
 
 def _send_via_resend(to_addr, subject, html_body, text_body=None):
@@ -767,9 +806,16 @@ def _send_email(to_addr, subject, html_body, text_body=None):
         ok, err = _send_via_resend(to_addr, subject, html_body, text_body)
         if ok:
             return True, None
+        if not (GAS_ENABLED or _SMTP_OK):
+            return False, err
+        # Resend failed — fall through to the next transport.
+    if GAS_ENABLED:
+        ok, err = _send_via_gas(to_addr, subject, html_body, text_body)
+        if ok:
+            return True, None
         if not _SMTP_OK:
             return False, err
-        # Resend failed but SMTP is configured — try it as a fallback.
+        # Apps Script failed but SMTP is configured — try it as a fallback.
     return _send_via_smtp(to_addr, subject, html_body, text_body)
 
 # ══════════════════════════════════════════════════════════
@@ -7486,16 +7532,16 @@ def _send_hire_invite(to_email, full_name, invite_url, lang="en"):
 def api_email_test():
     """Send a test email to confirm SMTP is wired up correctly."""
     d=request.get_json() or {}
-    _eff_from=RESEND_FROM if RESEND_ENABLED else SMTP_FROM
-    to=(d.get("to") or "").strip() or _eff_from
+    _eff_from=RESEND_FROM if RESEND_ENABLED else (EMAIL_REPLY_TO if GAS_ENABLED else SMTP_FROM)
+    to=(d.get("to") or "").strip() or _eff_from or EMAIL_REPLY_TO
     if not EMAIL_ENABLED:
         return jsonify({"ok":False,"configured":False,
-            "error":"Email not set up — add RESEND_API_KEY + RESEND_FROM in Railway → Variables (recommended), then redeploy."})
+            "error":"Email not set up — add GAS_EMAIL_URL (easiest) or RESEND_API_KEY in Railway → Variables, then redeploy."})
     if not to:
         return jsonify({"ok":False,"error":"Enter a recipient email address."})
     b=session.get("brand") or {}
     company=esc(b.get("company") or b.get("mark") or "your team")
-    _via="Resend" if RESEND_ENABLED else "SMTP"
+    _via=_EMAIL_VIA
     html=("<div style=\"font-family:-apple-system,Segoe UI,sans-serif;max-width:480px\">"
           "<h2 style=\"color:#059669\">✅ Email is working</h2>"
           "<p style=\"font-size:15px;color:#3a4252;line-height:1.6\">This is a test from <b>%s</b>'s onboarding "
