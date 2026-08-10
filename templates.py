@@ -6416,12 +6416,28 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:#1a
     <div class="pc-txt" id="pcTxt">—</div>
   </div>
 
+  <div style="text-align:right;margin:-10px 0 20px">
+    <button id="saveExitBtn" style="background:none;border:1px solid rgba(17,24,39,0.16);color:#586274;font-family:inherit;font-size:13px;font-weight:700;padding:9px 16px;border-radius:10px;cursor:pointer">💾 Save &amp; exit</button>
+  </div>
+
   <div id="stepsList"></div>
 
   <div class="finished" id="finished">
     <div class="icn">🎉</div>
     <div class="ttl">All done!</div>
     <div class="sub">Your manager has been notified. They'll reach out about your start date and getting you a badge.</div>
+  </div>
+</div>
+
+<div id="saveOverlay" style="display:none;position:fixed;inset:0;background:rgba(17,24,39,0.55);z-index:200;align-items:center;justify-content:center;padding:22px">
+  <div style="background:#fff;border-radius:20px;max-width:440px;width:100%;padding:30px 26px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.25)">
+    <div style="font-size:46px;line-height:1;margin-bottom:12px">✅</div>
+    <div id="soTtl" style="font-size:22px;font-weight:900;color:#141b26;margin-bottom:8px">Progress saved</div>
+    <div id="soBody" style="font-size:15px;color:#586274;line-height:1.55;margin-bottom:20px">You can safely close this page. When you're ready, just open your private link again — we've kept your place.</div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <button id="soCopy" style="background:var(--brand);color:#fff;border:none;border-radius:12px;padding:13px;font-family:inherit;font-size:15px;font-weight:800;cursor:pointer">🔗 Copy my link</button>
+      <button id="soClose" style="background:none;border:1px solid rgba(17,24,39,0.16);color:#586274;border-radius:12px;padding:12px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer">Keep going</button>
+    </div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -6464,6 +6480,12 @@ var I18N = {
         tryAgain:'Try again',
         savedToast:'✓ Saved',
         invalidLink:'Invalid link. Ask your manager for a new one.',
+        saveExit:'💾 Save & exit',
+        soTtl:'Progress saved',
+        soBody:"You can safely close this page. When you're ready, just open your private link again — we've kept your place.",
+        soCopy:'🔗 Copy my link',
+        soCopied:'✓ Link copied',
+        soClose:'Keep going',
     },
     es: {
         sub:'Orientación',
@@ -6498,6 +6520,12 @@ var I18N = {
         tryAgain:'Intenta de nuevo',
         savedToast:'✓ Guardado',
         invalidLink:'Enlace no válido. Pide a tu gerente uno nuevo.',
+        saveExit:'💾 Guardar y salir',
+        soTtl:'Progreso guardado',
+        soBody:'Puedes cerrar esta página con confianza. Cuando estés listo, abre de nuevo tu enlace privado — guardamos tu avance.',
+        soCopy:'🔗 Copiar mi enlace',
+        soCopied:'✓ Enlace copiado',
+        soClose:'Seguir',
     }
 };
 var CUR_LANG='en';
@@ -6514,8 +6542,38 @@ function applyStaticI18n(){
     document.getElementById('finished').querySelector('.sub').textContent=L.finishedSub;
     document.getElementById('langEn').classList.toggle('active',CUR_LANG==='en');
     document.getElementById('langEs').classList.toggle('active',CUR_LANG==='es');
+    document.getElementById('saveExitBtn').textContent=L.saveExit;
+    document.getElementById('soTtl').textContent=L.soTtl;
+    document.getElementById('soBody').textContent=L.soBody;
+    document.getElementById('soCopy').textContent=L.soCopy;
+    document.getElementById('soClose').textContent=L.soClose;
     document.documentElement.lang=CUR_LANG;
 }
+
+// Save & exit — everything already auto-saves per step; this reassures the hire
+// and hands them their resume link.
+document.getElementById('saveExitBtn').addEventListener('click',function(){
+    document.getElementById('saveOverlay').style.display='flex';
+});
+document.getElementById('soClose').addEventListener('click',function(){
+    document.getElementById('saveOverlay').style.display='none';
+});
+document.getElementById('saveOverlay').addEventListener('click',function(e){
+    if(e.target===this)this.style.display='none';
+});
+document.getElementById('soCopy').addEventListener('click',function(){
+    var b=this,url=window.location.href;
+    function done(){b.textContent=L.soCopied;setTimeout(function(){b.textContent=L.soCopy},1600);}
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(url).then(done,function(){
+            var t=document.createElement('textarea');t.value=url;document.body.appendChild(t);t.select();
+            try{document.execCommand('copy')}catch(e){}document.body.removeChild(t);done();
+        });
+    }else{
+        var t=document.createElement('textarea');t.value=url;document.body.appendChild(t);t.select();
+        try{document.execCommand('copy')}catch(e){}document.body.removeChild(t);done();
+    }
+});
 
 function setLang(lang,persist){
     CUR_LANG = (lang==='es')?'es':'en';
