@@ -9552,15 +9552,55 @@ def api_badge_pdf(u):
         print("Badge PDF error:",e,flush=True)
         return jsonify({"ok":False,"error":"PDF generation failed: "+str(e)[:100]}),500
 
+def _read_badge_photo_bytes(key):
+    """Fetch a stored badge selfie (R2 or local) by its storage key. Returns bytes or None."""
+    if not key:
+        return None
+    try:
+        if r2:
+            obj = r2.get_object(Bucket=R2_BUCKET, Key=key)
+            return obj["Body"].read()
+        p = os.path.join(HIRE_LOCAL_UPLOAD_DIR, key.replace("/", "__"))
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                return f.read()
+    except Exception as e:
+        print("badge photo read failed:", e, flush=True)
+    return None
+
+
+def _square_photo_reader(photo_bytes):
+    """Center-crop a selfie to a square (fixing phone EXIF rotation) so it fills the
+    badge photo box cleanly. Returns an ImageReader or None."""
+    if not photo_bytes:
+        return None
+    try:
+        from io import BytesIO
+        from PIL import Image, ImageOps
+        from reportlab.lib.utils import ImageReader
+        im = Image.open(BytesIO(photo_bytes))
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        w, h = im.size
+        s = min(w, h)
+        im = im.crop(((w - s) // 2, (h - s) // 2, (w - s) // 2 + s, (h - s) // 2 + s))
+        if s > 500:
+            im = im.resize((500, 500))
+        buf = BytesIO(); im.save(buf, "JPEG", quality=85); buf.seek(0)
+        return ImageReader(buf)
+    except Exception as e:
+        print("badge photo crop failed:", e, flush=True)
+        return None
+
+
 @app.route("/api/users/badge/label4x6/<u>")
 @req_role("admin")
 def api_badge_label4x6(u):
-    """Generate a 4×6 inch shipping-label-sized badge PDF.
-    The badge occupies a 4×3" area at the BOTTOM half of the label so the top
-    half can be folded over the badge or left blank for hole-punching/lamination.
-    Optimized for thermal label printers (DYMO 4XL, Rollo, Zebra, etc.)."""
+    """Badge on a 4×6" label sized to a CR80 PVC card (3.375×2.125"). Print on the
+    4×6 label printer, cut on the dashed outline, and stick onto the plastic card.
+    Includes the employee's selfie (if captured during onboarding), name, role and
+    a Code-128 barcode of their badge token."""
     users = ldj(USERS_FILE)
-    if u not in users or not _same_org_user(users,u): return ("", 404)
+    if u not in users or not _same_org_user(users, u): return ("", 404)
     info = users[u]
     token = info.get("badge_token")
     if not token: return jsonify({"ok": False, "error": "User has no badge token"}), 400
@@ -9568,53 +9608,102 @@ def api_badge_label4x6(u):
         from io import BytesIO
         from reportlab.pdfgen import canvas
         from reportlab.lib.units import inch
+        from reportlab.lib.utils import ImageReader
         import barcode
         from barcode.writer import ImageWriter
-        # Generate barcode image (Code 128 — scanner-friendly)
+        # Barcode (Code-128, scanner-friendly)
         bio = BytesIO()
         bc = barcode.Code128(token, writer=ImageWriter())
-        bc.write(bio, options={"module_height": 14.0, "module_width": 0.5, "font_size": 9,
-                               "text_distance": 3.0, "quiet_zone": 3})
+        bc.write(bio, options={"module_height": 9.0, "module_width": 0.38, "font_size": 7,
+                               "text_distance": 2.5, "quiet_zone": 2})
         bio.seek(0)
-        from reportlab.lib.utils import ImageReader
-        img = ImageReader(bio)
-        # Page = 4×6" (thermal label), with badge content in bottom 3"
+        barimg = ImageReader(bio)
+        photo = _square_photo_reader(_read_badge_photo_bytes(info.get("badge_photo")))
+
+        # Page 4×6"; CR80 card 3.375×2.125" centered.
         page_w, page_h = 4 * inch, 6 * inch
+        cw, ch = 3.375 * inch, 2.125 * inch
+        x0 = (page_w - cw) / 2
+        y0 = (page_h - ch) / 2
         out = BytesIO()
         c = canvas.Canvas(out, pagesize=(page_w, page_h))
-        # ─── Bottom half: the badge (4×3", from y=0 to y=3") ───
-        # Outer rounded border
-        c.setStrokeColorRGB(0.2, 0.2, 0.2); c.setLineWidth(1.2)
-        c.roundRect(0.15*inch, 0.15*inch, page_w - 0.3*inch, 3*inch - 0.3*inch, 8, stroke=1, fill=0)
-        # Top stripe — brand pink
-        stripe_h = 0.6 * inch
-        c.setFillColorRGB(0.851, 0.455, 0.561)  # #d9748f brand rose
-        c.roundRect(0.15*inch, 3*inch - 0.15*inch - stripe_h, page_w - 0.3*inch, stripe_h, 8, stroke=0, fill=1)
-        # Stripe text
-        c.setFillColorRGB(0.10, 0.06, 0.05)
-        _bmark=((session.get("brand") or {}).get("mark") or "").strip() or \
-               (org_get(current_org()).get("brand_mark") or "STAFF")
-        c.setFont("Helvetica-Bold", 22); c.drawCentredString(page_w/2, 3*inch - 0.40*inch, _bmark[:14])
-        c.setFont("Helvetica-Bold", 9); c.drawCentredString(page_w/2, 3*inch - 0.60*inch, "EMPLOYEE BADGE")
-        # Worker name (big, centered)
-        c.setFillColorRGB(0, 0, 0); c.setFont("Helvetica-Bold", 24)
-        c.drawCentredString(page_w/2, 3*inch - 1.15*inch, info["name"])
-        # Username
-        c.setFont("Helvetica", 11); c.setFillColorRGB(0.4, 0.4, 0.4)
-        c.drawCentredString(page_w/2, 3*inch - 1.42*inch, "@" + u)
-        # Role pill
-        role_text = info.get("role", "").upper()
+
+        # Brand colour (tenant colour if set, else brand rose)
+        br, bg, bb = 0.851, 0.455, 0.561
+        try:
+            hexc = (org_get(current_org()).get("brand_color") or "").lstrip("#")
+            if len(hexc) == 6:
+                br, bg, bb = (int(hexc[0:2],16)/255, int(hexc[2:4],16)/255, int(hexc[4:6],16)/255)
+        except Exception:
+            pass
+        _bmark = ((session.get("brand") or {}).get("mark") or "").strip() or \
+                 (org_get(current_org()).get("brand_mark") or "STAFF")
+
+        # ── Card background + stripe ──
+        c.setFillColorRGB(1,1,1)
+        c.rect(x0, y0, cw, ch, stroke=0, fill=1)
+        stripe_h = 0.42 * inch
+        c.setFillColorRGB(br, bg, bb)
+        c.rect(x0, y0 + ch - stripe_h, cw, stripe_h, stroke=0, fill=1)
+        # Readable text colour on the stripe (white unless very light brand colour)
+        lum = 0.299*br + 0.587*bg + 0.114*bb
+        c.setFillColorRGB(0,0,0) if lum > 0.75 else c.setFillColorRGB(1,1,1)
+        c.setFont("Helvetica-Bold", 15)
+        c.drawString(x0 + 0.16*inch, y0 + ch - 0.29*inch, _bmark[:18])
+        c.setFont("Helvetica-Bold", 7)
+        c.drawRightString(x0 + cw - 0.16*inch, y0 + ch - 0.27*inch, "EMPLOYEE BADGE")
+
+        # ── Photo box (left) ──
+        pad = 0.14 * inch
+        ph = 1.05 * inch
+        px = x0 + pad
+        py = y0 + ch - stripe_h - pad - ph
+        if photo:
+            c.drawImage(photo, px, py, width=ph, height=ph, mask='auto')
+            c.setStrokeColorRGB(0.8,0.8,0.8); c.setLineWidth(0.6); c.rect(px, py, ph, ph, stroke=1, fill=0)
+        else:
+            c.setFillColorRGB(0.93,0.93,0.93); c.rect(px, py, ph, ph, stroke=0, fill=1)
+            c.setFillColorRGB(0.6,0.6,0.6); c.setFont("Helvetica-Bold", 30)
+            c.drawCentredString(px + ph/2, py + ph/2 - 10, (info.get("name") or "?")[:1].upper())
+
+        # ── Name / role / username (right of photo) ──
+        tx = px + ph + 0.16*inch
+        c.setFillColorRGB(0.05,0.08,0.12); c.setFont("Helvetica-Bold", 15)
+        c.drawString(tx, y0 + ch - stripe_h - 0.30*inch, (info.get("name") or "")[:20])
+        role_text = (info.get("role", "") or "").upper()
         if role_text:
-            c.setFont("Helvetica-Bold", 9); c.setFillColorRGB(0.4, 0.4, 0.4)
-            c.drawCentredString(page_w/2, 3*inch - 1.65*inch, role_text)
-        # Barcode (large, scanner-friendly across the bottom)
-        bc_w = page_w - 0.6*inch; bc_h = 1.0*inch
-        c.drawImage(img, 0.30*inch, 0.30*inch, width=bc_w, height=bc_h,
+            c.setFillColorRGB(br, bg, bb); c.setFont("Helvetica-Bold", 8)
+            c.drawString(tx, y0 + ch - stripe_h - 0.48*inch, role_text)
+        c.setFillColorRGB(0.45,0.45,0.45); c.setFont("Helvetica", 8)
+        c.drawString(tx, y0 + ch - stripe_h - 0.63*inch, "@" + u)
+
+        # ── Barcode strip along the bottom (full width) ──
+        bc_h = 0.55 * inch
+        c.drawImage(barimg, x0 + 0.16*inch, y0 + 0.08*inch, width=cw - 0.32*inch, height=bc_h,
                     preserveAspectRatio=True, mask='auto')
+
+        # ── Cut outline (dashed) + corner crop marks ──
+        c.setStrokeColorRGB(0.55,0.55,0.55); c.setLineWidth(0.7); c.setDash(3, 2)
+        c.rect(x0, y0, cw, ch, stroke=1, fill=0); c.setDash()
+        c.setStrokeColorRGB(0.2,0.2,0.2); c.setLineWidth(0.6)
+        m = 0.12 * inch
+        for (cx, cy) in [(x0, y0), (x0+cw, y0), (x0, y0+ch), (x0+cw, y0+ch)]:
+            sx = -1 if cx > x0 else 1
+            sy = -1 if cy > y0 else 1
+            c.line(cx, cy, cx + sx*m, cy); c.line(cx, cy, cx, cy + sy*m)
+
+        # Instructions above / below the card
+        c.setFillColorRGB(0.4,0.4,0.4); c.setFont("Helvetica", 9)
+        c.drawCentredString(page_w/2, y0 + ch + 0.35*inch,
+                            "✂  Cut on the dashed line")
+        c.setFont("Helvetica", 8)
+        c.drawCentredString(page_w/2, y0 - 0.30*inch,
+                            "Stick onto a CR80 PVC card (3.375 x 2.125 in / 85.6 x 54 mm)")
+
         c.showPage(); c.save()
         out.seek(0)
         return send_file(out, mimetype="application/pdf",
-                         download_name="badge_4x6_" + u + ".pdf", as_attachment=False)
+                         download_name="badge_cr80_" + u + ".pdf", as_attachment=False)
     except Exception as e:
         print("Badge 4x6 PDF error:", e, flush=True)
         return jsonify({"ok": False, "error": "PDF generation failed: " + str(e)[:100]}), 500

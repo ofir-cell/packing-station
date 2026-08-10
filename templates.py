@@ -2069,7 +2069,7 @@ function loadUsers(){
             if(info.role==='worker'){
                 if(info.has_badge){
                     actions='<a class="btn btn-s btn-sm" href="/api/users/badge/pdf/'+u+'" target="_blank">🖨️ Card</a>'+
-                        '<a class="btn btn-s btn-sm" href="/api/users/badge/label4x6/'+u+'" target="_blank">🖨️ 4×6 Label</a>'+
+                        '<a class="btn btn-s btn-sm" href="/api/users/badge/label4x6/'+u+'" target="_blank">🖨️ 4×6 (CR80 card)</a>'+
                         '<button class="btn btn-d btn-sm" data-act="regen" data-u="'+u+'">↻ Regen</button>'+
                         '<button class="btn btn-d btn-sm" data-act="revoke" data-u="'+u+'">✕ Revoke</button>';
                 } else {
