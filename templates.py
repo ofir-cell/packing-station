@@ -6141,6 +6141,25 @@ __NAVBAR__
     <div style="font-size:12px;color:var(--text-muted);margin-top:10px">Send to the new hire via WhatsApp, email, or SMS. Regenerate to invalidate the old link if it was shared by mistake.</div>
   </div>
 
+  <div class="card" id="editCard">
+    <div class="card-title">✏️ Edit details</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:640px">
+      <label style="font-size:12px;font-weight:700;color:var(--text-muted)">Full name<input id="eName" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border);border-radius:9px;font-family:inherit"></label>
+      <label style="font-size:12px;font-weight:700;color:var(--text-muted)">Email<input id="eEmail" type="email" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border);border-radius:9px;font-family:inherit"></label>
+      <label style="font-size:12px;font-weight:700;color:var(--text-muted)">Phone<input id="ePhone" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border);border-radius:9px;font-family:inherit"></label>
+      <label style="font-size:12px;font-weight:700;color:var(--text-muted)">Role<select id="eRole" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border);border-radius:9px;font-family:inherit"><option value="worker">Warehouse Worker</option><option value="picker">Picker</option><option value="host">Host</option><option value="assistant">Assistant</option><option value="cs">Customer Service</option><option value="admin">Admin</option></select></label>
+      <label style="font-size:12px;font-weight:700;color:var(--text-muted)">Onboarding workflow<select id="eWorkflow" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border);border-radius:9px;font-family:inherit"></select></label>
+      <label style="font-size:12px;font-weight:700;color:var(--text-muted)">Language<select id="eLang" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border);border-radius:9px;font-family:inherit"><option value="en">English</option><option value="es">Español</option></select></label>
+    </div>
+    <div style="margin-top:12px"><button id="saveEditBtn" class="btn-primary" style="padding:9px 18px">Save changes</button><span id="editStat" style="font-size:13px;font-weight:700;margin-left:10px"></span></div>
+  </div>
+
+  <div class="card" id="acctCard" style="display:none;border:1px solid #10b981">
+    <div class="card-title">🔐 System login account</div>
+    <div id="acctBody" style="font-size:14px;line-height:1.7"></div>
+    <div style="font-size:12px;color:var(--text-muted);margin-top:8px">Created automatically when onboarding was completed. Hand these credentials to the new hire. Workers can also scan their badge to log in.</div>
+  </div>
+
   <div class="card">
     <div class="card-title">📁 Employee File</div>
     <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
@@ -6170,10 +6189,33 @@ function fmtData(s){
     return parts.length?parts.join(' · '):'';
 }
 
+var WORKFLOWS=[];
+function fillEdit(h){
+    document.getElementById('eName').value=h.full_name||'';
+    document.getElementById('eEmail').value=h.email||'';
+    document.getElementById('ePhone').value=h.phone||'';
+    if(h.role_target)document.getElementById('eRole').value=h.role_target;
+    document.getElementById('eLang').value=(h.preferred_language||'en');
+    var wsel=document.getElementById('eWorkflow');
+    wsel.innerHTML=WORKFLOWS.map(function(w){return '<option value="'+w.id+'"'+(w.id===h.workflow_id?' selected':'')+'>'+esc(w.name)+'</option>'}).join('');
+}
+function renderAccount(h){
+    var card=document.getElementById('acctCard');
+    if(!h.provisioned_username){card.style.display='none';return;}
+    card.style.display='';
+    var rows='<div>Username: <b>'+esc(h.provisioned_username)+'</b></div>';
+    if(h.provisioned_password)rows+='<div>Temporary password: <b style="font-family:monospace;background:#f1f5f9;padding:2px 8px;border-radius:6px">'+esc(h.provisioned_password)+'</b></div>';
+    if(h.role_target==='worker')rows+='<div style="color:#059669;font-weight:700">📇 Badge login enabled — this worker can scan their badge on the login screen.</div>';
+    if(h.provisioned_at)rows+='<div style="font-size:12px;color:var(--text-muted)">Account created '+(h.provisioned_at||'').slice(0,16)+'</div>';
+    document.getElementById('acctBody').innerHTML=rows;
+}
 function load(){
+    fetch('/api/workflows').then(function(r){return r.json()}).then(function(ws){WORKFLOWS=ws||[];
     fetch('/api/hires/__HIRE_ID__').then(function(r){return r.json()}).then(function(d){
         if(!d.ok)return;
         var h=d.hire;
+        fillEdit(h);
+        renderAccount(h);
         document.getElementById('hMeta').innerHTML=
             (h.email?'<span>📧 <b>'+esc(h.email)+'</b></span>':'')+
             (h.phone?'<span>📞 <b>'+esc(h.phone)+'</b></span>':'')+
@@ -6200,8 +6242,22 @@ function load(){
         });
         document.getElementById('stepsList').innerHTML=html;
     });
+    });
 }
 load();
+
+document.getElementById('saveEditBtn').addEventListener('click',function(){
+    var b=this,st=document.getElementById('editStat');b.disabled=true;st.style.color='#8a93a5';st.textContent='Saving…';
+    var body={full_name:document.getElementById('eName').value,email:document.getElementById('eEmail').value,
+        phone:document.getElementById('ePhone').value,role_target:document.getElementById('eRole').value,
+        preferred_language:document.getElementById('eLang').value,workflow_id:document.getElementById('eWorkflow').value};
+    fetch('/api/hires/__HIRE_ID__',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+      .then(function(r){return r.json()}).then(function(d){
+        b.disabled=false;
+        if(d.ok){st.style.color='#059669';st.textContent='✓ Saved';load();}
+        else{st.style.color='#e11d48';st.textContent='⚠️ '+(d.error||'Failed');}
+    }).catch(function(){b.disabled=false;st.style.color='#e11d48';st.textContent='Request failed';});
+});
 
 document.getElementById('copyBtn').addEventListener('click',function(){
     var inp=document.getElementById('iUrl');inp.select();
@@ -6578,6 +6634,7 @@ function renderStepBody(el){
         var fields=cfg.fields||[{name:'file',label:'File',required:true}];
         var accept=cfg.accept||'image/*,.pdf';
         var maxMb=cfg.max_mb||15;
+        var captureAttr=cfg.capture?(' capture="'+esc(cfg.capture)+'"'):'';
         var existing={};try{existing=JSON.parse(s.data_json||'{}').uploads||{}}catch(e){existing={}}
         bodyEl.innerHTML=(s.body?'<div class="doc-body">'+esc(s.body)+'</div>':'')+
             fields.map(function(f){
@@ -6589,7 +6646,7 @@ function renderStepBody(el){
                         ? '<div class="upload-have"><span class="icn">📎</span><span class="fn">'+esc(has.filename||'uploaded')+'</span>'+
                           '<button class="upload-rm" data-field="'+esc(f.name)+'">Remove</button></div>'
                         : '<div class="upload-pick"><div class="icn">📤</div><div class="ttl">'+(L.tapToUpload||'Tap to upload')+'</div><div class="sub">'+(L.maxSize||'Max')+' '+maxMb+'MB · '+esc(accept)+'</div></div>')+
-                      '<input type="file" accept="'+esc(accept)+'" data-field="'+esc(f.name)+'">'+
+                      '<input type="file" accept="'+esc(accept)+'"'+captureAttr+' data-field="'+esc(f.name)+'">'+
                     '</div>'+
                     '<div class="upload-status" data-status="'+esc(f.name)+'"></div>'+
                 '</div>';

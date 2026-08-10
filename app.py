@@ -960,8 +960,19 @@ def sdb_init(org):
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         created_by TEXT,
         notes TEXT,
-        preferred_language TEXT DEFAULT 'en'
+        preferred_language TEXT DEFAULT 'en',
+        provisioned_username TEXT,
+        provisioned_password TEXT,
+        provisioned_at TEXT
     )""")
+    # A-Z onboarding migration for existing tenants (table already created above).
+    for _stmt in (
+        "ALTER TABLE new_hires ADD COLUMN provisioned_username TEXT",
+        "ALTER TABLE new_hires ADD COLUMN provisioned_password TEXT",
+        "ALTER TABLE new_hires ADD COLUMN provisioned_at TEXT",
+    ):
+        try: c.execute(_stmt)
+        except sqlite3.OperationalError: pass
     c.execute("""CREATE TABLE IF NOT EXISTS onboarding_workflows(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -2308,6 +2319,72 @@ def _i9_documents_step():
         ),
     }
 
+def _badge_selfie_step():
+    """The final onboarding step — the hire takes a selfie that becomes their
+    badge photo. Implemented as an 'upload' step with capture=user so the phone
+    opens the front camera. config flag badge_photo=true marks it for provisioning."""
+    return {
+        "step_type": "upload",
+        "title_en": "Badge Photo",
+        "title_es": "Foto de Credencial",
+        "description_en": "Take a quick selfie — this becomes your employee badge photo.",
+        "description_es": "Tómate una selfie rápida — esta será la foto de tu credencial de empleado.",
+        "body_en": (
+            "Almost done! Take a clear photo of your face for your employee badge.\n\n"
+            "Tips for a good badge photo:\n"
+            "  • Face the camera straight on, eyes open, neutral expression or a small smile.\n"
+            "  • Good lighting — avoid strong backlight or shadows.\n"
+            "  • Plain background if possible.\n"
+            "  • No hats or sunglasses.\n\n"
+            "Tap below to open your camera and take the photo. You can retake it if it's blurry."
+        ),
+        "body_es": (
+            "¡Casi listo! Toma una foto clara de tu rostro para tu credencial de empleado.\n\n"
+            "Consejos para una buena foto de credencial:\n"
+            "  • Mira directamente a la cámara, ojos abiertos, expresión neutral o una pequeña sonrisa.\n"
+            "  • Buena iluminación — evita luz fuerte por detrás o sombras.\n"
+            "  • Fondo simple si es posible.\n"
+            "  • Sin sombreros ni gafas de sol.\n\n"
+            "Toca abajo para abrir tu cámara y tomar la foto. Puedes repetirla si sale borrosa."
+        ),
+        "config_json": (
+            '{"accept":"image/*","capture":"user","max_mb":10,"badge_photo":true,"fields":['
+            '{"name":"selfie","label":"Your badge selfie","required":true}'
+            ']}'
+        ),
+        "config_json_es": (
+            '{"accept":"image/*","capture":"user","max_mb":10,"badge_photo":true,"fields":['
+            '{"name":"selfie","label":"Tu selfie de credencial","required":true}'
+            ']}'
+        ),
+    }
+
+
+def _ensure_selfie_step_on_existing_workflows(org=None):
+    """Append the badge-selfie step to every workflow that doesn't already have it.
+    Placed last (after I-9) so it's the final thing the hire does. Idempotent."""
+    c = sdb(org)
+    workflows = c.execute("SELECT id FROM onboarding_workflows").fetchall()
+    for wf in workflows:
+        already = c.execute("""SELECT id FROM onboarding_steps
+                               WHERE workflow_id=? AND step_type='upload'
+                                 AND config_json LIKE '%"badge_photo":true%'""",
+                            (wf["id"],)).fetchone()
+        if already:
+            continue
+        max_order = c.execute("SELECT COALESCE(MAX(step_order),0) AS m FROM onboarding_steps WHERE workflow_id=?",
+                              (wf["id"],)).fetchone()["m"]
+        step = _badge_selfie_step()
+        c.execute("""INSERT INTO onboarding_steps
+                     (workflow_id, step_order, step_type, title, description, body, config_json,
+                      is_required, title_es, description_es, body_es, config_json_es)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
+                  (wf["id"], max_order + 1, step["step_type"],
+                   step["title_en"], step["description_en"], step["body_en"], step["config_json"],
+                   step["title_es"], step["description_es"], step["body_es"], step["config_json_es"]))
+    c.commit(); c.close()
+
+
 def _ensure_i9_steps_on_existing_workflows(org=None):
     """Append the I-9 form + supporting documents step to every existing workflow
     that doesn't already have them. Idempotent — runs once per workflow."""
@@ -2341,6 +2418,7 @@ def _seed_workflows_from_module(org=None):
         from onboarding_seed import WORKFLOWS
     except ImportError:
         _ensure_i9_steps_on_existing_workflows(org)
+        _ensure_selfie_step_on_existing_workflows(org)
         return None
     c = sdb(org)
     first_wf_id = None
@@ -2373,6 +2451,8 @@ def _seed_workflows_from_module(org=None):
     c.commit(); c.close()
     # Backfill I-9 onto every workflow (including ones we just seeded)
     _ensure_i9_steps_on_existing_workflows(org)
+    # Badge selfie is always the final step, appended after I-9
+    _ensure_selfie_step_on_existing_workflows(org)
     return first_wf_id
 
 def _seed_default_workflow_if_missing(org=None):
@@ -2789,10 +2869,87 @@ def _mark_step(hire_id, step_id, data_dict=None, status="done"):
         LEFT JOIN onboarding_progress p ON p.step_id=s.id AND p.hire_id=?
         WHERE s.workflow_id=? AND s.is_required=1 AND COALESCE(p.status,'pending')<>'done'
     """, (hire_id, workflow_id)).fetchone()["pending"]
+    just_completed = False
     if pending == 0:
+        prev = c.execute("SELECT status FROM new_hires WHERE id=?", (hire_id,)).fetchone()
         c.execute("UPDATE new_hires SET status='complete', completed_at=? WHERE id=? AND status<>'complete'",
                   (now, hire_id))
+        if prev and prev["status"] != 'complete':
+            just_completed = True
     c.commit(); c.close()
+    # A-Z automation: when the hire finishes every required step (incl. signing +
+    # badge selfie), auto-create their login account. Done after the connection
+    # closes so the USERS_FILE write can't deadlock against this open transaction.
+    if just_completed:
+        try:
+            _provision_user_from_hire(hire_id)
+        except Exception as _e:
+            print("hire provision failed:", _e, flush=True)
+
+
+def _slug_username(full_name):
+    """Turn a full name into a lowercase alphanumeric username base."""
+    base = re.sub(r'[^a-z0-9]+', '', (full_name or '').lower())[:24]
+    return base or 'staff'
+
+
+def _gen_temp_password():
+    """A short, readable temp password (no ambiguous chars) to hand to a new hire."""
+    import secrets
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(8))
+
+
+def _provision_user_from_hire(hire_id):
+    """Idempotently create a login account for a hire who has completed onboarding.
+    Workers get a scan-badge token; everyone also gets a temp password. The badge
+    selfie (if uploaded) becomes the user's badge photo. The account details are
+    written back onto the hire row so the admin can hand them over."""
+    org = current_org()
+    if not org:
+        return None
+    c = sdb(org)
+    row = c.execute("SELECT * FROM new_hires WHERE id=?", (hire_id,)).fetchone()
+    if not row:
+        c.close(); return None
+    hire = dict(row)
+    if hire.get("provisioned_username"):   # already provisioned — idempotent
+        c.close(); return hire["provisioned_username"]
+    selfie = c.execute("""SELECT storage_key FROM onboarding_uploads
+                          WHERE hire_id=? AND field_name='selfie' AND storage_key IS NOT NULL
+                          ORDER BY uploaded_at DESC LIMIT 1""", (hire_id,)).fetchone()
+    c.close()
+    selfie_key = selfie["storage_key"] if selfie else None
+
+    role = (hire.get("role_target") or "").strip().lower()
+    if role not in ("admin", "cs", "worker", "picker", "host", "assistant"):
+        role = "worker"
+    full_name = hire.get("full_name") or "New Hire"
+    temp_pw = _gen_temp_password()
+    base = _slug_username(full_name)
+
+    with update_json(USERS_FILE) as users:
+        uname = base; n = 1
+        while uname in users:            # globally unique across the control plane
+            n += 1; uname = base + str(n)
+        users[uname] = {"password": _h(temp_pw), "role": role, "name": full_name, "org": org}
+        if role == "worker":
+            users[uname]["badge_token"] = _gen_badge_token()
+        if selfie_key:
+            users[uname]["badge_photo"] = selfie_key
+        users[uname]["from_hire_id"] = hire_id
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c = sdb(org)
+    c.execute("""UPDATE new_hires SET provisioned_username=?, provisioned_password=?, provisioned_at=?
+                 WHERE id=?""", (uname, temp_pw, now, hire_id))
+    c.commit(); c.close()
+    try:
+        alog("hire.provision", "%s -> user %s (role=%s)" % (full_name, uname, role))
+    except Exception:
+        pass
+    return uname
+
 
 def _sku_weight(sku):
     """Look up a single SKU's weight in grams. Returns None if unknown."""
@@ -7350,6 +7507,56 @@ def api_hire_get(hire_id):
     return jsonify({"ok": True, "hire": h, "steps": steps, "signatures": sigs,
                     "uploads": uploads,
                     "progress": {"done": done, "total": total, "pct": pct}})
+
+@app.route("/api/hires/<int:hire_id>", methods=["PATCH"])
+@req_role("admin", "cs")
+def api_hire_update(hire_id):
+    """Edit an invited hire's details (name/email/phone/role/workflow/language)
+    at any time. Only the fields present in the body are updated."""
+    d = request.get_json() or {}
+    c = sdb()
+    h = c.execute("SELECT id, workflow_id FROM new_hires WHERE id=?", (hire_id,)).fetchone()
+    if not h:
+        c.close(); return jsonify({"ok": False, "error": "Hire not found"}), 404
+    sets, vals = [], []
+    if "full_name" in d:
+        nm = (d.get("full_name") or "").strip()
+        if not nm:
+            c.close(); return jsonify({"ok": False, "error": "Name can't be empty"})
+        sets.append("full_name=?"); vals.append(nm)
+    if "email" in d:
+        sets.append("email=?"); vals.append((d.get("email") or "").strip() or None)
+    if "phone" in d:
+        sets.append("phone=?"); vals.append((d.get("phone") or "").strip() or None)
+    if "role_target" in d:
+        role = (d.get("role_target") or "").strip().lower()
+        if role and role not in ("admin", "cs", "worker", "picker", "host", "assistant"):
+            c.close(); return jsonify({"ok": False, "error": "Invalid role"})
+        sets.append("role_target=?"); vals.append(role or None)
+    if "preferred_language" in d:
+        lang = (d.get("preferred_language") or "en").strip().lower()
+        if lang not in ("en", "es"): lang = "en"
+        sets.append("preferred_language=?"); vals.append(lang)
+    if "workflow_id" in d:
+        wid = d.get("workflow_id")
+        if wid in (None, "", 0, "0"):
+            c.close(); return jsonify({"ok": False, "error": "Pick a workflow"})
+        try: wid = int(wid)
+        except (TypeError, ValueError):
+            c.close(); return jsonify({"ok": False, "error": "Invalid workflow"})
+        wf = c.execute("SELECT id FROM onboarding_workflows WHERE id=?", (wid,)).fetchone()
+        if not wf:
+            c.close(); return jsonify({"ok": False, "error": "Workflow not found"})
+        sets.append("workflow_id=?"); vals.append(wid)
+    if not sets:
+        c.close(); return jsonify({"ok": False, "error": "Nothing to update"})
+    vals.append(hire_id)
+    c.execute("UPDATE new_hires SET %s WHERE id=?" % ", ".join(sets), vals)
+    c.commit()
+    row = dict(c.execute("SELECT * FROM new_hires WHERE id=?", (hire_id,)).fetchone())
+    c.close()
+    alog("hire.update", "#%s" % hire_id)
+    return jsonify({"ok": True, "hire": row})
 
 @app.route("/api/hires/<int:hire_id>/regenerate-token", methods=["POST"])
 @req_role("admin", "cs")
