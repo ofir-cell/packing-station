@@ -667,16 +667,60 @@ SMTP_FROM_NAME=os.environ.get("SMTP_FROM_NAME","").strip()
 # Replies land here — lets you send from a dedicated account but get answers in
 # your own inbox. Defaults to the From address.
 SMTP_REPLY_TO=os.environ.get("SMTP_REPLY_TO","").strip() or SMTP_FROM
-EMAIL_ENABLED=bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
-print(("Email/SMTP enabled (from %s)"%SMTP_FROM) if EMAIL_ENABLED
-      else "Email/SMTP not configured (invite links must be copied manually)",flush=True)
+# Resend (HTTPS email API). Preferred because many hosts (Railway) block outbound
+# SMTP ports — HTTPS on 443 always gets through. Set RESEND_API_KEY and RESEND_FROM
+# ("Name <you@yourdomain.com>", domain verified in Resend). Replies still route to
+# SMTP_REPLY_TO (your own inbox).
+RESEND_API_KEY=os.environ.get("RESEND_API_KEY","").strip()
+RESEND_FROM=os.environ.get("RESEND_FROM","").strip() or (SMTP_FROM if SMTP_FROM else "")
+RESEND_ENABLED=bool(RESEND_API_KEY and RESEND_FROM)
+_SMTP_OK=bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
+EMAIL_ENABLED=bool(RESEND_ENABLED or _SMTP_OK)
+# Whatever address replies should go to (your inbox), independent of transport.
+EMAIL_REPLY_TO=SMTP_REPLY_TO or RESEND_FROM
+print(("Email enabled via %s (from %s)"%(
+        "Resend" if RESEND_ENABLED else "SMTP",
+        RESEND_FROM if RESEND_ENABLED else SMTP_FROM)) if EMAIL_ENABLED
+      else "Email not configured (invite links must be copied manually)",flush=True)
 
-def _send_email(to_addr, subject, html_body, text_body=None):
+
+def _send_via_resend(to_addr, subject, html_body, text_body=None):
+    """Send one email through the Resend HTTPS API (port 443). Returns (ok, error)."""
+    import json as _json, urllib.request, urllib.error, socket
+    from email.utils import formataddr
+    frm = RESEND_FROM
+    if SMTP_FROM_NAME and "<" not in frm:
+        frm = formataddr((SMTP_FROM_NAME, RESEND_FROM))
+    payload = {"from": frm, "to": [to_addr], "subject": subject, "html": html_body}
+    if EMAIL_REPLY_TO: payload["reply_to"] = EMAIL_REPLY_TO
+    if text_body: payload["text"] = text_body
+    data = _json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request("https://api.resend.com/emails", data=data, method="POST",
+        headers={"Authorization": "Bearer "+RESEND_API_KEY, "Content-Type": "application/json"})
+    _orig_gai=socket.getaddrinfo
+    def _gai_ipv4(host,port,family=0,type=0,proto=0,flags=0):
+        return _orig_gai(host,port,socket.AF_INET,type,proto,flags)
+    try:
+        socket.getaddrinfo=_gai_ipv4
+        with urllib.request.urlopen(req, timeout=20) as r:
+            r.read()
+        return True, None
+    except urllib.error.HTTPError as e:
+        try: body=e.read().decode("utf-8")[:300]
+        except Exception: body=str(e)
+        print("resend send failed:", e.code, body, flush=True)
+        return False, "Resend %s: %s"%(e.code, body)
+    except Exception as e:
+        print("resend send failed:", e, flush=True)
+        return False, str(e)[:200]
+    finally:
+        socket.getaddrinfo=_orig_gai
+
+
+def _send_via_smtp(to_addr, subject, html_body, text_body=None):
     """Send one email over SMTP (STARTTLS, or SSL on port 465). Returns (ok, error)."""
-    if not EMAIL_ENABLED:
+    if not _SMTP_OK:
         return False, "SMTP not configured"
-    if not (to_addr or "").strip():
-        return False, "No recipient address"
     import smtplib, ssl, socket
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
@@ -685,7 +729,7 @@ def _send_email(to_addr, subject, html_body, text_body=None):
     msg["Subject"]=subject
     msg["From"]=formataddr((SMTP_FROM_NAME or "", SMTP_FROM))
     msg["To"]=to_addr
-    if SMTP_REPLY_TO: msg["Reply-To"]=SMTP_REPLY_TO
+    if EMAIL_REPLY_TO: msg["Reply-To"]=EMAIL_REPLY_TO
     if text_body: msg.attach(MIMEText(text_body,"plain","utf-8"))
     msg.attach(MIMEText(html_body,"html","utf-8"))
     # Force IPv4. Many hosts (Railway) have no IPv6 route, so a plain connect tries
@@ -710,6 +754,23 @@ def _send_email(to_addr, subject, html_body, text_body=None):
         return False, str(e)[:200]
     finally:
         socket.getaddrinfo=_orig_gai
+
+
+def _send_email(to_addr, subject, html_body, text_body=None):
+    """Send one email. Prefers Resend (HTTPS, never blocked); falls back to SMTP.
+    Returns (ok, error)."""
+    if not EMAIL_ENABLED:
+        return False, "Email not configured"
+    if not (to_addr or "").strip():
+        return False, "No recipient address"
+    if RESEND_ENABLED:
+        ok, err = _send_via_resend(to_addr, subject, html_body, text_body)
+        if ok:
+            return True, None
+        if not _SMTP_OK:
+            return False, err
+        # Resend failed but SMTP is configured — try it as a fallback.
+    return _send_via_smtp(to_addr, subject, html_body, text_body)
 
 # ══════════════════════════════════════════════════════════
 # GIVEAWAY MODULE - SQLite database
@@ -7425,24 +7486,26 @@ def _send_hire_invite(to_email, full_name, invite_url, lang="en"):
 def api_email_test():
     """Send a test email to confirm SMTP is wired up correctly."""
     d=request.get_json() or {}
-    to=(d.get("to") or "").strip() or SMTP_FROM
+    _eff_from=RESEND_FROM if RESEND_ENABLED else SMTP_FROM
+    to=(d.get("to") or "").strip() or _eff_from
     if not EMAIL_ENABLED:
         return jsonify({"ok":False,"configured":False,
-            "error":"Email not set up — add SMTP_USER and SMTP_PASS in Railway → Variables, then redeploy."})
+            "error":"Email not set up — add RESEND_API_KEY + RESEND_FROM in Railway → Variables (recommended), then redeploy."})
     if not to:
         return jsonify({"ok":False,"error":"Enter a recipient email address."})
     b=session.get("brand") or {}
     company=esc(b.get("company") or b.get("mark") or "your team")
+    _via="Resend" if RESEND_ENABLED else "SMTP"
     html=("<div style=\"font-family:-apple-system,Segoe UI,sans-serif;max-width:480px\">"
           "<h2 style=\"color:#059669\">✅ Email is working</h2>"
           "<p style=\"font-size:15px;color:#3a4252;line-height:1.6\">This is a test from <b>%s</b>'s onboarding "
           "system. If you received this, new-hire invite emails will send correctly.</p>"
-          "<p style=\"font-size:12px;color:#8a93a5\">Sent from %s · replies go to %s</p></div>"
-          %(company,esc(SMTP_FROM),esc(SMTP_REPLY_TO)))
+          "<p style=\"font-size:12px;color:#8a93a5\">Sent via %s from %s · replies go to %s</p></div>"
+          %(company,_via,esc(_eff_from),esc(EMAIL_REPLY_TO)))
     ok,err=_send_email(to,"✅ Test email from %s"%company,html,"Email is working. New-hire invites will send correctly.")
-    if ok: alog("email.test","-> %s"%to)
+    if ok: alog("email.test","-> %s (%s)"%(to,_via))
     return jsonify({"ok":ok,"error":err,"sent_to":(to if ok else None),
-                    "from":SMTP_FROM,"reply_to":SMTP_REPLY_TO})
+                    "via":_via,"from":_eff_from,"reply_to":EMAIL_REPLY_TO})
 
 @app.route("/api/hires", methods=["POST"])
 @req_role("admin", "cs")
@@ -7578,7 +7641,7 @@ def api_hire_send_invite(hire_id):
     c.close()
     if not h: return jsonify({"ok":False,"error":"Hire not found"}),404
     if not EMAIL_ENABLED:
-        return jsonify({"ok":False,"error":"Email is not set up. Add SMTP_USER / SMTP_PASS in Railway, or copy the link and send it manually.","email_configured":False})
+        return jsonify({"ok":False,"error":"Email is not set up. Add RESEND_API_KEY + RESEND_FROM in Railway (recommended), or copy the link and send it manually.","email_configured":False})
     to=(h["email"] or "").strip()
     if not to: return jsonify({"ok":False,"error":"This hire has no email address on file."})
     url=request.url_root.rstrip("/")+"/hire/"+h["invite_token"]
