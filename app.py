@@ -664,6 +664,9 @@ SMTP_USER=os.environ.get("SMTP_USER","").strip()
 SMTP_PASS=os.environ.get("SMTP_PASS","").strip()
 SMTP_FROM=os.environ.get("SMTP_FROM","").strip() or SMTP_USER
 SMTP_FROM_NAME=os.environ.get("SMTP_FROM_NAME","").strip()
+# Replies land here — lets you send from a dedicated account but get answers in
+# your own inbox. Defaults to the From address.
+SMTP_REPLY_TO=os.environ.get("SMTP_REPLY_TO","").strip() or SMTP_FROM
 EMAIL_ENABLED=bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
 print(("Email/SMTP enabled (from %s)"%SMTP_FROM) if EMAIL_ENABLED
       else "Email/SMTP not configured (invite links must be copied manually)",flush=True)
@@ -682,6 +685,7 @@ def _send_email(to_addr, subject, html_body, text_body=None):
     msg["Subject"]=subject
     msg["From"]=formataddr((SMTP_FROM_NAME or "", SMTP_FROM))
     msg["To"]=to_addr
+    if SMTP_REPLY_TO: msg["Reply-To"]=SMTP_REPLY_TO
     if text_body: msg.attach(MIMEText(text_body,"plain","utf-8"))
     msg.attach(MIMEText(html_body,"html","utf-8"))
     try:
