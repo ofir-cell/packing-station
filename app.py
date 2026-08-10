@@ -7576,7 +7576,12 @@ def api_hires_create():
     workflow_id = d.get("workflow_id")
     c = sdb()
     if not workflow_id:
-        row = c.execute("SELECT id FROM onboarding_workflows WHERE is_default=1 ORDER BY id LIMIT 1").fetchone()
+        # Prefer the workflow whose role matches this hire's role (worker→Warehouse,
+        # host→Host, cs→CS). Fall back to the default workflow, then seed if empty.
+        row = c.execute("SELECT id FROM onboarding_workflows WHERE role_target=? ORDER BY id LIMIT 1",
+                        (role_target,)).fetchone()
+        if not row:
+            row = c.execute("SELECT id FROM onboarding_workflows WHERE is_default=1 ORDER BY id LIMIT 1").fetchone()
         if not row:
             c.close()
             wf_id = _seed_default_workflow_if_missing()
@@ -7721,8 +7726,13 @@ def public_hire_onboarding(token):
     h = _hire_by_token(token)
     if not h:
         return "<h1>Invite link not valid</h1><p>Please ask your manager to send a new link.</p>", 404
+    # This page is public (no session), so resolve the tenant's brand here — otherwise
+    # the global brand-token filler would fall back to a default/other-tenant name.
+    ob = org_get(h.get("_org") or current_org())
+    mark = ob.get("brand_mark") or ob.get("company_name") or "Onboarding"
     return (HIRE_ONBOARDING_HTML
         .replace("__TOKEN__", token)
+        .replace("__BRANDMARK__", esc(mark))
         .replace("__HIRE_NAME__", esc(h["full_name"]))
         .replace("__HIRE_ROLE__", h["role_target"] or ""))
 

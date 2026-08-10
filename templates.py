@@ -6000,13 +6000,23 @@ function load(){
 }
 load();
 
-// Populate workflow dropdown once on page load
+// Populate workflow dropdown once on page load, and keep the list so we can
+// auto-match the workflow to the selected role (worker → Warehouse, etc.)
+var HIRE_WFS=[];
+function syncWorkflowToRole(){
+    var role=document.getElementById('fRole').value;
+    var match=HIRE_WFS.filter(function(w){return (w.role_target||'')===role;})[0];
+    if(match){document.getElementById('fWorkflow').value=String(match.id);}
+}
 fetch('/api/workflows').then(function(r){return r.json()}).then(function(wfs){
+    HIRE_WFS=wfs||[];
     var sel=document.getElementById('fWorkflow');
-    sel.innerHTML=(wfs||[]).map(function(w){
-        return '<option value="'+w.id+'"'+(w.is_default?' selected':'')+'>'+esc(w.name)+'</option>';
+    sel.innerHTML=HIRE_WFS.map(function(w){
+        return '<option value="'+w.id+'">'+esc(w.name)+'</option>';
     }).join('');
+    syncWorkflowToRole();   // default role is worker → pick the Warehouse workflow
 });
+document.getElementById('fRole').addEventListener('change',syncWorkflowToRole);
 
 document.getElementById('newBtn').addEventListener('click',function(){
     document.getElementById('modal').classList.add('on');
@@ -6387,7 +6397,7 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:#1a
 </head><body>
 <div class="top">
   <div class="top-brand">
-    <div class="brand-mark">5&nbsp;SEC</div>
+    <div class="brand-mark">__BRANDMARK__</div>
     <div class="brand-sub" id="brandSub">Onboarding</div>
   </div>
   <div class="lang-toggle">
