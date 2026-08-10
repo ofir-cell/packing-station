@@ -654,6 +654,50 @@ else:
     print("Anthropic AI not configured (manual address entry only)",flush=True)
 
 # ══════════════════════════════════════════════════════════
+# EMAIL (SMTP) — send new-hire invites, etc. Configure with env vars:
+#   SMTP_HOST (default smtp.gmail.com), SMTP_PORT (587), SMTP_USER, SMTP_PASS,
+#   SMTP_FROM (defaults to SMTP_USER). For Gmail/Workspace use an App Password.
+# ══════════════════════════════════════════════════════════
+SMTP_HOST=os.environ.get("SMTP_HOST","smtp.gmail.com").strip()
+SMTP_PORT=int(os.environ.get("SMTP_PORT","587") or 587)
+SMTP_USER=os.environ.get("SMTP_USER","").strip()
+SMTP_PASS=os.environ.get("SMTP_PASS","").strip()
+SMTP_FROM=os.environ.get("SMTP_FROM","").strip() or SMTP_USER
+SMTP_FROM_NAME=os.environ.get("SMTP_FROM_NAME","").strip()
+EMAIL_ENABLED=bool(SMTP_HOST and SMTP_USER and SMTP_PASS)
+print(("Email/SMTP enabled (from %s)"%SMTP_FROM) if EMAIL_ENABLED
+      else "Email/SMTP not configured (invite links must be copied manually)",flush=True)
+
+def _send_email(to_addr, subject, html_body, text_body=None):
+    """Send one email over SMTP (STARTTLS, or SSL on port 465). Returns (ok, error)."""
+    if not EMAIL_ENABLED:
+        return False, "SMTP not configured"
+    if not (to_addr or "").strip():
+        return False, "No recipient address"
+    import smtplib, ssl
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.utils import formataddr
+    msg=MIMEMultipart("alternative")
+    msg["Subject"]=subject
+    msg["From"]=formataddr((SMTP_FROM_NAME or "", SMTP_FROM))
+    msg["To"]=to_addr
+    if text_body: msg.attach(MIMEText(text_body,"plain","utf-8"))
+    msg.attach(MIMEText(html_body,"html","utf-8"))
+    try:
+        if SMTP_PORT==465:
+            with smtplib.SMTP_SSL(SMTP_HOST,SMTP_PORT,context=ssl.create_default_context(),timeout=20) as s:
+                s.login(SMTP_USER,SMTP_PASS); s.sendmail(SMTP_FROM,[to_addr],msg.as_string())
+        else:
+            with smtplib.SMTP(SMTP_HOST,SMTP_PORT,timeout=20) as s:
+                s.starttls(context=ssl.create_default_context())
+                s.login(SMTP_USER,SMTP_PASS); s.sendmail(SMTP_FROM,[to_addr],msg.as_string())
+        return True, None
+    except Exception as e:
+        print("email send failed:",e,flush=True)
+        return False, str(e)[:200]
+
+# ══════════════════════════════════════════════════════════
 # GIVEAWAY MODULE - SQLite database
 # ══════════════════════════════════════════════════════════
 # Seeded only for the founding tenant. Every other tenant defines their own in
@@ -7143,6 +7187,30 @@ def api_workflows_list():
     c.close()
     return jsonify([dict(r) for r in rows])
 
+def _send_hire_invite(to_email, full_name, invite_url, lang="en"):
+    """Email a new hire their private onboarding link. Returns (ok, error)."""
+    b=session.get("brand") or {}
+    company=esc(b.get("company") or b.get("mark") or "our team")
+    color=b.get("color") or "#4f46e5"
+    first=esc((full_name or "").split()[0] if full_name else "there")
+    if lang=="es":
+        subject="Bienvenido/a a %s — completa tu registro"%company
+        intro="¡Te damos la bienvenida a %s! Para empezar, completa tu incorporación en el enlace de abajo."%company
+        btn="Completar mi registro"; note="Este enlace es personal — no lo compartas."
+    else:
+        subject="Welcome to %s — finish your onboarding"%company
+        intro="You've been invited to join %s. To get started, complete your onboarding at the link below."%company
+        btn="Complete my onboarding"; note="This link is personal to you — please don't share it."
+    html=("""<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:520px;margin:0 auto;color:#1a2130">
+      <h2 style="margin:0 0 6px">Hi %s 👋</h2>
+      <p style="font-size:15px;line-height:1.6;color:#3a4252">%s</p>
+      <p style="margin:26px 0"><a href="%s" style="background:%s;color:#fff;text-decoration:none;font-weight:700;padding:14px 26px;border-radius:10px;display:inline-block">%s</a></p>
+      <p style="font-size:12px;color:#8a93a5">Or paste this link into your browser:<br><a href="%s" style="color:%s">%s</a></p>
+      <p style="font-size:12px;color:#8a93a5">%s</p>
+    </div>"""%(first,esc(intro),esc(invite_url),esc(color),esc(btn),esc(invite_url),esc(color),esc(invite_url),note))
+    text="%s\n\n%s\n\n%s\n%s"%(("Hola "+first if lang=="es" else "Hi "+first),intro,invite_url,note)
+    return _send_email(to_email, subject, html, text)
+
 @app.route("/api/hires", methods=["POST"])
 @req_role("admin", "cs")
 def api_hires_create():
@@ -7178,7 +7246,13 @@ def api_hires_create():
     hire_id = cur.lastrowid
     c.commit(); c.close()
     invite_url = request.url_root.rstrip("/") + "/hire/" + token
-    return jsonify({"ok": True, "id": hire_id, "invite_token": token, "invite_url": invite_url})
+    # Auto-send the invite email if SMTP is configured and we have an address.
+    emailed=False; email_error=None
+    if email and EMAIL_ENABLED:
+        emailed, email_error = _send_hire_invite(email, full_name, invite_url, preferred_language)
+    return jsonify({"ok": True, "id": hire_id, "invite_token": token, "invite_url": invite_url,
+                    "emailed": emailed, "email_error": email_error,
+                    "email_configured": EMAIL_ENABLED, "has_email": bool(email)})
 
 @app.route("/api/hires/<int:hire_id>", methods=["GET"])
 @req_role("admin", "cs")
@@ -7211,6 +7285,23 @@ def api_hire_regen_token(hire_id):
     c.commit(); c.close()
     invite_url = request.url_root.rstrip("/") + "/hire/" + new_tok
     return jsonify({"ok": True, "invite_token": new_tok, "invite_url": invite_url})
+
+@app.route("/api/hires/<int:hire_id>/send-invite", methods=["POST"])
+@req_role("admin", "cs")
+def api_hire_send_invite(hire_id):
+    """(Re)send the onboarding invite email to a hire."""
+    c=sdb()
+    h=c.execute("SELECT full_name,email,invite_token,preferred_language FROM new_hires WHERE id=?",(hire_id,)).fetchone()
+    c.close()
+    if not h: return jsonify({"ok":False,"error":"Hire not found"}),404
+    if not EMAIL_ENABLED:
+        return jsonify({"ok":False,"error":"Email is not set up. Add SMTP_USER / SMTP_PASS in Railway, or copy the link and send it manually.","email_configured":False})
+    to=(h["email"] or "").strip()
+    if not to: return jsonify({"ok":False,"error":"This hire has no email address on file."})
+    url=request.url_root.rstrip("/")+"/hire/"+h["invite_token"]
+    ok,err=_send_hire_invite(to,h["full_name"],url,(h["preferred_language"] or "en"))
+    if ok: alog("hire.invite_sent","#%s -> %s"%(hire_id,to))
+    return jsonify({"ok":ok,"error":err,"sent_to":to if ok else None})
 
 @app.route("/api/hires/<int:hire_id>", methods=["DELETE"])
 @req_role("admin")

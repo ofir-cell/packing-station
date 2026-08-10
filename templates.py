@@ -5958,6 +5958,7 @@ __NAVBAR__
     </div>
     <div class="invite-show" id="inviteShow">
       <div class="ttl">✓ Hire created — share this link</div>
+      <div id="inviteEmailStatus" style="font-size:13px;font-weight:700;margin:2px 0 8px"></div>
       <div class="url"><input id="inviteUrl" readonly><button id="copyBtn">Copy</button></div>
       <div class="help">Send this link to your new hire via WhatsApp, email, or SMS. They open it (no password needed) and walk through onboarding step-by-step. You can see their progress on their detail page.</div>
     </div>
@@ -6029,6 +6030,11 @@ document.getElementById('okBtn').addEventListener('click',function(){
         btn.disabled=false;
         if(!d.ok){toast(d.error||'Failed',true);return}
         document.getElementById('inviteUrl').value=d.invite_url;
+        var st=document.getElementById('inviteEmailStatus');
+        if(d.emailed){st.style.color='#059669';st.textContent='📧 Invite email sent automatically.';}
+        else if(d.has_email&&d.email_configured){st.style.color='#e11d48';st.textContent='⚠️ Email failed'+(d.email_error?(': '+d.email_error):'')+' — copy the link below and send it manually.';}
+        else if(d.has_email&&!d.email_configured){st.style.color='#b45309';st.textContent='ℹ️ Email not set up (add SMTP in Railway). Copy the link and send it manually.';}
+        else{st.style.color='#8a93a5';st.textContent='No email on file — copy the link and send it manually.';}
         document.getElementById('inviteShow').classList.add('on');
         load();
     });
@@ -6117,6 +6123,7 @@ __NAVBAR__
       <button id="copyBtn">Copy</button>
       <button id="regenBtn" class="warn">Regenerate</button>
     </div>
+    <div style="margin-top:10px"><button id="emailBtn" class="btn-primary" style="padding:9px 16px">📧 Send invite email</button><span id="emailStat" style="font-size:13px;font-weight:700;margin-left:10px"></span></div>
     <div style="font-size:12px;color:var(--text-muted);margin-top:10px">Send to the new hire via WhatsApp, email, or SMS. Regenerate to invalidate the old link if it was shared by mistake.</div>
   </div>
 
@@ -6193,6 +6200,14 @@ document.getElementById('regenBtn').addEventListener('click',function(){
     fetch('/api/hires/__HIRE_ID__/regenerate-token',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
         if(d.ok){document.getElementById('iUrl').value=d.invite_url;alert('✓ New link generated')}
     });
+});
+document.getElementById('emailBtn').addEventListener('click',function(){
+    var b=this,st=document.getElementById('emailStat');b.disabled=true;st.style.color='#8a93a5';st.textContent='Sending…';
+    fetch('/api/hires/__HIRE_ID__/send-invite',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+        b.disabled=false;
+        if(d.ok){st.style.color='#059669';st.textContent='✓ Sent to '+(d.sent_to||'the hire');}
+        else{st.style.color='#e11d48';st.textContent='⚠️ '+(d.error||'Failed');}
+    }).catch(function(){b.disabled=false;st.style.color='#e11d48';st.textContent='Request failed';});
 });
 </script>
 </body></html>'''
