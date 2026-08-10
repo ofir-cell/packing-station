@@ -677,7 +677,7 @@ def _send_email(to_addr, subject, html_body, text_body=None):
         return False, "SMTP not configured"
     if not (to_addr or "").strip():
         return False, "No recipient address"
-    import smtplib, ssl
+    import smtplib, ssl, socket
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     from email.utils import formataddr
@@ -688,18 +688,28 @@ def _send_email(to_addr, subject, html_body, text_body=None):
     if SMTP_REPLY_TO: msg["Reply-To"]=SMTP_REPLY_TO
     if text_body: msg.attach(MIMEText(text_body,"plain","utf-8"))
     msg.attach(MIMEText(html_body,"html","utf-8"))
+    # Force IPv4. Many hosts (Railway) have no IPv6 route, so a plain connect tries
+    # IPv6 first and dies with '[Errno 101] Network is unreachable'. We temporarily
+    # make DNS return only IPv4, while still connecting by hostname so TLS/SNI works.
+    _orig_gai=socket.getaddrinfo
+    def _gai_ipv4(host,port,family=0,type=0,proto=0,flags=0):
+        return _orig_gai(host,port,socket.AF_INET,type,proto,flags)
     try:
+        socket.getaddrinfo=_gai_ipv4
+        ctx=ssl.create_default_context()
         if SMTP_PORT==465:
-            with smtplib.SMTP_SSL(SMTP_HOST,SMTP_PORT,context=ssl.create_default_context(),timeout=20) as s:
+            with smtplib.SMTP_SSL(SMTP_HOST,SMTP_PORT,timeout=25,context=ctx) as s:
                 s.login(SMTP_USER,SMTP_PASS); s.sendmail(SMTP_FROM,[to_addr],msg.as_string())
         else:
-            with smtplib.SMTP(SMTP_HOST,SMTP_PORT,timeout=20) as s:
-                s.starttls(context=ssl.create_default_context())
+            with smtplib.SMTP(SMTP_HOST,SMTP_PORT,timeout=25) as s:
+                s.starttls(context=ctx)
                 s.login(SMTP_USER,SMTP_PASS); s.sendmail(SMTP_FROM,[to_addr],msg.as_string())
         return True, None
     except Exception as e:
         print("email send failed:",e,flush=True)
         return False, str(e)[:200]
+    finally:
+        socket.getaddrinfo=_orig_gai
 
 # ══════════════════════════════════════════════════════════
 # GIVEAWAY MODULE - SQLite database
