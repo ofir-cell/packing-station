@@ -7188,27 +7188,65 @@ def api_workflows_list():
     return jsonify([dict(r) for r in rows])
 
 def _send_hire_invite(to_email, full_name, invite_url, lang="en"):
-    """Email a new hire their private onboarding link. Returns (ok, error)."""
+    """Email a new hire a warm, branded welcome + their private onboarding link.
+    Returns (ok, error). Bilingual (en/es). Uses the tenant's brand name + colour."""
     b=session.get("brand") or {}
-    company=esc(b.get("company") or b.get("mark") or "our team")
+    company=b.get("company") or b.get("mark") or "our team"
     color=b.get("color") or "#4f46e5"
-    first=esc((full_name or "").split()[0] if full_name else "there")
+    first=(full_name or "").split()[0] if full_name else ("there" if lang!="es" else "")
     if lang=="es":
-        subject="Bienvenido/a a %s — completa tu registro"%company
-        intro="¡Te damos la bienvenida a %s! Para empezar, completa tu incorporación en el enlace de abajo."%company
-        btn="Completar mi registro"; note="Este enlace es personal — no lo compartas."
+        subject="¡Bienvenido/a a %s! 🎉"%company
+        headline=("¡Bienvenido/a, %s! 🎉"%first) if first else "¡Bienvenido/a al equipo! 🎉"
+        intro=("Estamos muy contentos de que te unas a <b>%s</b>. Antes de tu primer día, solo "
+               "necesitas completar un registro rápido — toma unos minutos.")%esc(company)
+        whatt="Lo que necesitas saber"
+        items=["Toma solo unos minutos","Puedes hacerlo desde tu teléfono","Sin contraseña — solo toca el botón"]
+        btn="Comenzar mi registro →"; timen="Toca el botón cuando estés listo/a."
+        linklbl="O pega este enlace en tu navegador:"
+        note="Este enlace es personal — por favor no lo compartas."
     else:
-        subject="Welcome to %s — finish your onboarding"%company
-        intro="You've been invited to join %s. To get started, complete your onboarding at the link below."%company
-        btn="Complete my onboarding"; note="This link is personal to you — please don't share it."
-    html=("""<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:520px;margin:0 auto;color:#1a2130">
-      <h2 style="margin:0 0 6px">Hi %s 👋</h2>
-      <p style="font-size:15px;line-height:1.6;color:#3a4252">%s</p>
-      <p style="margin:26px 0"><a href="%s" style="background:%s;color:#fff;text-decoration:none;font-weight:700;padding:14px 26px;border-radius:10px;display:inline-block">%s</a></p>
-      <p style="font-size:12px;color:#8a93a5">Or paste this link into your browser:<br><a href="%s" style="color:%s">%s</a></p>
-      <p style="font-size:12px;color:#8a93a5">%s</p>
-    </div>"""%(first,esc(intro),esc(invite_url),esc(color),esc(btn),esc(invite_url),esc(color),esc(invite_url),note))
-    text="%s\n\n%s\n\n%s\n%s"%(("Hola "+first if lang=="es" else "Hi "+first),intro,invite_url,note)
+        subject="You're invited to join %s 🎉"%company
+        headline=("Welcome aboard, %s! 🎉"%first) if first else "Welcome to the team! 🎉"
+        intro=("We're so excited to have you joining <b>%s</b>. Before your first day, we just need "
+               "you to complete a quick onboarding — it only takes a few minutes.")%esc(company)
+        whatt="Here's what to know"
+        items=["Takes just a few minutes","Do it right from your phone","No password needed — just tap the button"]
+        btn="Start my onboarding →"; timen="Tap the button above whenever you're ready."
+        linklbl="Or paste this link into your browser:"
+        note="This link is personal to you — please don't share it."
+    items_html="".join(
+        '<div style="font-size:14px;color:#4a5568;padding:6px 0;line-height:1.4">'
+        '<span style="color:%s;font-weight:800;margin-right:8px">✓</span>%s</div>'%(esc(color),esc(it))
+        for it in items)
+    html=("""<div style="background:#f4f5f7;padding:26px 12px;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.06)">
+    <div style="background:%s;padding:30px 32px;text-align:center">
+      <div style="font-size:34px;line-height:1">🎉</div>
+      <div style="color:#ffffff;font-size:21px;font-weight:800;letter-spacing:-.3px;margin-top:6px">%s</div>
+    </div>
+    <div style="padding:30px 32px">
+      <h1 style="margin:0 0 10px;font-size:24px;font-weight:800;color:#1a2130">%s</h1>
+      <p style="margin:0 0 20px;font-size:15px;line-height:1.65;color:#4a5568">%s</p>
+      <div style="background:#f8f7fb;border-radius:14px;padding:16px 18px;margin:0 0 24px">
+        <div style="font-size:11px;font-weight:800;letter-spacing:.7px;text-transform:uppercase;color:%s;margin-bottom:6px">%s</div>
+        %s
+      </div>
+      <div style="text-align:center;margin:8px 0 22px">
+        <a href="%s" style="background:%s;color:#ffffff;text-decoration:none;font-weight:700;font-size:16px;padding:15px 36px;border-radius:12px;display:inline-block">%s</a>
+      </div>
+      <p style="font-size:13px;color:#8a93a5;text-align:center;margin:0 0 14px">%s</p>
+      <p style="font-size:12px;color:#a0aab8;text-align:center;margin:0">%s<br><a href="%s" style="color:%s;word-break:break-all">%s</a></p>
+    </div>
+    <div style="border-top:1px solid #eef0f3;padding:16px 32px;text-align:center">
+      <p style="font-size:12px;color:#a0aab8;margin:0">%s</p>
+      <p style="font-size:12px;color:#c2c9d2;margin:6px 0 0;font-weight:700">%s</p>
+    </div>
+  </div>
+</div>"""%(esc(color),esc(company),esc(headline),intro,esc(color),esc(whatt),items_html,
+           esc(invite_url),esc(color),esc(btn),esc(timen),esc(linklbl),esc(invite_url),esc(color),esc(invite_url),
+           esc(note),esc(company)))
+    _hi=("Hola "+first if (lang=="es" and first) else ("Hi "+first if first else ("Welcome!" if lang!="es" else "¡Bienvenido/a!")))
+    text="%s\n\n%s\n\n%s\n\n%s\n%s"%(_hi, re.sub(r'<[^>]+>','',intro), btn+": "+invite_url, note, company)
     return _send_email(to_email, subject, html, text)
 
 @app.route("/api/hires", methods=["POST"])
