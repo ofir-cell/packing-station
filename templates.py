@@ -123,7 +123,7 @@ def _navbar(active_page=""):
         if has("host", "assistant"):
             team.append(("myavail", "/my-availability", "🕒 My Availability"))
             team.append(("myschedule", "/my-schedule", "🗓️ My Schedule"))
-        _t = _grp("🗓️ Team", team)
+        _t = _grp("👥 Team & Access", team)
         if _t: entries.append(_t)
 
         # Resources (news / help / guides) — always grouped.
