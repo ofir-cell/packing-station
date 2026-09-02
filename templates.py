@@ -84,24 +84,53 @@ def _navbar(active_page=""):
                    ("support", "/admin/support", "🛟 Support"),
                    ("guides", "/admin/guides", "📚 Guides")]
     else:
+        # Grouped, decluttered nav. A few high-value items stay as direct links;
+        # everything else is tucked into a small number of labelled dropdown menus
+        # so the bar stays clean no matter how many roles a person holds. A group
+        # with a single item is flattened to a plain link.
+        def _grp(label, items):
+            items = [it for it in items if it]
+            if len(items) == 1:
+                return items[0]
+            return {"label": label, "items": items} if items else None
+
         entries = [("home", "/home", "🏠 Home")]
-        entries.append(("announcements", "/announcements", "📣 News"))
-        if has("worker"):
-            entries.append(("pack", "/", "📦 Pack"))
-        if has("worker", "picker"):
-            entries.append(("preshow", "/admin/preshow", "🔗 Match Products"))
+
+        # Operations hub — the main work surface for office roles (kept direct).
         if has("admin", "cs"):
-            # Operations is now a dedicated hub page (/operations) with tabbed cards
-            # (Giveaways is one of its tabs).
             entries.append(("operations", "/operations", "📦 Operations"))
-            entries.append(("roster", "/admin/roster", "🗓️ Roster"))
-            entries.append(("support", "/support", "🛟 Support"))
-            entries.append(("guides", "/guides", "📚 Guides"))
-        if has("host", "assistant"):
-            entries.append(("myavail", "/my-availability", "🕒 My Availability"))
-            entries.append(("myschedule", "/my-schedule", "🗓️ My Schedule"))
+
+        # Warehouse floor tasks (workers / pickers).
+        floor = []
+        if has("worker"):
+            floor.append(("pack", "/", "📦 Pack"))
+        if has("worker", "picker"):
+            floor.append(("preshow", "/admin/preshow", "🔗 Match Products"))
+        _f = _grp("🧰 Warehouse", floor)
+        if _f: entries.append(_f)
+
+        # Scanit — live-selling tool (kept direct, used on-air).
         if has("host", "assistant", "admin", "cs"):
             entries.append(("scanit", "/scanit", "🍑 Scanit"))
+
+        # Team & schedule.
+        team = []
+        if has("admin", "cs"):
+            team.append(("roster", "/admin/roster", "🗓️ Roster"))
+        if has("host", "assistant"):
+            team.append(("myavail", "/my-availability", "🕒 My Availability"))
+            team.append(("myschedule", "/my-schedule", "🗓️ My Schedule"))
+        _t = _grp("🗓️ Team", team)
+        if _t: entries.append(_t)
+
+        # Resources (news / help / guides) — always grouped.
+        res = [("announcements", "/announcements", "📣 News")]
+        if has("admin", "cs") or has("worker", "picker"):
+            res.append(("guides", "/guides", "📚 Guides"))
+        if has("admin", "cs"):
+            res.append(("support", "/support", "🛟 Support"))
+        _r = _grp("📚 Resources", res)
+        if _r: entries.append(_r)
 
     # ── Avatar menu sections (personal + team/settings) ──
     # Each section: (title, [(key,url,label),...]). Titles of "" render with no header.
