@@ -117,6 +117,9 @@ def _navbar(active_page=""):
         team = []
         if has("admin", "cs"):
             team.append(("roster", "/admin/roster", "🗓️ Roster"))
+        if has("admin"):
+            team.append(("users", "/users", "👥 Users"))
+            team.append(("badges", "/users/badges", "📇 Badges"))
         if has("host", "assistant"):
             team.append(("myavail", "/my-availability", "🕒 My Availability"))
             team.append(("myschedule", "/my-schedule", "🗓️ My Schedule"))
