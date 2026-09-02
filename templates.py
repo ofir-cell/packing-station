@@ -165,6 +165,17 @@ def _navbar(active_page=""):
             nav_html += '</div></details>'
     nav_html += '</div>'
 
+    # ── Global search box (management roles only — never on the iPad/pack station) ──
+    show_search = (role != "superadmin") and has("admin", "cs")
+    if show_search:
+        nav_html += ('<div class="topnav-search">'
+            '<span class="gs-ico">🔍</span>'
+            '<input id="gSearch" type="search" autocomplete="off" spellcheck="false" '
+            'placeholder="Search orders, customers, products, screens…">'
+            '<span class="gs-kbd">⌘K</span>'
+            '<div class="gsearch-panel" id="gSearchPanel"></div>'
+            '</div>')
+
     # ── Render avatar user menu (right) ──
     # Users/Badges/Permissions now live under Settings, so treat them as the
     # Settings entry for highlighting purposes.
@@ -192,6 +203,24 @@ def _navbar(active_page=""):
     nav_html += '</div></nav>'
     # Single-open + click-outside-to-close behaviour (covers row groups + user menu)
     nav_html += '<script>(function(){var ds=document.querySelectorAll(".nav-group,.nav-user-group");ds.forEach(function(d){d.addEventListener("toggle",function(){if(d.open)ds.forEach(function(o){if(o!==d)o.open=false})})});document.addEventListener("click",function(e){if(!e.target.closest(".nav-group")&&!e.target.closest(".nav-user-group"))ds.forEach(function(d){d.open=false})});document.addEventListener("keydown",function(e){if(e.key==="Escape")ds.forEach(function(d){d.open=false})})})();</script>'
+    if show_search:
+        nav_html += ('<script>(function(){'
+            'var inp=document.getElementById("gSearch");if(!inp)return;'
+            'var panel=document.getElementById("gSearchPanel");var t=null;var first=null;'
+            'function esc(s){return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}'
+            'function close(){panel.classList.remove("open");panel.innerHTML="";first=null;}'
+            'function render(groups){first=null;if(!groups||!groups.length){panel.innerHTML="<div class=\\"gs-empty\\">No matches</div>";panel.classList.add("open");return;}'
+            'var h="";groups.forEach(function(g){h+="<div class=\\"gs-group\\">"+esc(g.label)+"</div>";'
+            'g.items.forEach(function(it){if(!first)first=it.url;'
+            'h+="<a class=\\"gs-item\\" href=\\""+esc(it.url)+"\\"><span class=\\"gs-i\\">"+(it.icon||"\\u2022")+"</span><span class=\\"gs-t\\"><b>"+esc(it.title)+"</b><small>"+esc(it.sub||"")+"</small></span></a>";});});'
+            'panel.innerHTML=h;panel.classList.add("open");}'
+            'function run(q){fetch("/api/search?q="+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){if((inp.value||"").trim()!==q)return;render((d&&d.groups)||[]);}).catch(function(){});}'
+            'inp.addEventListener("input",function(){var q=inp.value.trim();clearTimeout(t);if(q.length<1){close();return;}t=setTimeout(function(){run(q);},180);});'
+            'inp.addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();if(first)location.href=first;}else if(e.key==="Escape"){inp.value="";close();inp.blur();}});'
+            'inp.addEventListener("focus",function(){if(inp.value.trim().length>=1&&!panel.classList.contains("open"))run(inp.value.trim());});'
+            'document.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&(e.key==="k"||e.key==="K")){e.preventDefault();inp.focus();inp.select();}});'
+            'document.addEventListener("click",function(e){if(!e.target.closest(".topnav-search"))close();});'
+            '})();</script>')
     return nav_html
 
 # CSS for the unified top navbar - injected into every page that uses it.
@@ -221,6 +250,24 @@ _NAVBAR_CSS='''<style>
 .topnav-links{display:flex;gap:2px;flex:1;align-items:center}
 .topnav-link{color:var(--text-muted);text-decoration:none;font-size:13px;font-weight:600;padding:9px 14px;border-radius:10px;transition:all .15s;white-space:nowrap}
 .topnav-link:hover{color:var(--text);background:var(--surface-strong)}
+/* Global search box */
+.topnav-search{position:relative;flex-shrink:0;display:flex;align-items:center;gap:6px;width:300px;max-width:32vw;background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:0 10px;height:38px;transition:border .15s,box-shadow .15s}
+.topnav-search:focus-within{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-glow);background:#fff}
+.topnav-search .gs-ico{font-size:13px;opacity:.7;flex-shrink:0}
+.topnav-search input{border:none;background:none;outline:none;flex:1;min-width:0;font-family:inherit;font-size:13px;color:var(--text)}
+.topnav-search input::-webkit-search-cancel-button{cursor:pointer}
+.topnav-search .gs-kbd{font-size:10px;font-weight:800;color:var(--text-dim);background:var(--surface-strong);border:1px solid var(--border);border-radius:5px;padding:2px 5px;flex-shrink:0}
+.gsearch-panel{display:none;position:absolute;top:calc(100% + 8px);left:0;width:420px;max-width:80vw;max-height:70vh;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:14px;box-shadow:0 16px 44px rgba(20,27,38,.18);padding:6px;z-index:200}
+.gsearch-panel.open{display:block}
+.gs-group{font-size:10px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;color:var(--text-dim);padding:9px 10px 4px}
+.gs-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;text-decoration:none;color:var(--text)}
+.gs-item:hover{background:var(--surface-strong)}
+.gs-item .gs-i{font-size:16px;width:22px;text-align:center;flex-shrink:0}
+.gs-item .gs-t{display:flex;flex-direction:column;min-width:0}
+.gs-item .gs-t b{font-size:13.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gs-item .gs-t small{font-size:11.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gs-empty{padding:16px;text-align:center;color:var(--text-dim);font-size:13px}
+@media(max-width:1100px){.topnav-search{width:190px}.topnav-search .gs-kbd{display:none}}
 .topnav-link.active{color:var(--brand-ink);background:var(--brand-glow);box-shadow:inset 0 0 0 1px var(--brand-strong)}
 /* Dropdown groups using HTML <details> */
 .nav-group{position:relative;list-style:none}
@@ -4194,7 +4241,10 @@ qEl.addEventListener('input',function(){
   debounceTimer=setTimeout(function(){search(qEl.value.trim())},250);
 });
 clearBtn.addEventListener('click',function(){qEl.value='';clearBtn.classList.remove('show');qEl.focus();search('')});
-showEmpty('Start typing to search','Type a username or partial name above');
+// Deep-link: /customers?u=<username> opens that customer straight away (from global search).
+var _pu=new URLSearchParams(location.search).get('u');
+if(_pu){qEl.value=_pu;clearBtn.classList.add('show');search(_pu);}
+else showEmpty('Start typing to search','Type a username or partial name above');
 </script>
 </body></html>'''
 
@@ -7507,6 +7557,9 @@ document.getElementById('lowBtn').addEventListener('click',function(){lowMode=!l
 function refreshAll(){load();loadStats();loadBestsellers();}
 function fillParentList(){fetch('/api/products').then(function(r){return r.json()}).then(function(rows){
   document.getElementById('prodList2').innerHTML=(rows||[]).filter(function(p){return !p.parent_sku}).map(function(p){return '<option value="'+esc(p.sku)+'">'+esc(p.name||'')+'</option>'}).join('');})}
+// Deep-link: /inventory?focus=<sku> prefills the product search (from global search).
+var _pf=new URLSearchParams(location.search).get('focus');
+if(_pf){document.getElementById('q').value=_pf;}
 load();loadStats();loadBestsellers();fillParentList();
 </script></body></html>'''
 

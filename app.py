@@ -5141,6 +5141,152 @@ def api_customers_search():
     c.close()
     return jsonify([dict(r) for r in rows])
 
+_SEARCH_PAGES = [
+    # (title, sub, icon, url, keywords, admin_only)
+    ("Home", "Dashboard", "🏠", "/home", "home dashboard start", False),
+    ("Operations", "Orders, packing, giveaways", "📦", "/operations", "operations orders packing pack ship board", False),
+    ("Shipments", "All orders & packing status", "📦", "/admin/shipments", "shipments orders packages tracking packing", False),
+    ("Shows", "Live shows & imports", "🎬", "/admin/shows", "shows live import csv", False),
+    ("Customers", "Buyer profiles & history", "🧑", "/customers", "customers buyers clients", False),
+    ("Inventory", "Products & stock", "📦", "/inventory", "inventory products stock sku catalog", False),
+    ("Purchasing", "POs & receiving", "🧾", "/admin/purchasing", "purchasing purchase order po receiving suppliers", False),
+    ("SKU Reconciliation", "Packed vs sold", "🧮", "/admin/sku-lookup", "sku reconciliation lookup", False),
+    ("Analytics", "Packer, picker & sales", "📊", "/admin/analytics", "analytics reports stats performance", False),
+    ("Geography", "Orders by state", "🗺️", "/admin/geo", "geography map states location", False),
+    ("Giveaways", "Live giveaways", "🎁", "/admin/giveaway", "giveaway giveaways winners", False),
+    ("Roster", "Team schedule", "🗓️", "/admin/roster", "roster schedule shifts team", False),
+    ("New Hires", "Onboarding", "🧑‍💼", "/admin/hires", "hires onboarding employees new hire", False),
+    ("Scanit", "Live-sell product lookup", "🍑", "/scanit", "scanit scan product host msrp", False),
+    ("Badges", "Worker badges", "📇", "/users/badges", "badges badge cards print worker id", True),
+    ("Company setup", "Brand & company", "🚀", "/setup", "setup company brand logo color", True),
+    ("Settings", "Org configuration", "⚙️", "/admin/settings", "settings config users permissions", True),
+    ("Audit log", "Activity history", "🧾", "/admin/audit", "audit log history activity", True),
+]
+
+@app.route("/api/search")
+@req_role("admin", "cs")
+def api_global_search():
+    """Universal search for the persistent navbar box (management roles only).
+    Returns grouped results across app screens, orders, customers, products,
+    shows and employees so staff can jump anywhere without menu-hopping."""
+    from urllib.parse import quote
+    q = (request.args.get("q") or "").strip()
+    ql = q.lower()
+    if not ql:
+        return jsonify({"ok": True, "groups": []})
+    is_admin = "admin" in set(session.get("roles") or [session.get("role")])
+    like = "%" + ql + "%"
+    groups = []
+
+    # 1) Screens / pages (also matches on 1 char)
+    pages = []
+    for title, sub, icon, url, kw, admin_only in _SEARCH_PAGES:
+        if admin_only and not is_admin:
+            continue
+        if ql in title.lower() or ql in kw:
+            pages.append({"title": title, "sub": sub, "icon": icon, "url": url})
+    if pages:
+        groups.append({"type": "pages", "label": "Screens", "items": pages[:6]})
+
+    if len(ql) >= 2:
+        c = sdb()
+        # 2) Orders / tracking — match tracking, shipment id, buyer, recipient
+        try:
+            orders = c.execute("""
+                SELECT shipment_id, tracking_code, buyer_username, buyer_name, status, import_label
+                FROM shipments
+                WHERE LOWER(tracking_code) LIKE ? OR LOWER(shipment_id) LIKE ?
+                   OR LOWER(buyer_username) LIKE ? OR LOWER(buyer_name) LIKE ?
+                ORDER BY imported_at DESC LIMIT 6
+            """, (like, like, like, like)).fetchall()
+        except Exception:
+            orders = []
+        if orders:
+            items = []
+            for o in orders:
+                o = dict(o)
+                who = o.get("buyer_name") or o.get("buyer_username") or "Order"
+                sub = " · ".join(x for x in [o.get("import_label"), (o.get("status") or "").title(),
+                                             (o.get("tracking_code") or "")[:22]] if x)
+                url = ("/customers?u=" + o["buyer_username"]) if o.get("buyer_username") else "/admin/shipments"
+                items.append({"title": who, "sub": sub, "icon": "📦", "url": url})
+            groups.append({"type": "orders", "label": "Orders", "items": items})
+
+        # 3) Customers
+        try:
+            custs = c.execute("""
+                SELECT buyer_username, MAX(buyer_name) AS buyer_name, COUNT(*) AS n
+                FROM shipments
+                WHERE buyer_username != '' AND (LOWER(buyer_username) LIKE ? OR LOWER(buyer_name) LIKE ?)
+                GROUP BY buyer_username ORDER BY n DESC LIMIT 6
+            """, (like, like)).fetchall()
+        except Exception:
+            custs = []
+        if custs:
+            items = [{"title": (dict(x).get("buyer_name") or x["buyer_username"]),
+                      "sub": "@" + x["buyer_username"] + " · " + str(x["n"]) + " orders",
+                      "icon": "🧑", "url": "/customers?u=" + x["buyer_username"]} for x in custs]
+            groups.append({"type": "customers", "label": "Customers", "items": items})
+
+        # 4) Products / SKU
+        try:
+            prods = c.execute("""SELECT sku, name FROM products
+                                 WHERE LOWER(sku) LIKE ? OR LOWER(name) LIKE ?
+                                 ORDER BY name LIMIT 6""", (like, like)).fetchall()
+        except Exception:
+            prods = []
+        if prods:
+            items = [{"title": (dict(p).get("name") or p["sku"]), "sub": "SKU " + (p["sku"] or ""),
+                      "icon": "🏷️", "url": "/inventory?focus=" + (p["sku"] or "")} for p in prods]
+            groups.append({"type": "products", "label": "Products", "items": items})
+
+        # 5) Shows (distinct import labels)
+        try:
+            shows = c.execute("""SELECT import_label AS lbl, COUNT(*) AS n
+                                 FROM shipments WHERE import_label IS NOT NULL AND import_label!=''
+                                   AND LOWER(import_label) LIKE ?
+                                 GROUP BY import_label ORDER BY MAX(imported_at) DESC LIMIT 6""",
+                              (like,)).fetchall()
+        except Exception:
+            shows = []
+        if shows:
+            items = [{"title": s["lbl"], "sub": str(s["n"]) + " orders", "icon": "🎬",
+                      "url": "/admin/shows?show=" + quote(s["lbl"])} for s in shows]
+            groups.append({"type": "shows", "label": "Shows", "items": items})
+
+        # 6) Employees (hires + system users)
+        try:
+            hires = c.execute("""SELECT id, full_name, role_target, status FROM new_hires
+                                 WHERE LOWER(full_name) LIKE ? ORDER BY created_at DESC LIMIT 5""",
+                              (like,)).fetchall()
+        except Exception:
+            hires = []
+        c.close()
+        emp_items = []
+        for h in hires:
+            emp_items.append({"title": h["full_name"], "icon": "🧑‍💼",
+                              "sub": "New hire · " + (h["role_target"] or "") + " · " + (h["status"] or ""),
+                              "url": "/admin/hires/" + str(h["id"])})
+        try:
+            _users = ldj(USERS_FILE)
+            myorg = session.get("org", DEFAULT_ORG)
+            for un, info in _users.items():
+                if info.get("org", DEFAULT_ORG) != myorg:
+                    continue
+                nm = info.get("name", "")
+                if ql in un.lower() or ql in nm.lower():
+                    emp_items.append({"title": nm or un, "icon": "👤",
+                                      "sub": "@" + un + " · " + (info.get("role") or ""),
+                                      "url": "/users/badges"})
+                if len(emp_items) >= 8:
+                    break
+        except Exception:
+            pass
+        if emp_items:
+            groups.append({"type": "employees", "label": "People", "items": emp_items[:6]})
+
+    return jsonify({"ok": True, "groups": groups})
+
 @app.route("/api/customers/<username>")
 @req_role("admin", "cs")
 def api_customer_detail(username):
