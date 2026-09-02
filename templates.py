@@ -97,7 +97,7 @@ def _navbar(active_page=""):
         entries = [("home", "/home", "🏠 Home")]
 
         # Operations hub — the main work surface for office roles (kept direct).
-        if has("admin", "cs"):
+        if has("admin", "cs", "manager"):
             entries.append(("operations", "/operations", "📦 Operations"))
 
         # Warehouse floor tasks (workers / pickers).
@@ -110,14 +110,14 @@ def _navbar(active_page=""):
         if _f: entries.append(_f)
 
         # Scanit — live-selling tool (kept direct, used on-air).
-        if has("host", "assistant", "admin", "cs"):
+        if has("host", "assistant", "admin", "cs", "manager"):
             entries.append(("scanit", "/scanit", "🍑 Scanit"))
 
         # Team & schedule.
         team = []
-        if has("admin", "cs"):
+        if has("admin", "cs", "manager"):
             team.append(("roster", "/admin/roster", "🗓️ Roster"))
-        if has("admin"):
+        if has("admin", "manager"):
             team.append(("users", "/users", "👥 Users"))
             team.append(("badges", "/users/badges", "📇 Badges"))
         if has("host", "assistant"):
@@ -128,9 +128,9 @@ def _navbar(active_page=""):
 
         # Resources (news / help / guides) — always grouped.
         res = [("announcements", "/announcements", "📣 News")]
-        if has("admin", "cs") or has("worker", "picker"):
+        if has("admin", "cs", "manager") or has("worker", "picker"):
             res.append(("guides", "/guides", "📚 Guides"))
-        if has("admin", "cs"):
+        if has("admin", "cs", "manager"):
             res.append(("support", "/support", "🛟 Support"))
         _r = _grp("📚 Resources", res)
         if _r: entries.append(_r)
@@ -153,15 +153,17 @@ def _navbar(active_page=""):
             _common.append(("myavail", "/my-availability", "🕒 My Availability"))
             _common.append(("myschedule", "/my-schedule", "🗓️ My Schedule"))
         user_sections = [("", _common)]
-        if has("admin"):
+        if has("admin", "manager"):
             # Users / Badges / Permissions live *inside* Settings now, so they're
             # not repeated here — Settings is the single entry point for org config.
-            user_sections.append(("Team & Admin", [
-                ("setup", "/setup", "🚀 Company setup"),
-                ("hires", "/admin/hires", "🧑‍💼 New Hires"),
-                ("settings", "/admin/settings", "⚙️ Settings"),
-                ("audit", "/admin/audit", "🧾 Audit log"),
-            ]))
+            # Company setup + billing stay admin-only (managers are near-admin).
+            _admin_items = []
+            if has("admin"):
+                _admin_items.append(("setup", "/setup", "🚀 Company setup"))
+            _admin_items.append(("hires", "/admin/hires", "🧑‍💼 New Hires"))
+            _admin_items.append(("settings", "/admin/settings", "⚙️ Settings"))
+            _admin_items.append(("audit", "/admin/audit", "🧾 Audit log"))
+            user_sections.append(("Team & Admin", _admin_items))
         elif has("cs"):
             user_sections.append(("Team", [
                 ("hires", "/admin/hires", "🧑‍💼 New Hires"),
@@ -221,7 +223,8 @@ def _navbar(active_page=""):
     nav_html += '<span class="user-name-inline">' + name + '</span><span class="caret">▾</span>'
     nav_html += '</summary><div class="nav-menu user-menu">'
     nav_html += '<div class="user-menu-head"><span class="user-avatar lg">' + initials + '</span>'
-    nav_html += '<span class="user-menu-id"><b>' + name + '</b><small>' + str(_e(role.upper())) + '</small></span></div>'
+    _rlabel={"admin":"Admin","manager":"Warehouse Manager","cs":"Customer Service","host":"Host","worker":"Warehouse Associate","picker":"Warehouse Associate","assistant":"Host","superadmin":"Platform Owner"}.get(role,(role or "").title())
+    nav_html += '<span class="user-menu-id"><b>' + name + '</b><small>' + str(_e(_rlabel.upper())) + '</small></span></div>'
     for title, items in user_sections:
         if title:
             nav_html += '<div class="user-menu-title">' + str(_e(title)) + '</div>'
@@ -1132,14 +1135,13 @@ __NAVBAR__
 <input type="text" id="nu" placeholder="Username">
 <input type="password" id="np" placeholder="Password">
 <input type="text" id="nn" placeholder="Display Name">
-<select id="nr"><option value="worker">Worker</option><option value="picker">Picker</option><option value="cs">Customer Service</option><option value="host">Live Show Host</option><option value="assistant">Show Assistant</option><option value="admin">Admin</option></select>
+<select id="nr"><option value="worker">Warehouse Associate</option><option value="manager">Warehouse Manager</option><option value="cs">Customer Service</option><option value="host">Host</option><option value="admin">Admin</option></select>
 <button class="add-btn" id="addBtn">+ Add User</button>
 <div style="flex-basis:100%;margin-top:8px;font-size:13px;color:#6b7280">Also does (optional — for people with more than one job):
-  <label style="margin-left:8px"><input type="checkbox" class="xrole" value="picker"> Picker</label>
-  <label style="margin-left:8px"><input type="checkbox" class="xrole" value="worker"> Worker</label>
-  <label style="margin-left:8px"><input type="checkbox" class="xrole" value="cs"> CS</label>
+  <label style="margin-left:8px"><input type="checkbox" class="xrole" value="worker"> Warehouse Associate</label>
+  <label style="margin-left:8px"><input type="checkbox" class="xrole" value="cs"> Customer Service</label>
   <label style="margin-left:8px"><input type="checkbox" class="xrole" value="host"> Host</label>
-  <label style="margin-left:8px"><input type="checkbox" class="xrole" value="assistant"> Assistant</label>
+  <label style="margin-left:8px"><input type="checkbox" class="xrole" value="manager"> Warehouse Manager</label>
 </div>
 <div class="msg" id="am"></div>
 </div></div>
@@ -1197,7 +1199,9 @@ function changePw(u){
     .then(function(r){return r.json()}).then(function(d){alert(d.ok?'Password changed!':'Failed')});
 }
 var USERS={};
-var ALL_ROLES=[['worker','Worker'],['picker','Picker'],['cs','Customer Service'],['host','Live Show Host'],['assistant','Show Assistant'],['admin','Admin']];
+var ALL_ROLES=[['worker','Warehouse Associate'],['manager','Warehouse Manager'],['cs','Customer Service'],['host','Host'],['admin','Admin']];
+var ROLE_LABEL={worker:'Warehouse Associate',manager:'Warehouse Manager',cs:'Customer Service',host:'Host',admin:'Admin',picker:'Warehouse Associate',assistant:'Host'};
+function roleLbl(r){return ROLE_LABEL[r]||r;}
 function editRoles(u){
     var v=USERS[u]||{};var cur=v.role||'worker';var ex=v.extra_roles||[];
     var ov=document.createElement('div');
@@ -2157,7 +2161,7 @@ function loadUsers(){
             } else {
                 actions='<span style="color:#6b7280;font-size:12px">Badges are for workers</span>';
             }
-            return '<tr><td><b>'+u+'</b></td><td>'+info.name+'</td><td><span class="'+roleClass+'">'+info.role+'</span></td><td>'+badgeText+'</td><td><div class="actions">'+actions+'</div></td></tr>';
+            return '<tr><td><b>'+u+'</b></td><td>'+info.name+'</td><td><span class="'+roleClass+'">'+roleLbl(info.role)+'</span></td><td>'+badgeText+'</td><td><div class="actions">'+actions+'</div></td></tr>';
         });
         tb.innerHTML=rows.join('')||'<tr><td colspan="5" style="text-align:center;color:#6b7280;padding:40px">No users yet</td></tr>';
         tb.querySelectorAll('button[data-act]').forEach(function(b){
@@ -6030,11 +6034,10 @@ __NAVBAR__
       <option value="es">🇪🇸 Español</option>
     </select></label>
     <label class="field"><span class="field-lbl">Role</span><select class="field-sel" id="fRole">
-      <option value="worker">Packer / Worker</option>
-      <option value="picker">Picker</option>
+      <option value="worker">Warehouse Associate</option>
+      <option value="manager">Warehouse Manager</option>
       <option value="cs">Customer Service</option>
-      <option value="host">Live Show Host</option>
-      <option value="assistant">Show Assistant</option>
+      <option value="host">Host</option>
       <option value="admin">Admin</option>
     </select></label>
     <div class="modal-actions">
@@ -6239,7 +6242,7 @@ __NAVBAR__
       <label style="font-size:12px;font-weight:700;color:var(--text-muted)">Full name<input id="eName" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border);border-radius:9px;font-family:inherit"></label>
       <label style="font-size:12px;font-weight:700;color:var(--text-muted)">Email<input id="eEmail" type="email" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border);border-radius:9px;font-family:inherit"></label>
       <label style="font-size:12px;font-weight:700;color:var(--text-muted)">Phone<input id="ePhone" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border);border-radius:9px;font-family:inherit"></label>
-      <label style="font-size:12px;font-weight:700;color:var(--text-muted)">Role<select id="eRole" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border);border-radius:9px;font-family:inherit"><option value="worker">Warehouse Worker</option><option value="picker">Picker</option><option value="host">Host</option><option value="assistant">Assistant</option><option value="cs">Customer Service</option><option value="admin">Admin</option></select></label>
+      <label style="font-size:12px;font-weight:700;color:var(--text-muted)">Role<select id="eRole" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border);border-radius:9px;font-family:inherit"><option value="worker">Warehouse Associate</option><option value="manager">Warehouse Manager</option><option value="cs">Customer Service</option><option value="host">Host</option><option value="admin">Admin</option></select></label>
       <label style="font-size:12px;font-weight:700;color:var(--text-muted)">Onboarding workflow<select id="eWorkflow" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border);border-radius:9px;font-family:inherit"></select></label>
       <label style="font-size:12px;font-weight:700;color:var(--text-muted)">Language<select id="eLang" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border);border-radius:9px;font-family:inherit"><option value="en">English</option><option value="es">Español</option></select></label>
     </div>
@@ -7270,7 +7273,8 @@ function render(){
   document.getElementById('pinState').className='pin-state '+(DATA.pin_set?'pin-on':'pin-off');
   document.getElementById('pinState').textContent=DATA.pin_set?'PIN is set ✓':'not set yet';
   var roles=DATA.roles;
-  var h='<table><thead><tr><th class="act">Action</th>'+roles.map(function(r){return '<th>'+r+'</th>'}).join('')+'<th>Needs PIN</th></tr></thead><tbody>';
+  var RLBL={admin:'Admin',manager:'Warehouse Manager',cs:'Customer Service',host:'Host',worker:'Warehouse Associate',picker:'Warehouse Associate',assistant:'Host'};
+  var h='<table><thead><tr><th class="act">Action</th>'+roles.map(function(r){return '<th>'+(RLBL[r]||r)+'</th>'}).join('')+'<th>Needs PIN</th></tr></thead><tbody>';
   DATA.actions.forEach(function(a){
     var p=DATA.permissions[a]||{roles:[],require_pin:false};
     h+='<tr><td class="act">'+(DATA.labels[a]||a)+'</td>'+

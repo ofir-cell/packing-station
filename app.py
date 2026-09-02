@@ -634,6 +634,23 @@ if not os.path.exists(USERS_FILE):
             print("Change them after first login via Admin -> Users.",flush=True)
             print("="*70,flush=True)
 
+# One-time role migration: 'picker' and 'assistant' were merged away. Convert any
+# existing accounts so only the five current roles remain (picker→worker,
+# assistant→host). Idempotent — safe to run on every boot.
+try:
+    _rolemap={"picker":"worker","assistant":"host"}
+    with update_json(USERS_FILE) as _users:
+        for _u,_inf in _users.items():
+            if _inf.get("role") in _rolemap:
+                _inf["role"]=_rolemap[_inf["role"]]
+            if _inf.get("extra_roles"):
+                _ex=[_rolemap.get(r,r) for r in _inf["extra_roles"]]
+                _inf["extra_roles"]=[r for r in dict.fromkeys(_ex) if r!=_inf.get("role")]
+            if _inf.get("role")=="worker" and not _inf.get("badge_token"):
+                _inf["badge_token"]=_gen_badge_token()
+except Exception as _e:
+    print("role migration skipped:",_e,flush=True)
+
 _init(STATIONS_FILE,{"S1":"Station 1","S2":"Station 2","S3":"Station 3","S4":"Station 4","S5":"Station 5","S6":"Station 6"})
 
 # ══════════════════════════════════════════════════════════
@@ -3035,7 +3052,7 @@ def _provision_user_from_hire(hire_id):
     selfie_key = selfie["storage_key"] if selfie else None
 
     role = (hire.get("role_target") or "").strip().lower()
-    if role not in ("admin", "cs", "worker", "picker", "host", "assistant"):
+    if role not in VALID_ROLES:
         role = "worker"
     full_name = hire.get("full_name") or "New Hire"
     temp_pw = _gen_temp_password()
@@ -3249,16 +3266,56 @@ def _effective_roles(info):
 def session_roles():
     return session.get("roles") or ([session.get("role")] if session.get("role") else [])
 
+# ── Role model ────────────────────────────────────────────────────────────────
+# Internal role keys stay stable ("worker" powers badge login + the pack station);
+# only the human-facing LABEL changed. The selectable roles are exactly five.
+ROLE_LABELS = {
+    "admin":     "Admin",
+    "manager":   "Warehouse Manager",
+    "cs":        "Customer Service",
+    "host":      "Host",
+    "worker":    "Warehouse Associate",
+    # legacy keys kept only so old records display sensibly until migrated
+    "picker":    "Warehouse Associate",
+    "assistant": "Host",
+    "superadmin":"Platform Owner",
+}
+# The roles offered in dropdowns, in order.
+ROLE_OPTIONS = [
+    ("admin",   "Admin"),
+    ("manager", "Warehouse Manager"),
+    ("cs",      "Customer Service"),
+    ("host",    "Host"),
+    ("worker",  "Warehouse Associate"),
+]
+VALID_ROLES = {"admin", "manager", "cs", "host", "worker"}
+
+def role_label(r):
+    return ROLE_LABELS.get(r, (r or "").title())
+
+# Warehouse Manager is a near-admin: it may reach everything an admin can EXCEPT a
+# short list of sensitive areas (billing, company setup/branding, and the platform
+# org console which is super-admin territory anyway).
+_MANAGER_BLOCK_PREFIXES = ("/billing", "/api/billing", "/setup", "/api/setup",
+                           "/api/org/branding", "/api/orgs")
+def _manager_blocked(path):
+    p = path or ""
+    return any(p == bp or p.startswith(bp + "/") or p == bp for bp in _MANAGER_BLOCK_PREFIXES) \
+        or any(p.startswith(bp) for bp in _MANAGER_BLOCK_PREFIXES)
+
 def req_role(*roles):
     def w(f):
         @wraps(f)
         def d(*a,**k):
             if "user" not in session: return redirect("/")
-            # The super-admin is a pure platform owner (no tenant). They must NOT
-            # reach tenant-operational routes — only the control plane (req_super).
+            ur = session_roles()
             # A user passes if ANY of their roles (primary or extra) is allowed.
-            if not any(r in roles for r in session_roles()): return "Access denied",403
-            return f(*a,**k)
+            if any(r in roles for r in ur):
+                return f(*a,**k)
+            # Warehouse Manager acts as an admin everywhere except the blocklist above.
+            if ("manager" in ur) and ("admin" in roles) and not _manager_blocked(request.path):
+                return f(*a,**k)
+            return "Access denied",403
         return d
     return w
 def req_super(f):
@@ -5675,10 +5732,10 @@ def api_home_fulfillment():
 
 # ── Settings / Manager PIN / Permissions ───────────────────────────
 _DEFAULT_PERMS={
-    "mark_show_done": {"roles":["admin","cs"], "require_pin": True},
-    "import_csv":     {"roles":["admin","cs"], "require_pin": False},
-    "manage_users":   {"roles":["admin"],      "require_pin": False},
-    "attach_giveaway":{"roles":["admin","cs"], "require_pin": False},
+    "mark_show_done": {"roles":["admin","manager","cs"], "require_pin": True},
+    "import_csv":     {"roles":["admin","manager","cs"], "require_pin": False},
+    "manage_users":   {"roles":["admin","manager"],      "require_pin": False},
+    "attach_giveaway":{"roles":["admin","manager","cs"], "require_pin": False},
 }
 _PERM_LABELS={
     "mark_show_done":"Mark a show DONE",
@@ -5718,7 +5775,11 @@ def api_show_done():
     if not label:
         return jsonify({"ok": False, "error": "label required"})
     perm=_get_perms().get("mark_show_done",{})
-    if session.get("role") not in (perm.get("roles") or ["admin","cs"]):
+    _allowed=perm.get("roles") or ["admin","cs"]
+    _ur=session_roles()
+    # Admin + Warehouse Manager (near-admin) always pass; otherwise any of the
+    # user's roles must be in the allowed list.
+    if not (("admin" in _ur) or ("manager" in _ur) or any(r in _allowed for r in _ur)):
         return jsonify({"ok": False, "error": "Your role is not allowed to mark shows done."}), 403
     if perm.get("require_pin"):
         if not _manager_pin_set():
@@ -5771,7 +5832,7 @@ def api_permissions_get():
     return jsonify({"ok":True,"permissions":_get_perms(),"labels":_PERM_LABELS,
                     "pin_set":_manager_pin_set(),
                     "actions":list(_DEFAULT_PERMS.keys()),
-                    "roles":["admin","cs","picker","worker"]})
+                    "roles":["admin","manager","cs","host","worker"]})
 
 @app.route("/api/permissions",methods=["POST"])
 @req_role("admin")
@@ -5780,7 +5841,7 @@ def api_permissions_save():
     perms=d.get("permissions")
     if not isinstance(perms,dict):
         return jsonify({"ok":False,"error":"invalid permissions"})
-    valid_roles={"admin","cs","picker","worker"}
+    valid_roles=set(VALID_ROLES)
     clean={}
     for k,v in perms.items():
         if k not in _DEFAULT_PERMS or not isinstance(v,dict): continue
@@ -8635,10 +8696,10 @@ def api_add():
     if not u or not p: return jsonify({"ok":False,"error":"Required"})
     if not re.match(r'^[a-z0-9_\-]{2,32}$',u):
         return jsonify({"ok":False,"error":"Username: lowercase letters, digits, _ -, 2-32 chars"})
-    if role not in ("admin","cs","worker","picker","host","assistant"):
+    if role not in VALID_ROLES:
         return jsonify({"ok":False,"error":"Invalid role"})
     # Extra roles let one person do several jobs (e.g. picker + host).
-    _valid_extra={"worker","picker","cs","host","assistant"}
+    _valid_extra=set(VALID_ROLES)
     extra=[r for r in (d.get("extra_roles") or []) if r in _valid_extra and r!=role]
     # Plan limit: Starter is capped at 3 users per tenant.
     _lim=_plan_user_limit(current_org())
@@ -8670,9 +8731,9 @@ def api_user_roles():
     d=request.get_json() or {}
     u=(d.get("username") or "").strip().lower()
     role=(d.get("role") or "").strip()
-    if role not in ("admin","cs","worker","picker","host","assistant"):
+    if role not in VALID_ROLES:
         return jsonify({"ok":False,"error":"Invalid role"})
-    _valid_extra={"worker","picker","cs","host","assistant"}
+    _valid_extra=set(VALID_ROLES)
     extra=[r for r in (d.get("extra_roles") or []) if r in _valid_extra and r!=role]
     with update_json(USERS_FILE) as users:
         if u not in users or not _same_org_user(users,u):
