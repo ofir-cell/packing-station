@@ -3293,6 +3293,16 @@ VALID_ROLES = {"admin", "manager", "cs", "host", "worker"}
 def role_label(r):
     return ROLE_LABELS.get(r, (r or "").title())
 
+def _touch_last_login(username):
+    """Record a user's last successful login timestamp (for the Users admin view)."""
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with update_json(USERS_FILE) as uu:
+            if username in uu:
+                uu[username]["last_login"] = now
+    except Exception:
+        pass
+
 # Warehouse Manager is a near-admin: it may reach everything an admin can EXCEPT a
 # short list of sensitive areas (billing, company setup/branding, and the platform
 # org console which is super-admin territory anyway).
@@ -3701,6 +3711,7 @@ def api_login():
         session["roles"]=_effective_roles(user)
         session["org"]=user.get("org",DEFAULT_ORG)
         session["brand"]=brand_for_session(session["org"])
+        _touch_last_login(u)
         return jsonify({"ok":True,"role":user["role"]})
     # Equalize timing on unknown username so it doesn't return faster (enumeration oracle)
     if not user:
@@ -8342,7 +8353,7 @@ def api_users():
     u=ldj(USERS_FILE)
     myorg=session.get("org",DEFAULT_ORG)
     return jsonify({k:{"name":v["name"],"role":v["role"],"extra_roles":v.get("extra_roles",[]),
-                       "has_badge":bool(v.get("badge_token"))}
+                       "has_badge":bool(v.get("badge_token")),"last_login":v.get("last_login")}
                     for k,v in u.items() if v.get("org",DEFAULT_ORG)==myorg})
 
 @app.route("/api/audit-log")
@@ -8819,6 +8830,7 @@ def api_badge_login():
     session["roles"]=_effective_roles(user)
     session["org"]=user.get("org",DEFAULT_ORG)
     session["brand"]=brand_for_session(session["org"])
+    _touch_last_login(matched_u)
     return jsonify({"ok":True,"role":user["role"],"name":user["name"]})
 
 @app.route("/badge-login")

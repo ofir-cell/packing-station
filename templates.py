@@ -1129,7 +1129,7 @@ tr:hover td{background:rgba(79,70,229,.03)}
 __NAVBAR__
 <div class="upage">
 <h1>👥 User Management</h1>
-<div class="card"><h2>Current Users</h2><table><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Actions</th></tr></thead><tbody id="ut"></tbody></table></div>
+
 <div class="card"><h2>Add New User</h2>
 <div class="add-form">
 <input type="text" id="nu" placeholder="Username">
@@ -1145,34 +1145,91 @@ __NAVBAR__
 </div>
 <div class="msg" id="am"></div>
 </div></div>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+    <h2 style="margin:0">Current Users</h2>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input id="uSearch" placeholder="🔍 Search name or username" style="padding:9px 12px;border:1.5px solid var(--border,#e4e7ec);border-radius:9px;font-family:inherit;font-size:13px;min-width:200px">
+      <select id="uRole" style="padding:9px 12px;border:1.5px solid var(--border,#e4e7ec);border-radius:9px;font-family:inherit;font-size:13px">
+        <option value="">All roles</option>
+        <option value="admin">Admin</option>
+        <option value="manager">Warehouse Manager</option>
+        <option value="cs">Customer Service</option>
+        <option value="host">Host</option>
+        <option value="worker">Warehouse Associate</option>
+      </select>
+      <select id="uActive" style="padding:9px 12px;border:1.5px solid var(--border,#e4e7ec);border-radius:9px;font-family:inherit;font-size:13px">
+        <option value="">Any status</option>
+        <option value="active">🟢 Active (30d)</option>
+        <option value="inactive">⚪ Inactive</option>
+        <option value="never">🟠 Never logged in</option>
+      </select>
+    </div>
+  </div>
+  <table><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Last login</th><th>Actions</th></tr></thead><tbody id="ut"></tbody></table>
+  <div id="uCount" style="font-size:12px;color:#6b7280;margin-top:10px"></div>
+</div>
+<script>
+var URLBL={admin:'Admin',manager:'Warehouse Manager',cs:'Customer Service',host:'Host',worker:'Warehouse Associate',picker:'Warehouse Associate',assistant:'Host'};
+function ulbl(r){return URLBL[r]||r;}
+function uRoleCls(r){return r==='admin'?'r-admin':r==='cs'?'r-cs':r==='manager'?'r-admin':'r-worker';}
+function fmtLogin(s){
+  if(!s)return {txt:'Never',cls:'never',ago:''};
+  var d=new Date(s.replace(' ','T'));
+  if(isNaN(d))return {txt:s,cls:'inactive',ago:''};
+  var days=Math.floor((Date.now()-d.getTime())/86400000);
+  var ago=days<=0?'today':days===1?'yesterday':days+' days ago';
+  var dateTxt=d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+  return {txt:dateTxt,ago:ago,cls:days<=30?'active':'inactive'};
+}
+</script>
 <script>
 function loadUsers(){
     fetch('/api/users').then(function(r){return r.json()}).then(function(d){
-        var rows='';
-        Object.keys(d).forEach(function(k){
-            var v=d[k];
-            var rc=v.role==='admin'?'r-admin':v.role==='cs'?'r-cs':'r-worker';
-            var xr=(v.extra_roles||[]).map(function(r){return '<span class="role r-worker" style="opacity:.7;margin-left:4px">+'+r+'</span>'}).join('');
-            rows+='<tr><td><b>'+k+'</b></td><td>'+v.name+'</td><td><span class="role '+rc+'">'+v.role+'</span>'+xr+'</td><td>';
-            rows+='<div class="actions"><button class="act-btn" data-u="'+k+'" data-a="roles">Edit Roles</button>';
-            if(k!=='admin'){
-                rows+='<button class="act-btn act-pw" data-u="'+k+'" data-a="pw">Change Password</button><button class="act-btn act-del" data-u="'+k+'" data-a="del">Delete</button>';
-            }
-            rows+='</div></td></tr>';
-        });
-        document.getElementById('ut').innerHTML=rows;
         USERS=d;
-        document.querySelectorAll('[data-a="pw"]').forEach(function(b){
-            b.addEventListener('click',function(){changePw(this.dataset.u)});
-        });
-        document.querySelectorAll('[data-a="del"]').forEach(function(b){
-            b.addEventListener('click',function(){delUser(this.dataset.u)});
-        });
-        document.querySelectorAll('[data-a="roles"]').forEach(function(b){
-            b.addEventListener('click',function(){editRoles(this.dataset.u)});
-        });
+        renderUsers();
     });
 }
+function renderUsers(){
+    var d=USERS||{};
+    var q=(document.getElementById('uSearch').value||'').trim().toLowerCase();
+    var rf=document.getElementById('uRole').value;
+    var af=document.getElementById('uActive').value;
+    var rows='';var shown=0,total=0;
+    Object.keys(d).sort().forEach(function(k){
+        var v=d[k];total++;
+        var allRoles=[v.role].concat(v.extra_roles||[]);
+        // filters
+        if(q && k.toLowerCase().indexOf(q)<0 && (v.name||'').toLowerCase().indexOf(q)<0) return;
+        if(rf && allRoles.indexOf(rf)<0) return;
+        var li=fmtLogin(v.last_login);
+        var status=v.last_login?li.cls:'never';
+        if(af && status!==af) return;
+        shown++;
+        var rc=uRoleCls(v.role);
+        var xr=(v.extra_roles||[]).map(function(r){return '<span class="role r-worker" style="opacity:.7;margin-left:4px">+'+ulbl(r)+'</span>'}).join('');
+        var badge=status==='active'?'<span style="color:#059669;font-weight:700">🟢 Active</span>':
+                  status==='inactive'?'<span style="color:#94a3b8;font-weight:700">⚪ Inactive</span>':
+                  '<span style="color:#d97706;font-weight:700">🟠 Never</span>';
+        var loginTxt=v.last_login?('<b>'+li.txt+'</b> <span style="color:#94a3b8;font-size:11px">· '+li.ago+'</span>'):'<span style="color:#94a3b8">—</span>';
+        rows+='<tr><td><b>'+k+'</b></td><td>'+(v.name||'')+'</td><td><span class="role '+rc+'">'+ulbl(v.role)+'</span>'+xr+'</td><td>'+badge+'</td><td>'+loginTxt+'</td><td>';
+        rows+='<div class="actions"><button class="act-btn" data-u="'+k+'" data-a="roles">Edit Roles</button>';
+        if(k!=='admin'){
+            rows+='<button class="act-btn act-pw" data-u="'+k+'" data-a="pw">Change Password</button><button class="act-btn act-del" data-u="'+k+'" data-a="del">Delete</button>';
+        }
+        rows+='</div></td></tr>';
+    });
+    document.getElementById('ut').innerHTML=rows||'<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:20px">No users match your filters.</td></tr>';
+    document.getElementById('uCount').textContent='Showing '+shown+' of '+total+' users';
+    document.querySelectorAll('[data-a="pw"]').forEach(function(b){b.addEventListener('click',function(){changePw(this.dataset.u)})});
+    document.querySelectorAll('[data-a="del"]').forEach(function(b){b.addEventListener('click',function(){delUser(this.dataset.u)})});
+    document.querySelectorAll('[data-a="roles"]').forEach(function(b){b.addEventListener('click',function(){editRoles(this.dataset.u)})});
+}
+['uSearch','uRole','uActive'].forEach(function(id){
+    var el=document.getElementById(id);
+    el.addEventListener(id==='uSearch'?'input':'change',renderUsers);
+});
 document.getElementById('addBtn').addEventListener('click',function(){
     var u=document.getElementById('nu').value.trim();
     var p=document.getElementById('np').value;
