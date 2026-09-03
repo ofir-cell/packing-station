@@ -10952,7 +10952,9 @@ document.getElementById('createBtn').addEventListener('click',function(){
     contact_email:val('contact_email'),contact_phone:val('contact_phone'),
     admin_username:val('admin_username').toLowerCase(),admin_name:val('admin_name'),admin_password:val('admin_password')};
   fetch('/api/orgs/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(function(r){return r.json()}).then(function(d){
+    .then(function(r){return r.text().then(function(t){
+      try{return JSON.parse(t)}catch(e){return {ok:false,error:'Server error '+r.status+(t?(': '+t.replace(/<[^>]+>/g,' ').trim().slice(0,140)):'')};}
+    })}).then(function(d){
       btn.disabled=false;
       if(!d.ok){toast(d.error||'Failed',1);return}
       var c=document.getElementById('cred');
