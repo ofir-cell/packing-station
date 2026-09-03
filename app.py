@@ -38,7 +38,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML,
-    SCANIT_HTML)
+    SCANIT_HTML, APPLY_HTML)
 from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
 
 
@@ -311,6 +311,34 @@ def pdb_init():
         message TEXT,
         status TEXT DEFAULT 'new',
         notes TEXT,
+        converted_org TEXT
+    )""")
+    # Full new-client onboarding intake — the public /apply form saves everything
+    # needed to provision a tenant in one click.
+    c.execute("""CREATE TABLE IF NOT EXISTS client_intakes(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        company_name TEXT,
+        contact_name TEXT,
+        contact_email TEXT,
+        contact_phone TEXT,
+        brand_mark TEXT,
+        brand_color TEXT,
+        website TEXT,
+        platforms TEXT,
+        monthly_volume TEXT,
+        team_size TEXT,
+        ship_name TEXT,
+        ship_street1 TEXT,
+        ship_street2 TEXT,
+        ship_city TEXT,
+        ship_state TEXT,
+        ship_zip TEXT,
+        ship_phone TEXT,
+        preferred_username TEXT,
+        notes TEXT,
+        status TEXT DEFAULT 'new',
+        admin_notes TEXT,
         converted_org TEXT
     )""")
     # Seed the founding tenant (5 Second Beauty) if the table is empty.
@@ -3148,7 +3176,7 @@ _CSRF_SAFE=("GET","HEAD","OPTIONS","TRACE")
 # The public lead form is unauthenticated — there is no session for a forged request
 # to ride on, so CSRF adds nothing, and it must be POSTable from the marketing site
 # on a different origin. It is rate-limited by IP instead.
-_CSRF_EXEMPT={"/api/lead"}
+_CSRF_EXEMPT={"/api/lead","/api/apply"}
 
 @app.before_request
 def _csrf_protect():
@@ -8977,6 +9005,109 @@ def api_lead_update(lid):
     plog(session.get("user"),"lead_update","","lead #%d"%lid)
     return jsonify({"ok":True})
 
+# ── New-client onboarding intake (public form → one-click provision) ───────────
+def _slug_org_id(name):
+    """Turn a company name into a valid, lowercase org id base."""
+    s=re.sub(r'[^a-z0-9]+','-',(name or '').lower()).strip('-')[:24]
+    if not s or not s[0].isalnum(): s=("c"+s).strip('-')
+    return s or "client"
+
+@app.route("/apply")
+def apply_page():
+    """Public onboarding intake form. A prospect fills it; it lands in the platform
+    owner's Organizations console ready to provision. No login required."""
+    return APPLY_HTML
+
+@app.route("/api/apply",methods=["POST"])
+def api_apply():
+    """Public intake submission. Rate-limited by IP; saved to client_intakes."""
+    d=request.get_json(silent=True) or {}
+    company=(d.get("company_name") or "").strip()[:120]
+    name=(d.get("contact_name") or "").strip()[:120]
+    email=(d.get("contact_email") or "").strip()[:160]
+    if not company or not name or not email or "@" not in email:
+        return jsonify({"ok":False,"error":"Company, your name, and a valid email are required."})
+    ip=request.remote_addr or "?"
+    if not _rate_ok("apply:"+ip, limit=6, window=3600):
+        return jsonify({"ok":False,"error":"Too many submissions — please try again later."})
+    def g(k,n=120): return (d.get(k) or "").strip()[:n]
+    c=pdb()
+    c.execute("""INSERT INTO client_intakes(company_name,contact_name,contact_email,contact_phone,
+                   brand_mark,brand_color,website,platforms,monthly_volume,team_size,
+                   ship_name,ship_street1,ship_street2,ship_city,ship_state,ship_zip,ship_phone,
+                   preferred_username,notes)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (company,name,email,g("contact_phone",60),g("brand_mark",40),g("brand_color",20),
+               g("website",160),g("platforms",120),g("monthly_volume",60),g("team_size",40),
+               g("ship_name",120),g("ship_street1",160),g("ship_street2",160),g("ship_city",80),
+               g("ship_state",40),g("ship_zip",20),g("ship_phone",60),
+               g("preferred_username",40),(d.get("notes") or "").strip()[:2000]))
+    c.commit();c.close()
+    print("NEW CLIENT INTAKE: %s / %s / %s"%(company,name,email),flush=True)
+    return jsonify({"ok":True})
+
+@app.route("/api/intakes")
+@req_super
+def api_intakes_list():
+    c=pdb();rows=[dict(r) for r in c.execute(
+        "SELECT * FROM client_intakes ORDER BY (status='provisioned'), created_at DESC LIMIT 500").fetchall()];c.close()
+    return jsonify({"ok":True,"intakes":rows})
+
+@app.route("/api/intakes/<int:iid>/status",methods=["POST"])
+@req_super
+def api_intake_status(iid):
+    d=request.get_json() or {}
+    st=(d.get("status") or "").strip()
+    c=pdb()
+    if st in ("new","reviewing","archived"):
+        c.execute("UPDATE client_intakes SET status=? WHERE id=?",(st,iid))
+    if d.get("admin_notes") is not None:
+        c.execute("UPDATE client_intakes SET admin_notes=? WHERE id=?",((d.get("admin_notes") or "")[:2000],iid))
+    c.commit();c.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/intakes/<int:iid>/provision",methods=["POST"])
+@req_super
+def api_intake_provision(iid):
+    """Turn a client intake into a live tenant + admin account, in one click."""
+    d=request.get_json() or {}
+    c=pdb()
+    row=c.execute("SELECT * FROM client_intakes WHERE id=?",(iid,)).fetchone()
+    c.close()
+    if not row:
+        return jsonify({"ok":False,"error":"Intake not found"})
+    it=dict(row)
+    if it.get("converted_org"):
+        return jsonify({"ok":False,"error":"Already provisioned as '%s'."%it["converted_org"]})
+    # org_id: admin override → slug(company); make globally unique.
+    base=_slug_org_id(d.get("org_id") or it.get("company_name"))
+    cc=pdb(); org_id=base; n=1
+    while cc.execute("SELECT 1 FROM organizations WHERE org_id=?",(org_id,)).fetchone():
+        n+=1; org_id=base+str(n)
+    cc.close()
+    # admin username: override → preferred → slug(company)+"admin"; unique globally.
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    ubase=re.sub(r'[^a-z0-9_\-]','',(d.get("admin_username") or it.get("preferred_username") or (base+"admin")).lower())[:28] or (base+"admin")
+    admin_user=ubase; m=1
+    while admin_user in users:
+        m+=1; admin_user=ubase+str(m)
+    ok,res=_create_tenant(
+        org_id=org_id, company=it["company_name"], admin_user=admin_user,
+        admin_name=it.get("contact_name") or "Admin",
+        admin_pw=d.get("admin_password"),
+        contact_email=it.get("contact_email") or "", contact_phone=it.get("contact_phone") or "",
+        brand_mark=it.get("brand_mark") or "", brand_color=it.get("brand_color") or "",
+        plan=d.get("plan") or "starter", trial_days=d.get("trial_days"),
+        actor=session.get("user"))
+    if not ok:
+        return jsonify({"ok":False,"error":res})
+    c=pdb()
+    c.execute("UPDATE client_intakes SET status='provisioned', converted_org=? WHERE id=?",
+              (res["org_id"],iid))
+    c.commit();c.close()
+    plog(session.get("user"),"intake_provision",res["org_id"],"from intake #%d"%iid)
+    return jsonify({"ok":True, **res})
+
 # ── Super-admin subscription controls ─────────────────────────────────────────
 @app.route("/api/orgs/<org_id>/subscription",methods=["POST"])
 @req_super
@@ -9240,67 +9371,77 @@ def api_orgs_list():
 
 @app.route("/api/orgs/create",methods=["POST"])
 @req_super
-def api_orgs_create():
-    """Create a new tenant: register it, provision its isolated data, and create
-    its first admin user. Returns the admin's one-time password."""
-    d=request.get_json() or {}
-    org_id=(d.get("org_id") or "").strip().lower()
-    company=(d.get("company_name") or "").strip()
-    admin_user=(d.get("admin_username") or "").strip().lower()
-    admin_pw=(d.get("admin_password") or "").strip()
+def _create_tenant(org_id, company, admin_user, admin_name="Admin", admin_pw=None,
+                   contact_email="", contact_phone="", brand_mark="", brand_sub="",
+                   brand_color="", logo_url="", plan="starter", trial_days=None, actor=""):
+    """Register a tenant, provision its isolated data, and create its first admin user.
+    Shared by the manual create-org form and the client-intake provisioner.
+    Returns (True, {org_id, admin_username, admin_password}) or (False, error_str)."""
+    org_id=(org_id or "").strip().lower()
+    company=(company or "").strip()
+    admin_user=(admin_user or "").strip().lower()
+    admin_pw=(admin_pw or "").strip()
     if not _ORG_ID_RE.match(org_id):
-        return jsonify({"ok":False,"error":"Org ID: lowercase letters/digits/-, 2-31 chars, must start alphanumeric"})
+        return False,"Org ID: lowercase letters/digits/-, 2-31 chars, must start alphanumeric"
     if not company:
-        return jsonify({"ok":False,"error":"Company name is required"})
+        return False,"Company name is required"
     if not re.match(r'^[a-z0-9_\-]{2,32}$',admin_user):
-        return jsonify({"ok":False,"error":"Admin username: lowercase letters, digits, _ -, 2-32 chars"})
-    # Contact details for the account owner (who we invoice and call).
-    contact_email=(d.get("contact_email") or "").strip()[:160]
-    contact_phone=(d.get("contact_phone") or "").strip()[:60]
+        return False,"Admin username: lowercase letters, digits, _ -, 2-32 chars"
+    contact_email=(contact_email or "").strip()[:160]
+    contact_phone=(contact_phone or "").strip()[:60]
     if contact_email and "@" not in contact_email:
-        return jsonify({"ok":False,"error":"That contact email doesn't look valid"})
-    # This account can see every order and customer address in the tenant — don't let
-    # it be created with a throwaway password.
+        return False,"That contact email doesn't look valid"
     if not admin_pw:
         admin_pw=_gen_pw()
     elif len(admin_pw)<8:
-        return jsonify({"ok":False,"error":"Admin password must be at least 8 characters (or leave it blank to auto-generate a strong one)"})
-    # org_id must be unique
+        return False,"Admin password must be at least 8 characters (or leave it blank to auto-generate a strong one)"
     c=pdb()
     if c.execute("SELECT 1 FROM organizations WHERE org_id=?",(org_id,)).fetchone():
-        c.close(); return jsonify({"ok":False,"error":"That Org ID already exists"})
-    # username must be globally unique (usernames are global across tenants)
+        c.close(); return False,"That Org ID already exists"
     users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
     if admin_user in users:
-        c.close(); return jsonify({"ok":False,"error":"That admin username is already taken (usernames are global)"})
-    # 1) register the tenant
-    # New tenants start on a 7-day trial (sales-led: opened after the sales call).
-    _plan=(d.get("plan") or "starter")
-    if _plan not in PLANS: _plan="starter"
-    try: _tdays=max(0,min(90,int(d.get("trial_days",TRIAL_DAYS))))
+        c.close(); return False,"That admin username is already taken (usernames are global)"
+    if plan not in PLANS: plan="starter"
+    try: _tdays=max(0,min(90,int(trial_days if trial_days is not None else TRIAL_DAYS)))
     except Exception: _tdays=TRIAL_DAYS
     _tends=(datetime.now()+timedelta(days=_tdays)).isoformat(timespec="seconds")
     c.execute("""INSERT INTO organizations(org_id,company_name,brand_mark,brand_sub,brand_color,logo_url,plan,
                                            sub_status,trial_ends_at,contact_email,contact_phone)
                  VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-              (org_id,company,(d.get("brand_mark") or company[:12] or "BRAND").upper(),
-               (d.get("brand_sub") or "Employee Hub"),(d.get("brand_color") or "#d9748f"),
-               (d.get("logo_url") or ""),_plan,
-               ("trialing" if _tdays>0 else "none"), (_tends if _tdays>0 else None),
+              (org_id,company,(brand_mark or company[:12] or "BRAND").upper(),
+               (brand_sub or "Employee Hub"),(brand_color or "#d9748f"),(logo_url or ""),plan,
+               ("trialing" if _tdays>0 else "none"),(_tends if _tdays>0 else None),
                contact_email or None, contact_phone or None))
     c.commit(); c.close()
-    # 2) provision its isolated data folders/DBs + seed defaults
     try:
         provision_org(org_id)
         _seed_default_workflow_if_missing(org_id)
     except Exception as e:
         print("provision error for new org",org_id,":",e,flush=True)
-    # 3) create its first admin user
     with update_json(USERS_FILE) as uu:
         uu[admin_user]={"password":_h(admin_pw),"role":"admin",
-                        "name":_clean_name(d.get("admin_name") or "Admin"),"org":org_id}
-    plog(session.get("user"),"org_create",org_id,"company="+company+" admin="+admin_user)
-    return jsonify({"ok":True,"org_id":org_id,"admin_username":admin_user,"admin_password":admin_pw})
+                        "name":_clean_name(admin_name or "Admin"),"org":org_id}
+    try: plog(actor,"org_create",org_id,"company="+company+" admin="+admin_user)
+    except Exception: pass
+    return True,{"org_id":org_id,"admin_username":admin_user,"admin_password":admin_pw}
+
+
+def api_orgs_create():
+    """Create a new tenant: register it, provision its isolated data, and create
+    its first admin user. Returns the admin's one-time password."""
+    d=request.get_json() or {}
+    ok,res=_create_tenant(
+        org_id=d.get("org_id"), company=d.get("company_name"),
+        admin_user=d.get("admin_username"), admin_name=d.get("admin_name") or "Admin",
+        admin_pw=d.get("admin_password"),
+        contact_email=d.get("contact_email") or "", contact_phone=d.get("contact_phone") or "",
+        brand_mark=d.get("brand_mark") or "", brand_sub=d.get("brand_sub") or "",
+        brand_color=d.get("brand_color") or "", logo_url=d.get("logo_url") or "",
+        plan=d.get("plan") or "starter", trial_days=d.get("trial_days"),
+        actor=session.get("user"))
+    if not ok:
+        return jsonify({"ok":False,"error":res})
+    return jsonify({"ok":True, **res})
 
 @app.route("/api/orgs/toggle",methods=["POST"])
 @req_super

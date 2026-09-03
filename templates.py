@@ -10663,6 +10663,17 @@ __NAVBAR__
 </div>
 
 <div class="card">
+  <h2>📥 New-client applications</h2>
+  <div class="desc">Send this link to a prospective client — they fill in everything, and it lands here ready to provision in one click.</div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 14px">
+    <input id="applyLink" readonly style="flex:1;min-width:240px;padding:9px 12px;border:1px solid #e4e7ec;border-radius:9px;font-family:monospace;font-size:13px;background:#f8fafc">
+    <button id="copyApply" class="btn">Copy link</button>
+    <a id="openApply" href="/apply" target="_blank" class="btn">Open form ↗</a>
+  </div>
+  <div id="intakeList"><div class="muted">Loading…</div></div>
+</div>
+
+<div class="card">
   <h2>Leads</h2>
   <div class="desc">Submissions from the public demo form at <code>/demo</code>.</div>
   <table><thead><tr><th>When</th><th>Company</th><th>Contact</th><th>Volume</th><th>Status</th></tr></thead>
@@ -10847,6 +10858,54 @@ function loadLeads(){
     }).join(''):'<tr><td colspan=5 class=muted>No leads yet</td></tr>';
   });
 }
+// New-client applications
+(function(){
+  var link=location.origin+'/apply';
+  var el=document.getElementById('applyLink'); if(el)el.value=link;
+  var cb=document.getElementById('copyApply');
+  if(cb)cb.addEventListener('click',function(){
+    navigator.clipboard.writeText(link).then(function(){cb.textContent='✓ Copied';setTimeout(function(){cb.textContent='Copy link'},1400)});
+  });
+})();
+function loadIntakes(){
+  fetch('/api/intakes').then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;
+    var box=document.getElementById('intakeList');
+    if(!d.intakes.length){box.innerHTML='<div class="muted">No applications yet. Share the link above.</div>';return;}
+    box.innerHTML=d.intakes.map(function(it){
+      var addr=[it.ship_street1,it.ship_city,it.ship_state,it.ship_zip].filter(Boolean).join(', ');
+      var done=it.status==='provisioned';
+      var head='<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">'+
+        '<div><b style="font-size:15px">'+esc(it.company_name||'—')+'</b> <span class="muted">· '+String(it.created_at||'').slice(0,16)+'</span></div>'+
+        (done?'<span style="color:#059669;font-weight:800">✓ Provisioned · '+esc(it.converted_org||'')+'</span>'
+             :'<button class="btn primary" data-prov="'+it.id+'">⚡ Provision this client</button>')+'</div>';
+      var body='<div style="font-size:13px;color:#586274;margin-top:8px;line-height:1.7">'+
+        '👤 '+esc(it.contact_name||'')+' · '+esc(it.contact_email||'')+(it.contact_phone?' · '+esc(it.contact_phone):'')+'<br>'+
+        (it.platforms||it.monthly_volume?('🛒 '+esc(it.platforms||'')+(it.monthly_volume?' · ~'+esc(it.monthly_volume)+' orders/mo':'')+'<br>'):'')+
+        (it.brand_mark||it.brand_color?('🎨 '+esc(it.brand_mark||'')+' '+(it.brand_color?'<span style="display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:middle;background:'+esc(it.brand_color)+'"></span> '+esc(it.brand_color):'')+'<br>'):'')+
+        (addr?('📦 '+esc(it.ship_name||'')+' — '+esc(addr)+'<br>'):'')+
+        (it.notes?('📝 '+esc(it.notes)):'')+'</div>';
+      var stat='<div id="provStat_'+it.id+'" style="font-size:13px;font-weight:700;margin-top:8px"></div>';
+      return '<div style="border:1px solid #e4e7ec;border-radius:12px;padding:14px;margin-bottom:10px;background:'+(done?'#f0fdf4':'#fff')+'">'+head+body+stat+'</div>';
+    }).join('');
+    box.querySelectorAll('[data-prov]').forEach(function(b){
+      b.addEventListener('click',function(){provisionIntake(b.getAttribute('data-prov'),b)});
+    });
+  });
+}
+function provisionIntake(id,btn){
+  if(!confirm('Create a live tenant + admin login from this application?'))return;
+  btn.disabled=true;btn.textContent='Provisioning…';
+  var st=document.getElementById('provStat_'+id);
+  fetch('/api/intakes/'+id+'/provision',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+    .then(function(r){return r.json()}).then(function(d){
+      if(d.ok){
+        st.style.color='#059669';
+        st.innerHTML='✓ Created tenant <b>'+esc(d.org_id)+'</b> · login <b>'+esc(d.admin_username)+'</b> · password <b style="font-family:monospace;background:#f1f5f9;padding:2px 8px;border-radius:6px">'+esc(d.admin_password)+'</b><br><span class="muted">Copy the password now — it won\\'t be shown again.</span>';
+        loadIntakes();load();
+      }else{btn.disabled=false;btn.textContent='⚡ Provision this client';st.style.color='#e11d48';st.textContent='⚠️ '+(d.error||'Failed');}
+    }).catch(function(){btn.disabled=false;btn.textContent='⚡ Provision this client';st.style.color='#e11d48';st.textContent='Request failed';});
+}
 function load(){
   fetch('/api/orgs').then(function(r){return r.json()}).then(function(d){
     if(!d.ok){document.getElementById('orgRows').innerHTML='<tr><td colspan=7 class=muted>Failed to load</td></tr>';return}
@@ -10935,7 +10994,7 @@ function setColor(hex,skip){
     var p=this.selectionStart;this.value=this.value.toLowerCase().replace(/[^a-z0-9\\-]/g,'');this.setSelectionRange(p,p)});
   setColor('#d9748f');
 })();
-load();loadUsage();loadReqs();loadLeads();
+load();loadUsage();loadReqs();loadLeads();loadIntakes();
 document.getElementById('refreshStore').addEventListener('click',function(){document.getElementById('storeTotal').textContent='Recounting…';loadStorage(true)});
 setInterval(loadUsage,60000);
 </script></body></html>'''
@@ -11669,3 +11728,138 @@ function saveProduct(id){
 function delProduct(id){if(!confirm('Delete this product?'))return;fetch('/api/scanit/product/'+id+'/delete',{method:'POST'}).then(function(){toast('Deleted');showTab('search')})}
 showTab('scan');
 </script></body></html>'''
+
+
+# ── Public new-client onboarding intake (/apply) ──────────────────────────────
+APPLY_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Get started — LiveOpsHub</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;background:#f5f3ff;color:#1a2130;min-height:100vh;padding:32px 16px 80px}
+.wrap{max-width:640px;margin:0 auto}
+.brand{text-align:center;margin-bottom:8px;font-weight:900;font-size:22px;letter-spacing:.5px;color:#4f46e5}
+.hero{text-align:center;margin-bottom:26px}
+.hero h1{font-size:26px;font-weight:900;letter-spacing:-.5px;margin-bottom:6px}
+.hero p{font-size:15px;color:#586274;line-height:1.5}
+.card{background:#fff;border:1px solid #e4e7ec;border-radius:18px;padding:24px;box-shadow:0 10px 30px rgba(20,27,38,.06);margin-bottom:16px}
+.sec-t{font-size:12px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;color:#4f46e5;margin:4px 0 14px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:520px){.grid{grid-template-columns:1fr}}
+label{display:block;font-size:12px;font-weight:700;color:#586274;margin-bottom:5px}
+.f{margin-bottom:14px}
+input,textarea,select{width:100%;padding:11px 13px;border:1.5px solid #e4e7ec;border-radius:10px;font-family:inherit;font-size:14px;color:#1a2130;outline:none;transition:border .15s}
+input:focus,textarea:focus,select:focus{border-color:#4f46e5}
+textarea{min-height:80px;resize:vertical}
+.req{color:#e11d48}
+.hint{font-size:11px;color:#94a3b8;margin-top:4px}
+.color-row{display:flex;align-items:center;gap:10px}
+.color-row input[type=color]{width:52px;height:42px;padding:3px;cursor:pointer}
+.submit{width:100%;background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;border:none;border-radius:12px;padding:15px;font-size:16px;font-weight:800;cursor:pointer;font-family:inherit;transition:transform .12s,box-shadow .12s}
+.submit:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(79,70,229,.3)}
+.submit:disabled{opacity:.6;cursor:default;transform:none}
+.msg{font-size:13px;font-weight:700;margin-top:12px;text-align:center;min-height:18px}
+.msg.err{color:#e11d48}
+.done{text-align:center;padding:40px 20px}
+.done .ic{font-size:56px;margin-bottom:12px}
+.done h2{font-size:24px;font-weight:900;margin-bottom:8px}
+.done p{color:#586274;font-size:15px;line-height:1.6}
+.foot{text-align:center;font-size:12px;color:#94a3b8;margin-top:20px}
+</style></head><body>
+<div class="wrap">
+  <div class="brand">LiveOpsHub</div>
+  <div class="hero">
+    <h1>Let's set up your account</h1>
+    <p>Fill in your details below and we'll build your workspace. Takes about 3 minutes — no account needed yet.</p>
+  </div>
+
+  <form id="applyForm">
+    <div class="card">
+      <div class="sec-t">Your business</div>
+      <div class="f"><label>Company / brand name <span class="req">*</span></label><input id="company_name" placeholder="e.g. Glow Beauty Live" required></div>
+      <div class="grid">
+        <div class="f"><label>Display name on screens</label><input id="brand_mark" placeholder="e.g. GLOW" maxlength="14"><div class="hint">Short wordmark shown in the app (optional).</div></div>
+        <div class="f"><label>Brand color</label><div class="color-row"><input type="color" id="brand_color" value="#4f46e5"><span class="hint" id="colorHex">#4f46e5</span></div></div>
+      </div>
+      <div class="f"><label>Website / main sales channel</label><input id="website" placeholder="e.g. tiktok.com/@glowbeauty"></div>
+    </div>
+
+    <div class="card">
+      <div class="sec-t">Contact (account owner)</div>
+      <div class="grid">
+        <div class="f"><label>Your name <span class="req">*</span></label><input id="contact_name" placeholder="Full name" required></div>
+        <div class="f"><label>Email <span class="req">*</span></label><input id="contact_email" type="email" placeholder="you@company.com" required></div>
+      </div>
+      <div class="grid">
+        <div class="f"><label>Phone</label><input id="contact_phone" type="tel" placeholder="+1 555…"></div>
+        <div class="f"><label>Preferred admin username</label><input id="preferred_username" placeholder="e.g. glowadmin"><div class="hint">Your login name (we'll confirm it).</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="sec-t">How you sell</div>
+      <div class="grid">
+        <div class="f"><label>Platforms</label><input id="platforms" placeholder="TikTok Shop, Whatnot…"></div>
+        <div class="f"><label>Orders / month (approx.)</label><input id="monthly_volume" placeholder="e.g. 2,000"></div>
+      </div>
+      <div class="f"><label>Team size</label><input id="team_size" placeholder="e.g. 6 people (2 hosts, 3 warehouse, 1 CS)"></div>
+    </div>
+
+    <div class="card">
+      <div class="sec-t">Ship-from address (for shipping labels)</div>
+      <div class="f"><label>Business / sender name</label><input id="ship_name" placeholder="e.g. Glow Beauty LLC"></div>
+      <div class="f"><label>Street address</label><input id="ship_street1" placeholder="Street address"></div>
+      <div class="f"><label>Suite / unit (optional)</label><input id="ship_street2" placeholder="Suite, unit, floor"></div>
+      <div class="grid">
+        <div class="f"><label>City</label><input id="ship_city"></div>
+        <div class="f"><label>State</label><input id="ship_state"></div>
+      </div>
+      <div class="grid">
+        <div class="f"><label>ZIP</label><input id="ship_zip"></div>
+        <div class="f"><label>Warehouse phone</label><input id="ship_phone" type="tel"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="sec-t">Anything else?</div>
+      <div class="f"><label>Notes for the setup team</label><textarea id="notes" placeholder="Anything special about your workflow, timing, or needs."></textarea></div>
+    </div>
+
+    <button type="submit" class="submit" id="submitBtn">Submit &amp; get started →</button>
+    <div class="msg" id="msg"></div>
+  </form>
+
+  <div class="card" id="doneCard" style="display:none">
+    <div class="done">
+      <div class="ic">🎉</div>
+      <h2>Thank you!</h2>
+      <p>We've received your details and we're setting up your workspace.<br>We'll reach out to <b id="doneEmail"></b> with your login shortly.</p>
+    </div>
+  </div>
+
+  <div class="foot">Powered by LiveOpsHub · Your information is kept private.</div>
+</div>
+<script>
+var ce=document.getElementById('brand_color');
+ce.addEventListener('input',function(){document.getElementById('colorHex').textContent=ce.value});
+function val(id){return (document.getElementById(id).value||'').trim();}
+document.getElementById('applyForm').addEventListener('submit',function(e){
+  e.preventDefault();
+  var msg=document.getElementById('msg');msg.className='msg';msg.textContent='';
+  if(!val('company_name')||!val('contact_name')||!val('contact_email')){
+    msg.className='msg err';msg.textContent='Please fill company, your name, and email.';return;
+  }
+  var b=document.getElementById('submitBtn');b.disabled=true;b.textContent='Submitting…';
+  var body={};['company_name','brand_mark','brand_color','website','contact_name','contact_email','contact_phone','preferred_username','platforms','monthly_volume','team_size','ship_name','ship_street1','ship_street2','ship_city','ship_state','ship_zip','ship_phone','notes'].forEach(function(k){body[k]=val(k)});
+  fetch('/api/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json()}).then(function(d){
+      if(d.ok){
+        document.getElementById('applyForm').style.display='none';
+        document.getElementById('doneEmail').textContent=val('contact_email');
+        document.getElementById('doneCard').style.display='block';
+        window.scrollTo({top:0,behavior:'smooth'});
+      }else{b.disabled=false;b.textContent='Submit & get started →';msg.className='msg err';msg.textContent=d.error||'Something went wrong.';}
+    }).catch(function(){b.disabled=false;b.textContent='Submit & get started →';msg.className='msg err';msg.textContent='Network error — please try again.';});
+});
+</script>
+</body></html>'''
