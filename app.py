@@ -9142,19 +9142,26 @@ def api_intake_provision(iid):
               (res["org_id"],iid))
     c.commit();c.close()
     plog(session.get("user"),"intake_provision",res["org_id"],"from intake #%d"%iid)
-    # Auto-email the client their login details (unless disabled or no email on file).
-    emailed=False; email_error=None
+    # Auto-email the client their login details — IN THE BACKGROUND so a slow mail
+    # provider never blocks the provisioning response (the tenant is already created).
+    email_queued=False
     to=(it.get("contact_email") or "").strip()
     send_email = d.get("send_email", True)
     if send_email and to and EMAIL_ENABLED:
         login_url = request.url_root.rstrip("/") + "/login"
-        emailed, email_error = _send_tenant_welcome(
-            to, it.get("company_name"), it.get("contact_name"),
-            res["admin_username"], res["admin_password"], login_url)
-        if emailed:
-            plog(session.get("user"),"intake_welcome_sent",res["org_id"],to)
-    return jsonify({"ok":True, "emailed":emailed, "email_error":email_error,
-                    "email_configured":EMAIL_ENABLED, "sent_to":(to if emailed else None), **res})
+        _co=it.get("company_name"); _cn=it.get("contact_name")
+        _au=res["admin_username"]; _ap=res["admin_password"]; _org=res["org_id"]
+        def _bg_welcome():
+            ok2,err2=_send_tenant_welcome(to,_co,_cn,_au,_ap,login_url)
+            print("tenant welcome email %s -> %s%s"%(
+                "sent" if ok2 else "FAILED", to, "" if ok2 else (": "+str(err2))),flush=True)
+        try:
+            import threading; threading.Thread(target=_bg_welcome,daemon=True).start()
+            email_queued=True
+        except Exception as _e:
+            print("welcome email thread failed:",_e,flush=True)
+    return jsonify({"ok":True, "email_queued":email_queued,
+                    "email_configured":EMAIL_ENABLED, "sent_to":(to if email_queued else None), **res})
 
 # ── Super-admin subscription controls ─────────────────────────────────────────
 @app.route("/api/orgs/<org_id>/subscription",methods=["POST"])
