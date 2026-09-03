@@ -9042,18 +9042,30 @@ def apply_page():
     owner's Organizations console ready to provision. No login required."""
     return APPLY_HTML
 
-@app.route("/api/apply",methods=["POST"])
+def _cors(resp):
+    """Allow the marketing site (liveopshub.com) to POST the intake cross-origin."""
+    if MARKETING_ORIGIN:
+        resp.headers["Access-Control-Allow-Origin"]=MARKETING_ORIGIN
+        resp.headers["Access-Control-Allow-Headers"]="Content-Type"
+        resp.headers["Access-Control-Allow-Methods"]="POST, OPTIONS"
+        resp.headers["Vary"]="Origin"
+    return resp
+
+@app.route("/api/apply",methods=["POST","OPTIONS"])
 def api_apply():
-    """Public intake submission. Rate-limited by IP; saved to client_intakes."""
+    """Public intake submission. Rate-limited by IP; saved to client_intakes.
+    CORS-enabled so the registration form on liveopshub.com can post to it."""
+    if request.method=="OPTIONS":
+        return _cors(Response("",204))
     d=request.get_json(silent=True) or {}
     company=(d.get("company_name") or "").strip()[:120]
     name=(d.get("contact_name") or "").strip()[:120]
     email=(d.get("contact_email") or "").strip()[:160]
     if not company or not name or not email or "@" not in email:
-        return jsonify({"ok":False,"error":"Company, your name, and a valid email are required."})
+        return _cors(jsonify({"ok":False,"error":"Company, your name, and a valid email are required."}))
     ip=request.remote_addr or "?"
     if not _rate_ok("apply:"+ip, limit=6, window=3600):
-        return jsonify({"ok":False,"error":"Too many submissions — please try again later."})
+        return _cors(jsonify({"ok":False,"error":"Too many submissions — please try again later."}))
     def g(k,n=120): return (d.get(k) or "").strip()[:n]
     c=pdb()
     c.execute("""INSERT INTO client_intakes(company_name,contact_name,contact_email,contact_phone,
@@ -9068,7 +9080,7 @@ def api_apply():
                g("preferred_username",40),(d.get("notes") or "").strip()[:2000]))
     c.commit();c.close()
     print("NEW CLIENT INTAKE: %s / %s / %s"%(company,name,email),flush=True)
-    return jsonify({"ok":True})
+    return _cors(jsonify({"ok":True}))
 
 @app.route("/api/intakes")
 @req_super

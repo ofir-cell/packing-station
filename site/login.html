@@ -8,13 +8,13 @@
        protection and the session cookie). This page just forwards you there — so there is
        exactly one login, and it always works. Set APP_URL to your deployed app. -->
   <script>
-    var APP_URL = "https://app.liveopshub.com";   // ← your live app origin (e.g. https://getwhatnot.com)
+    var APP_URL = "https://getwhatnot.com";   // ← your live app origin (e.g. https://getwhatnot.com)
     // Preserve a ?next= deep link if present.
     var qs = new URLSearchParams(location.search);
     var dest = APP_URL + "/login" + (qs.get("next") ? ("?next=" + encodeURIComponent(qs.get("next"))) : "");
     location.replace(dest);
   </script>
-  <meta http-equiv="refresh" content="1;url=https://app.liveopshub.com/login">
+  <meta http-equiv="refresh" content="1;url=https://getwhatnot.com/login">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
   <style>
     body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
@@ -34,7 +34,7 @@
     <div class="brand">LiveOps<span>Hub</span></div>
     <div class="spin"></div>
     <p>Taking you to your company's secure login…<br>
-       If nothing happens, <a href="https://app.liveopshub.com/login">click here to log in</a>.</p>
+       If nothing happens, <a href="https://getwhatnot.com/login">click here to log in</a>.</p>
   </div>
 </body>
 </html>
