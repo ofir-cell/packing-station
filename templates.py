@@ -10901,7 +10901,10 @@ function provisionIntake(id,btn){
     .then(function(r){return r.json()}).then(function(d){
       if(d.ok){
         st.style.color='#059669';
-        st.innerHTML='✓ Created tenant <b>'+esc(d.org_id)+'</b> · login <b>'+esc(d.admin_username)+'</b> · password <b style="font-family:monospace;background:#f1f5f9;padding:2px 8px;border-radius:6px">'+esc(d.admin_password)+'</b><br><span class="muted">Copy the password now — it won\\'t be shown again.</span>';
+        var em=d.emailed?('<br><span style="color:#059669">✉️ Login details emailed to '+esc(d.sent_to)+'</span>')
+              :(d.email_configured===false?'<br><span class="muted">✉️ Email not set up — copy the details and send them manually.</span>'
+               :'<br><span style="color:#e11d48">✉️ Email not sent'+(d.email_error?': '+esc(d.email_error):'')+' — send the details manually.</span>');
+        st.innerHTML='✓ Created tenant <b>'+esc(d.org_id)+'</b> · login <b>'+esc(d.admin_username)+'</b> · password <b style="font-family:monospace;background:#f1f5f9;padding:2px 8px;border-radius:6px">'+esc(d.admin_password)+'</b><br><span class="muted">Copy the password now — it won\\'t be shown again.</span>'+em;
         loadIntakes();load();
       }else{btn.disabled=false;btn.textContent='⚡ Provision this client';st.style.color='#e11d48';st.textContent='⚠️ '+(d.error||'Failed');}
     }).catch(function(){btn.disabled=false;btn.textContent='⚡ Provision this client';st.style.color='#e11d48';st.textContent='Request failed';});

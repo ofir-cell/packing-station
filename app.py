@@ -7717,6 +7717,30 @@ def api_workflows_list():
     c.close()
     return jsonify([dict(r) for r in rows])
 
+def _send_tenant_welcome(to_email, company, contact_name, admin_user, admin_pw, login_url):
+    """Email a freshly-provisioned client their login details. Returns (ok, error)."""
+    first = (contact_name or "").split()[0] if contact_name else "there"
+    subject = "Your %s workspace is ready 🎉" % (company or "LiveOpsHub")
+    html = ("""<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:520px;margin:0 auto;background:#f5f3ff;padding:24px;border-radius:16px">
+  <div style="text-align:center;font-weight:900;color:#4f46e5;font-size:20px;letter-spacing:.5px;margin-bottom:6px">LiveOpsHub</div>
+  <div style="background:#fff;border-radius:14px;padding:26px">
+    <h2 style="margin:0 0 10px;color:#141b26">Welcome, %s! 🎉</h2>
+    <p style="font-size:15px;color:#3a4252;line-height:1.6;margin:0 0 18px">Your <b>%s</b> workspace is set up and ready. Here are your login details — please sign in and change your password right away.</p>
+    <div style="background:#f8fafc;border:1px solid #e4e7ec;border-radius:12px;padding:16px;font-size:14px;color:#1a2130;line-height:2">
+      <div>Username: <b>%s</b></div>
+      <div>Temporary password: <b style="font-family:monospace;background:#eef2ff;padding:2px 8px;border-radius:6px">%s</b></div>
+    </div>
+    <div style="text-align:center;margin:22px 0 8px">
+      <a href="%s" style="background:#4f46e5;color:#fff;text-decoration:none;font-weight:800;font-size:15px;padding:14px 34px;border-radius:12px;display:inline-block">Log in to your workspace →</a>
+    </div>
+    <p style="font-size:12px;color:#94a3b8;text-align:center;margin:12px 0 0">If the button doesn't work, open: <a href="%s" style="color:#6366f1">%s</a></p>
+  </div>
+</div>""" % (esc(first), esc(company or "your"), esc(admin_user), esc(admin_pw),
+            esc(login_url), esc(login_url), esc(login_url)))
+    text = "Welcome to %s!\n\nUsername: %s\nTemporary password: %s\nLog in: %s\n\nPlease change your password after signing in." % (
+        company or "LiveOpsHub", admin_user, admin_pw, login_url)
+    return _send_email(to_email, subject, html, text)
+
 def _send_hire_invite(to_email, full_name, invite_url, lang="en"):
     """Email a new hire a warm, branded welcome + their private onboarding link.
     Returns (ok, error). Bilingual (en/es). Uses the tenant's brand name + colour."""
@@ -9106,7 +9130,19 @@ def api_intake_provision(iid):
               (res["org_id"],iid))
     c.commit();c.close()
     plog(session.get("user"),"intake_provision",res["org_id"],"from intake #%d"%iid)
-    return jsonify({"ok":True, **res})
+    # Auto-email the client their login details (unless disabled or no email on file).
+    emailed=False; email_error=None
+    to=(it.get("contact_email") or "").strip()
+    send_email = d.get("send_email", True)
+    if send_email and to and EMAIL_ENABLED:
+        login_url = request.url_root.rstrip("/") + "/login"
+        emailed, email_error = _send_tenant_welcome(
+            to, it.get("company_name"), it.get("contact_name"),
+            res["admin_username"], res["admin_password"], login_url)
+        if emailed:
+            plog(session.get("user"),"intake_welcome_sent",res["org_id"],to)
+    return jsonify({"ok":True, "emailed":emailed, "email_error":email_error,
+                    "email_configured":EMAIL_ENABLED, "sent_to":(to if emailed else None), **res})
 
 # ── Super-admin subscription controls ─────────────────────────────────────────
 @app.route("/api/orgs/<org_id>/subscription",methods=["POST"])
