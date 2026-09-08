@@ -4597,6 +4597,36 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
 .empty-icon{font-size:56px;margin-bottom:14px;opacity:.5}
 .empty-title{font-size:18px;font-weight:700;color:var(--text-muted);margin-bottom:6px}
 .empty-sub{font-size:14px;margin-bottom:20px}
+ .show-filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 16px}
+ .show-filters input,.show-filters select{padding:9px 12px;border:1.5px solid var(--border);border-radius:10px;font-family:inherit;font-size:13px;color:var(--text);background:#fff;outline:none}
+ .show-filters input:focus,.show-filters select:focus{border-color:var(--brand)}
+ .show-filters .dlabel{font-size:12px;font-weight:700;color:var(--text-dim);display:flex;align-items:center;gap:6px}
+ .show-filters .clr{background:var(--surface);border:1px solid var(--border);cursor:pointer;color:var(--text-muted);font-weight:700}
+ .show-list{display:flex;flex-direction:column;gap:8px}
+ .show-row{display:flex;align-items:center;gap:14px;background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--border);border-radius:12px;padding:12px 16px;cursor:pointer;transition:box-shadow .12s,transform .05s;text-decoration:none;color:inherit}
+ .show-row:hover{box-shadow:0 4px 16px rgba(20,27,38,.08)}
+ .show-row.st-new{border-left-color:#60a5fa}
+ .show-row.st-progress{border-left-color:#f59e0b}
+ .show-row.st-done{border-left-color:#34d399;background:#f0fdf4}
+ .row-badge{font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;padding:4px 9px;border-radius:20px;white-space:nowrap;flex-shrink:0;width:92px;text-align:center}
+ .row-badge.st-new{background:rgba(96,165,250,.15);color:#2563eb}
+ .row-badge.st-progress{background:rgba(245,158,11,.15);color:#b45309}
+ .row-badge.st-done{background:rgba(52,211,153,.2);color:#059669}
+ .row-name{font-size:15px;font-weight:800;color:#141b26;flex:1;min-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .row-plat{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;padding:3px 8px;border-radius:6px;background:rgba(139,92,246,.12);color:#7c3aed;flex-shrink:0}
+ .row-plat.tiktok{background:rgba(236,72,153,.12);color:#db2777}
+ .row-nums{display:flex;gap:16px;flex-shrink:0}
+ .row-nums .n{text-align:center;min-width:52px}
+ .row-nums .n b{display:block;font-size:16px;font-weight:900;line-height:1}
+ .row-nums .n span{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.4px;font-weight:700}
+ .row-nums .n.pend b{color:#b45309}.row-nums .n.pack b{color:#059669}
+ .row-when{font-size:11px;color:var(--text-dim);white-space:nowrap;flex-shrink:0;min-width:110px;text-align:right}
+ .row-acts{display:flex;gap:6px;flex-shrink:0}
+ .row-acts button{border-radius:8px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;border:1px solid}
+ .ra-done{background:rgba(52,211,153,.12);color:#059669;border-color:rgba(52,211,153,.35)}
+ .ra-undo{background:rgba(17,24,39,0.08);color:#586274;border-color:rgba(17,24,39,0.16)}
+ .ra-del{background:rgba(244,63,94,.1);color:#e11d48;border-color:rgba(244,63,94,.25)}
+ @media(max-width:820px){.row-nums,.row-when{display:none}}
 </style>
 </head><body data-role="__ROLE__">
 __NAVBAR__
@@ -4609,10 +4639,24 @@ __NAVBAR__
   </div>
   <div class="page-sub">
     <span class="window-pill">Active + last 30 days</span>
-    <span style="margin-left:12px">Active shows currently being packed. Click any show to see its packages.</span>
+    <span style="margin-left:12px">Pick a show from the list to see its packages. Unfinished shows always stay here.</span>
   </div>
 
   <div class="kpis" id="kpis"></div>
+
+  <div class="show-filters">
+    <input id="fSearch" placeholder="🔍 Search show name" style="min-width:200px;flex:1">
+    <select id="fStatus">
+      <option value="">All statuses</option>
+      <option value="new">● Not started</option>
+      <option value="progress">◑ In progress</option>
+      <option value="done">✓ Done</option>
+    </select>
+    <span class="dlabel">From <input id="fFrom" type="date"></span>
+    <span class="dlabel">To <input id="fTo" type="date"></span>
+    <button class="clr" id="fClear" style="padding:9px 14px;border-radius:10px">Clear</button>
+    <span id="fCount" style="font-size:12px;color:var(--text-dim);margin-left:auto"></span>
+  </div>
 
   <div id="grid"></div>
 </div>
@@ -4633,73 +4677,73 @@ function renderKpis(){
     '<div class="kpi good"><div class="lbl">Packed</div><div class="val">'+(d+s)+'</div></div>'+
     '<div class="kpi bad"><div class="lbl">Cancelled</div><div class="val">'+x+'</div></div>';
 }
-function dropCard(name){
-  var el=document.querySelector('.show-card[data-show="'+encodeURIComponent(name)+'"]');
-  if(el)el.remove();
-  SHOWS=SHOWS.filter(function(s){return s.name!==name});
-  renderKpis();
-  if(!SHOWS.length)renderGrid();
+function showStatus(sh){
+  var packed=(sh.packed||0)+(sh.shipped||0), total=sh.shipments;
+  if(sh.done||((sh.pending||0)===0 && total>0))return 'done';
+  if(packed===0 && total>0)return 'new';
+  return 'progress';
 }
-function renderGrid(){
-  var shows=SHOWS;
+function dropCard(name){
+  SHOWS=SHOWS.filter(function(s){return s.name!==name});
+  renderKpis();renderList();
+}
+function applyFilters(){
+  var q=(document.getElementById('fSearch').value||'').trim().toLowerCase();
+  var st=document.getElementById('fStatus').value;
+  var from=document.getElementById('fFrom').value;
+  var to=document.getElementById('fTo').value;
+  return SHOWS.filter(function(sh){
+    if(q && sh.name.toLowerCase().indexOf(q)<0)return false;
+    if(st && showStatus(sh)!==st)return false;
+    var d=(sh.last_import||'').slice(0,10);
+    if(from && d && d<from)return false;
+    if(to && d && d>to)return false;
+    return true;
+  });
+}
+var BADGE={new:'● Not started',progress:'◑ In progress',done:'✓ Done'};
+function renderList(){
   var grid=document.getElementById('grid');
-  if(!shows||shows.length===0){
+  if(!SHOWS.length){
     grid.innerHTML='<div class="empty"><div class="empty-icon">📺</div><div class="empty-title">No active shows</div><div class="empty-sub">No unfinished shows right now.</div><a href="/admin/shipments" class="go-import-btn">＋ Import your first show</a></div>';
-    return;
+    document.getElementById('fCount').textContent='';return;
   }
-  grid.innerHTML='<div class="shows-grid">'+shows.map(function(sh){
-    var packed=(sh.packed||0)+(sh.shipped||0);
-    var total=sh.shipments;
-    var pctP=total?(100*(sh.packed||0)/total):0;
-    var pctS=total?(100*(sh.shipped||0)/total):0;
-    var pctC=total?(100*(sh.cancelled||0)/total):0;
-    var pctPnd=total?(100*(sh.pending||0)/total):0;
+  var shows=applyFilters();
+  document.getElementById('fCount').textContent='Showing '+shows.length+' of '+SHOWS.length;
+  if(!shows.length){grid.innerHTML='<div class="empty"><div class="empty-icon">🔍</div><div class="empty-title">No shows match your filters</div></div>';return;}
+  grid.innerHTML='<div class="show-list">'+shows.map(function(sh){
+    var total=sh.shipments, packed=(sh.packed||0)+(sh.shipped||0);
+    var status=showStatus(sh);
     var isWhatnot=(sh.platform==='whatnot' && (sh.platform_count||1)<=1);
-    var platCls='platform-'+(sh.platform||'mixed');
-    if(sh.platform_count>1)platCls='platform-mixed';
     var platName=sh.platform_count>1?'Mixed':(sh.platform||'?');
-    // NEW = uploaded, nobody touched it yet; DONE = manually marked, or nothing pending.
-    var untouched=(packed===0 && total>0);
-    var isDone=sh.done||((sh.pending||0)===0 && total>0);
-    // Whole-card highlight: colored border + full-width banner so status is obvious.
-    var cardStyle='position:relative;';
-    var banner='';
-    if(isDone){
-      cardStyle+='border:2px solid rgba(52,211,153,.65);box-shadow:0 0 0 1px rgba(52,211,153,.25),0 0 24px rgba(52,211,153,.12);';
-      banner='<div style="background:linear-gradient(90deg,rgba(52,211,153,.25),rgba(52,211,153,.12));color:#059669;font-weight:900;text-align:center;padding:8px;border-radius:10px;margin-bottom:12px;letter-spacing:2px;font-size:14px">✓ DONE</div>';
-    } else if(untouched){
-      cardStyle+='border:2px solid rgba(96,165,250,.65);box-shadow:0 0 0 1px rgba(96,165,250,.25),0 0 24px rgba(96,165,250,.12);';
-      banner='<div style="background:linear-gradient(90deg,rgba(96,165,250,.28),rgba(96,165,250,.12));color:#2563eb;font-weight:900;text-align:center;padding:8px;border-radius:10px;margin-bottom:12px;letter-spacing:2px;font-size:14px">● NEW · not started</div>';
-    }
-    return '<a href="/admin/shipments?show='+encodeURIComponent(sh.name)+'" class="show-card" data-show="'+encodeURIComponent(sh.name)+'" style="'+cardStyle+'">'+
-      banner+
-      '<div class="show-card-head">'+
-        '<div class="show-card-name">'+escapeHtml(sh.name)+'</div>'+
-        '<span class="platform-pill '+platCls+'">'+platName+'</span>'+
-      '</div>'+
-      '<div class="show-totals"><span class="big">'+total+'</span><span class="small">shipments</span></div>'+
-      '<div class="show-bar">'+
-        (sh.shipped?'<div class="bar-shipped" style="width:'+pctS+'%"></div>':'')+
-        (sh.packed?'<div class="bar-packed" style="width:'+pctP+'%"></div>':'')+
-        (sh.pending?'<div class="bar-pending" style="width:'+pctPnd+'%"></div>':'')+
-        ((!isWhatnot&&sh.cancelled)?'<div class="bar-cancelled" style="width:'+pctC+'%"></div>':'')+
-      '</div>'+
-      '<div class="show-progress">'+
-        '<div class="sp pending"><div class="v">'+(sh.pending||0)+'</div><div class="l">Pending</div></div>'+
-        '<div class="sp packed"><div class="v">'+(sh.packed||0)+'</div><div class="l">Packed</div></div>'+
-        '<div class="sp shipped"><div class="v">'+(sh.shipped||0)+'</div><div class="l">Shipped</div></div>'+
-        (isWhatnot?'':'<div class="sp cancelled"><div class="v">'+(sh.cancelled||0)+'</div><div class="l">Cancelled</div></div>')+
-      '</div>'+
-      '<div class="show-footer">'+
-        '<div class="when">Last import <b>'+fmtDateShort(sh.last_import)+'</b>'+(sh.done&&sh.done_by?'<br><span style="color:#059669">✓ done by '+escapeHtml(sh.done_by)+'</span>':'')+'</div>'+
-        '<div style="display:flex;gap:6px;align-items:center">'+
-          '<button onclick="toggleDone(event,\\''+encodeURIComponent(sh.name)+'\\','+(sh.done?'false':'true')+')" style="background:'+(sh.done?'rgba(17,24,39,0.128)':'rgba(52,211,153,.15)')+';color:'+(sh.done?'#586274':'#059669')+';border:1px solid '+(sh.done?'rgba(17,24,39,0.16)':'rgba(52,211,153,.35)')+';border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">'+(sh.done?'↩︎ Undo':'✓ Mark DONE')+'</button>'+
-          '<button onclick="deleteShow(event,\\''+encodeURIComponent(sh.name)+'\\')" title="Delete this show (manager PIN)" style="background:rgba(244,63,94,.1);color:#e11d48;border:1px solid rgba(244,63,94,.25);border-radius:8px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">🗑</button>'+
-        '</div>'+
-      '</div>'+
+    var platCls=(sh.platform==='tiktok')?'tiktok':'';
+    var en=encodeURIComponent(sh.name);
+    return '<a class="show-row st-'+status+'" data-show="'+en+'" href="/admin/shipments?show='+en+'">'+
+      '<span class="row-badge st-'+status+'">'+BADGE[status]+'</span>'+
+      '<span class="row-name">'+escapeHtml(sh.name)+'</span>'+
+      '<span class="row-plat '+platCls+'">'+platName+'</span>'+
+      '<span class="row-nums">'+
+        '<span class="n"><b>'+total+'</b><span>total</span></span>'+
+        '<span class="n pend"><b>'+(sh.pending||0)+'</b><span>pending</span></span>'+
+        '<span class="n pack"><b>'+packed+'</b><span>packed</span></span>'+
+      '</span>'+
+      '<span class="row-when">'+fmtDateShort(sh.last_import)+(sh.done&&sh.done_by?'<br>✓ '+escapeHtml(sh.done_by):'')+'</span>'+
+      '<span class="row-acts">'+
+        '<button class="'+(sh.done?'ra-undo':'ra-done')+'" onclick="toggleDone(event,\\''+en+'\\','+(sh.done?'false':'true')+')">'+(sh.done?'↩︎ Undo':'✓ Done')+'</button>'+
+        '<button class="ra-del" title="Delete this show (manager PIN)" onclick="deleteShow(event,\\''+en+'\\')">🗑</button>'+
+      '</span>'+
     '</a>';
   }).join('')+'</div>';
 }
+function renderGrid(){renderList();}  // back-compat alias
+['fSearch','fStatus','fFrom','fTo'].forEach(function(id){
+  var el=document.getElementById(id);
+  el.addEventListener(id==='fSearch'?'input':'change',renderList);
+});
+document.getElementById('fClear').addEventListener('click',function(){
+  document.getElementById('fSearch').value='';document.getElementById('fStatus').value='';
+  document.getElementById('fFrom').value='';document.getElementById('fTo').value='';renderList();
+});
 loadShows();
 function toggleDone(ev,name,done){
   ev.preventDefault();ev.stopPropagation();
