@@ -5682,7 +5682,12 @@ def api_pick_complete(sid):
 # Whatnot, re-uploads after corrections). Packers may be working multiple
 # active shows simultaneously, so this is the index they need.
 # ══════════════════════════════════════════════════════════
-SHOW_WINDOW_DAYS = 5
+# A show still being worked (not marked DONE) ALWAYS appears, regardless of age —
+# so an old back-dated import never vanishes and workers can always pull it.
+# DONE shows are hidden after SHOW_WINDOW_DAYS to keep the board clean.
+# SHOW_HARD_CAP_DAYS bounds the query so we never scan the whole history.
+SHOW_WINDOW_DAYS = 30
+SHOW_HARD_CAP_DAYS = 180
 
 @app.route("/admin/shows")
 @req_role("admin","cs")
@@ -5698,6 +5703,7 @@ def api_shows():
     """Return distinct shows (import_label) from the last 5 days, with rollup
     stats per show. Used by the Shows page, the import autocomplete, and the picker."""
     cutoff_dt = (datetime.now() - timedelta(days=SHOW_WINDOW_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    cap_dt = (datetime.now() - timedelta(days=SHOW_HARD_CAP_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     c = sdb()
     rows = c.execute("""
         SELECT import_label AS name,
@@ -5715,13 +5721,18 @@ def api_shows():
           AND imported_at >= ?
         GROUP BY import_label
         ORDER BY last_import DESC
-    """, (cutoff_dt,)).fetchall()
+    """, (cap_dt,)).fetchall()
     done_map = {r["import_label"]: dict(r) for r in c.execute("SELECT * FROM show_state").fetchall()}
     c.close()
     # Attach cleanup status so the picker can warn / block on unclean shows.
     out = []
     for r in rows:
         d = dict(r)
+        _st = done_map.get(d["name"])
+        _is_done = bool(_st and _st.get("done"))
+        # Unfinished shows always show (any age); DONE shows age out of the window.
+        if _is_done and (d["last_import"] or "") < cutoff_dt:
+            continue
         cp = _cleanup_progress(d["name"])
         d["cleanup"] = {
             "is_clean": cp["is_clean"],
@@ -7051,7 +7062,7 @@ def packer_analytics_page():
 # Operations hub: (tab_key, tab_label, [ (icon, title, sublabel, url, admin_only), ... ])
 OPS_GROUPS = [
     ("shows", "🎬 Shows", [
-        ("🎬", "Shows", "Last 5 days · live rollup", "/admin/shows", False),
+        ("🎬", "Shows", "Active + last 30 days · live rollup", "/admin/shows", False),
         ("📥", "Import Shipments", "Upload To-Ship / cancel CSV", "/admin/shipments", False),
         ("🔗", "Match Products", "Bind stickers to real SKUs", "/admin/preshow", False),
         ("🧾", "SKU Reconciliation", "Verify packed vs sold", "/admin/sku-lookup", False),
@@ -7442,15 +7453,19 @@ def api_shows_recent():
     """Lightweight — just distinct show names from the last 5 days, for
     autocomplete dropdowns. Same data, slimmer payload."""
     cutoff_dt = (datetime.now() - timedelta(days=SHOW_WINDOW_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    cap_dt = (datetime.now() - timedelta(days=SHOW_HARD_CAP_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     c = sdb()
     rows = c.execute("""SELECT import_label AS name, MAX(imported_at) AS last
                         FROM shipments
                         WHERE import_label IS NOT NULL AND import_label != ''
                           AND imported_at >= ?
                         GROUP BY import_label
-                        ORDER BY last DESC""", (cutoff_dt,)).fetchall()
+                        ORDER BY last DESC""", (cap_dt,)).fetchall()
+    done_labels = {r["import_label"] for r in c.execute("SELECT import_label FROM show_state WHERE done=1").fetchall()}
     c.close()
-    return jsonify([r["name"] for r in rows])
+    # Unfinished shows always listed; DONE shows only within the recent window.
+    return jsonify([r["name"] for r in rows
+                    if (r["name"] not in done_labels) or ((r["last"] or "") >= cutoff_dt)])
 
 @app.route("/api/hosts/recent")
 @req_role("admin","cs")

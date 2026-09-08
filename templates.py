@@ -2703,7 +2703,7 @@ __NAVBAR__
   <div class="fulfil hub-section-ops" id="fulfil">
     <div class="fulfil-panel">
       <div class="fulfil-head">
-        <div class="ttl"><span class="dot"></span>Fulfillment · last 5 days</div>
+        <div class="ttl"><span class="dot"></span>Fulfillment · active + last 30 days</div>
         <a href="/admin/shows">Open Shows →</a>
       </div>
       <div class="fulfil-tiles">
@@ -4608,7 +4608,7 @@ __NAVBAR__
     <a href="/admin/shipments" class="go-import-btn">＋ Import a CSV</a>
   </div>
   <div class="page-sub">
-    <span class="window-pill">Last 5 days</span>
+    <span class="window-pill">Active + last 30 days</span>
     <span style="margin-left:12px">Active shows currently being packed. Click any show to see its packages.</span>
   </div>
 
@@ -4644,7 +4644,7 @@ function renderGrid(){
   var shows=SHOWS;
   var grid=document.getElementById('grid');
   if(!shows||shows.length===0){
-    grid.innerHTML='<div class="empty"><div class="empty-icon">📺</div><div class="empty-title">No active shows</div><div class="empty-sub">No CSVs have been imported in the last 5 days.</div><a href="/admin/shipments" class="go-import-btn">＋ Import your first show</a></div>';
+    grid.innerHTML='<div class="empty"><div class="empty-icon">📺</div><div class="empty-title">No active shows</div><div class="empty-sub">No unfinished shows right now.</div><a href="/admin/shipments" class="go-import-btn">＋ Import your first show</a></div>';
     return;
   }
   grid.innerHTML='<div class="shows-grid">'+shows.map(function(sh){
@@ -5167,7 +5167,7 @@ function loadShows(){
         // Render show picker
         var list=document.getElementById('showList');
         if(availableShows.length===0){
-            list.innerHTML='<div class="show-empty">No active shows in the last 5 days.<br>Ask your admin to import a CSV first.</div>';
+            list.innerHTML='<div class="show-empty">No unfinished shows right now.<br>Ask your admin to import a CSV first.</div>';
             switchState('show');
             return;
         }
@@ -5875,7 +5875,7 @@ function loadShows(){
         var empty=document.getElementById('emptyShows');
         if(!shows||shows.length===0){
             grid.innerHTML='';
-            empty.innerHTML='<div class="empty"><div class="icn">📦</div><div class="ttl">No active shows in the last 5 days</div><div>Import a TikTok or Whatnot CSV to get started.</div></div>';
+            empty.innerHTML='<div class="empty"><div class="icn">📦</div><div class="ttl">No unfinished shows right now</div><div>Import a TikTok or Whatnot CSV to get started.</div></div>';
             return;
         }
         empty.innerHTML='';
