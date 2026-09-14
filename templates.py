@@ -615,7 +615,7 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 body.sw{background:linear-gradient(135deg,#ffffff,#fffbeb)}
 body.sf{background:linear-gradient(135deg,#ffffff,#f0fdf4)}
 </style></head><body class="sr">
-<div class="top"><div class="brand-tag"><span class="brand-mark-mini">5&nbsp;SEC</span><span class="badge">__STATION__ — __NAME__</span></div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span data-i18n="camera">Camera</span></div><button class="role-switch" id="langBtn" onclick="toggleLang()" style="cursor:pointer">ES</button><a href="/pick" class="role-switch" data-i18n="switchpick">📋 Switch to Picking</a><a href="/home" class="portal-b" data-i18n="portal">🏠 Portal</a><button class="out-b" id="endBtn" data-i18n="endshift">End Shift</button></div></div>
+<div class="top"><div class="brand-tag"><span class="brand-mark-mini">__BRANDMARK__</span><span class="badge">__STATION__ — __NAME__</span></div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span data-i18n="camera">Camera</span></div><button class="role-switch" id="langBtn" onclick="toggleLang()" style="cursor:pointer">ES</button><a href="/pick" class="role-switch" data-i18n="switchpick">📋 Switch to Picking</a><a href="/home" class="portal-b" data-i18n="portal">🏠 Portal</a><button class="out-b" id="endBtn" data-i18n="endshift">End Shift</button></div></div>
 <div class="pv"><video id="pv" autoplay muted playsinline></video></div>
 
 <div class="x on" id="xw"><div class="w-icon">👋</div><div class="w-title"><span data-i18n="welcomeg">Welcome</span>, __NAME__!</div><div class="w-sub"><span data-i18n="youareat">You are at</span> <b>__STATION__</b></div><div class="w-msg" data-i18n="greatshift">Have a great shift! Your camera is being set up...</div></div>
@@ -3231,7 +3231,7 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(900px 
 </style>
 </head><body>
 <div class="brand">
-  <div class="brand-mark">5&nbsp;SEC</div>
+  <div class="brand-mark">__BRANDMARK__</div>
   <div class="brand-sub">Employee Hub</div>
 </div>
 <div class="greet">
@@ -4974,7 +4974,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 </head><body data-role="__ROLE__">
 <div class="top">
   <div class="top-brand">
-    <div class="brand-mark">5&nbsp;SEC</div>
+    <div class="brand-mark">__BRANDMARK__</div>
     <div class="brand-sub">Picking</div>
   </div>
   <div class="top-show" id="topShow"></div>
