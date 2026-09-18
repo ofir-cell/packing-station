@@ -4743,11 +4743,15 @@ def api_shipments_import():
     # Normalize all rows to common shape
     if fmt == "tiktok":
         norm = [_norm_tiktok(r) for r in rows]
-        # Detect if this is purely a cancel file — TikTok cancel export has empty package_id
-        # on every row and Order Status starts with "Cancel"
+        # Detect a cancellations export: a file where (almost) every row's Order
+        # Status is "Cancel(l)ed". We do NOT also require a missing Package ID —
+        # an order cancelled AFTER a label was printed keeps its package_id, so the
+        # old no-package check wrongly rejected real cancel files. The user picking
+        # the Cancellations dialog (kind=tiktok_cancel) forces this path too.
         cancel_count = sum(1 for n in norm if n["status"].lower().startswith("cancel"))
-        no_pkg = sum(1 for n in norm if not n["package_id"])
-        is_cancel_file = (cancel_count / len(norm) > 0.8) and (no_pkg / len(norm) > 0.8)
+        explicit_cancel = (request.form.get("kind") == "tiktok_cancel")
+        ratio = cancel_count / len(norm)
+        is_cancel_file = (ratio > 0.8) or (explicit_cancel and ratio > 0.4)
         if is_cancel_file:
             return _process_cancel_file(norm, "tiktok", label)
         platform = "tiktok"

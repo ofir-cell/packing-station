@@ -4011,6 +4011,7 @@ function renderTable(){
 // Import modal — three entry points (TikTok orders / TikTok cancellations / Whatnot)
 // share a single modal but with context-appropriate copy.
 var modal=document.getElementById('modal');
+var IMPORT_KIND='tiktok_orders';
 var importContexts={
   tiktok_orders: {
     title:'Import TikTok Orders CSV',
@@ -4030,6 +4031,7 @@ var importContexts={
 };
 document.querySelectorAll('.import-btn[data-kind]').forEach(function(btn){
   btn.addEventListener('click',function(){
+    IMPORT_KIND=btn.dataset.kind||'tiktok_orders';
     var ctx=importContexts[btn.dataset.kind]||importContexts.tiktok_orders;
     document.getElementById('modalTitle').textContent=ctx.title;
     document.getElementById('modalSub').textContent=ctx.sub;
@@ -4072,7 +4074,7 @@ function runImport(force){
   var res=document.getElementById('modalResult');
   if(!label){res.className='modal-result err show';res.textContent='Show name is required';document.getElementById('showName').focus();return}
   if(!f){res.className='modal-result err show';res.textContent='Pick a CSV file';return}
-  var fd=new FormData();fd.append('file',f);fd.append('label',label);
+  var fd=new FormData();fd.append('file',f);fd.append('label',label);fd.append('kind',IMPORT_KIND);
   var ss=document.getElementById('showStart');if(ss&&ss.value)fd.append('show_start',ss.value);
   var hn=document.getElementById('hostName');if(hn&&hn.value.trim())fd.append('host',hn.value.trim());
   if(force)fd.append('force','1');
