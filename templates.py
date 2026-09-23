@@ -7481,6 +7481,35 @@ __NAVBAR__
     <button class="btn btn-p" id="csvBtn">Import →</button>
   </div>
   <div class="muted" id="csvResult" style="margin-top:10px;font-size:13px"></div>
+
+  <div style="border-top:1px dashed rgba(17,24,39,0.12);margin:18px 0 14px"></div>
+  <h2 style="font-size:16px">📑 Import from supplier PO / invoice (PDF)</h2>
+  <div class="muted" style="font-size:13px;margin-bottom:12px">Upload the PDF your supplier sends. We read the line items automatically, then you map each <b>supplier SKU</b> to the matching product in <b>your</b> catalog before importing. Mappings are remembered for next time.</div>
+  <div class="row">
+    <div class="f" style="flex:1;min-width:220px"><label>PO / invoice file (PDF or image)</label><input id="poFile" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" style="width:100%;padding:9px"></div>
+    <button class="btn btn-s" id="poReadBtn">Read PDF →</button>
+  </div>
+  <div class="muted" id="poResult" style="margin-top:10px;font-size:13px"></div>
+  <div id="poReview" style="margin-top:14px;display:none">
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="text-align:left;color:#6b7280;border-bottom:1px solid rgba(17,24,39,0.1)">
+        <th style="padding:6px 8px">Supplier SKU</th><th style="padding:6px 8px">Product (from PDF)</th>
+        <th style="padding:6px 8px;width:70px">Qty</th><th style="padding:6px 8px;width:90px">Unit cost</th>
+        <th style="padding:6px 8px;width:220px">Your store SKU →</th></tr></thead>
+      <tbody id="poRows"></tbody>
+    </table>
+    <datalist id="storeSkus"></datalist>
+    <div class="row" style="margin-top:12px;align-items:flex-end">
+      <div class="f"><label>On-hand mode</label>
+        <select id="poMode" style="background:#ffffff;border:2px solid rgba(17,24,39,0.128);border-radius:10px;padding:11px 14px;font-size:14px;color:#1a2130;font-family:inherit;outline:none">
+          <option value="add">Add to stock (receive)</option>
+          <option value="replace">Replace on-hand (set)</option>
+        </select></div>
+      <button class="btn btn-p" id="poImportBtn">Import all →</button>
+      <button class="btn btn-s" id="poCancelBtn">Cancel</button>
+    </div>
+    <div class="muted" id="poImportResult" style="margin-top:10px;font-size:13px"></div>
+  </div>
 </div>
 <div class="card">
   <h2>📊 Inventory at a glance</h2>
@@ -7611,6 +7640,61 @@ document.getElementById('csvBtn').addEventListener('click',function(){
     document.getElementById('csvResult').innerHTML='✓ '+d.created+' new · '+d.updated+' updated · '+d.stocked+' stocked'+(d.skipped?(' · '+d.skipped+' skipped'):'');
     toast('Imported ✓');fi.value='';load();
   }).catch(function(){document.getElementById('csvResult').innerHTML='<span style="color:#f43f5e">Upload failed</span>'});
+});
+// ── Supplier PO (PDF) import + SKU mapping ──
+var PO_ITEMS=[];
+function poFillSkuList(){
+  fetch('/api/products').then(function(r){return r.json()}).then(function(d){
+    var arr=(d&&d.products)||(Array.isArray(d)?d:[]);var dl=document.getElementById('storeSkus');
+    dl.innerHTML=arr.map(function(p){return '<option value="'+esc(p.sku)+'">'+esc((p.name||''))+'</option>'}).join('');
+  }).catch(function(){});
+}
+function poRenderRows(){
+  var tb=document.getElementById('poRows');
+  tb.innerHTML=PO_ITEMS.map(function(it,i){
+    var tag=it.matched?'<span style="color:#10b981;font-weight:700">✓ mapped</span>'
+           :(it.store_sku?'<span style="color:#6b7280">existing</span>':'<span style="color:#f59e0b">new</span>');
+    return '<tr style="border-bottom:1px solid rgba(17,24,39,0.06)">'+
+      '<td style="padding:6px 8px"><b>'+esc(it.supplier_sku||'—')+'</b></td>'+
+      '<td style="padding:6px 8px">'+esc(it.name||'')+'</td>'+
+      '<td style="padding:6px 8px"><input class="poQ" data-i="'+i+'" type="number" value="'+it.qty+'" style="width:60px;padding:6px"></td>'+
+      '<td style="padding:6px 8px"><input class="poC" data-i="'+i+'" type="number" step="0.01" value="'+it.unit_cost+'" style="width:80px;padding:6px"></td>'+
+      '<td style="padding:6px 8px"><input class="poS" data-i="'+i+'" list="storeSkus" value="'+esc(it.store_sku||'')+'" placeholder="'+esc(it.supplier_sku||'auto')+'" style="width:150px;padding:6px"> <span class="poTag" data-i="'+i+'">'+tag+'</span></td>'+
+    '</tr>';
+  }).join('');
+  tb.querySelectorAll('.poS').forEach(function(inp){inp.addEventListener('input',function(){
+    var i=+this.getAttribute('data-i');PO_ITEMS[i].store_sku=this.value.trim();
+    this.parentNode.querySelector('.poTag').innerHTML=this.value.trim()?'<span style="color:#6b7280">set</span>':'<span style="color:#f59e0b">new</span>';
+  })});
+  tb.querySelectorAll('.poQ').forEach(function(inp){inp.addEventListener('input',function(){PO_ITEMS[+this.getAttribute('data-i')].qty=parseInt(this.value||'0')})});
+  tb.querySelectorAll('.poC').forEach(function(inp){inp.addEventListener('input',function(){PO_ITEMS[+this.getAttribute('data-i')].unit_cost=parseFloat(this.value||'0')})});
+}
+document.getElementById('poReadBtn').addEventListener('click',function(){
+  var fi=document.getElementById('poFile');
+  if(!fi.files||!fi.files[0]){toast('Choose a PDF first',true);return}
+  var fd=new FormData();fd.append('file',fi.files[0]);
+  document.getElementById('poResult').textContent='Reading the PDF…';
+  fetch('/api/products/import-pdf',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){document.getElementById('poResult').innerHTML='<span style="color:#f43f5e">'+esc(d.error||'Failed')+'</span>';return}
+    if(!d.items||!d.items.length){document.getElementById('poResult').innerHTML='<span style="color:#f59e0b">No line items found in that file.</span>';return}
+    PO_ITEMS=d.items;document.getElementById('poResult').innerHTML='✓ Found <b>'+d.items.length+'</b> line items — review the mapping below, then import.';
+    poFillSkuList();poRenderRows();document.getElementById('poReview').style.display='block';
+  }).catch(function(){document.getElementById('poResult').innerHTML='<span style="color:#f43f5e">Upload failed</span>'});
+});
+document.getElementById('poCancelBtn').addEventListener('click',function(){
+  PO_ITEMS=[];document.getElementById('poReview').style.display='none';
+  document.getElementById('poResult').textContent='';document.getElementById('poFile').value='';
+});
+document.getElementById('poImportBtn').addEventListener('click',function(){
+  if(!PO_ITEMS.length){toast('Nothing to import',true);return}
+  document.getElementById('poImportResult').textContent='Importing…';
+  fetch('/api/products/import-pdf/confirm',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({mode:document.getElementById('poMode').value,items:PO_ITEMS})}).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){document.getElementById('poImportResult').innerHTML='<span style="color:#f43f5e">'+esc(d.error||'Failed')+'</span>';return}
+    document.getElementById('poImportResult').innerHTML='✓ '+d.created+' new · '+d.updated+' updated · '+d.stocked+' stocked · '+d.mapped+' SKUs remembered'+(d.skipped?(' · '+d.skipped+' skipped'):'');
+    toast('Imported ✓');PO_ITEMS=[];document.getElementById('poReview').style.display='none';
+    document.getElementById('poFile').value='';document.getElementById('poResult').textContent='';load();
+  }).catch(function(){document.getElementById('poImportResult').innerHTML='<span style="color:#f43f5e">Import failed</span>'});
 });
 // ── Product editor (full product page) ──
 var ROLE='__ROLE__';var curSku='';

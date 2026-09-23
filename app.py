@@ -1258,6 +1258,15 @@ def sdb_init(org):
         unit_cost REAL DEFAULT 0
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_poitems_po ON po_items(po_id)")
+    # Supplier-SKU → store-SKU memory: when a supplier PO/invoice uses their own
+    # product codes, remember which of our catalog SKUs each one maps to so the next
+    # import auto-fills the mapping. Keyed on the supplier code (case-insensitive).
+    c.execute("""CREATE TABLE IF NOT EXISTS supplier_sku_map(
+        supplier_sku TEXT PRIMARY KEY,
+        store_sku TEXT NOT NULL,
+        supplier TEXT,
+        updated_at TEXT
+    )""")
     # Pre-show mapping: per-show, links a generic sticker (sticker#, Part) to a real
     # catalog product. Sticker numbers are reused each show, so this is show-scoped.
     c.execute("""CREATE TABLE IF NOT EXISTS show_product_map(
@@ -6383,6 +6392,133 @@ def api_products_import():
     c.commit(); c.close()
     return jsonify({"ok":True,"created":created,"updated":updated,"stocked":stocked,
                     "skipped":skipped,"mode":mode})
+
+def _ai_extract_line_items(f):
+    """Read a supplier PO / invoice (PDF or image) with Claude and return
+    (ok, items_or_error). Each item: {name, supplier_sku, qty, unit_cost}."""
+    if not anthropic_client:
+        return False, "Auto-read isn't set up — the ANTHROPIC_API_KEY isn't configured."
+    if not f or not f.filename:
+        return False, "Pick a PDF (or image) file first."
+    ext=f.filename.rsplit(".",1)[-1].lower() if "." in f.filename else ""
+    if ext not in ("jpg","jpeg","png","webp","pdf"):
+        return False, "Use a PDF, or an image (JPG/PNG)."
+    import base64, json as _j
+    b64=base64.standard_b64encode(f.read()).decode()
+    prompt=("This is a supplier purchase order / invoice. Extract every purchased line item. "
+            "Return ONLY a JSON array, no prose, no code fences. Each element: "
+            "{\"name\": product name/description, \"supplier_sku\": the supplier's SKU or item "
+            "code shown for that line (empty string if none), \"qty\": integer quantity, "
+            "\"unit_cost\": unit cost as a number (not the line total)}.")
+    if ext=="pdf":
+        block={"type":"document","source":{"type":"base64","media_type":"application/pdf","data":b64}}
+    else:
+        media="image/png" if ext=="png" else ("image/webp" if ext=="webp" else "image/jpeg")
+        block={"type":"image","source":{"type":"base64","media_type":media,"data":b64}}
+    try:
+        msg=anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=3000,
+            messages=[{"role":"user","content":[block,{"type":"text","text":prompt}]}])
+        txt="".join(b.text for b in msg.content if getattr(b,"type","")=="text").strip()
+        if txt.startswith("```"): txt=txt.strip("`").split("\n",1)[-1]
+        items=_j.loads(txt)
+        clean=[]
+        for it in (items if isinstance(items,list) else []):
+            ssku=str(it.get("supplier_sku") or it.get("sku") or "")[:40].strip()
+            nm=str(it.get("name") or "")[:120].strip()
+            if not nm and not ssku: continue
+            try: qty=int(float(it.get("qty") or 0))
+            except Exception: qty=0
+            try: cost=float(str(it.get("unit_cost") or 0).replace("$","").replace(",",""))
+            except Exception: cost=0.0
+            clean.append({"name":nm,"supplier_sku":ssku,"qty":qty,"unit_cost":round(cost,4)})
+        return True, clean
+    except Exception as e:
+        print("PO extract error:",e,flush=True)
+        return False, "Couldn't read that file automatically — try a clearer PDF or add the lines manually."
+
+@app.route("/api/products/import-pdf",methods=["POST"])
+@req_role("admin")
+def api_products_import_pdf():
+    """Step 1 of PDF import: read a supplier PO PDF and return the line items for
+    review. Pre-fills each row's store SKU from the remembered supplier→store map."""
+    ok,res=_ai_extract_line_items(request.files.get("file"))
+    if not ok: return jsonify({"ok":False,"error":res})
+    c=sdb()
+    out=[]
+    for it in res:
+        ssku=it["supplier_sku"]
+        store_sku=""; matched=False; store_name=""
+        if ssku:
+            m=c.execute("SELECT store_sku FROM supplier_sku_map WHERE supplier_sku=? COLLATE NOCASE",
+                        (ssku,)).fetchone()
+            if m:
+                store_sku=m["store_sku"]; matched=True
+            else:
+                # If the supplier code already equals one of our SKUs, pre-select it.
+                if c.execute("SELECT 1 FROM products WHERE sku=? COLLATE NOCASE",(ssku,)).fetchone():
+                    store_sku=ssku
+        if store_sku:
+            p=c.execute("SELECT name FROM products WHERE sku=? COLLATE NOCASE",(store_sku,)).fetchone()
+            store_name=(p["name"] if p else "") or ""
+        out.append({"name":it["name"],"supplier_sku":ssku,"qty":it["qty"],
+                    "unit_cost":it["unit_cost"],"store_sku":store_sku,
+                    "matched":matched,"store_name":store_name})
+    c.close()
+    return jsonify({"ok":True,"items":out})
+
+@app.route("/api/products/import-pdf/confirm",methods=["POST"])
+@req_role("admin")
+def api_products_import_pdf_confirm():
+    """Step 2: import the reviewed rows. Upserts each product keyed by store SKU,
+    receives (or replaces) stock, and remembers each supplier→store SKU mapping."""
+    d=request.get_json() or {}
+    mode=(d.get("mode") or "add").lower()
+    rows=d.get("items") or []
+    now=datetime.now().isoformat(timespec='seconds')
+    supplier=(d.get("supplier") or "").strip() or None
+    created=0; updated=0; stocked=0; mapped=0; skipped=0
+    c=sdb()
+    for it in rows:
+        name=(it.get("name") or "").strip()
+        ssku=(it.get("supplier_sku") or "").strip()
+        store_sku=(it.get("store_sku") or "").strip()
+        try: qty=int(float(it.get("qty") or 0))
+        except Exception: qty=0
+        try: cost=float(str(it.get("unit_cost") or 0).replace("$","").replace(",",""))
+        except Exception: cost=0.0
+        if not (name or store_sku or ssku): skipped+=1; continue
+        # Resolve the store SKU: explicit → supplier code → auto-generated.
+        if not store_sku: store_sku = ssku or _gen_sku()
+        existed=bool(c.execute("SELECT 1 FROM products WHERE sku=?",(store_sku,)).fetchone())
+        c.execute("""INSERT INTO products(sku,name,updated_at) VALUES(?,?,?)
+                     ON CONFLICT(sku) DO UPDATE SET
+                        name=COALESCE(NULLIF(excluded.name,''),products.name),
+                        updated_at=excluded.updated_at""",
+                  (store_sku,name or store_sku,now))
+        if mode=="replace":
+            if it.get("unit_cost") not in (None,""):
+                c.execute("UPDATE products SET on_hand=?,avg_cost=? WHERE sku=?",(qty,round(cost,4),store_sku))
+            else:
+                c.execute("UPDATE products SET on_hand=? WHERE sku=?",(qty,store_sku))
+            if qty: stocked+=1
+        else:
+            if qty>0:
+                _receive_stock(c,store_sku,qty,cost,note="PDF PO import",name=name); stocked+=1
+        created+=0 if existed else 1
+        updated+=1 if existed else 0
+        # Remember the supplier→store mapping for next time.
+        if ssku and store_sku:
+            c.execute("""INSERT INTO supplier_sku_map(supplier_sku,store_sku,supplier,updated_at)
+                         VALUES(?,?,?,?)
+                         ON CONFLICT(supplier_sku) DO UPDATE SET
+                            store_sku=excluded.store_sku, supplier=excluded.supplier,
+                            updated_at=excluded.updated_at""",
+                      (ssku,store_sku,supplier,now))
+            mapped+=1
+    c.commit(); c.close()
+    return jsonify({"ok":True,"created":created,"updated":updated,"stocked":stocked,
+                    "mapped":mapped,"skipped":skipped,"mode":mode})
 
 @app.route("/api/receive",methods=["POST"])
 @req_role("admin","cs")
