@@ -38,7 +38,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML,
-    SCANIT_HTML, APPLY_HTML)
+    SCANIT_HTML, APPLY_HTML, TRACK_HTML)
 from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
 
 
@@ -5088,6 +5088,15 @@ def _giveaway_by_tracking(code):
                    ORDER BY id DESC LIMIT 1""",(code,code,code)).fetchone()
     g.close()
     return dict(r) if r else None
+
+@app.route("/admin/track")
+@req_role("admin", "cs", "manager", "worker", "picker")
+def track_page():
+    """Scan/type a tracking number → see which show + order it belongs to."""
+    return (TRACK_HTML
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("track"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
 @app.route("/api/shipment/<code>")
 @req_login

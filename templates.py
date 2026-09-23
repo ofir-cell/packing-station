@@ -99,6 +99,7 @@ def _navbar(active_page=""):
         # Operations hub — the main work surface for office roles (kept direct).
         if has("admin", "cs", "manager"):
             entries.append(("operations", "/operations", "📦 Operations"))
+            entries.append(("track", "/admin/track", "🔎 Track"))
 
         # Warehouse floor tasks (workers / pickers).
         floor = []
@@ -106,6 +107,8 @@ def _navbar(active_page=""):
             floor.append(("pack", "/", "📦 Pack"))
         if has("worker", "picker"):
             floor.append(("preshow", "/admin/preshow", "🔗 Match Products"))
+        if has("worker", "picker"):
+            floor.append(("track", "/admin/track", "🔎 Find by tracking"))
         _f = _grp("🧰 Warehouse", floor)
         if _f: entries.append(_f)
 
@@ -11915,5 +11918,118 @@ document.getElementById('applyForm').addEventListener('submit',function(e){
       }else{b.disabled=false;b.textContent='Submit & get started →';msg.className='msg err';msg.textContent=d.error||'Something went wrong.';}
     }).catch(function(){b.disabled=false;b.textContent='Submit & get started →';msg.className='msg err';msg.textContent='Network error — please try again.';});
 });
+</script>
+</body></html>'''
+
+
+# ── Tracking lookup — scan/type a tracking number → which show + order ─────────
+TRACK_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Find by tracking — __BRANDMARK__</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:var(--bg,#fff);color:var(--text,#1a2130);-webkit-font-smoothing:antialiased}
+.wrap{max-width:900px;margin:0 auto;padding:28px 22px 80px}
+.h1{font-size:26px;font-weight:900;letter-spacing:-.4px;margin-bottom:4px}
+.sub{color:var(--text-muted,#586274);font-size:14px;margin-bottom:22px}
+.searchbar{display:flex;gap:10px;margin-bottom:8px}
+.searchbar input{flex:1;padding:15px 18px;border:2px solid var(--border,#e4e7ec);border-radius:14px;font-family:inherit;font-size:17px;outline:none}
+.searchbar input:focus{border-color:var(--brand,#d9748f)}
+.searchbar button{background:var(--brand,#d9748f);color:#fff;border:none;border-radius:14px;padding:0 26px;font-family:inherit;font-size:16px;font-weight:800;cursor:pointer}
+.hint{font-size:12px;color:var(--text-dim,#7b8494);margin-bottom:20px}
+.result{border:1px solid var(--border,#e4e7ec);border-radius:16px;padding:22px;margin-bottom:20px;display:none}
+.result.show{display:block}
+.result.err{border-color:#f4b0be;background:#fdf2f4}
+.r-show{font-size:13px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:var(--brand,#d9748f)}
+.r-showname{font-size:28px;font-weight:900;letter-spacing:-.5px;margin:2px 0 12px}
+.r-meta{display:flex;gap:18px;flex-wrap:wrap;font-size:14px;color:var(--text-muted,#586274);margin-bottom:14px}
+.r-meta b{color:var(--text,#1a2130)}
+.r-status{display:inline-block;font-size:12px;font-weight:800;text-transform:uppercase;padding:4px 12px;border-radius:20px;letter-spacing:.5px}
+.st-pending{background:rgba(245,158,11,.15);color:#b45309}
+.st-picked{background:rgba(99,102,241,.15);color:#4f46e5}
+.st-packed,.st-shipped,.st-delivered{background:rgba(52,211,153,.18);color:#059669}
+.st-cancelled{background:rgba(244,63,94,.12);color:#e11d48}
+.r-items{border-top:1px solid var(--border,#e4e7ec);padding-top:12px;font-size:13px;color:var(--text-muted,#586274)}
+.r-items .it{padding:3px 0}
+.tally{margin:26px 0 10px;font-size:12px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--text-dim,#7b8494)}
+.tally-row{display:flex;justify-content:space-between;padding:8px 12px;background:var(--surface,#f6f7f9);border-radius:10px;margin-bottom:6px;font-size:14px}
+.tally-row b{color:var(--brand,#d9748f)}
+table.log{width:100%;border-collapse:collapse;margin-top:8px}
+table.log th,table.log td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--border,#e4e7ec);font-size:13px}
+table.log th{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim,#7b8494)}
+.tr-track{font-family:monospace;font-size:12px}
+.clearlog{background:none;border:1px solid var(--border,#e4e7ec);border-radius:8px;padding:6px 12px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;color:var(--text-muted,#586274);float:right}
+</style></head><body data-role="__ROLE__">
+__NAVBAR__
+<div class="wrap">
+  <div class="h1">🔎 Find by tracking</div>
+  <div class="sub">Scan or type a tracking number to see which show the order belongs to — before you open anything.</div>
+  <div class="searchbar">
+    <input id="q" placeholder="Scan or type a tracking number…" autocomplete="off" autofocus>
+    <button id="go">Find</button>
+  </div>
+  <div class="hint">Tip: a barcode scanner types the number and presses Enter automatically. Each lookup is added to the list below.</div>
+
+  <div class="result" id="result"></div>
+
+  <div id="logWrap" style="display:none">
+    <div class="tally">By show <button class="clearlog" id="clearLog">Clear list</button></div>
+    <div id="tally"></div>
+    <table class="log"><thead><tr><th>Tracking</th><th>Show</th><th>Buyer</th><th>Status</th></tr></thead><tbody id="logBody"></tbody></table>
+  </div>
+</div>
+<script>
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+var LOG=[];
+var qEl=document.getElementById('q'),resEl=document.getElementById('result');
+function statusCls(s){s=(s||'').toLowerCase();return 'st-'+(s||'pending');}
+function lookup(){
+  var code=(qEl.value||'').trim();
+  if(!code)return;
+  resEl.className='result show';resEl.innerHTML='<div style="color:#94a3b8">Searching…</div>';
+  fetch('/api/shipment/'+encodeURIComponent(code)).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){
+      resEl.className='result show err';
+      resEl.innerHTML='<b style="color:#e11d48">Not found</b><div style="color:#586274;margin-top:4px">No order matches <span class="tr-track">'+esc(code)+'</span>. It may not be imported yet, or the number is partial.</div>';
+      addLog(code,'—','—','not found');
+    } else {
+      var s=d.shipment||{};
+      var show=s.import_label||'(no show)';
+      var items=(d.items||[]).map(function(i){return '<div class="it">• '+esc(i.product_name||i.sku||'item')+' ×'+(i.quantity||1)+'</div>'}).join('')||'<div class="it">—</div>';
+      resEl.className='result show';
+      resEl.innerHTML=
+        '<div class="r-show">📺 Show</div>'+
+        '<div class="r-showname">'+esc(show)+'</div>'+
+        '<div class="r-meta">'+
+          '<span>👤 <b>'+esc(s.buyer_name||s.buyer_username||'—')+'</b>'+(s.buyer_username?' <span style="color:#94a3b8">@'+esc(s.buyer_username)+'</span>':'')+'</span>'+
+          (s.platform?'<span>🛒 <b>'+esc(s.platform)+'</b></span>':'')+
+          '<span class="r-status '+statusCls(s.status)+'">'+esc(s.status||'pending')+'</span>'+
+        '</div>'+
+        '<div class="r-items"><b style="color:#1a2130">Items</b>'+items+'</div>';
+      addLog(s.tracking_code||code,show,s.buyer_name||s.buyer_username||'—',s.status||'pending');
+    }
+    qEl.value='';qEl.focus();
+  }).catch(function(){resEl.className='result show err';resEl.innerHTML='<b style="color:#e11d48">Request failed</b>';});
+}
+function addLog(track,show,buyer,status){
+  LOG.unshift({track:track,show:show,buyer:buyer,status:status});
+  renderLog();
+}
+function renderLog(){
+  if(!LOG.length){document.getElementById('logWrap').style.display='none';return;}
+  document.getElementById('logWrap').style.display='block';
+  document.getElementById('logBody').innerHTML=LOG.map(function(r){
+    return '<tr><td class="tr-track">'+esc(r.track)+'</td><td>'+esc(r.show)+'</td><td>'+esc(r.buyer)+'</td><td><span class="r-status '+statusCls(r.status)+'">'+esc(r.status)+'</span></td></tr>';
+  }).join('');
+  var byShow={};LOG.forEach(function(r){if(r.show&&r.show!=='—'){byShow[r.show]=(byShow[r.show]||0)+1}});
+  document.getElementById('tally').innerHTML=Object.keys(byShow).sort(function(a,b){return byShow[b]-byShow[a]}).map(function(sh){
+    return '<div class="tally-row"><span>'+esc(sh)+'</span><b>'+byShow[sh]+' scanned</b></div>';
+  }).join('');
+}
+document.getElementById('go').addEventListener('click',lookup);
+qEl.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();lookup();}});
+document.getElementById('clearLog').addEventListener('click',function(){LOG=[];renderLog();qEl.focus();});
 </script>
 </body></html>'''
