@@ -7446,15 +7446,49 @@ def api_product_label(sku):
         import barcode
         from barcode.writer import ImageWriter
         bio=_io.BytesIO()
-        barcode.get('code128', safe, writer=ImageWriter()).write(bio, options={"module_height":12.0,"font_size":9,"text_distance":3,"quiet_zone":2})
+        # Compact barcode for a 1x1" label: shorter bars, small SKU text, tight quiet zone.
+        barcode.get('code128', safe, writer=ImageWriter()).write(
+            bio, options={"module_height":9.0,"font_size":8,"text_distance":2.2,"quiet_zone":1})
         bio.seek(0)
         from reportlab.pdfgen import canvas
-        from reportlab.lib.units import mm
+        from reportlab.lib.units import inch
         from reportlab.lib.utils import ImageReader
-        out=_io.BytesIO(); W,H=60*mm,30*mm
-        cp=canvas.Canvas(out,pagesize=(W,H))
-        cp.drawImage(ImageReader(bio), 4*mm, 8*mm, width=52*mm, height=18*mm, preserveAspectRatio=True, anchor='sw')
-        cp.setFont("Helvetica-Bold",9); cp.drawString(4*mm, 2.5*mm, name[:34])
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+        S = 1.0*inch                       # 1" x 1" label
+        out=_io.BytesIO()
+        cp=canvas.Canvas(out,pagesize=(S,S))
+        # Barcode (with its SKU digits) across the top ~60% of the square.
+        bw, bh = 0.92*inch, 0.56*inch
+        cp.drawImage(ImageReader(bio), (S-bw)/2, S-bh-0.05*inch,
+                     width=bw, height=bh, preserveAspectRatio=True, anchor='n')
+        # Product name below — shrink font + wrap to at most 2 lines to fit the width.
+        nm=(name or "").strip()
+        if nm:
+            maxw=S-0.10*inch
+            def _wrap(txt, fs):
+                out=[]; cur=""
+                for w in txt.split():
+                    t=(cur+" "+w).strip()
+                    if stringWidth(t,"Helvetica-Bold",fs)<=maxw: cur=t
+                    else:
+                        if cur: out.append(cur)
+                        cur=w
+                if cur: out.append(cur)
+                return out
+            # Shrink font until the name fits on <=2 lines with no line overflowing.
+            fs=8
+            while fs>5:
+                ls=_wrap(nm, fs)
+                if len(ls)<=2 and all(stringWidth(l,"Helvetica-Bold",fs)<=maxw for l in ls):
+                    break
+                fs-=1
+            lines=_wrap(nm, fs)
+            if len(lines)>2:                # still too long: keep 2 lines, ellipsize
+                lines=lines[:2]; lines[1]=lines[1][:max(0,len(lines[1])-1)]+"…"
+            cp.setFont("Helvetica-Bold",fs)
+            y=0.26*inch
+            for ln in lines[:2]:
+                cp.drawCentredString(S/2, y, ln); y-=fs+1.5
         cp.showPage(); cp.save(); out.seek(0)
         return send_file(out, mimetype="application/pdf", download_name="label_"+safe+".pdf", as_attachment=False)
     except Exception as e:
