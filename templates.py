@@ -2170,6 +2170,8 @@ Workers don't need passwords — just scan the badge. Print them on Avery 5160 s
 <div class="toast" id="t"></div>
 <script>
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
+var ROLE_LABEL={worker:'Warehouse Associate',manager:'Warehouse Manager',cs:'Customer Service',host:'Host',admin:'Admin',picker:'Warehouse Associate',assistant:'Host'};
+function roleLbl(r){return ROLE_LABEL[r]||r;}
 
 function loadStation(){
     fetch('/api/machine-station').then(function(r){return r.json()}).then(function(d){
