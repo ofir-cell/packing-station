@@ -6840,6 +6840,72 @@ def api_preshow_map():
                     "product":{"sku":prod["sku"],"name":prod["name"],"image_url":prod["image_url"],
                                "on_hand":newoh["on_hand"] if newoh else None}})
 
+@app.route("/api/preshow/map-bulk",methods=["POST"])
+@req_role("admin","cs","worker","picker")
+def api_preshow_map_bulk():
+    """Bind a whole range of sticker numbers (start..end) to the SAME catalog product
+    in one go, for a show + part. Each sticker is bound exactly like a single scan:
+    prior deduction reversed, units sold under that sticker deducted from the product.
+    Saves a lot of scanning when many stickers on the table are the same item."""
+    d=request.get_json() or {}
+    show=(d.get("show") or "").strip()
+    try: part=int(d.get("part") or 0)
+    except Exception: part=0
+    try: start=int(d.get("start"))
+    except Exception: start=None
+    try: end=int(d.get("end"))
+    except Exception: end=None
+    code=(d.get("code") or "").strip()
+    product_sku=(d.get("product_sku") or "").strip()
+    if not show or start is None or end is None:
+        return jsonify({"ok":False,"error":"show, start and end are required"})
+    if start>end: start,end=end,start
+    if end-start+1>2000:
+        return jsonify({"ok":False,"error":"Range too large (max 2000 stickers at once)."})
+    c=sdb()
+    prod=None
+    if product_sku:
+        prod=c.execute("SELECT * FROM products WHERE sku=?",(product_sku,)).fetchone()
+    elif code:
+        prod=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
+    if not prod:
+        c.close()
+        return jsonify({"ok":False,"error":"Product not found in catalog","not_found":True,
+                        "code":code or product_sku})
+    _now=datetime.now().isoformat(timespec='seconds'); _who=session.get("name","")[:60]
+    total_sold=0; done=[]
+    for n in range(start,end+1):
+        sticker=str(n)
+        items=c.execute("""SELECT i.product_name, i.quantity FROM shipment_items i
+                           JOIN shipments s ON s.shipment_id=i.shipment_id
+                           WHERE s.import_label=? AND i.sku=? AND COALESCE(i.cancelled,0)=0""",(show,sticker)).fetchall()
+        sold_qty=sum((it["quantity"] or 1) for it in items if _part_num(it["product_name"] or "")==part)
+        ex=c.execute("SELECT product_sku,COALESCE(depleted_qty,0) dq FROM show_product_map WHERE import_label=? AND sticker_sku=? AND part=?",(show,sticker,part)).fetchone()
+        if ex and ex["product_sku"] and ex["dq"]:
+            c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(ex["dq"],ex["product_sku"]))
+            c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
+                      (ex["product_sku"],ex["dq"],"sale reversal (bulk re-map "+show+")",_now,_who))
+        if sold_qty:
+            c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(sold_qty,prod["sku"]))
+            _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(prod["sku"],)).fetchone()
+            c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
+                      (prod["sku"],-sold_qty,(_ac["avg_cost"] if _ac else 0) or 0,"sale (bulk "+show+")",_now,_who))
+        c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by)
+                     VALUES(?,?,?,?,?,?,?)
+                     ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET
+                        product_sku=excluded.product_sku,depleted_qty=excluded.depleted_qty,
+                        mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
+                  (show,sticker,part,prod["sku"],sold_qty,_now,_who))
+        total_sold+=sold_qty
+        done.append(sticker)
+    c.commit()
+    newoh=c.execute("SELECT on_hand FROM products WHERE sku=?",(prod["sku"],)).fetchone()
+    c.close()
+    return jsonify({"ok":True,"part":part,"count":len(done),"start":start,"end":end,
+                    "total_sold":total_sold,
+                    "product":{"sku":prod["sku"],"name":prod["name"],"image_url":prod["image_url"],
+                               "on_hand":newoh["on_hand"] if newoh else None}})
+
 @app.route("/api/preshow/map")
 @req_role("admin","cs","worker","picker")
 def api_preshow_map_list():

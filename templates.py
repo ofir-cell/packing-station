@@ -9737,6 +9737,21 @@ __NAVBAR__
   <div class="muted" style="margin-top:12px;font-size:12.5px" data-i18n="hint">After each scan the sticker # advances by 1. Type a different number anytime — handy since cancelled items were already pulled, so numbers may skip. If a barcode won\\'t scan, tap Search catalog and find it by name, a few barcode digits, or SKU.</div>
 </div>
 
+<div class="card" id="bulkCard" style="opacity:.45;pointer-events:none">
+  <h2 data-i18n="bstep">⚡ Bulk — same product across a range of stickers</h2>
+  <div class="scanbox" style="flex-wrap:wrap">
+    <div class="f"><label data-i18n="bfrom">From sticker #</label><input id="bFrom" type="number" value="1" style="width:110px"></div>
+    <div class="f"><label data-i18n="bto">To sticker #</label><input id="bTo" type="number" style="width:110px"></div>
+    <div class="grow f big" style="min-width:200px"><label data-i18n="bscan">Scan barcode / type SKU</label>
+      <input id="bCode" placeholder="📷 …" style="width:100%" autocomplete="off"></div>
+    <div class="f"><label>&nbsp;</label><button class="btn btn-s" id="bPickBtn" data-i18n="pickcat">🔍 Search catalog</button></div>
+    <div class="f"><label>&nbsp;</label><button class="btn btn-p" id="bApplyBtn" data-i18n="bapply">Apply to range →</button></div>
+  </div>
+  <div id="bChosen" class="muted" style="margin-top:8px;font-size:13px"></div>
+  <div class="last" id="bLast"></div>
+  <div class="muted" style="margin-top:10px;font-size:12.5px" data-i18n="bhint">Binds every sticker from the first to the last number (inclusive) to this one product — in your current Part. Great when a whole batch on the table is the same item. You can still fix any single sticker by scanning it above.</div>
+</div>
+
 <div class="card">
   <h2><span data-i18n="linked">Linked this show</span> <span class="pill" id="cnt">0</span></h2>
   <table><thead><tr><th data-i18n="thpart">Part</th><th data-i18n="thsticker">Sticker</th><th></th><th data-i18n="thproduct">Product</th><th data-i18n="thby">By</th><th></th></tr></thead>
@@ -9756,8 +9771,8 @@ __NAVBAR__
 
 <div class="toast" id="t"></div>
 <script>
-var T={en:{title:"Match Sold Products",step1:"1 · Pick the show & your Part (lane)",show:"Show",pickshow:"Pick a show…",part:"Part (your lane)",nopart:"No part",startat:"Start at sticker #",step2:"2 · For each product on the table: scan its real barcode",sticker:"Sticker #",scanbarcode:"Scan product barcode (or type SKU)",pickcat:"🔍 Search catalog",lanehint:"💡 Each Part is its own lane — several workers can run Part 1, Part 2, Part 3… at the same time on different iPads without clashing.",hint:"After each scan the sticker # advances by 1. Type a different number anytime — handy since cancelled items were already pulled, so numbers may skip. If a barcode won't scan, tap Search catalog and find it by name, a few barcode digits, or SKU.",linked:"Matched this show",thpart:"Part",thsticker:"Sticker",thproduct:"Product",thby:"By",none:"Pick a show to begin.",pickttl:"Find product in catalog",newprod:"+ New product",cancel:"Cancel",notfound:"Not in catalog — search or add it",linkedok:"Matched ✓",removed:"Removed",chooseshow:"Choose a show first"},
-es:{title:"Vincular productos vendidos",step1:"1 · Elige el show y tu Parte (carril)",show:"Show",pickshow:"Elige un show…",part:"Parte (tu carril)",nopart:"Sin parte",startat:"Empezar en etiqueta #",step2:"2 · Por cada producto en la mesa: escanea su código real",sticker:"Etiqueta #",scanbarcode:"Escanea el código (o escribe SKU)",pickcat:"🔍 Buscar catálogo",lanehint:"💡 Cada Parte es su propio carril — varios trabajadores pueden hacer Parte 1, Parte 2, Parte 3… al mismo tiempo en distintos iPads sin chocar.",hint:"Tras cada escaneo el número avanza en 1. Escribe otro número cuando quieras — útil porque los cancelados ya se retiraron y los números pueden saltarse. Si un código no escanea, toca Buscar catálogo y encuéntralo por nombre, unos dígitos del código, o SKU.",linked:"Vinculados este show",thpart:"Parte",thsticker:"Etiqueta",thproduct:"Producto",thby:"Por",none:"Elige un show para empezar.",pickttl:"Buscar producto en el catálogo",newprod:"+ Nuevo producto",cancel:"Cancelar",notfound:"No está en el catálogo — búscalo o agrégalo",linkedok:"Vinculado ✓",removed:"Eliminado",chooseshow:"Elige un show primero"}};
+var T={en:{title:"Match Sold Products",step1:"1 · Pick the show & your Part (lane)",show:"Show",pickshow:"Pick a show…",part:"Part (your lane)",nopart:"No part",startat:"Start at sticker #",step2:"2 · For each product on the table: scan its real barcode",sticker:"Sticker #",scanbarcode:"Scan product barcode (or type SKU)",pickcat:"🔍 Search catalog",lanehint:"💡 Each Part is its own lane — several workers can run Part 1, Part 2, Part 3… at the same time on different iPads without clashing.",hint:"After each scan the sticker # advances by 1. Type a different number anytime — handy since cancelled items were already pulled, so numbers may skip. If a barcode won't scan, tap Search catalog and find it by name, a few barcode digits, or SKU.",linked:"Matched this show",thpart:"Part",thsticker:"Sticker",thproduct:"Product",thby:"By",none:"Pick a show to begin.",pickttl:"Find product in catalog",newprod:"+ New product",cancel:"Cancel",notfound:"Not in catalog — search or add it",linkedok:"Matched ✓",removed:"Removed",chooseshow:"Choose a show first",bstep:"⚡ Bulk — same product across a range of stickers",bfrom:"From sticker #",bto:"To sticker #",bscan:"Scan barcode / type SKU",bapply:"Apply to range →",bhint:"Binds every sticker from the first to the last number (inclusive) to this one product — in your current Part. Great when a whole batch on the table is the same item. You can still fix any single sticker by scanning it above.",brange:"Enter a valid range (From ≤ To).",bchosen:"Chosen",bdone:"Bound stickers"},
+es:{title:"Vincular productos vendidos",step1:"1 · Elige el show y tu Parte (carril)",show:"Show",pickshow:"Elige un show…",part:"Parte (tu carril)",nopart:"Sin parte",startat:"Empezar en etiqueta #",step2:"2 · Por cada producto en la mesa: escanea su código real",sticker:"Etiqueta #",scanbarcode:"Escanea el código (o escribe SKU)",pickcat:"🔍 Buscar catálogo",lanehint:"💡 Cada Parte es su propio carril — varios trabajadores pueden hacer Parte 1, Parte 2, Parte 3… al mismo tiempo en distintos iPads sin chocar.",hint:"Tras cada escaneo el número avanza en 1. Escribe otro número cuando quieras — útil porque los cancelados ya se retiraron y los números pueden saltarse. Si un código no escanea, toca Buscar catálogo y encuéntralo por nombre, unos dígitos del código, o SKU.",linked:"Vinculados este show",thpart:"Parte",thsticker:"Etiqueta",thproduct:"Producto",thby:"Por",none:"Elige un show para empezar.",pickttl:"Buscar producto en el catálogo",newprod:"+ Nuevo producto",cancel:"Cancelar",notfound:"No está en el catálogo — búscalo o agrégalo",linkedok:"Vinculado ✓",removed:"Eliminado",chooseshow:"Elige un show primero",bstep:"⚡ Masivo — mismo producto en un rango de etiquetas",bfrom:"Desde etiqueta #",bto:"Hasta etiqueta #",bscan:"Escanea código / escribe SKU",bapply:"Aplicar al rango →",bhint:"Vincula todas las etiquetas desde la primera hasta la última (incluidas) a este producto — en tu Parte actual. Ideal cuando todo un lote en la mesa es el mismo artículo. Aún puedes corregir una etiqueta escaneándola arriba.",brange:"Introduce un rango válido (Desde ≤ Hasta).",bchosen:"Elegido",bdone:"Etiquetas vinculadas"}};
 var lang=localStorage.getItem('lang')||'en';
 function t(k){return (T[lang]&&T[lang][k])||T.en[k]||k}
 function applyLang(){document.querySelectorAll('[data-i18n]').forEach(function(e){e.textContent=t(e.getAttribute('data-i18n'))});document.getElementById('langBtn').textContent=lang==='en'?'ES':'EN';document.documentElement.lang=lang}
@@ -9776,7 +9791,7 @@ fetch('/api/shows/recent').then(function(r){return r.json()}).then(function(show
   (shows||[]).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=s;sel.appendChild(o)});
 });
 
-function enableScan(on){var c=document.getElementById('scanCard');c.style.opacity=on?'1':'.45';c.style.pointerEvents=on?'auto':'none';if(on){document.getElementById('code').focus()}}
+function enableScan(on){var c=document.getElementById('scanCard');c.style.opacity=on?'1':'.45';c.style.pointerEvents=on?'auto':'none';var b=document.getElementById('bulkCard');if(b){b.style.opacity=on?'1':'.45';b.style.pointerEvents=on?'auto':'none'}if(on){document.getElementById('code').focus()}}
 function onShowChange(){if(show()){enableScan(true);refresh();setCur(parseInt(document.getElementById('startSku').value||'1'))}else{enableScan(false)}}
 document.getElementById('showSel').addEventListener('change',onShowChange);
 document.getElementById('partSel').addEventListener('change',function(){setCur(parseInt(document.getElementById('startSku').value||'1'));refresh()});
@@ -9807,8 +9822,8 @@ document.getElementById('code').addEventListener('keydown',function(e){
 document.getElementById('pickBtn').addEventListener('click',function(){openPick('')});
 
 // ── catalog pick / add modal ──
-var pendingCode='';
-function openPick(code){pendingCode=code;document.getElementById('pickModal').classList.add('on');var q=document.getElementById('pickQ');q.value='';document.getElementById('pickRows').innerHTML='';q.focus();if(code){toast(t('notfound'),true)}}
+var pendingCode='';var pickMode='single';
+function openPick(code){pickMode='single';pendingCode=code;document.getElementById('pickModal').classList.add('on');var q=document.getElementById('pickQ');q.value='';document.getElementById('pickRows').innerHTML='';q.focus();if(code){toast(t('notfound'),true)}}
 function closePick(){document.getElementById('pickModal').classList.remove('on');document.getElementById('code').focus()}
 var pq=null;
 document.getElementById('pickQ').addEventListener('input',function(){clearTimeout(pq);var v=this.value.trim();pq=setTimeout(function(){
@@ -9820,6 +9835,7 @@ document.getElementById('pickQ').addEventListener('input',function(){clearTimeou
   });
 },200)});
 function pickProduct(sku){
+  if(pickMode==='bulk'){closePick();setBulkProduct(sku);return}
   bind({product_sku:sku}).then(function(d){
     if(d.ok){closePick();var img=d.product.image_url?'<img class="thumb" src="'+esc(d.product.image_url)+'">':'<div class="thumb"></div>';
       showLast(true,img+'<div><div class="nm">'+esc(d.product.name||d.product.sku)+'</div><div class="sub">'+t('linkedok')+' → '+t('sticker')+' '+esc(d.sticker)+'</div></div>');
@@ -9853,6 +9869,45 @@ function unmap(sticker,p){
   fetch('/api/preshow/map',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:show(),sticker:sticker,part:p})})
    .then(function(r){return r.json()}).then(function(){toast(t('removed'));refresh()});
 }
+
+// ── Bulk range mapping ──
+var bulkSku='';
+function setBulkProduct(sku){
+  bulkSku=sku;document.getElementById('bCode').value='';
+  fetch('/api/product/'+encodeURIComponent(sku)).then(function(r){return r.json()}).then(function(d){
+    var nm=(d&&d.ok&&d.product)?(d.product.name||sku):sku;
+    document.getElementById('bChosen').innerHTML='✓ '+t('bchosen')+': <b>'+esc(nm)+'</b> <span class="sku">'+esc(sku)+'</span>';
+  }).catch(function(){document.getElementById('bChosen').innerHTML='✓ '+t('bchosen')+': <span class="sku">'+esc(sku)+'</span>'});
+}
+document.getElementById('bPickBtn').addEventListener('click',function(){
+  if(!show()){toast(t('chooseshow'),true);return}
+  pickMode='bulk';pendingCode='';document.getElementById('pickModal').classList.add('on');
+  var q=document.getElementById('pickQ');q.value='';document.getElementById('pickRows').innerHTML='';q.focus();
+});
+document.getElementById('bCode').addEventListener('input',function(){if(this.value.trim()){bulkSku='';document.getElementById('bChosen').innerHTML=''}});
+function doBulk(){
+  if(!show()){toast(t('chooseshow'),true);return}
+  var from=parseInt(document.getElementById('bFrom').value||''),to=parseInt(document.getElementById('bTo').value||'');
+  if(isNaN(from)||isNaN(to)||from>to){toast(t('brange'),true);return}
+  var code=document.getElementById('bCode').value.trim();
+  if(!code&&!bulkSku){toast(t('notfound'),true);document.getElementById('bCode').focus();return}
+  var payload={show:show(),part:part(),start:from,end:to};
+  if(bulkSku)payload.product_sku=bulkSku; else payload.code=code;
+  var btn=document.getElementById('bApplyBtn');btn.disabled=true;
+  fetch('/api/preshow/map-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+   .then(function(r){return r.json()}).then(function(d){
+    btn.disabled=false;
+    if(!d.ok){ if(d.not_found){pickMode='bulk';toast(t('notfound'),true);document.getElementById('bPickBtn').click();} else toast(d.error||'Failed',true); return; }
+    var l=document.getElementById('bLast');l.className='last ok';
+    l.innerHTML='<div><div class="nm">'+esc(d.product.name||d.product.sku)+'</div><div class="sub">'+t('bdone')+': <b>'+d.count+'</b> ('+d.start+'–'+d.end+') · '+esc(partLabel(d.part))+' · <span class="sku">'+esc(d.product.sku)+'</span></div></div>';
+    toast(t('linkedok')+' ×'+d.count);
+    bulkSku='';document.getElementById('bCode').value='';document.getElementById('bChosen').innerHTML='';
+    document.getElementById('bFrom').value=(d.end+1);document.getElementById('bTo').value='';
+    refresh();
+  }).catch(function(){btn.disabled=false;toast('Failed',true)});
+}
+document.getElementById('bApplyBtn').addEventListener('click',doBulk);
+document.getElementById('bCode').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();doBulk()}});
 applyLang();
 </script></body></html>'''
 
