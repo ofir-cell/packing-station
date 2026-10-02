@@ -949,6 +949,10 @@ def gdb_init(org):
         # scanning their own tracking; these capture that.
         "filmed_at":"TEXT",
         "filmed_by":"TEXT",
+        # How many identical prizes this one row represents. When the same winner
+        # wins the same prize several times we merge into one row and bump qty
+        # (shown as ×2, ×3…) instead of creating duplicate rows.
+        "qty":"INTEGER DEFAULT 1",
     }
     _have={r[1] for r in c.execute("PRAGMA table_info(giveaways)").fetchall()}
     for _col,_decl in _gv_cols.items():
@@ -10920,10 +10924,42 @@ def api_giveaway_create():
     if platform not in ("tiktok","whatnot"):
         return jsonify({"ok":False,"error":"Invalid platform"})
     c=gdb()
-    cur=c.execute("""INSERT INTO giveaways(winner_username,prize_name,brand,platform,created_by)
-        VALUES(?,?,?,?,?)""",(winner,prize,brand or None,platform,session.get("name","")))
+    # Merge into an existing OPEN, UNLINKED giveaway for the same winner + same prize
+    # (+ brand) instead of opening a duplicate row. Only standalone giveaways that
+    # haven't shipped and aren't tied to a specific order are mergeable — a prize
+    # already riding inside a chosen box stays on its own.
+    dup=c.execute("""SELECT id, COALESCE(qty,1) q FROM giveaways
+                     WHERE lower(trim(winner_username))=lower(trim(?))
+                       AND lower(trim(prize_name))=lower(trim(?))
+                       AND COALESCE(brand,'')=COALESCE(?,'')
+                       AND status NOT IN ('shipped','cancelled')
+                       AND linked_shipment_id IS NULL
+                     ORDER BY id DESC LIMIT 1""",(winner,prize,brand or None)).fetchone()
+    if dup:
+        newq=(dup["q"] or 1)+1
+        c.execute("UPDATE giveaways SET qty=? WHERE id=?",(newq,dup["id"]))
+        c.commit();c.close()
+        return jsonify({"ok":True,"id":dup["id"],"merged":True,"qty":newq})
+    cur=c.execute("""INSERT INTO giveaways(winner_username,prize_name,brand,platform,created_by,qty)
+        VALUES(?,?,?,?,?,1)""",(winner,prize,brand or None,platform,session.get("name","")))
     gid=cur.lastrowid;c.commit();c.close()
-    return jsonify({"ok":True,"id":gid})
+    return jsonify({"ok":True,"id":gid,"merged":False,"qty":1})
+
+@app.route("/api/giveaway/<int:gid>/qty",methods=["POST"])
+@req_role("admin","cs")
+def api_giveaway_set_qty(gid):
+    """Set how many identical prizes this one row stands for (×N). Used to correct an
+    over-merge or to bump the count manually. Minimum 1."""
+    d=request.get_json() or {}
+    try: q=int(d.get("qty"))
+    except Exception: q=None
+    if q is None or q<1: return jsonify({"ok":False,"error":"Quantity must be 1 or more"})
+    if q>999: q=999
+    c=gdb()
+    if not c.execute("SELECT 1 FROM giveaways WHERE id=?",(gid,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    c.execute("UPDATE giveaways SET qty=? WHERE id=?",(q,gid)); c.commit(); c.close()
+    return jsonify({"ok":True,"id":gid,"qty":q})
 
 @app.route("/api/giveaway/<int:gid>/address",methods=["POST"])
 @req_role("admin","cs")

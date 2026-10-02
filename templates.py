@@ -1560,9 +1560,10 @@ function card(g,stage){
     } else if(stage==='need_label'){
         extra='<div class="card-m"><span style="color:#e11d48;font-weight:700">🏷️ No order arrived — create a label</span></div>';
     }
+    var qtyBadge=(g.qty&&g.qty>1)?' <span style="background:#ff2d78;color:#fff;font-weight:900;font-size:12px;padding:1px 8px;border-radius:999px;vertical-align:middle">×'+g.qty+'</span>':'';
     return '<a class="card" href="/giveaway/'+g.id+'">'+
         '<div class="card-w"><span class="at">@</span>'+esc(g.winner_username)+' '+spendChip(g)+'</div>'+
-        '<div class="card-p">🎁 '+esc(g.prize_name)+'</div>'+
+        '<div class="card-p">🎁 '+esc(g.prize_name)+qtyBadge+'</div>'+
         extra+
         '<div class="card-m" style="margin-top:8px">'+pl+'<span>'+timeAgo(g.created_at)+'</span></div>'+
         '</a>';
@@ -1678,7 +1679,7 @@ document.getElementById('add').addEventListener('click',function(){
     fetch('/api/giveaway',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({prize_name:pn,winner_username:wu,brand:br,platform:pl})})
     .then(function(r){return r.json()}).then(function(d){
-        if(d.ok){toast('Added! ID #'+d.id);document.getElementById('pn').value='';document.getElementById('wu').value='';load()}
+        if(d.ok){toast(d.merged?('Merged — this winner now has ×'+d.qty+' of this prize'):('Added! ID #'+d.id));document.getElementById('pn').value='';document.getElementById('wu').value='';load()}
         else toast(d.error||'Failed',true);
     });
 });
@@ -1711,8 +1712,10 @@ body{font-family:'DM Sans',sans-serif;background:#ffffff;color:#1a2130;min-heigh
 .s-lc{background:rgba(167,139,250,.15);color:#7c3aed;border:1.5px solid rgba(167,139,250,.3)}
 .s-sh{background:rgba(52,211,153,.15);color:#059669;border:1.5px solid rgba(52,211,153,.3)}
 .s-cl{background:rgba(244,63,94,.15);color:#e11d48;border:1.5px solid rgba(244,63,94,.3)}
-.meta{display:flex;gap:18px;font-size:13px;color:#6b7280}
+.meta{display:flex;gap:18px;font-size:13px;color:#6b7280;flex-wrap:wrap;align-items:center}
 .meta b{color:#1a2130}
+.qstep{border:1px solid rgba(17,24,39,0.2);background:#fff;width:24px;height:24px;border-radius:7px;font-size:15px;font-weight:800;cursor:pointer;color:#1a2130;line-height:1;vertical-align:middle}
+.qstep:hover{background:#f3f4f6}
 .section{background:#ffffff;border:1px solid rgba(17,24,39,0.096);border-radius:16px;padding:24px 28px;margin-bottom:20px}
 .section h3{font-size:14px;font-weight:700;color:#4f46e5;margin-bottom:16px;text-transform:uppercase;letter-spacing:.6px}
 .f{margin-bottom:14px}
@@ -1753,12 +1756,19 @@ var GID=__GID__;var G=null;
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
 function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
 function statusLabel(s){var m={pending_address:['s-pa','📋 Pending Address'],address_received:['s-ar','✏️ Address Received'],label_created:['s-lc','📦 Label Created'],shipped:['s-sh','✅ Shipped'],cancelled:['s-cl','❌ Cancelled']};var v=m[s]||['s-pa',s];return '<span class="status '+v[0]+'">'+v[1]+'</span>'}
+function bumpQty(delta){
+  var cur=(G&&G.qty)||1; var next=cur+delta; if(next<1)next=1; if(next===cur)return;
+  fetch('/api/giveaway/'+GID+'/qty',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qty:next})})
+   .then(function(r){return r.json()}).then(function(d){if(d.ok){G.qty=d.qty;render()}else toast(d.error||'Failed',true)});
+}
 function fmt(ts){if(!ts)return '-';var d=new Date(ts);return d.toLocaleString()}
 
 function render(){
     var g=G;
-    var h='<div class="hdr"><div class="hdr-top"><div><div class="h-w"><span class="at">@</span>'+esc(g.winner_username)+'</div><div class="h-p">'+esc(g.prize_name)+'</div></div>'+statusLabel(g.status)+'</div>'+
-        '<div class="meta"><div>Platform: <b>'+(g.platform==='tiktok'?'TikTok':'Whatnot')+'</b></div>'+
+    var qb=(g.qty&&g.qty>1)?' <span style="background:#ff2d78;color:#fff;font-weight:900;font-size:14px;padding:1px 9px;border-radius:999px;vertical-align:middle">×'+g.qty+'</span>':'';
+    var h='<div class="hdr"><div class="hdr-top"><div><div class="h-w"><span class="at">@</span>'+esc(g.winner_username)+'</div><div class="h-p">'+esc(g.prize_name)+qb+'</div></div>'+statusLabel(g.status)+'</div>'+
+        '<div class="meta"><div>Quantity: <b id="qtyVal">'+(g.qty||1)+'</b> prize'+((g.qty||1)>1?'s':'')+' &nbsp;<button class="qstep" onclick="bumpQty(-1)" title="Remove one">−</button> <button class="qstep" onclick="bumpQty(1)" title="Add one">+</button></div>'+
+        '<div>Platform: <b>'+(g.platform==='tiktok'?'TikTok':'Whatnot')+'</b></div>'+
         (g.brand?'<div>Brand: <b>'+esc(g.brand)+'</b></div>':'')+
         '<div>Created: <b>'+fmt(g.created_at)+'</b></div>'+
         (g.created_by?'<div>By: <b>'+esc(g.created_by)+'</b></div>':'')+
