@@ -8551,12 +8551,25 @@ def api_public_hire_upload(token, step_id):
     # Derive MIME from the (already whitelisted) extension, not from the client.
     mime = HIRE_UPLOAD_EXT_MIME.get(ext, "application/octet-stream")
     if r2:
+        # Sensitive hire docs go to the permanent HR bucket (no 30-day expiry). If that
+        # write fails (e.g. the R2 API token isn't scoped to the new bucket yet), fall
+        # back to the main bucket so a new hire is NEVER blocked — reads check both
+        # buckets, and 'Secure documents' can move it to the permanent bucket later.
+        put_ok = False
         try:
-            # Sensitive hire docs go to the permanent HR bucket (no 30-day expiry).
-            r2.upload_fileobj(f.stream, R2_HR_BUCKET, key,
-                              ExtraArgs={"ContentType": mime})
+            r2.upload_fileobj(f.stream, R2_HR_BUCKET, key, ExtraArgs={"ContentType": mime})
+            put_ok = True
         except Exception as e:
-            print("R2 hire upload failed:", e, flush=True)
+            print("R2 hire upload to HR bucket failed:", e, flush=True)
+            if R2_HR_BUCKET != R2_BUCKET:
+                try:
+                    f.stream.seek(0)
+                    r2.upload_fileobj(f.stream, R2_BUCKET, key, ExtraArgs={"ContentType": mime})
+                    put_ok = True
+                    print("hire upload fell back to main bucket for key", key, flush=True)
+                except Exception as e2:
+                    print("R2 hire upload fallback also failed:", e2, flush=True)
+        if not put_ok:
             c.close()
             return jsonify({"ok": False, "error": "Storage upload failed"}), 500
     else:
