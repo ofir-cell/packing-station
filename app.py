@@ -6788,6 +6788,23 @@ def api_po_slip(poid):
     cv.showPage(); cv.save(); out.seek(0)
     return send_file(out,mimetype="application/pdf",download_name=f"PO{poid}_slip.pdf")
 
+def _sticker_sold_qty(c, show, sticker, part):
+    """Units sold under one sticker this show, for the worker's current Part lane.
+
+    Normally an item belongs to a lane when its product name carries 'Part N'. But
+    many exports (e.g. TikTok live) have NO Part in the product name — those items are
+    'unpartitioned' (part 0). If the worker is in a Part lane (1,2,3…) and the sticker
+    has no items for that part, we treat the sticker's unpartitioned items as this
+    lane's, so the quantity (and the stock deduction) isn't silently zero."""
+    items=c.execute("""SELECT i.product_name pn, i.quantity q FROM shipment_items i
+                       JOIN shipments s ON s.shipment_id=i.shipment_id
+                       WHERE s.import_label=? AND i.sku=? AND COALESCE(i.cancelled,0)=0""",
+                    (show,sticker)).fetchall()
+    sel=sum((r["q"] or 1) for r in items if _part_num(r["pn"] or "")==part)
+    if sel==0 and part!=0:
+        sel=sum((r["q"] or 1) for r in items if _part_num(r["pn"] or "")==0)
+    return sel
+
 @app.route("/api/preshow/map",methods=["POST"])
 @req_role("admin","cs","worker","picker")
 def api_preshow_map():
@@ -6814,10 +6831,7 @@ def api_preshow_map():
         return jsonify({"ok":False,"error":"Product not found in catalog","not_found":True,
                         "code":code or product_sku})
     # Units sold under this sticker this show (one product per sticker per show).
-    items=c.execute("""SELECT i.product_name, i.quantity FROM shipment_items i
-                       JOIN shipments s ON s.shipment_id=i.shipment_id
-                       WHERE s.import_label=? AND i.sku=? AND COALESCE(i.cancelled,0)=0""",(show,sticker)).fetchall()
-    sold_qty=sum((it["quantity"] or 1) for it in items if _part_num(it["product_name"] or "")==part)
+    sold_qty=_sticker_sold_qty(c, show, sticker, part)
     # Restore any prior deduction (re-bind / corrected scan), then deduct from the real product.
     ex=c.execute("SELECT product_sku,COALESCE(depleted_qty,0) dq FROM show_product_map WHERE import_label=? AND sticker_sku=? AND part=?",(show,sticker,part)).fetchone()
     _now=datetime.now().isoformat(timespec='seconds'); _who=session.get("name","")[:60]
@@ -6880,10 +6894,7 @@ def api_preshow_map_bulk():
     total_sold=0; done=[]
     for n in range(start,end+1):
         sticker=str(n)
-        items=c.execute("""SELECT i.product_name, i.quantity FROM shipment_items i
-                           JOIN shipments s ON s.shipment_id=i.shipment_id
-                           WHERE s.import_label=? AND i.sku=? AND COALESCE(i.cancelled,0)=0""",(show,sticker)).fetchall()
-        sold_qty=sum((it["quantity"] or 1) for it in items if _part_num(it["product_name"] or "")==part)
+        sold_qty=_sticker_sold_qty(c, show, sticker, part)
         ex=c.execute("SELECT product_sku,COALESCE(depleted_qty,0) dq FROM show_product_map WHERE import_label=? AND sticker_sku=? AND part=?",(show,sticker,part)).fetchone()
         if ex and ex["product_sku"] and ex["dq"]:
             c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(ex["dq"],ex["product_sku"]))
@@ -6947,6 +6958,36 @@ def api_preshow_unmap():
     c.commit(); c.close()
     return jsonify({"ok":True})
 
+@app.route("/api/preshow/recompute",methods=["POST"])
+@req_role("admin","cs")
+def api_preshow_recompute():
+    """Backfill: re-apply the stock deduction for every existing binding of a show using
+    the corrected quantity logic. For each binding, compare what SHOULD have been
+    deducted to what was, and adjust the product's on_hand by the difference (with a
+    ledger line). Fixes shows whose matches were made under a Part lane before the fix,
+    so their stock catches up without re-scanning."""
+    d=request.get_json() or {}
+    show=(d.get("show") or "").strip()
+    if not show: return jsonify({"ok":False,"error":"show required"})
+    c=sdb()
+    rows=c.execute("""SELECT sticker_sku,part,product_sku,COALESCE(depleted_qty,0) dq
+                      FROM show_product_map WHERE import_label=? AND product_sku IS NOT NULL""",(show,)).fetchall()
+    now=datetime.now().isoformat(timespec='seconds'); who=session.get("name","")[:60]
+    changed=0; total_delta=0
+    for r in rows:
+        want=_sticker_sold_qty(c, show, r["sticker_sku"], r["part"])
+        delta=want-(r["dq"] or 0)          # extra units to deduct now (can be negative)
+        if delta==0: continue
+        c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(delta,r["product_sku"]))
+        _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(r["product_sku"],)).fetchone()
+        c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
+                  (r["product_sku"],-delta,(_ac["avg_cost"] if _ac else 0) or 0,"sale recompute ("+show+")",now,who))
+        c.execute("UPDATE show_product_map SET depleted_qty=? WHERE import_label=? AND sticker_sku=? AND part=?",
+                  (want,show,r["sticker_sku"],r["part"]))
+        changed+=1; total_delta+=delta
+    c.commit(); c.close()
+    return jsonify({"ok":True,"show":show,"bindings":len(rows),"adjusted":changed,"units_deducted":total_delta})
+
 @app.route("/api/profit")
 @req_role("admin")
 def api_profit():
@@ -6968,6 +7009,13 @@ def api_profit():
     else:
         mrows=c.execute("SELECT import_label,sticker_sku,part,product_sku FROM show_product_map").fetchall()
     mp={(m["import_label"],(m["sticker_sku"] or "").strip(),m["part"]):m["product_sku"] for m in mrows}
+    # Fallback index: bindings per (show, sticker) regardless of part. Lets an
+    # unpartitioned item (Part 0 in its name) attribute to the sticker's binding even
+    # when the worker matched it under a Part lane (1,2,3…) — matching the stock logic.
+    from collections import defaultdict as _dd
+    mp_sticker=_dd(set)
+    for m in mrows:
+        mp_sticker[(m["import_label"],(m["sticker_sku"] or "").strip())].add(m["product_sku"])
     prods={p["sku"]:p for p in c.execute("SELECT sku,name,avg_cost FROM products").fetchall()}
     c.close()
     agg={}  # key -> line
@@ -6976,6 +7024,10 @@ def api_profit():
         sku=(r["sku"] or "").strip(); part=_part_num(r["product_name"] or "")
         qty=r["quantity"] or 0; rev=r["revenue"] or 0
         psku=mp.get((r["import_label"],sku,part))
+        if not psku:
+            cand=mp_sticker.get((r["import_label"],sku))
+            if cand and len(cand)==1:       # exactly one binding for this sticker → use it
+                psku=next(iter(cand))
         if psku and psku in prods:
             p=prods[psku]; key=psku; name=p["name"] or psku; ac=p["avg_cost"]; mapped=True
         else:
@@ -7003,7 +7055,7 @@ def api_profit():
 @app.route("/admin/preshow")
 @req_role("admin","cs","worker","picker")
 def preshow_page():
-    return PRESHOW_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("preshow")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return PRESHOW_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("preshow")).replace("__NAVBAR_CSS__",_NAVBAR_CSS).replace("__ROLE__",session.get("role",""))
 
 @app.route("/admin/inventory")
 @req_role("admin")
