@@ -7038,14 +7038,16 @@ HIRE_FILE_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
+  color-scheme:light only;
   --brand:#c25c79;
   --bg:#fff;
-  --text:#f6f7f9;
-  --text-muted:#6b7280;
-  --text-dim:#9b9bab;
+  --text:#141b26;
+  --text-muted:#5b6474;
+  --text-dim:#8a90a0;
   --border:#dadae3;
   --surface:#f7f7f9;
 }
+html{color-scheme:light only}
 body{font-family:'DM Sans',-apple-system,sans-serif;background:#e9e9ec;color:var(--text);min-height:100vh;padding:40px 20px;-webkit-font-smoothing:antialiased}
 .page{max-width:850px;margin:0 auto;background:var(--bg);border-radius:10px;box-shadow:0 4px 24px rgba(0,0,0,.08);padding:60px 70px}
 
