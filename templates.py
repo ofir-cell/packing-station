@@ -9734,13 +9734,14 @@ __NAVBAR__
     <div class="f grow" style="flex:1;min-width:240px"><label data-i18n="show">Show</label>
       <select id="showSel" style="width:100%"><option value="" data-i18n="pickshow">Pick a show…</option></select></div>
     <div class="f"><label data-i18n="part">Part (your lane)</label>
-      <select id="partSel"><option value="1">Part 1</option><option value="2">Part 2</option><option value="3">Part 3</option><option value="4">Part 4</option><option value="5">Part 5</option><option value="0" data-i18n="nopart">No part</option></select></div>
+      <select id="partSel"><option value="0" selected data-i18n="nopart">No part</option><option value="1">Part 1</option><option value="2">Part 2</option><option value="3">Part 3</option><option value="4">Part 4</option><option value="5">Part 5</option></select></div>
     <div class="f"><label data-i18n="startat">Start at sticker #</label><input id="startSku" type="number" value="1" style="width:120px"></div>
   </div>
   <div class="lane" data-i18n="lanehint">💡 Each Part is its own lane — several workers can run Part 1, Part 2, Part 3… at the same time on different iPads without clashing.</div>
   <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
     <div class="muted" id="progress" style="font-size:13px"></div>
     <button class="btn btn-s" id="recalcBtn" style="display:none;margin-left:auto" data-i18n="recalc">♻️ Recompute stock for this show</button>
+    <button class="btn btn-s" id="recalcAllBtn" style="display:none" data-i18n="recalcAll">♻️ All shows</button>
   </div>
   <div class="muted" id="recalcMsg" style="font-size:12.5px;margin-top:6px"></div>
 </div>
@@ -9748,7 +9749,7 @@ __NAVBAR__
 <div class="card" id="scanCard" style="opacity:.45;pointer-events:none">
   <h2 data-i18n="step2">2 · For each product on the table: scan its real barcode</h2>
   <div class="scanbox">
-    <div class="cur"><div class="lab" data-i18n="sticker">Sticker #</div><input class="numin" id="curNum" type="number" value="1"><div class="pt" id="curPart">Part 1</div></div>
+    <div class="cur"><div class="lab" data-i18n="sticker">Sticker #</div><input class="numin" id="curNum" type="number" value="1"><div class="pt" id="curPart">No part</div></div>
     <div class="grow f big"><label data-i18n="scanbarcode">Scan product barcode (or type SKU)</label>
       <input id="code" placeholder="📷 …" style="width:100%" autocomplete="off"></div>
     <div class="f"><label>&nbsp;</label><button class="btn btn-s" id="pickBtn" data-i18n="pickcat">🔍 Search catalog</button></div>
@@ -9791,8 +9792,8 @@ __NAVBAR__
 
 <div class="toast" id="t"></div>
 <script>
-var T={en:{title:"Match Sold Products",step1:"1 · Pick the show & your Part (lane)",show:"Show",pickshow:"Pick a show…",part:"Part (your lane)",nopart:"No part",startat:"Start at sticker #",step2:"2 · For each product on the table: scan its real barcode",sticker:"Sticker #",scanbarcode:"Scan product barcode (or type SKU)",pickcat:"🔍 Search catalog",lanehint:"💡 Each Part is its own lane — several workers can run Part 1, Part 2, Part 3… at the same time on different iPads without clashing.",hint:"After each scan the sticker # advances by 1. Type a different number anytime — handy since cancelled items were already pulled, so numbers may skip. If a barcode won't scan, tap Search catalog and find it by name, a few barcode digits, or SKU.",linked:"Matched this show",thpart:"Part",thsticker:"Sticker",thproduct:"Product",thby:"By",none:"Pick a show to begin.",pickttl:"Find product in catalog",newprod:"+ New product",cancel:"Cancel",notfound:"Not in catalog — search or add it",linkedok:"Matched ✓",removed:"Removed",chooseshow:"Choose a show first",bstep:"⚡ Bulk — same product across a range of stickers",bfrom:"From sticker #",bto:"To sticker #",bscan:"Scan barcode / type SKU",bapply:"Apply to range →",bhint:"Binds every sticker from the first to the last number (inclusive) to this one product — in your current Part. Great when a whole batch on the table is the same item. You can still fix any single sticker by scanning it above.",brange:"Enter a valid range (From ≤ To).",bchosen:"Chosen",bdone:"Bound stickers",recalc:"♻️ Recompute stock for this show",recalcConfirm:"Recompute stock deductions for this show? This re-applies the correct quantity for every matched sticker and adjusts inventory to match.",recalcDone:"Stock recomputed"},
-es:{title:"Vincular productos vendidos",step1:"1 · Elige el show y tu Parte (carril)",show:"Show",pickshow:"Elige un show…",part:"Parte (tu carril)",nopart:"Sin parte",startat:"Empezar en etiqueta #",step2:"2 · Por cada producto en la mesa: escanea su código real",sticker:"Etiqueta #",scanbarcode:"Escanea el código (o escribe SKU)",pickcat:"🔍 Buscar catálogo",lanehint:"💡 Cada Parte es su propio carril — varios trabajadores pueden hacer Parte 1, Parte 2, Parte 3… al mismo tiempo en distintos iPads sin chocar.",hint:"Tras cada escaneo el número avanza en 1. Escribe otro número cuando quieras — útil porque los cancelados ya se retiraron y los números pueden saltarse. Si un código no escanea, toca Buscar catálogo y encuéntralo por nombre, unos dígitos del código, o SKU.",linked:"Vinculados este show",thpart:"Parte",thsticker:"Etiqueta",thproduct:"Producto",thby:"Por",none:"Elige un show para empezar.",pickttl:"Buscar producto en el catálogo",newprod:"+ Nuevo producto",cancel:"Cancelar",notfound:"No está en el catálogo — búscalo o agrégalo",linkedok:"Vinculado ✓",removed:"Eliminado",chooseshow:"Elige un show primero",bstep:"⚡ Masivo — mismo producto en un rango de etiquetas",bfrom:"Desde etiqueta #",bto:"Hasta etiqueta #",bscan:"Escanea código / escribe SKU",bapply:"Aplicar al rango →",bhint:"Vincula todas las etiquetas desde la primera hasta la última (incluidas) a este producto — en tu Parte actual. Ideal cuando todo un lote en la mesa es el mismo artículo. Aún puedes corregir una etiqueta escaneándola arriba.",brange:"Introduce un rango válido (Desde ≤ Hasta).",bchosen:"Elegido",bdone:"Etiquetas vinculadas",recalc:"♻️ Recalcular stock de este show",recalcConfirm:"¿Recalcular las bajas de stock de este show? Vuelve a aplicar la cantidad correcta por cada etiqueta vinculada y ajusta el inventario.",recalcDone:"Stock recalculado"}};
+var T={en:{title:"Match Sold Products",step1:"1 · Pick the show & your Part (lane)",show:"Show",pickshow:"Pick a show…",part:"Part (your lane)",nopart:"No part",startat:"Start at sticker #",step2:"2 · For each product on the table: scan its real barcode",sticker:"Sticker #",scanbarcode:"Scan product barcode (or type SKU)",pickcat:"🔍 Search catalog",lanehint:"💡 Each Part is its own lane — several workers can run Part 1, Part 2, Part 3… at the same time on different iPads without clashing.",hint:"After each scan the sticker # advances by 1. Type a different number anytime — handy since cancelled items were already pulled, so numbers may skip. If a barcode won't scan, tap Search catalog and find it by name, a few barcode digits, or SKU.",linked:"Matched this show",thpart:"Part",thsticker:"Sticker",thproduct:"Product",thby:"By",none:"Pick a show to begin.",pickttl:"Find product in catalog",newprod:"+ New product",cancel:"Cancel",notfound:"Not in catalog — search or add it",linkedok:"Matched ✓",removed:"Removed",chooseshow:"Choose a show first",bstep:"⚡ Bulk — same product across a range of stickers",bfrom:"From sticker #",bto:"To sticker #",bscan:"Scan barcode / type SKU",bapply:"Apply to range →",bhint:"Binds every sticker from the first to the last number (inclusive) to this one product — in your current Part. Great when a whole batch on the table is the same item. You can still fix any single sticker by scanning it above.",brange:"Enter a valid range (From ≤ To).",bchosen:"Chosen",bdone:"Bound stickers",recalc:"♻️ Recompute stock for this show",recalcConfirm:"Recompute stock deductions for this show? This re-applies the correct quantity for every matched sticker and adjusts inventory to match.",recalcDone:"Stock recomputed",recalcAll:"♻️ All shows",recalcAllConfirm:"Recompute stock deductions for ALL shows ever matched? This fixes inventory across every past show in one pass. Safe to run once.",recalcAllDone:"All shows recomputed"},
+es:{title:"Vincular productos vendidos",step1:"1 · Elige el show y tu Parte (carril)",show:"Show",pickshow:"Elige un show…",part:"Parte (tu carril)",nopart:"Sin parte",startat:"Empezar en etiqueta #",step2:"2 · Por cada producto en la mesa: escanea su código real",sticker:"Etiqueta #",scanbarcode:"Escanea el código (o escribe SKU)",pickcat:"🔍 Buscar catálogo",lanehint:"💡 Cada Parte es su propio carril — varios trabajadores pueden hacer Parte 1, Parte 2, Parte 3… al mismo tiempo en distintos iPads sin chocar.",hint:"Tras cada escaneo el número avanza en 1. Escribe otro número cuando quieras — útil porque los cancelados ya se retiraron y los números pueden saltarse. Si un código no escanea, toca Buscar catálogo y encuéntralo por nombre, unos dígitos del código, o SKU.",linked:"Vinculados este show",thpart:"Parte",thsticker:"Etiqueta",thproduct:"Producto",thby:"Por",none:"Elige un show para empezar.",pickttl:"Buscar producto en el catálogo",newprod:"+ Nuevo producto",cancel:"Cancelar",notfound:"No está en el catálogo — búscalo o agrégalo",linkedok:"Vinculado ✓",removed:"Eliminado",chooseshow:"Elige un show primero",bstep:"⚡ Masivo — mismo producto en un rango de etiquetas",bfrom:"Desde etiqueta #",bto:"Hasta etiqueta #",bscan:"Escanea código / escribe SKU",bapply:"Aplicar al rango →",bhint:"Vincula todas las etiquetas desde la primera hasta la última (incluidas) a este producto — en tu Parte actual. Ideal cuando todo un lote en la mesa es el mismo artículo. Aún puedes corregir una etiqueta escaneándola arriba.",brange:"Introduce un rango válido (Desde ≤ Hasta).",bchosen:"Elegido",bdone:"Etiquetas vinculadas",recalc:"♻️ Recalcular stock de este show",recalcConfirm:"¿Recalcular las bajas de stock de este show? Vuelve a aplicar la cantidad correcta por cada etiqueta vinculada y ajusta el inventario.",recalcDone:"Stock recalculado",recalcAll:"♻️ Todos los shows",recalcAllConfirm:"¿Recalcular las bajas de stock de TODOS los shows vinculados? Corrige el inventario de todos los shows anteriores en una sola pasada. Seguro ejecutarlo una vez.",recalcAllDone:"Todos los shows recalculados"}};
 var lang=localStorage.getItem('lang')||'en';
 function t(k){return (T[lang]&&T[lang][k])||T.en[k]||k}
 function applyLang(){document.querySelectorAll('[data-i18n]').forEach(function(e){e.textContent=t(e.getAttribute('data-i18n'))});document.getElementById('langBtn').textContent=lang==='en'?'ES':'EN';document.documentElement.lang=lang}
@@ -9813,16 +9814,24 @@ fetch('/api/shows/recent').then(function(r){return r.json()}).then(function(show
 
 var ROLE='__ROLE__';
 function enableScan(on){var c=document.getElementById('scanCard');c.style.opacity=on?'1':'.45';c.style.pointerEvents=on?'auto':'none';var b=document.getElementById('bulkCard');if(b){b.style.opacity=on?'1':'.45';b.style.pointerEvents=on?'auto':'none'}var rb=document.getElementById('recalcBtn');if(rb)rb.style.display=(on&&(ROLE==='admin'||ROLE==='cs'))?'inline-block':'none';if(on){document.getElementById('code').focus()}}
-(function(){var rb=document.getElementById('recalcBtn');if(!rb)return;rb.addEventListener('click',function(){
-  if(!show())return; if(!confirm(t('recalcConfirm')))return;
-  rb.disabled=true;var m=document.getElementById('recalcMsg');m.textContent='…';
-  fetch('/api/preshow/recompute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:show()})})
-   .then(function(r){return r.json()}).then(function(d){rb.disabled=false;
-     if(!d.ok){m.innerHTML='<span style="color:#e11d48">'+esc(d.error||'Failed')+'</span>';return}
-     m.innerHTML='✓ '+t('recalcDone')+': '+d.adjusted+'/'+d.bindings+' · '+d.units_deducted+' units deducted';
-     toast(t('recalcDone'));
-   }).catch(function(){rb.disabled=false;m.innerHTML='<span style="color:#e11d48">Failed</span>'});
-});})();
+(function(){
+  var isAdmin=(ROLE==='admin'||ROLE==='cs');
+  var rb=document.getElementById('recalcBtn'),ab=document.getElementById('recalcAllBtn'),m=document.getElementById('recalcMsg');
+  function run(payload,confirmKey,doneKey,btn){
+    if(!confirm(t(confirmKey)))return;
+    btn.disabled=true;m.textContent='…';
+    fetch('/api/preshow/recompute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+     .then(function(r){return r.json()}).then(function(d){btn.disabled=false;
+       if(!d.ok){m.innerHTML='<span style="color:#e11d48">'+esc(d.error||'Failed')+'</span>';return}
+       var scope=d.all?(d.shows_adjusted+'/'+d.shows+' shows'):(d.adjusted+'/'+d.bindings+' stickers');
+       m.innerHTML='✓ '+t(doneKey)+': '+scope+' · '+d.units_deducted+' units deducted';
+       toast(t(doneKey));
+     }).catch(function(){btn.disabled=false;m.innerHTML='<span style="color:#e11d48">Failed</span>'});
+  }
+  if(rb)rb.addEventListener('click',function(){if(show())run({show:show()},'recalcConfirm','recalcDone',rb)});
+  if(ab){if(isAdmin)ab.style.display='inline-block';
+    ab.addEventListener('click',function(){run({all:true},'recalcAllConfirm','recalcAllDone',ab)});}
+})();
 function onShowChange(){if(show()){enableScan(true);refresh();setCur(parseInt(document.getElementById('startSku').value||'1'))}else{enableScan(false)}}
 document.getElementById('showSel').addEventListener('change',onShowChange);
 document.getElementById('partSel').addEventListener('change',function(){setCur(parseInt(document.getElementById('startSku').value||'1'));refresh()});

@@ -6968,25 +6968,34 @@ def api_preshow_recompute():
     so their stock catches up without re-scanning."""
     d=request.get_json() or {}
     show=(d.get("show") or "").strip()
-    if not show: return jsonify({"ok":False,"error":"show required"})
-    c=sdb()
-    rows=c.execute("""SELECT sticker_sku,part,product_sku,COALESCE(depleted_qty,0) dq
-                      FROM show_product_map WHERE import_label=? AND product_sku IS NOT NULL""",(show,)).fetchall()
+    do_all=bool(d.get("all")) or (not show)
     now=datetime.now().isoformat(timespec='seconds'); who=session.get("name","")[:60]
-    changed=0; total_delta=0
-    for r in rows:
-        want=_sticker_sold_qty(c, show, r["sticker_sku"], r["part"])
-        delta=want-(r["dq"] or 0)          # extra units to deduct now (can be negative)
-        if delta==0: continue
-        c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(delta,r["product_sku"]))
-        _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(r["product_sku"],)).fetchone()
-        c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
-                  (r["product_sku"],-delta,(_ac["avg_cost"] if _ac else 0) or 0,"sale recompute ("+show+")",now,who))
-        c.execute("UPDATE show_product_map SET depleted_qty=? WHERE import_label=? AND sticker_sku=? AND part=?",
-                  (want,show,r["sticker_sku"],r["part"]))
-        changed+=1; total_delta+=delta
+    c=sdb()
+    if do_all:
+        shows=[r["import_label"] for r in c.execute(
+            "SELECT DISTINCT import_label FROM show_product_map WHERE import_label IS NOT NULL").fetchall()]
+    else:
+        shows=[show]
+    total_bindings=0; total_changed=0; total_delta=0; shows_touched=0
+    for sh in shows:
+        rows=c.execute("""SELECT sticker_sku,part,product_sku,COALESCE(depleted_qty,0) dq
+                          FROM show_product_map WHERE import_label=? AND product_sku IS NOT NULL""",(sh,)).fetchall()
+        total_bindings+=len(rows); hit=False
+        for r in rows:
+            want=_sticker_sold_qty(c, sh, r["sticker_sku"], r["part"])
+            delta=want-(r["dq"] or 0)      # extra units to deduct now (can be negative)
+            if delta==0: continue
+            c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(delta,r["product_sku"]))
+            _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(r["product_sku"],)).fetchone()
+            c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
+                      (r["product_sku"],-delta,(_ac["avg_cost"] if _ac else 0) or 0,"sale recompute ("+sh+")",now,who))
+            c.execute("UPDATE show_product_map SET depleted_qty=? WHERE import_label=? AND sticker_sku=? AND part=?",
+                      (want,sh,r["sticker_sku"],r["part"]))
+            total_changed+=1; total_delta+=delta; hit=True
+        if hit: shows_touched+=1
     c.commit(); c.close()
-    return jsonify({"ok":True,"show":show,"bindings":len(rows),"adjusted":changed,"units_deducted":total_delta})
+    return jsonify({"ok":True,"all":do_all,"shows":len(shows),"shows_adjusted":shows_touched,
+                    "bindings":total_bindings,"adjusted":total_changed,"units_deducted":total_delta})
 
 @app.route("/api/profit")
 @req_role("admin")
