@@ -7134,6 +7134,9 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#e9e9ec;color:var
   .step{page-break-inside:avoid}
   .sig-block{page-break-inside:avoid}
   .upload-item{page-break-inside:avoid}
+  /* One ID per row, full width and uncapped height, so the document is legible on paper. */
+  .uploads-list{grid-template-columns:1fr !important}
+  .upload-thumb{max-height:none !important}
   .section-head{page-break-after:avoid}
   @page{size:Letter;margin:0.5in 0.6in}
 }

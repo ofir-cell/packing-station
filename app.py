@@ -8076,11 +8076,16 @@ def render_hire_file_page(h, steps, sigs, uploads, workflow_name):
                     fn = esc(u["original_filename"] or "file")
                     field = esc(u["field_name"])
                     size_kb = (u["size_bytes"] or 0) / 1024
-                    is_image = (u.get("mime_type") or "").startswith("image/")
+                    rawfn = u["original_filename"] or ""
+                    ext = rawfn.rsplit(".", 1)[-1].lower() if "." in rawfn else ""
+                    is_image = HIRE_UPLOAD_EXT_MIME.get(ext, "").startswith("image/")
                     section += f'<div class="upload-item">'
                     section += f'<div class="upload-meta"><b>{field}</b> &middot; {fn} &middot; {size_kb:.0f} KB</div>'
-                    if is_image:
-                        section += f'<img class="upload-thumb" src="/api/hires/{h["id"]}/upload/{u["id"]}?inline=1" alt="{fn}">'
+                    data_uri = _hire_image_data_uri(u) if is_image else None
+                    if data_uri:
+                        # Embedded so it always prints; also a link to the full-size original.
+                        section += f'<a href="/api/hires/{h["id"]}/upload/{u["id"]}?inline=1" target="_blank">'
+                        section += f'<img class="upload-thumb" src="{data_uri}" alt="{fn}"></a>'
                     else:
                         section += f'<a href="/api/hires/{h["id"]}/upload/{u["id"]}" class="upload-link no-print">📎 Download {fn}</a>'
                     section += '</div>'
@@ -8621,6 +8626,49 @@ def api_admin_hire_upload_view(hire_id, upload_id):
                      as_attachment=not inline, download_name=fn)
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
+
+def _load_hire_upload_bytes(row):
+    """Raw bytes for a hire upload (from R2 or local disk), or None on any failure."""
+    key = row["storage_key"]
+    if r2:
+        try:
+            return r2.get_object(Bucket=R2_BUCKET, Key=key)["Body"].read()
+        except Exception as e:
+            print("hire upload fetch failed:", e, flush=True); return None
+    local_path = os.path.join(HIRE_LOCAL_UPLOAD_DIR, key.replace("/", "__"))
+    try:
+        with open(local_path, "rb") as f: return f.read()
+    except Exception:
+        return None
+
+def _hire_image_data_uri(row, max_px=1500, quality=82):
+    """A downscaled base64 data: URI for an uploaded image, so it can be embedded
+    directly in the printable Employee File — the page stays self-contained and the
+    photos always appear, including when the admin does Print → Save as PDF (no network
+    request, no presigned-URL expiry). Returns None if it isn't an image or can't load."""
+    fn = row["original_filename"] or ""
+    ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
+    mime = HIRE_UPLOAD_EXT_MIME.get(ext, "")
+    if not mime.startswith("image/"): return None
+    raw = _load_hire_upload_bytes(row)
+    if not raw: return None
+    import base64, io as _io
+    try:
+        from PIL import Image, ImageOps
+        im = Image.open(_io.BytesIO(raw))
+        im = ImageOps.exif_transpose(im)        # honor phone rotation
+        im = im.convert("RGB")
+        w, h = im.size
+        if max(w, h) > max_px:
+            r = max_px / float(max(w, h)); im = im.resize((int(w*r), int(h*r)))
+        out = _io.BytesIO(); im.save(out, format="JPEG", quality=quality)
+        return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode()
+    except Exception as e:
+        print("hire image embed failed:", e, flush=True)
+        try:    # last resort: embed original bytes unchanged (e.g. PIL can't open it)
+            return "data:" + mime + ";base64," + base64.b64encode(raw).decode()
+        except Exception:
+            return None
 
 
 @app.route("/api/hire/<token>/step/<int:step_id>/complete", methods=["POST"])
