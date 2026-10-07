@@ -139,6 +139,11 @@ RETENTION_DAYS=int(os.environ.get("RETENTION_DAYS",30))
 # When configured, videos/photos are stored in R2 instead of local disk.
 # Saves ~95% on storage cost vs Railway Volume + zero egress fees.
 R2_BUCKET=os.environ.get("R2_BUCKET")
+# Sensitive new-hire documents (ID photos, I-9 evidence, badge selfies) must be kept
+# permanently and must NOT be swept by the 30-day media retention. Put them in a
+# dedicated bucket that has NO lifecycle/expiry rule. Defaults to the main bucket when
+# unset (so nothing changes until a separate bucket is configured).
+R2_HR_BUCKET=os.environ.get("R2_HR_BUCKET") or R2_BUCKET
 R2_ENDPOINT=os.environ.get("R2_ENDPOINT")
 R2_ACCESS_KEY_ID=os.environ.get("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY=os.environ.get("R2_SECRET_ACCESS_KEY")
@@ -8547,7 +8552,8 @@ def api_public_hire_upload(token, step_id):
     mime = HIRE_UPLOAD_EXT_MIME.get(ext, "application/octet-stream")
     if r2:
         try:
-            r2.upload_fileobj(f.stream, R2_BUCKET, key,
+            # Sensitive hire docs go to the permanent HR bucket (no 30-day expiry).
+            r2.upload_fileobj(f.stream, R2_HR_BUCKET, key,
                               ExtraArgs={"ContentType": mime})
         except Exception as e:
             print("R2 hire upload failed:", e, flush=True)
@@ -8580,8 +8586,10 @@ def api_public_hire_upload_delete(token, step_id, field):
                      (h["id"], step_id, field)).fetchall()
     for r in rows:
         if r2:
-            try: r2.delete_object(Bucket=R2_BUCKET, Key=r["storage_key"])
-            except: pass
+            for _b in _hire_r2_buckets():
+                for _k in _hire_upload_key_candidates(r["storage_key"]):
+                    try: r2.delete_object(Bucket=_b, Key=_k)
+                    except: pass
         else:
             try: os.remove(os.path.join(HIRE_LOCAL_UPLOAD_DIR, r["storage_key"].replace("/", "__")))
             except: pass
@@ -8634,15 +8642,61 @@ def _hire_upload_key_candidates(storage_key):
         keys.append("/".join(parts[1:]))     # drop leading org segment
     return keys
 
+def _hire_r2_buckets():
+    """Buckets to search for a hire file, newest first: the permanent HR bucket, then
+    the main bucket (where older objects lived before the split). De-duplicated."""
+    out = []
+    for b in (R2_HR_BUCKET, R2_BUCKET):
+        if b and b not in out: out.append(b)
+    return out
+
+@app.route("/api/hires/secure-documents", methods=["POST"])
+@req_role("admin")
+def api_hires_secure_documents():
+    """One-time: copy this tenant's existing hire documents into the permanent HR
+    bucket (which has no 30-day expiry), so they're protected before the main bucket's
+    lifecycle rule can delete them. Idempotent — files already in the HR bucket are
+    skipped. Requires R2_HR_BUCKET to point at a separate bucket."""
+    if not r2:
+        return jsonify({"ok": False, "error": "Cloud storage (R2) isn't configured."})
+    if R2_HR_BUCKET == R2_BUCKET:
+        return jsonify({"ok": False, "error": "Set R2_HR_BUCKET to a SEPARATE bucket (with no delete rule) and redeploy first, then run this."})
+    c = sdb()
+    rows = c.execute("SELECT id, storage_key, original_filename FROM onboarding_uploads").fetchall()
+    moved = 0; already = 0; missing = 0
+    for r in rows:
+        canon = r["storage_key"]
+        try:
+            r2.head_object(Bucket=R2_HR_BUCKET, Key=canon); already += 1; continue
+        except Exception:
+            pass
+        data, found = _load_hire_upload_bytes(dict(r))
+        if not data:
+            missing += 1; continue
+        ext = (r["original_filename"] or "").rsplit(".", 1)[-1].lower() if "." in (r["original_filename"] or "") else ""
+        mime = HIRE_UPLOAD_EXT_MIME.get(ext, "application/octet-stream")
+        try:
+            r2.put_object(Bucket=R2_HR_BUCKET, Key=canon, Body=data, ContentType=mime)
+            if found != canon:
+                c.execute("UPDATE onboarding_uploads SET storage_key=? WHERE id=?", (canon, r["id"]))
+            moved += 1
+        except Exception as e:
+            print("hire secure-copy failed:", e, flush=True); missing += 1
+    c.commit(); c.close()
+    return jsonify({"ok": True, "moved": moved, "already_safe": already,
+                    "missing": missing, "total": len(rows)})
+
 def _load_hire_upload_bytes(row):
-    """Raw bytes for a hire upload, trying R2 then local disk, and both the current and
-    the legacy (un-prefixed) key. Returns (bytes, working_key) or (None, None)."""
+    """Raw bytes for a hire upload, trying every (bucket, key) combination and local
+    disk — current + legacy key, HR + main bucket. Returns (bytes, working_key) or
+    (None, None)."""
     for k in _hire_upload_key_candidates(row["storage_key"]):
         if r2:
-            try:
-                return r2.get_object(Bucket=R2_BUCKET, Key=k)["Body"].read(), k
-            except Exception:
-                pass
+            for bucket in _hire_r2_buckets():
+                try:
+                    return r2.get_object(Bucket=bucket, Key=k)["Body"].read(), k
+                except Exception:
+                    pass
         local_path = os.path.join(HIRE_LOCAL_UPLOAD_DIR, k.replace("/", "__"))
         try:
             with open(local_path, "rb") as f: return f.read(), k
@@ -10467,20 +10521,16 @@ def api_badge_pdf(u):
         return jsonify({"ok":False,"error":"PDF generation failed: "+str(e)[:100]}),500
 
 def _read_badge_photo_bytes(key):
-    """Fetch a stored badge selfie (R2 or local) by its storage key. Returns bytes or None."""
+    """Fetch a stored badge selfie by its storage key, trying the HR + main buckets and
+    the current + legacy key (and local disk). Returns bytes or None."""
     if not key:
         return None
     try:
-        if r2:
-            obj = r2.get_object(Bucket=R2_BUCKET, Key=key)
-            return obj["Body"].read()
-        p = os.path.join(HIRE_LOCAL_UPLOAD_DIR, key.replace("/", "__"))
-        if os.path.exists(p):
-            with open(p, "rb") as f:
-                return f.read()
+        data, _k = _load_hire_upload_bytes({"storage_key": key})
+        return data
     except Exception as e:
         print("badge photo read failed:", e, flush=True)
-    return None
+        return None
 
 
 def _square_photo_reader(photo_bytes):

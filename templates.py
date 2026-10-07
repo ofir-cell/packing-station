@@ -6124,6 +6124,7 @@ __NAVBAR__
       <div class="page-sub">Onboard new team members with paperwork, signatures, and ID verification — all in one link.</div>
     </div>
     <div style="display:flex;gap:10px;align-items:center">
+      <button class="new-btn" id="secureDocsBtn" style="background:#fff;color:#0f9d58;border:1px solid rgba(16,157,88,.35)" title="Copy all hire ID documents into the permanent, never-deleted storage bucket">🔒 Secure documents</button>
       <button class="new-btn" id="testEmailBtn" style="background:#fff;color:#4f46e5;border:1px solid rgba(79,70,229,.3)">📧 Test email</button>
       <button class="new-btn" id="newBtn">+ New Hire</button>
     </div>
@@ -6228,6 +6229,15 @@ document.getElementById('newBtn').addEventListener('click',function(){
     document.getElementById('fEmail').value='';
     document.getElementById('fPhone').value='';
     document.getElementById('fName').focus();
+});
+document.getElementById('secureDocsBtn').addEventListener('click',function(){
+    if(!confirm('Copy all hire ID documents into the permanent (never-deleted) storage bucket? Safe to run anytime — already-protected files are skipped.'))return;
+    var b=this;b.disabled=true;var old=b.textContent;b.textContent='Securing…';
+    fetch('/api/hires/secure-documents',{method:'POST',headers:{'Content-Type':'application/json'}})
+     .then(function(r){return r.json()}).then(function(d){b.disabled=false;b.textContent=old;
+        if(!d.ok){alert(d.error||'Failed');return}
+        alert('✓ Secured '+d.moved+' document(s). '+d.already_safe+' already safe'+(d.missing?(', '+d.missing+' missing from storage (deleted before — need re-upload)'):'')+'.');
+     }).catch(function(){b.disabled=false;b.textContent=old;alert('Request failed')});
 });
 document.getElementById('testEmailBtn').addEventListener('click',function(){
     var to=prompt('Send a test email to which address?\\n(Leave blank to send to your sending account)');
