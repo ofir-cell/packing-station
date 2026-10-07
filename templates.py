@@ -4821,19 +4821,19 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     --text-dim:#64748b;
     --input-bg:#ffffff;
 }
-:root.theme-light{
-    --brand:#c25c79;
-    --brand-strong:#a63456;
-    --bg:#f5f4f0;
-    --top-bg:rgba(255,255,255,.92);
-    --surface:rgba(0,0,0,.04);
-    --surface-strong:#fff;
-    --border:rgba(0,0,0,.1);
-    --border-strong:rgba(0,0,0,.2);
+:root.theme-dark{
+    --brand:#ec8ba6;
+    --brand-strong:#d9748f;
+    --bg:#12151c;
+    --top-bg:rgba(18,21,28,.92);
+    --surface:rgba(255,255,255,.06);
+    --surface-strong:#1b2030;
+    --border:rgba(255,255,255,.14);
+    --border-strong:rgba(255,255,255,.24);
     --text:#f6f7f9;
-    --text-muted:#6b7280;
-    --text-dim:#888896;
-    --input-bg:#fff;
+    --text-muted:#aab2c0;
+    --text-dim:#8691a0;
+    --input-bg:#1b2030;
 }
 
 /* Top bar */
@@ -4896,7 +4896,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .scan-title{font-size:28px;font-weight:900;color:var(--text);letter-spacing:-.4px;margin-bottom:8px;text-align:center}
 .scan-sub{font-size:15px;color:var(--text-muted);margin-bottom:36px;text-align:center;max-width:480px}
 .scan-input-wrap{position:relative;width:100%;max-width:600px;margin-bottom:24px}
-.scan-input{width:100%;background:var(--surface-strong);border:3px solid var(--brand);border-radius:18px;padding:24px 28px;font-size:28px;color:#1a2130;font-family:'SF Mono',Menlo,monospace;text-align:center;outline:none;transition:all .2s;letter-spacing:1px;box-shadow:0 0 30px rgba(217,116,143,.12)}
+.scan-input{width:100%;background:var(--surface-strong);border:3px solid var(--brand);border-radius:18px;padding:24px 28px;font-size:28px;color:var(--text);font-family:'SF Mono',Menlo,monospace;text-align:center;outline:none;transition:all .2s;letter-spacing:1px;box-shadow:0 0 30px rgba(217,116,143,.12)}
 .scan-input:focus{border-color:var(--brand-strong);box-shadow:0 0 40px rgba(217,116,143,.25)}
 .scan-input::placeholder{color:var(--text-dim);font-family:'DM Sans',sans-serif;font-size:18px;letter-spacing:.5px}
 .scan-status{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--text-muted);margin-bottom:32px}
@@ -4971,7 +4971,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .toast.ok{background:rgba(16,185,129,.95)}
 
 /* Issue report modal */
-.issue-modal{position:fixed;inset:0;background:#ffffff;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);z-index:300;display:none;align-items:center;justify-content:center;padding:24px}
+.issue-modal{position:fixed;inset:0;background:var(--bg);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);z-index:300;display:none;align-items:center;justify-content:center;padding:24px}
 .issue-modal[style*="flex"]{display:flex!important}
 .issue-card{background:var(--surface-strong);border:1px solid var(--border);border-radius:22px;padding:28px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto}
 .issue-card h3{font-size:22px;font-weight:900;color:var(--text);margin-bottom:6px;line-height:1.2}
@@ -5160,14 +5160,14 @@ document.body.addEventListener('click',ensureAudio,{once:true});
 
 // ─── Theme toggle (light/dark, persisted) ───
 function setTheme(mode){
-    document.documentElement.classList.toggle('theme-light',mode==='light');
+    document.documentElement.classList.toggle('theme-dark',mode==='dark');
     localStorage.setItem('pickTheme',mode);
-    document.getElementById('themeToggle').textContent=mode==='light'?'🌙':'☀️';
+    document.getElementById('themeToggle').textContent=mode==='dark'?'☀️':'🌙';
 }
-setTheme(localStorage.getItem('pickTheme')||'dark');
+setTheme(localStorage.getItem('pickTheme')||'light');
 document.getElementById('themeToggle').addEventListener('click',function(){
-    var cur=localStorage.getItem('pickTheme')||'dark';
-    setTheme(cur==='light'?'dark':'light');
+    var cur=localStorage.getItem('pickTheme')||'light';
+    setTheme(cur==='dark'?'light':'dark');
 });
 
 function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
@@ -6501,10 +6501,15 @@ HIRE_ONBOARDING_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UT
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
 <title>Welcome — __BRANDMARK__ Onboarding</title>
+<meta name="color-scheme" content="light only">
 <style>
+/* Lock this public page to a light scheme — new hires often open it on phones/iPads
+   set to Dark Mode, where the browser would otherwise auto-darken the page and turn
+   the (dark-on-white) document and signature text unreadable. */
+:root{color-scheme:light only;--brand:#d9748f;--brand-strong:#c25c79}
+html{color-scheme:light only;background:#ffffff}
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:#1a2130;min-height:100vh;padding-bottom:80px;-webkit-font-smoothing:antialiased}
-:root{--brand:#d9748f;--brand-strong:#c25c79}
 .top{background:#ffffff;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid rgba(17,24,39,0.096);padding:16px 22px;position:sticky;top:0;z-index:50}
 .brand-mark{font-size:18px;font-weight:900;color:var(--brand);letter-spacing:1.5px;line-height:1}
 .brand-sub{font-size:9px;color:#64748b;letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-top:3px}
@@ -6546,7 +6551,8 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:#1a
 
 .sign-block{background:rgba(17,24,39,0.064);border:1px dashed rgba(17,24,39,0.16);border-radius:12px;padding:18px 20px;margin-bottom:16px}
 .sign-lbl{font-size:12px;color:var(--brand);font-weight:800;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
-.sign-input{width:100%;background:#ffffff;border:none;border-bottom:2px solid var(--brand);padding:14px 4px;font-size:24px;color:var(--brand);font-family:"Brush Script MT",cursive;outline:none;font-style:italic}
+.sign-input{width:100%;background:#ffffff;border:none;border-bottom:2px solid var(--brand);padding:14px 4px;font-size:26px;color:#141b26;font-family:"Brush Script MT","Snell Roundhand",cursive;outline:none;font-style:italic;font-weight:600}
+.sign-input::placeholder{color:#9aa3b0;font-style:italic;opacity:1}
 .sign-input:focus{border-bottom-color:#141b26}
 .sign-hint{font-size:11px;color:#64748b;margin-top:8px;line-height:1.5}
 
