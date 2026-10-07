@@ -3926,6 +3926,8 @@ def api_backfill_packed():
                      packed_at=COALESCE(packed_at, ?), packed_by=COALESCE(packed_by, ?)
                      WHERE tracking_code=?""",
                   (ts or None, w or None, trk))
+        try: _deplete_stock_for(c, row["shipment_id"])   # pack = stock leaves the catalog
+        except Exception as e: print("stock deplete failed for", trk, ":", e, flush=True)
         updated += 1
     c.commit(); c.close()
     return jsonify({"ok": True, "log_rows": len(by_track),
@@ -6008,7 +6010,7 @@ def api_shipment_revert(sid):
 
     Deliberately does NOT delete the packing recording — that footage is the proof
     you rely on in a dispute, and a status mistake is no reason to destroy evidence.
-    Stock is untouched because depletion happens at match time, not at pack time."""
+    Stock that was deducted when the order was packed is restored to the shelf."""
     if not re.match(r'^[A-Za-z0-9_\-]{1,64}$', sid):
         return jsonify({"ok":False,"error":"Invalid id"})
     d=request.get_json(silent=True) or {}
@@ -6025,6 +6027,8 @@ def api_shipment_revert(sid):
     if was=="shipped" and not d.get("force"):
         c.close(); return jsonify({"ok":False,"needs_confirm":True,
             "error":"This order is already marked shipped. Reverting it will put it back in the pick/pack queue — only do this if the shipment really didn't go out."})
+    # If it was packed, put its items back on the shelf before changing status.
+    _undeplete_stock_for(c, sid)
     if to=="picked":
         # Undo just the packing step; the pick stands.
         c.execute("""UPDATE shipments SET status='picked', packed_at=NULL, packed_by=NULL
@@ -6047,11 +6051,98 @@ def api_shipment_revert(sid):
          (" (was packed by %s)"%row["packed_by"]) if row["packed_by"] else ""))
     return jsonify({"ok":True,"shipment_id":sid,"was":was,"now":to})
 
+def _ship_item_products(c, shipment_id):
+    """Return (list[(product_sku, qty)], import_label) for a shipment's non-cancelled
+    items, each resolved to a real catalog product through the show's sticker→product
+    bindings (exact Part match, else the sticker's sole binding). Unmapped items drop."""
+    row=c.execute("SELECT import_label FROM shipments WHERE shipment_id=?",(shipment_id,)).fetchone()
+    label=(row["import_label"] if row else "") or ""
+    if not label: return [], ""
+    exact={}; by_sticker={}
+    for m in c.execute("SELECT sticker_sku,part,product_sku FROM show_product_map WHERE import_label=?",(label,)).fetchall():
+        if not m["product_sku"]: continue
+        st=(m["sticker_sku"] or "").strip()
+        exact[(st,m["part"])]=m["product_sku"]
+        by_sticker.setdefault(st,set()).add(m["product_sku"])
+    out=[]
+    for it in c.execute("SELECT sku,product_name,quantity FROM shipment_items WHERE shipment_id=? AND COALESCE(cancelled,0)=0",(shipment_id,)).fetchall():
+        st=(it["sku"] or "").strip(); qty=it["quantity"] or 1
+        psku=exact.get((st,_part_num(it["product_name"] or "")))
+        if not psku:
+            cand=by_sticker.get(st)
+            if cand and len(cand)==1: psku=next(iter(cand))
+        if psku: out.append((psku,qty))
+    return out, label
+
 def _deplete_stock_for(c, shipment_id):
-    """No-op. Stock depletion now happens at MATCH time (api_preshow_map), keyed to
-    the real catalog product — not the generic sticker number, which isn't a product
-    SKU and reuses across shows. Kept so existing pack-time call sites stay valid."""
-    return
+    """Deduct inventory for a packed shipment's items — ONCE per shipment (guarded by
+    shipments.stock_depleted). This is the single point where a sale leaves the catalog:
+    the box is physically packed, so its items come off on_hand. Each sticker maps to a
+    real product via the show's bindings; unmapped stickers are skipped. Ledger line is
+    named by show."""
+    row=c.execute("SELECT COALESCE(stock_depleted,0) sd, packed_by FROM shipments WHERE shipment_id=?",(shipment_id,)).fetchone()
+    if not row or row["sd"]: return
+    pairs,label=_ship_item_products(c, shipment_id)
+    now=datetime.now().isoformat(timespec='seconds'); who=(row["packed_by"] or "pack")[:60]
+    for psku,qty in pairs:
+        c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(qty,psku))
+        _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(psku,)).fetchone()
+        c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
+                  (psku,-qty,(_ac["avg_cost"] if _ac else 0) or 0,"sale packed ("+label+")",now,who))
+    c.execute("UPDATE shipments SET stock_depleted=1 WHERE shipment_id=?",(shipment_id,))
+
+def _undeplete_stock_for(c, shipment_id):
+    """Reverse a prior pack-time depletion — used when un-packing / reverting a packed
+    order so its items go back on the shelf. Only acts if it had been depleted."""
+    row=c.execute("SELECT COALESCE(stock_depleted,0) sd FROM shipments WHERE shipment_id=?",(shipment_id,)).fetchone()
+    if not row or not row["sd"]: return
+    pairs,label=_ship_item_products(c, shipment_id)
+    now=datetime.now().isoformat(timespec='seconds')
+    try: who=(session.get("name","") or "revert")[:60]
+    except Exception: who="revert"
+    for psku,qty in pairs:
+        c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(qty,psku))
+        c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
+                  (psku,qty,"unpacked — stock restored ("+label+")",now,who))
+    c.execute("UPDATE shipments SET stock_depleted=0 WHERE shipment_id=?",(shipment_id,))
+
+def _migrate_stock_model_packtime(c):
+    """One-time switch from match-time depletion to pack-time depletion, per tenant.
+    (1) Reverse any stock already deducted at match (show_product_map.depleted_qty) back
+        onto on_hand. (2) Deduct for every shipment already packed/shipped so inventory
+        reflects what has actually left. Guarded by a settings flag so it runs once."""
+    try:
+        flag=c.execute("SELECT value FROM settings WHERE key='stock_model'").fetchone()
+    except Exception:
+        return
+    if flag and flag["value"]=="packtime_v2": return
+    now=datetime.now().isoformat(timespec='seconds')
+    for r in c.execute("""SELECT import_label,sticker_sku,part,product_sku,COALESCE(depleted_qty,0) dq
+                          FROM show_product_map WHERE COALESCE(depleted_qty,0)>0 AND product_sku IS NOT NULL""").fetchall():
+        c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(r["dq"],r["product_sku"]))
+        c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
+                  (r["product_sku"],r["dq"],"stock-model switch: reverse match deduction",now,"system"))
+        c.execute("UPDATE show_product_map SET depleted_qty=0 WHERE import_label=? AND sticker_sku=? AND part=?",
+                  (r["import_label"],r["sticker_sku"],r["part"]))
+    for s in c.execute("SELECT shipment_id FROM shipments WHERE status IN ('packed','shipped') AND COALESCE(stock_depleted,0)=0").fetchall():
+        _deplete_stock_for(c, s["shipment_id"])
+    c.execute("INSERT INTO settings(key,value) VALUES('stock_model','packtime_v2') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    c.commit()
+
+_stock_model_migrated=set()
+@app.before_request
+def _ensure_stock_model_once():
+    """Run the pack-time stock-model migration once per tenant per process, lazily."""
+    try:
+        org=session.get("org") or DEFAULT_ORG
+    except Exception:
+        return
+    if org in _stock_model_migrated: return
+    _stock_model_migrated.add(org)          # mark first to avoid re-entry on error
+    try:
+        c=sdb(org); _migrate_stock_model_packtime(c); c.close()
+    except Exception as e:
+        print("stock-model migrate failed for",org,":",e,flush=True)
 
 @app.route("/api/products")
 @req_role("admin","cs")
@@ -6280,6 +6371,85 @@ def api_products_export():
         w.writerow(row)
     return Response(buf.getvalue(),mimetype="text/csv",
                     headers={"Content-Disposition":"attachment; filename=inventory.csv"})
+
+@app.route("/api/inventory/export-by-show.csv")
+@req_role("admin","cs")
+def api_inventory_export_by_show():
+    """Inventory impact of one show (or all shows): for every real product, how many
+    units were ordered vs actually packed (deducted from stock), with cost and revenue.
+    Uses the show's sticker→product bindings to roll generic stickers up to products."""
+    show=(request.args.get("show") or "").strip()
+    is_admin=session.get("role")=="admin"
+    c=sdb()
+    where="WHERE COALESCE(i.cancelled,0)=0"; params=[]
+    if show:
+        where+=" AND s.import_label=?"; params.append(show)
+    items=c.execute("""SELECT s.import_label lbl, i.sku, i.product_name, i.quantity,
+                              COALESCE(i.revenue,0) rev, COALESCE(s.stock_depleted,0) dep, s.status
+                       FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id """+where,params).fetchall()
+    mrows=c.execute("SELECT import_label,sticker_sku,part,product_sku FROM show_product_map"
+                    +(" WHERE import_label=?" if show else ""), ([show] if show else [])).fetchall()
+    exact={}; by_st={}
+    for m in mrows:
+        if not m["product_sku"]: continue
+        k=(m["import_label"],(m["sticker_sku"] or "").strip())
+        exact[(m["import_label"],(m["sticker_sku"] or "").strip(),m["part"])]=m["product_sku"]
+        by_st.setdefault(k,set()).add(m["product_sku"])
+    prods={p["sku"]:dict(p) for p in c.execute("SELECT sku,name,avg_cost FROM products").fetchall()}
+    c.close()
+    agg={}
+    for r in items:
+        st=(r["sku"] or "").strip()
+        psku=exact.get((r["lbl"],st,_part_num(r["product_name"] or "")))
+        if not psku:
+            cand=by_st.get((r["lbl"],st))
+            if cand and len(cand)==1: psku=next(iter(cand))
+        key=(r["lbl"],psku or ("?"+st))
+        g=agg.setdefault(key,{"show":r["lbl"],"sku":psku or "","name":(prods.get(psku,{}).get("name") if psku else None) or (r["product_name"] or st),
+                              "ordered":0,"packed":0,"revenue":0.0,"mapped":bool(psku),
+                              "avg_cost":(prods.get(psku,{}).get("avg_cost") if psku else None)})
+        q=r["quantity"] or 0
+        g["ordered"]+=q
+        if r["dep"] or (r["status"] in ("packed","shipped")): g["packed"]+=q
+        g["revenue"]+=r["rev"] or 0
+    buf=io.StringIO(); w=csv.writer(buf)
+    hdr=["Show","SKU","Product","Units ordered","Units packed (deducted)","Revenue"]
+    if is_admin: hdr+=["Avg cost","COGS (packed)","Profit","Mapped"]
+    else: hdr+=["Mapped"]
+    w.writerow(hdr)
+    for g in sorted(agg.values(),key=lambda x:(x["show"],-x["revenue"])):
+        row=[g["show"],g["sku"],g["name"],g["ordered"],g["packed"],round(g["revenue"],2)]
+        if is_admin:
+            ac=g["avg_cost"] or 0; cogs=round(g["packed"]*ac,2)
+            row+=[round(ac,4),cogs,round(g["revenue"]-cogs,2),"yes" if g["mapped"] else "NO"]
+        else:
+            row+=["yes" if g["mapped"] else "NO"]
+        w.writerow(row)
+    fn="inventory_"+(secure_filename(show) or "all_shows")+".csv"
+    return Response(buf.getvalue(),mimetype="text/csv",
+                    headers={"Content-Disposition":"attachment; filename="+fn})
+
+@app.route("/api/product/<sku>/moves.csv")
+@req_role("admin","cs")
+def api_product_moves_csv(sku):
+    """One product's full stock-movement history as CSV (receipts, sales, adjustments)."""
+    is_admin=session.get("role")=="admin"
+    safe=secure_filename(sku) or sku
+    c=sdb()
+    p=c.execute("SELECT name,on_hand FROM products WHERE sku=?",(safe,)).fetchone()
+    rows=c.execute("SELECT qty,unit_cost,note,moved_at,moved_by FROM stock_moves WHERE sku=? ORDER BY id",(safe,)).fetchall()
+    c.close()
+    buf=io.StringIO(); w=csv.writer(buf)
+    hdr=["Date","Change","Note","By"]
+    if is_admin: hdr[2:2]=["Unit cost"]
+    w.writerow(hdr)
+    for r in rows:
+        row=[(r["moved_at"] or ""),r["qty"],r["note"] or "",r["moved_by"] or ""]
+        if is_admin: row[2:2]=[round(r["unit_cost"] or 0,4)]
+        w.writerow(row)
+    fn="history_"+safe+".csv"
+    return Response(buf.getvalue(),mimetype="text/csv",
+                    headers={"Content-Disposition":"attachment; filename="+fn})
 
 @app.route("/api/product/<sku>/count",methods=["POST"])
 @req_role("admin","cs")
@@ -6830,27 +7000,18 @@ def api_preshow_map():
         c.close()
         return jsonify({"ok":False,"error":"Product not found in catalog","not_found":True,
                         "code":code or product_sku})
-    # Units sold under this sticker this show (one product per sticker per show).
+    # Matching only LINKS a sticker to a real product — it does NOT touch stock.
+    # Inventory is deducted later, at PACK time (see _deplete_stock_for), so a box only
+    # leaves the catalog when it's actually packed. sold_qty here is informational: how
+    # many units this sticker sold this show, shown on the card.
     sold_qty=_sticker_sold_qty(c, show, sticker, part)
-    # Restore any prior deduction (re-bind / corrected scan), then deduct from the real product.
-    ex=c.execute("SELECT product_sku,COALESCE(depleted_qty,0) dq FROM show_product_map WHERE import_label=? AND sticker_sku=? AND part=?",(show,sticker,part)).fetchone()
-    _now=datetime.now().isoformat(timespec='seconds'); _who=session.get("name","")[:60]
-    if ex and ex["product_sku"] and ex["dq"]:
-        c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(ex["dq"],ex["product_sku"]))
-        c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
-                  (ex["product_sku"],ex["dq"],"sale reversal (re-map "+show+")",_now,_who))
-    c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(sold_qty,prod["sku"]))
-    if sold_qty:
-        _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(prod["sku"],)).fetchone()
-        c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
-                  (prod["sku"],-sold_qty,(_ac["avg_cost"] if _ac else 0) or 0,"sale ("+show+")",_now,_who))
+    _now=datetime.now().isoformat(timespec='seconds')
     c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by)
-                 VALUES(?,?,?,?,?,?,?)
+                 VALUES(?,?,?,?,0,?,?)
                  ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET
-                    product_sku=excluded.product_sku,depleted_qty=excluded.depleted_qty,
+                    product_sku=excluded.product_sku,
                     mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
-              (show,sticker,part,prod["sku"],sold_qty,datetime.now().isoformat(timespec='seconds'),
-               session.get("name","")[:60]))
+              (show,sticker,part,prod["sku"],_now,session.get("name","")[:60]))
     c.commit()
     newoh=c.execute("SELECT on_hand FROM products WHERE sku=?",(prod["sku"],)).fetchone()
     c.close()
@@ -6894,23 +7055,14 @@ def api_preshow_map_bulk():
     total_sold=0; done=[]
     for n in range(start,end+1):
         sticker=str(n)
+        # Link only — no stock change here (deducted at pack time). sold_qty is info.
         sold_qty=_sticker_sold_qty(c, show, sticker, part)
-        ex=c.execute("SELECT product_sku,COALESCE(depleted_qty,0) dq FROM show_product_map WHERE import_label=? AND sticker_sku=? AND part=?",(show,sticker,part)).fetchone()
-        if ex and ex["product_sku"] and ex["dq"]:
-            c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(ex["dq"],ex["product_sku"]))
-            c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
-                      (ex["product_sku"],ex["dq"],"sale reversal (bulk re-map "+show+")",_now,_who))
-        if sold_qty:
-            c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(sold_qty,prod["sku"]))
-            _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(prod["sku"],)).fetchone()
-            c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
-                      (prod["sku"],-sold_qty,(_ac["avg_cost"] if _ac else 0) or 0,"sale (bulk "+show+")",_now,_who))
         c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by)
-                     VALUES(?,?,?,?,?,?,?)
+                     VALUES(?,?,?,?,0,?,?)
                      ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET
-                        product_sku=excluded.product_sku,depleted_qty=excluded.depleted_qty,
+                        product_sku=excluded.product_sku,
                         mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
-                  (show,sticker,part,prod["sku"],sold_qty,_now,_who))
+                  (show,sticker,part,prod["sku"],_now,_who))
         total_sold+=sold_qty
         done.append(sticker)
     c.commit()
@@ -6957,45 +7109,6 @@ def api_preshow_unmap():
     c.execute("DELETE FROM show_product_map WHERE import_label=? AND sticker_sku=? AND part=?",(show,sticker,part))
     c.commit(); c.close()
     return jsonify({"ok":True})
-
-@app.route("/api/preshow/recompute",methods=["POST"])
-@req_role("admin","cs")
-def api_preshow_recompute():
-    """Backfill: re-apply the stock deduction for every existing binding of a show using
-    the corrected quantity logic. For each binding, compare what SHOULD have been
-    deducted to what was, and adjust the product's on_hand by the difference (with a
-    ledger line). Fixes shows whose matches were made under a Part lane before the fix,
-    so their stock catches up without re-scanning."""
-    d=request.get_json() or {}
-    show=(d.get("show") or "").strip()
-    do_all=bool(d.get("all")) or (not show)
-    now=datetime.now().isoformat(timespec='seconds'); who=session.get("name","")[:60]
-    c=sdb()
-    if do_all:
-        shows=[r["import_label"] for r in c.execute(
-            "SELECT DISTINCT import_label FROM show_product_map WHERE import_label IS NOT NULL").fetchall()]
-    else:
-        shows=[show]
-    total_bindings=0; total_changed=0; total_delta=0; shows_touched=0
-    for sh in shows:
-        rows=c.execute("""SELECT sticker_sku,part,product_sku,COALESCE(depleted_qty,0) dq
-                          FROM show_product_map WHERE import_label=? AND product_sku IS NOT NULL""",(sh,)).fetchall()
-        total_bindings+=len(rows); hit=False
-        for r in rows:
-            want=_sticker_sold_qty(c, sh, r["sticker_sku"], r["part"])
-            delta=want-(r["dq"] or 0)      # extra units to deduct now (can be negative)
-            if delta==0: continue
-            c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(delta,r["product_sku"]))
-            _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(r["product_sku"],)).fetchone()
-            c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
-                      (r["product_sku"],-delta,(_ac["avg_cost"] if _ac else 0) or 0,"sale recompute ("+sh+")",now,who))
-            c.execute("UPDATE show_product_map SET depleted_qty=? WHERE import_label=? AND sticker_sku=? AND part=?",
-                      (want,sh,r["sticker_sku"],r["part"]))
-            total_changed+=1; total_delta+=delta; hit=True
-        if hit: shows_touched+=1
-    c.commit(); c.close()
-    return jsonify({"ok":True,"all":do_all,"shows":len(shows),"shows_adjusted":shows_touched,
-                    "bindings":total_bindings,"adjusted":total_changed,"units_deducted":total_delta})
 
 @app.route("/api/profit")
 @req_role("admin")

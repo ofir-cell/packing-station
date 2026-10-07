@@ -7539,7 +7539,8 @@ __NAVBAR__
     <div class="f" style="flex:1"><label>Search</label><input id="q" placeholder="SKU, name, or barcode" style="width:100%"></div>
     <button class="btn btn-s" id="lowBtn">⚠️ Low stock</button>
     <a class="btn btn-s" href="/admin/stocktake" style="text-decoration:none">🔢 Stock take</a>
-    <a class="btn btn-s" href="/api/products/export.csv" style="text-decoration:none">⬇️ Export</a>
+    <a class="btn btn-s" href="/api/products/export.csv" style="text-decoration:none">⬇️ Export all</a>
+    <select id="expShow" style="max-width:200px"><option value="">⬇️ Export by show…</option></select>
     <a class="btn btn-s" href="/admin/purchasing" style="text-decoration:none">📥 Purchasing</a>
     <button class="btn btn-s" id="addBtn">+ New product</button>
   </div>
@@ -7584,7 +7585,10 @@ __NAVBAR__
   </div>
   <div class="muted" id="pResult" style="margin:12px 0;font-size:13px"></div>
   <div style="display:flex;gap:10px;justify-content:space-between;align-items:center;margin-top:6px">
-    <a id="pLabel" href="#" target="_blank" class="btn btn-s" style="text-decoration:none;visibility:hidden">🏷️ Print label</a>
+    <div style="display:flex;gap:10px;align-items:center">
+      <a id="pLabel" href="#" target="_blank" class="btn btn-s" style="text-decoration:none;visibility:hidden">🏷️ Print label</a>
+      <button class="btn btn-s" id="pHistCsv" style="display:none" onclick="if(curSku)window.open('/api/product/'+encodeURIComponent(curSku)+'/moves.csv','_blank')">⬇️ Export history</button>
+    </div>
     <div style="display:flex;gap:10px">
       <button class="btn btn-s" onclick="closeP()">Close</button>
       <button class="btn btn-p" id="pSave">Save</button>
@@ -7740,6 +7744,7 @@ function fillP(p){
   document.getElementById('pImg').src=p.image_url||PLACEHOLDER;
   var lbl=document.getElementById('pLabel');
   if(p.sku){lbl.href='/api/product/'+encodeURIComponent(p.sku)+'/label.pdf';lbl.style.visibility='visible'}else{lbl.style.visibility='hidden'}
+  var hc=document.getElementById('pHistCsv');if(hc)hc.style.display=p.sku?'inline-block':'none';
   document.getElementById('pResult').innerHTML='';calcMargin();
   loadHistory(p.sku);
 }
@@ -7798,6 +7803,18 @@ document.getElementById('pCamera').addEventListener('change',function(){uploadPh
 document.getElementById('rSku').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('rBtn').click()});
 var dq=null;document.getElementById('q').addEventListener('input',function(){lowMode=false;document.getElementById('lowBtn').classList.remove('btn-p');clearTimeout(dq);dq=setTimeout(load,200)});
 document.getElementById('lowBtn').addEventListener('click',function(){lowMode=!lowMode;this.classList.toggle('btn-p',lowMode);if(lowMode)document.getElementById('q').value='';load()});
+// Export-by-show dropdown: populate with shows, download that show's inventory impact
+(function(){var sel=document.getElementById('expShow');if(!sel)return;
+  fetch('/api/shows/recent').then(function(r){return r.json()}).then(function(shows){
+    (shows||[]).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=s;sel.appendChild(o)});
+    var all=document.createElement('option');all.value='__ALL__';all.textContent='★ All shows';sel.appendChild(all);
+  }).catch(function(){});
+  sel.addEventListener('change',function(){
+    if(!this.value)return;
+    var url='/api/inventory/export-by-show.csv'+(this.value==='__ALL__'?'':('?show='+encodeURIComponent(this.value)));
+    window.open(url,'_blank');this.value='';
+  });
+})();
 function refreshAll(){load();loadStats();loadBestsellers();}
 function fillParentList(){fetch('/api/products').then(function(r){return r.json()}).then(function(rows){
   document.getElementById('prodList2').innerHTML=(rows||[]).filter(function(p){return !p.parent_sku}).map(function(p){return '<option value="'+esc(p.sku)+'">'+esc(p.name||'')+'</option>'}).join('');})}
@@ -9738,12 +9755,7 @@ __NAVBAR__
     <div class="f"><label data-i18n="startat">Start at sticker #</label><input id="startSku" type="number" value="1" style="width:120px"></div>
   </div>
   <div class="lane" data-i18n="lanehint">💡 Each Part is its own lane — several workers can run Part 1, Part 2, Part 3… at the same time on different iPads without clashing.</div>
-  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-    <div class="muted" id="progress" style="font-size:13px"></div>
-    <button class="btn btn-s" id="recalcBtn" style="display:none;margin-left:auto" data-i18n="recalc">♻️ Recompute stock for this show</button>
-    <button class="btn btn-s" id="recalcAllBtn" style="display:none" data-i18n="recalcAll">♻️ All shows</button>
-  </div>
-  <div class="muted" id="recalcMsg" style="font-size:12.5px;margin-top:6px"></div>
+  <div class="muted" id="progress" style="font-size:13px"></div>
 </div>
 
 <div class="card" id="scanCard" style="opacity:.45;pointer-events:none">
@@ -9812,26 +9824,7 @@ fetch('/api/shows/recent').then(function(r){return r.json()}).then(function(show
   (shows||[]).forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=s;sel.appendChild(o)});
 });
 
-var ROLE='__ROLE__';
-function enableScan(on){var c=document.getElementById('scanCard');c.style.opacity=on?'1':'.45';c.style.pointerEvents=on?'auto':'none';var b=document.getElementById('bulkCard');if(b){b.style.opacity=on?'1':'.45';b.style.pointerEvents=on?'auto':'none'}var rb=document.getElementById('recalcBtn');if(rb)rb.style.display=(on&&(ROLE==='admin'||ROLE==='cs'))?'inline-block':'none';if(on){document.getElementById('code').focus()}}
-(function(){
-  var isAdmin=(ROLE==='admin'||ROLE==='cs');
-  var rb=document.getElementById('recalcBtn'),ab=document.getElementById('recalcAllBtn'),m=document.getElementById('recalcMsg');
-  function run(payload,confirmKey,doneKey,btn){
-    if(!confirm(t(confirmKey)))return;
-    btn.disabled=true;m.textContent='…';
-    fetch('/api/preshow/recompute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
-     .then(function(r){return r.json()}).then(function(d){btn.disabled=false;
-       if(!d.ok){m.innerHTML='<span style="color:#e11d48">'+esc(d.error||'Failed')+'</span>';return}
-       var scope=d.all?(d.shows_adjusted+'/'+d.shows+' shows'):(d.adjusted+'/'+d.bindings+' stickers');
-       m.innerHTML='✓ '+t(doneKey)+': '+scope+' · '+d.units_deducted+' units deducted';
-       toast(t(doneKey));
-     }).catch(function(){btn.disabled=false;m.innerHTML='<span style="color:#e11d48">Failed</span>'});
-  }
-  if(rb)rb.addEventListener('click',function(){if(show())run({show:show()},'recalcConfirm','recalcDone',rb)});
-  if(ab){if(isAdmin)ab.style.display='inline-block';
-    ab.addEventListener('click',function(){run({all:true},'recalcAllConfirm','recalcAllDone',ab)});}
-})();
+function enableScan(on){var c=document.getElementById('scanCard');c.style.opacity=on?'1':'.45';c.style.pointerEvents=on?'auto':'none';var b=document.getElementById('bulkCard');if(b){b.style.opacity=on?'1':'.45';b.style.pointerEvents=on?'auto':'none'}if(on){document.getElementById('code').focus()}}
 function onShowChange(){if(show()){enableScan(true);refresh();setCur(parseInt(document.getElementById('startSku').value||'1'))}else{enableScan(false)}}
 document.getElementById('showSel').addEventListener('change',onShowChange);
 document.getElementById('partSel').addEventListener('change',function(){setCur(parseInt(document.getElementById('startSku').value||'1'));refresh()});
