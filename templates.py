@@ -7109,6 +7109,7 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#e9e9ec;color:var
 .upload-meta{font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.4}
 .upload-meta b{color:var(--text);font-weight:700}
 .upload-thumb{width:100%;height:auto;max-height:260px;object-fit:contain;border-radius:4px;background:#fff;border:1px solid var(--border)}
+.upload-missing{font-size:12px;color:#a13a3a;background:#fce0e0;border:1px solid #f0b4b4;border-radius:6px;padding:10px 12px;line-height:1.4}
 .upload-link{display:inline-block;margin-top:6px;font-size:12px;color:var(--brand);text-decoration:none;font-weight:700}
 .upload-link:hover{text-decoration:underline}
 

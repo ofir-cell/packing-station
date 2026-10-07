@@ -8086,6 +8086,10 @@ def render_hire_file_page(h, steps, sigs, uploads, workflow_name):
                         # Embedded so it always prints; also a link to the full-size original.
                         section += f'<a href="/api/hires/{h["id"]}/upload/{u["id"]}?inline=1" target="_blank">'
                         section += f'<img class="upload-thumb" src="{data_uri}" alt="{fn}"></a>'
+                    elif is_image:
+                        # Row exists but the image bytes couldn't be found in storage.
+                        section += ('<div class="upload-missing">⚠️ This photo is recorded but its '
+                                    'file is missing from storage. Ask the new hire to re-upload it.</div>')
                     else:
                         section += f'<a href="/api/hires/{h["id"]}/upload/{u["id"]}" class="upload-link no-print">📎 Download {fn}</a>'
                     section += '</div>'
@@ -8596,50 +8600,55 @@ def api_admin_hire_upload_view(hire_id, upload_id):
     c.close()
     if not row:
         return "Not found", 404
-    key = row["storage_key"]
     fn = row["original_filename"] or "file"
     inline = request.args.get("inline") == "1"
     # Re-derive MIME from the extension (don't trust the stored/old value) so an
     # image row can never be served as text/html on our origin.
     ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
     safe_mime = HIRE_UPLOAD_EXT_MIME.get(ext, "application/octet-stream")
-    # Only images/PDF may be shown inline; anything else is forced to download.
     inline = inline and (safe_mime.startswith("image/") or safe_mime == "application/pdf")
-    # Sanitize filename for the Content-Disposition header (strip quotes/CR/LF).
+    # Serve the bytes ourselves (trying current + legacy un-prefixed key, R2 or local)
+    # so a stale key or the per-org migration can't turn it into a dead presigned link.
+    data, found_key = _load_hire_upload_bytes(dict(row))
+    if data is None:
+        return ("File missing from storage — ask the new hire to re-upload it.", 404)
+    # Self-heal the DB if the object was found under the legacy key.
+    if found_key and found_key != row["storage_key"]:
+        try:
+            c2 = sdb(); c2.execute("UPDATE onboarding_uploads SET storage_key=? WHERE id=?",
+                                   (found_key, upload_id)); c2.commit(); c2.close()
+        except Exception: pass
     safe_fn = re.sub(r'["\r\n]', "", fn)
     disposition = "inline" if inline else f'attachment; filename="{safe_fn}"'
-    if r2:
-        try:
-            url = r2.generate_presigned_url("get_object",
-                Params={"Bucket": R2_BUCKET, "Key": key,
-                        "ResponseContentDisposition": disposition,
-                        "ResponseContentType": safe_mime},
-                ExpiresIn=R2_PRESIGN_TTL)
-            return redirect(url)
-        except Exception as e:
-            return f"Storage error: {e}", 500
-    local_path = os.path.join(HIRE_LOCAL_UPLOAD_DIR, key.replace("/", "__"))
-    if not os.path.exists(local_path):
-        return "File missing", 404
-    from flask import send_file
-    resp = send_file(local_path, mimetype=safe_mime,
-                     as_attachment=not inline, download_name=fn)
-    resp.headers["X-Content-Type-Options"] = "nosniff"
-    return resp
+    from flask import Response as _Resp
+    return _Resp(data, mimetype=safe_mime, headers={
+        "Content-Disposition": disposition, "X-Content-Type-Options": "nosniff"})
+
+def _hire_upload_key_candidates(storage_key):
+    """Keys to try for an upload, newest scheme first. Older uploads were stored
+    before the per-org key prefix existed, so the object may live at the key WITHOUT
+    the leading '{org}/' segment even though the DB now records the prefixed key."""
+    keys = [storage_key]
+    parts = (storage_key or "").split("/")
+    if len(parts) > 1:
+        keys.append("/".join(parts[1:]))     # drop leading org segment
+    return keys
 
 def _load_hire_upload_bytes(row):
-    """Raw bytes for a hire upload (from R2 or local disk), or None on any failure."""
-    key = row["storage_key"]
-    if r2:
+    """Raw bytes for a hire upload, trying R2 then local disk, and both the current and
+    the legacy (un-prefixed) key. Returns (bytes, working_key) or (None, None)."""
+    for k in _hire_upload_key_candidates(row["storage_key"]):
+        if r2:
+            try:
+                return r2.get_object(Bucket=R2_BUCKET, Key=k)["Body"].read(), k
+            except Exception:
+                pass
+        local_path = os.path.join(HIRE_LOCAL_UPLOAD_DIR, k.replace("/", "__"))
         try:
-            return r2.get_object(Bucket=R2_BUCKET, Key=key)["Body"].read()
-        except Exception as e:
-            print("hire upload fetch failed:", e, flush=True); return None
-    local_path = os.path.join(HIRE_LOCAL_UPLOAD_DIR, key.replace("/", "__"))
-    try:
-        with open(local_path, "rb") as f: return f.read()
-    except Exception:
-        return None
+            with open(local_path, "rb") as f: return f.read(), k
+        except Exception:
+            pass
+    return None, None
 
 def _hire_image_data_uri(row, max_px=1500, quality=82):
     """A downscaled base64 data: URI for an uploaded image, so it can be embedded
@@ -8650,7 +8659,7 @@ def _hire_image_data_uri(row, max_px=1500, quality=82):
     ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
     mime = HIRE_UPLOAD_EXT_MIME.get(ext, "")
     if not mime.startswith("image/"): return None
-    raw = _load_hire_upload_bytes(row)
+    raw, _k = _load_hire_upload_bytes(row)
     if not raw: return None
     import base64, io as _io
     try:
