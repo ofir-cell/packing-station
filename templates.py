@@ -135,6 +135,8 @@ def _navbar(active_page=""):
             res.append(("guides", "/guides", "📚 Guides"))
         if has("admin", "cs", "manager"):
             res.append(("support", "/support", "🛟 Support"))
+        if has("admin", "cs"):
+            res.append(("equipment", "/admin/equipment", "🛒 Equipment"))
         _r = _grp("📚 Resources", res)
         if _r: entries.append(_r)
 
@@ -11121,6 +11123,7 @@ function loadIntakes(){
       var body='<div style="font-size:13px;color:#586274;margin-top:8px;line-height:1.7">'+
         '👤 '+esc(it.contact_name||'')+' · '+esc(it.contact_email||'')+(it.contact_phone?' · '+esc(it.contact_phone):'')+'<br>'+
         (it.platforms||it.monthly_volume?('🛒 '+esc(it.platforms||'')+(it.monthly_volume?' · ~'+esc(it.monthly_volume)+' orders/mo':'')+'<br>'):'')+
+        ((it.packing_stations!=null||it.pullers!=null)?('🏭 '+(it.packing_stations!=null?esc(it.packing_stations)+' packing station(s)':'')+((it.packing_stations!=null&&it.pullers!=null)?' · ':'')+(it.pullers!=null?esc(it.pullers)+' puller(s)':'')+'<br>'):'')+
         (it.brand_mark||it.brand_color?('🎨 '+esc(it.brand_mark||'')+' '+(it.brand_color?'<span style="display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:middle;background:'+esc(it.brand_color)+'"></span> '+esc(it.brand_color):'')+'<br>'):'')+
         (addr?('📦 '+esc(it.ship_name||'')+' — '+esc(addr)+'<br>'):'')+
         (it.notes?('📝 '+esc(it.notes)):'')+'</div>';
@@ -12050,6 +12053,10 @@ textarea{min-height:80px;resize:vertical}
         <div class="f"><label>Orders / month (approx.)</label><input id="monthly_volume" placeholder="e.g. 2,000"></div>
       </div>
       <div class="f"><label>Team size</label><input id="team_size" placeholder="e.g. 6 people (2 hosts, 3 warehouse, 1 CS)"></div>
+      <div class="grid">
+        <div class="f"><label>Packing stations</label><input id="packing_stations" type="number" min="0" placeholder="e.g. 3"></div>
+        <div class="f"><label>Pullers (parallel pickers)</label><input id="pullers" type="number" min="0" placeholder="e.g. 4"></div>
+      </div>
     </div>
 
     <div class="card">
@@ -12097,7 +12104,7 @@ document.getElementById('applyForm').addEventListener('submit',function(e){
     msg.className='msg err';msg.textContent='Please fill company, your name, and email.';return;
   }
   var b=document.getElementById('submitBtn');b.disabled=true;b.textContent='Submitting…';
-  var body={};['company_name','brand_mark','brand_color','website','contact_name','contact_email','contact_phone','preferred_username','platforms','monthly_volume','team_size','ship_name','ship_street1','ship_street2','ship_city','ship_state','ship_zip','ship_phone','notes'].forEach(function(k){body[k]=val(k)});
+  var body={};['company_name','brand_mark','brand_color','website','contact_name','contact_email','contact_phone','preferred_username','platforms','monthly_volume','team_size','ship_name','ship_street1','ship_street2','ship_city','ship_state','ship_zip','ship_phone','notes','packing_stations','pullers'].forEach(function(k){body[k]=val(k)});
   fetch('/api/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json()}).then(function(d){
       if(d.ok){
@@ -12221,5 +12228,103 @@ function renderLog(){
 document.getElementById('go').addEventListener('click',lookup);
 qEl.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();lookup();}});
 document.getElementById('clearLog').addEventListener('click',function(){LOG=[];renderLog();qEl.focus();});
+</script>
+</body></html>'''
+
+
+# ── RECOMMENDED EQUIPMENT — tailored hardware shopping list per tenant size ──
+EQUIPMENT_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Equipment</title>
+__NAVBAR_CSS__
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#ffffff;color:#1a2130;min-height:100vh}
+.page-hdr{padding:24px 28px 8px;max-width:900px;margin:0 auto}
+.page-title{font-size:22px;font-weight:800}.page-title span{color:#4f46e5;margin-left:8px;font-weight:600;font-size:14px}
+.page-sub{font-size:13px;color:#586274;margin-top:4px}
+.wrap{max-width:900px;margin:0 auto;padding:8px 28px 60px}
+.card{background:#ffffff;border:1px solid rgba(17,24,39,0.096);border-radius:16px;padding:20px 22px;margin-bottom:18px}
+.card h2{font-size:13px;font-weight:800;color:#4f46e5;text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px}
+label{display:block;font-size:11px;font-weight:700;color:#6b7280;margin:0 0 4px;text-transform:uppercase;letter-spacing:.4px}
+input{background:#fff;border:2px solid rgba(17,24,39,0.128);border-radius:10px;padding:10px 13px;font-size:15px;color:#1a2130;font-family:inherit;outline:none;width:120px}
+input:focus{border-color:#4f46e5}
+.row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end}
+.btn{border:none;border-radius:10px;padding:11px 20px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}
+.btn-s{background:rgba(17,24,39,0.08);color:#1a2130;border:1px solid rgba(17,24,39,0.14)}
+.item{display:flex;gap:14px;align-items:flex-start;padding:14px 0;border-top:1px solid rgba(17,24,39,0.07)}
+.item:first-child{border-top:none}
+.item .em{font-size:26px;line-height:1;flex-shrink:0}
+.item .mid{flex:1;min-width:0}
+.item .nm{font-size:16px;font-weight:800}
+.item .nt{font-size:12.5px;color:#586274;margin-top:2px}
+.item .qty{background:#eef2ff;color:#4f46e5;font-weight:900;font-size:15px;padding:4px 12px;border-radius:999px;white-space:nowrap}
+.buy{margin-top:8px;display:inline-block;background:#4f46e5;color:#fff;text-decoration:none;font-weight:700;font-size:13px;padding:8px 16px;border-radius:9px}
+.buy.none{background:#eef0f4;color:#6b7280;pointer-events:none}
+.muted{color:#586274;font-size:13px}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#141b26;color:#fff;padding:12px 22px;border-radius:12px;font-weight:700;font-size:14px;display:none;z-index:100}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title">🛒 <span data-x>Equipment</span> <span>__NAME__</span></div>
+<div class="page-sub">The hardware your warehouse needs, sized to your operation. Each packing station needs a computer, a web cam and a packing scanner; each puller needs a hand scanner.</div></div>
+<div class="wrap">
+  <div class="card">
+    <h2>Your setup</h2>
+    <div class="row">
+      <div><label>Packing stations</label><input id="st" type="number" min="0"></div>
+      <div><label>Pullers (parallel pickers)</label><input id="pl" type="number" min="0"></div>
+      <button class="btn btn-p" id="save" style="display:none">Update list</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Shopping list</h2>
+    <div id="list"><div class="muted">Loading…</div></div>
+    <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-s" id="copy">📋 Copy all links</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="t"></div>
+<script>
+var ROLE='__ROLE__';var DATA=null;
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+function toast(m){var x=document.getElementById('t');x.textContent=m;x.style.display='block';setTimeout(function(){x.style.display='none'},2200)}
+function render(d){
+  DATA=d;
+  document.getElementById('st').value=d.stations||0;
+  document.getElementById('pl').value=d.pullers||0;
+  var L=document.getElementById('list');
+  if(!d.items||!d.items.length){L.innerHTML='<div class="muted">Enter how many packing stations and pullers you have above to see your equipment list.</div>';return}
+  L.innerHTML=d.items.map(function(it){
+    var buy=it.link?('<a class="buy" href="'+esc(it.link)+'" target="_blank" rel="noopener">Buy '+esc(it.name)+' →</a>')
+                   :('<span class="buy none">You provide this</span>');
+    return '<div class="item"><div class="em">'+esc(it.emoji)+'</div>'+
+      '<div class="mid"><div class="nm">'+esc(it.name)+'</div>'+
+      '<div class="nt">'+esc(it.note)+' · one per '+esc(it.per)+'</div>'+buy+'</div>'+
+      '<div class="qty">'+it.qty+'×</div></div>';
+  }).join('');
+}
+function load(){fetch('/api/equipment').then(function(r){return r.json()}).then(render)}
+load();
+if(ROLE==='admin'){
+  document.getElementById('save').style.display='inline-block';
+  function dirty(){document.getElementById('save').style.display='inline-block'}
+  document.getElementById('st').addEventListener('input',dirty);
+  document.getElementById('pl').addEventListener('input',dirty);
+  document.getElementById('save').addEventListener('click',function(){
+    var body={packing_stations:document.getElementById('st').value||0,pullers:document.getElementById('pl').value||0};
+    fetch('/api/equipment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+     .then(function(r){return r.json()}).then(function(d){render(d);toast('Saved ✓')});
+  });
+}else{
+  document.getElementById('st').disabled=true;document.getElementById('pl').disabled=true;
+}
+document.getElementById('copy').addEventListener('click',function(){
+  if(!DATA||!DATA.items)return;
+  var lines=DATA.items.filter(function(i){return i.link}).map(function(i){return i.qty+'x '+i.name+': '+i.link});
+  navigator.clipboard.writeText(lines.join('\\n')).then(function(){toast('Links copied ✓')});
+});
 </script>
 </body></html>'''

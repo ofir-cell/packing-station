@@ -38,7 +38,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML,
-    SCANIT_HTML, APPLY_HTML, TRACK_HTML)
+    SCANIT_HTML, APPLY_HTML, TRACK_HTML, EQUIPMENT_HTML)
 from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
 
 
@@ -134,6 +134,38 @@ if len(SECRET_KEY)<32:
 
 PORT=int(os.environ.get("PORT",8080))
 RETENTION_DAYS=int(os.environ.get("RETENTION_DAYS",30))
+
+# ── Recommended hardware (affiliate links) ────────────────────────────────────
+# During sign-up we ask how many packing stations and pullers (parallel pickers) a
+# client runs, then build a tailored shopping list: each packing station needs a
+# computer + webcam + packing scanner; each puller needs a hand scanner.
+HARDWARE_LINKS = {
+    "webcam":          os.environ.get("HW_WEBCAM_URL",          "https://bit.ly/3T7Mija"),
+    "packing_scanner": os.environ.get("HW_PACKING_SCANNER_URL", "https://bit.ly/4y7hhea"),
+    "hand_scanner":    os.environ.get("HW_HAND_SCANNER_URL",    "https://bit.ly/4wZua8U"),
+}
+
+def _equipment_list(stations, pullers):
+    """Build the recommended-equipment shopping list for a client of this size.
+    Returns a list of {emoji, name, qty, per, link, note}. Quantities scale with the
+    number of packing stations and pullers; a computer is listed (you provide it) with
+    no affiliate link."""
+    try: st=max(0,int(stations or 0))
+    except Exception: st=0
+    try: pl=max(0,int(pullers or 0))
+    except Exception: pl=0
+    items=[]
+    if st:
+        items.append({"emoji":"💻","name":"Computer / laptop","qty":st,"per":"packing station",
+                      "link":"","note":"Any Windows/Mac computer you already have works."})
+        items.append({"emoji":"📷","name":"Web cam","qty":st,"per":"packing station",
+                      "link":HARDWARE_LINKS["webcam"],"note":"Records each pack for your proof-of-pack video."})
+        items.append({"emoji":"📦","name":"Packing scanner","qty":st,"per":"packing station",
+                      "link":HARDWARE_LINKS["packing_scanner"],"note":"Scans the shipping label at the pack station."})
+    if pl:
+        items.append({"emoji":"🖐️","name":"Hand scanner","qty":pl,"per":"puller",
+                      "link":HARDWARE_LINKS["hand_scanner"],"note":"One per puller for picking on the floor."})
+    return {"stations":st,"pullers":pl,"items":items}
 
 # Cloudflare R2 cloud storage config (S3-compatible).
 # When configured, videos/photos are stored in R2 instead of local disk.
@@ -342,10 +374,17 @@ def pdb_init():
         ship_phone TEXT,
         preferred_username TEXT,
         notes TEXT,
+        packing_stations INTEGER,
+        pullers INTEGER,
         status TEXT DEFAULT 'new',
         admin_notes TEXT,
         converted_org TEXT
     )""")
+    # Backward-compatible: add the equipment-sizing columns to existing platform DBs.
+    _intake_have={r[1] for r in c.execute("PRAGMA table_info(client_intakes)").fetchall()}
+    for _col,_decl in (("packing_stations","INTEGER"),("pullers","INTEGER")):
+        if _col not in _intake_have:
+            c.execute("ALTER TABLE client_intakes ADD COLUMN %s %s" % (_col,_decl))
     # Seed the founding tenant (5 Second Beauty) if the table is empty.
     if not c.execute("SELECT 1 FROM organizations WHERE org_id=?", (DEFAULT_ORG,)).fetchone():
         c.execute("""INSERT INTO organizations(org_id,company_name,brand_mark,brand_sub,brand_color)
@@ -7528,6 +7567,30 @@ def operations_page():
 def settings_page():
     return SETTINGS_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("settings")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
+@app.route("/api/equipment")
+@req_role("admin","cs")
+def api_equipment_get():
+    """This tenant's recommended-equipment list, from their stored sizing."""
+    st=_get_setting("packing_stations"); pl=_get_setting("pullers")
+    return jsonify(_equipment_list(st, pl))
+
+@app.route("/api/equipment",methods=["POST"])
+@req_role("admin")
+def api_equipment_set():
+    """Update how many packing stations / pullers this tenant runs (regenerates list)."""
+    d=request.get_json() or {}
+    def gi(k):
+        try: return max(0,min(999,int(float(d.get(k) or 0))))
+        except Exception: return 0
+    st=gi("packing_stations"); pl=gi("pullers")
+    _set_setting("packing_stations",st); _set_setting("pullers",pl)
+    return jsonify(_equipment_list(st, pl))
+
+@app.route("/admin/equipment")
+@req_role("admin","cs")
+def equipment_page():
+    return EQUIPMENT_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("equipment")).replace("__NAVBAR_CSS__",_NAVBAR_CSS).replace("__ROLE__",session.get("role",""))
+
 # ── GEOGRAPHY ANALYTICS — where orders ship, by state (audience map) ──
 _US_STATES={"AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
  "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY",
@@ -8173,8 +8236,31 @@ def api_workflows_list():
     c.close()
     return jsonify([dict(r) for r in rows])
 
-def _send_tenant_welcome(to_email, company, contact_name, admin_user, admin_pw, login_url):
-    """Email a freshly-provisioned client their login details. Returns (ok, error)."""
+def _equipment_email_html(stations, pullers):
+    """The recommended-equipment shopping list as an HTML block for the welcome email,
+    or "" when the client gave no sizes."""
+    eq=_equipment_list(stations, pullers)
+    if not eq["items"]: return ""
+    rows=""
+    for it in eq["items"]:
+        qty='<b>%d×</b> '%it["qty"]
+        if it["link"]:
+            name='<a href="%s" style="color:#4f46e5;font-weight:700;text-decoration:none">%s %s →</a>'%(esc(it["link"]),it["emoji"],esc(it["name"]))
+        else:
+            name='%s <b>%s</b>'%(it["emoji"],esc(it["name"]))
+        rows+=('<tr><td style="padding:8px 0;font-size:14px;color:#1a2130">%s%s'
+               '<div style="font-size:12px;color:#8a90a0">%s · one per %s</div></td></tr>'
+               )%(qty,name,esc(it["note"]),esc(it["per"]))
+    return ('<div style="background:#fff;border-radius:14px;padding:22px;margin-top:14px">'
+            '<h3 style="margin:0 0 4px;color:#141b26;font-size:16px">🛒 Recommended equipment</h3>'
+            '<p style="font-size:13px;color:#6b7280;margin:0 0 10px">Based on <b>%d</b> packing station(s) and <b>%d</b> puller(s). '
+            'Tap an item to buy it.</p><table style="width:100%%;border-collapse:collapse">%s</table></div>'
+            )%(eq["stations"],eq["pullers"],rows)
+
+def _send_tenant_welcome(to_email, company, contact_name, admin_user, admin_pw, login_url,
+                         packing_stations=None, pullers=None):
+    """Email a freshly-provisioned client their login details + a tailored equipment
+    shopping list. Returns (ok, error)."""
     first = (contact_name or "").split()[0] if contact_name else "there"
     subject = "Your %s workspace is ready 🎉" % (company or "LiveOpsHub")
     html = ("""<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:520px;margin:0 auto;background:#f5f3ff;padding:24px;border-radius:16px">
@@ -8191,10 +8277,18 @@ def _send_tenant_welcome(to_email, company, contact_name, admin_user, admin_pw, 
     </div>
     <p style="font-size:12px;color:#94a3b8;text-align:center;margin:12px 0 0">If the button doesn't work, open: <a href="%s" style="color:#6366f1">%s</a></p>
   </div>
+  %s
 </div>""" % (esc(first), esc(company or "your"), esc(admin_user), esc(admin_pw),
-            esc(login_url), esc(login_url), esc(login_url)))
-    text = "Welcome to %s!\n\nUsername: %s\nTemporary password: %s\nLog in: %s\n\nPlease change your password after signing in." % (
-        company or "LiveOpsHub", admin_user, admin_pw, login_url)
+            esc(login_url), esc(login_url), esc(login_url),
+            _equipment_email_html(packing_stations, pullers)))
+    eq=_equipment_list(packing_stations, pullers)
+    eq_text=""
+    if eq["items"]:
+        eq_text="\n\nRecommended equipment (%d station(s), %d puller(s)):\n"%(eq["stations"],eq["pullers"])
+        for it in eq["items"]:
+            eq_text+="- %d× %s%s\n"%(it["qty"],it["name"],((" — "+it["link"]) if it["link"] else ""))
+    text = "Welcome to %s!\n\nUsername: %s\nTemporary password: %s\nLog in: %s\n\nPlease change your password after signing in.%s" % (
+        company or "LiveOpsHub", admin_user, admin_pw, login_url, eq_text)
     return _send_email(to_email, subject, html, text)
 
 def _send_hire_invite(to_email, full_name, invite_url, lang="en"):
@@ -9633,17 +9727,21 @@ def api_apply():
     if not _rate_ok("apply:"+ip, limit=6, window=3600):
         return _cors(jsonify({"ok":False,"error":"Too many submissions — please try again later."}))
     def g(k,n=120): return (d.get(k) or "").strip()[:n]
+    def gi(k):
+        try: return max(0,min(999,int(float(str(d.get(k) or "").strip() or 0))))
+        except Exception: return None
     c=pdb()
     c.execute("""INSERT INTO client_intakes(company_name,contact_name,contact_email,contact_phone,
                    brand_mark,brand_color,website,platforms,monthly_volume,team_size,
                    ship_name,ship_street1,ship_street2,ship_city,ship_state,ship_zip,ship_phone,
-                   preferred_username,notes)
-                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   preferred_username,notes,packing_stations,pullers)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
               (company,name,email,g("contact_phone",60),g("brand_mark",40),g("brand_color",20),
                g("website",160),g("platforms",120),g("monthly_volume",60),g("team_size",40),
                g("ship_name",120),g("ship_street1",160),g("ship_street2",160),g("ship_city",80),
                g("ship_state",40),g("ship_zip",20),g("ship_phone",60),
-               g("preferred_username",40),(d.get("notes") or "").strip()[:2000]))
+               g("preferred_username",40),(d.get("notes") or "").strip()[:2000],
+               gi("packing_stations"),gi("pullers")))
     c.commit();c.close()
     print("NEW CLIENT INTAKE: %s / %s / %s"%(company,name,email),flush=True)
     return _cors(jsonify({"ok":True}))
@@ -9708,6 +9806,16 @@ def api_intake_provision(iid):
               (res["org_id"],iid))
     c.commit();c.close()
     plog(session.get("user"),"intake_provision",res["org_id"],"from intake #%d"%iid)
+    # Carry the client's size (packing stations / pullers) onto the new tenant so the
+    # in-app equipment page can show their tailored shopping list.
+    try:
+        sc=sdb(res["org_id"])
+        for _k,_v in (("packing_stations",it.get("packing_stations")),("pullers",it.get("pullers"))):
+            if _v is not None:
+                sc.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(_k,str(_v)))
+        sc.commit(); sc.close()
+    except Exception as _e:
+        print("store equip counts failed:",_e,flush=True)
     # Auto-email the client their login details — IN THE BACKGROUND so a slow mail
     # provider never blocks the provisioning response (the tenant is already created).
     email_queued=False
@@ -9717,8 +9825,9 @@ def api_intake_provision(iid):
         login_url = request.url_root.rstrip("/") + "/login"
         _co=it.get("company_name"); _cn=it.get("contact_name")
         _au=res["admin_username"]; _ap=res["admin_password"]; _org=res["org_id"]
+        _ps=it.get("packing_stations"); _pu=it.get("pullers")
         def _bg_welcome():
-            ok2,err2=_send_tenant_welcome(to,_co,_cn,_au,_ap,login_url)
+            ok2,err2=_send_tenant_welcome(to,_co,_cn,_au,_ap,login_url,_ps,_pu)
             print("tenant welcome email %s -> %s%s"%(
                 "sent" if ok2 else "FAILED", to, "" if ok2 else (": "+str(err2))),flush=True)
         try:
