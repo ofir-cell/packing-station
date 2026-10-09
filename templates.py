@@ -8775,7 +8775,14 @@ th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
 </style></head><body>
 __NAVBAR__
 <div class="page-hdr"><div class="page-title">🎤 Host Analytics <span>__NAME__</span></div>
-  <div class="row"><div><label>Host</label><select id="hostSel"><option value="">All hosts</option></select></div></div>
+  <div class="row" style="flex-wrap:wrap;align-items:flex-end;gap:12px">
+    <div><label>Search live</label><input id="qSearch" placeholder="Show name…" style="padding:9px 12px;border:2px solid rgba(17,24,39,0.128);border-radius:10px;font-family:inherit;font-size:14px;outline:none"></div>
+    <div><label>From date</label><input id="qFrom" type="date" style="padding:8px 10px;border:2px solid rgba(17,24,39,0.128);border-radius:10px;font-family:inherit;font-size:14px;outline:none"></div>
+    <div><label>To date</label><input id="qTo" type="date" style="padding:8px 10px;border:2px solid rgba(17,24,39,0.128);border-radius:10px;font-family:inherit;font-size:14px;outline:none"></div>
+    <div><label>Host</label><select id="hostSel"><option value="">All hosts</option></select></div>
+    <button id="qClear" class="btn btn-s" style="background:rgba(17,24,39,0.08);border:1px solid rgba(17,24,39,0.14);color:#1a2130;border-radius:10px;padding:9px 16px;font-weight:700;cursor:pointer;font-family:inherit">Clear</button>
+  </div>
+  <div class="muted" id="filterCount" style="margin-top:6px;font-size:12.5px"></div>
 </div>
 <div class="wrap">
 
@@ -8878,7 +8885,21 @@ function hourChart(hrs){
 document.getElementById('showModal').addEventListener('click',function(e){if(e.target===this)closeShow()});
 
 function curHost(){return document.getElementById('hostSel').value}
-function filteredShows(){var h=curHost();return DATA.shows.filter(function(s){return !h||s.host===h})}
+function filteredShows(){
+  var h=curHost();
+  var q=(document.getElementById('qSearch').value||'').trim().toLowerCase();
+  var from=document.getElementById('qFrom').value||'';
+  var to=document.getElementById('qTo').value||'';
+  return DATA.shows.filter(function(s){
+    if(h && s.host!==h) return false;
+    if(q && (s.label||'').toLowerCase().indexOf(q)<0) return false;
+    var dt=(s.show_date||'').slice(0,10);
+    if(from && dt && dt<from) return false;
+    if(to && dt && dt>to) return false;
+    if((from||to) && !dt) return false;   // no date on this show → hide when filtering by date
+    return true;
+  });
+}
 
 function renderConfig(){
   var c=DATA.config||{};
@@ -8966,8 +8987,20 @@ function renderHostFilter(){
   sel.innerHTML='<option value="">All hosts</option>'+DATA.hosts.map(function(h){return '<option value="'+esc(h.host)+'">'+esc(h.host)+' ('+money(h.revenue)+')</option>'}).join('');
   sel.value=cur;
 }
-function renderAll(){renderKpis();renderChart();renderTable()}
+function renderAll(){
+  renderKpis();renderChart();renderTable();
+  var n=filteredShows().length,tot=DATA.shows.length;
+  var fc=document.getElementById('filterCount');
+  if(fc)fc.textContent=(n===tot)?(tot+' shows'):('Showing '+n+' of '+tot+' shows');
+}
 document.getElementById('hostSel').addEventListener('change',renderAll);
+['qSearch','qFrom','qTo'].forEach(function(id){
+  var el=document.getElementById(id);if(el)el.addEventListener('input',renderAll);
+});
+document.getElementById('qClear').addEventListener('click',function(){
+  document.getElementById('qSearch').value='';document.getElementById('qFrom').value='';
+  document.getElementById('qTo').value='';document.getElementById('hostSel').value='';renderAll();
+});
 
 function load(){
   fetch('/api/host-analytics').then(function(r){return r.json()}).then(function(d){
