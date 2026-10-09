@@ -7265,14 +7265,26 @@ def _get_commission_cfg():
         except Exception: pass
     return {"mode":"flat","flat_pct":10.0,"pct":10.0,"tiers":[{"min":0,"pct":8},{"min":2000,"pct":12}]}
 
+def _tier_type_value(t):
+    """A tier can pay a percentage of the show's net sales ('pct') or a fixed dollar
+    amount ('dollar'). Older saved tiers only had {min, pct} — treat those as pct."""
+    typ=(t.get("type") if t.get("type") in ("pct","dollar") else "pct")
+    val=t.get("value")
+    if val is None: val=t.get("pct") or 0
+    return typ, float(val or 0)
+
 def _compute_commission(rev, cfg):
     rev=rev or 0
     mode=(cfg or {}).get("mode","flat")
+    if mode=="flat_dollar":                 # fixed $ per show (paid only when it had sales)
+        return round(float(cfg.get("flat_amount") or 0),2) if rev>0 else 0.0
     if mode=="tiered":
-        pct=0
+        best=None
         for t in sorted(cfg.get("tiers") or [], key=lambda x:x.get("min",0)):
-            if rev>=(t.get("min") or 0): pct=t.get("pct") or 0
-        return round(rev*pct/100.0,2)
+            if rev>=(t.get("min") or 0): best=t
+        if not best: return 0.0
+        typ,val=_tier_type_value(best)
+        return round(val if typ=="dollar" else rev*val/100.0, 2)
     if mode=="base_pct":   # hourly base needs live hours (not captured yet) → % only
         return round(rev*(cfg.get("pct") or 0)/100.0,2)
     return round(rev*(cfg.get("flat_pct") or 0)/100.0,2)
@@ -7339,11 +7351,16 @@ def api_host_analytics():
 def api_commission_config():
     if request.method=="POST":
         d=request.get_json() or {}
+        def _tv(t):
+            typ=(t.get("type") if t.get("type") in ("pct","dollar") else "pct")
+            val=t.get("value")
+            if val is None: val=t.get("pct") or 0
+            return {"min":float(t.get("min") or 0),"type":typ,"value":float(val or 0)}
         cfg={"mode":d.get("mode","flat"),
              "flat_pct":float(d.get("flat_pct") or 0),
              "pct":float(d.get("pct") or 0),
-             "tiers":[{"min":float(t.get("min") or 0),"pct":float(t.get("pct") or 0)}
-                      for t in (d.get("tiers") or [])][:8]}
+             "flat_amount":float(d.get("flat_amount") or 0),
+             "tiers":[_tv(t) for t in (d.get("tiers") or [])][:8]}
         _set_setting("commission_config", json.dumps(cfg))
         return jsonify({"ok":True})
     return jsonify({"ok":True,"config":_get_commission_cfg()})

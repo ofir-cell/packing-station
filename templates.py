@@ -8791,10 +8791,12 @@ __NAVBAR__
   <div class="row">
     <div><label>Model</label><select id="cMode">
       <option value="flat">Flat % of net sales</option>
+      <option value="flat_dollar">Flat $ per show</option>
       <option value="tiered">Tiered by sales volume</option>
       <option value="base_pct">% only (hourly base later)</option>
     </select></div>
     <div id="flatBox"><label>Flat %</label><input id="cFlat" type="number" step="0.1" style="width:100px"></div>
+    <div id="dollarBox" style="display:none"><label>Flat $ per show</label><input id="cAmount" type="number" step="0.01" style="width:120px"></div>
     <div id="pctBox" style="display:none"><label>%</label><input id="cPct" type="number" step="0.1" style="width:100px"></div>
     <button class="btn btn-p" id="saveCfg">Save rule</button>
   </div>
@@ -8906,26 +8908,41 @@ function renderConfig(){
   document.getElementById('cMode').value=c.mode||'flat';
   document.getElementById('cFlat').value=c.flat_pct!=null?c.flat_pct:10;
   document.getElementById('cPct').value=c.pct!=null?c.pct:10;
+  document.getElementById('cAmount').value=c.flat_amount!=null?c.flat_amount:0;
   renderTiers(c.tiers||[]);
   applyModeUI();
 }
 function applyModeUI(){var m=document.getElementById('cMode').value;
   document.getElementById('flatBox').style.display=(m==='flat')?'block':'none';
+  document.getElementById('dollarBox').style.display=(m==='flat_dollar')?'block':'none';
   document.getElementById('pctBox').style.display=(m==='base_pct')?'block':'none';
   document.getElementById('tierBox').style.display=(m==='tiered')?'block':'none';}
 var TIERS=[];
-function renderTiers(ts){TIERS=ts.length?ts.slice():[{min:0,pct:8}];
+function normTier(t){
+  // old tiers only had {min,pct} → treat as a percentage tier.
+  var type=(t.type==='dollar'||t.type==='pct')?t.type:'pct';
+  var value=(t.value!=null)?t.value:(t.pct!=null?t.pct:0);
+  return {min:(t.min||0),type:type,value:value};
+}
+function renderTiers(ts){
+  TIERS=(ts&&ts.length?ts.slice():[{min:0,type:'pct',value:8}]).map(normTier);
   document.getElementById('tiers').innerHTML=TIERS.map(function(t,i){
-    return '<div class="tier-row"><span class="muted">from</span> $<input type="number" value="'+(t.min||0)+'" data-i="'+i+'" data-k="min" style="width:110px"> <span class="muted">→</span> <input type="number" step="0.1" value="'+(t.pct||0)+'" data-i="'+i+'" data-k="pct" style="width:80px">% <button class="btn-x" onclick="delTier('+i+')">✕</button></div>';
+    var sel='<select data-i="'+i+'" data-k="type" style="width:58px;padding:7px 6px;border:2px solid rgba(17,24,39,0.128);border-radius:8px;font-family:inherit">'+
+      '<option value="pct"'+(t.type==='pct'?' selected':'')+'>%</option>'+
+      '<option value="dollar"'+(t.type==='dollar'?' selected':'')+'>$</option></select>';
+    return '<div class="tier-row"><span class="muted">from</span> $<input type="number" value="'+(t.min||0)+'" data-i="'+i+'" data-k="min" style="width:110px"> <span class="muted">→ pay</span> '+sel+' <input type="number" step="0.01" value="'+(t.value||0)+'" data-i="'+i+'" data-k="value" style="width:90px"> <button class="btn-x" onclick="delTier('+i+')">✕</button></div>';
   }).join('');
-  document.getElementById('tiers').querySelectorAll('input').forEach(function(el){el.addEventListener('input',function(){TIERS[+el.dataset.i][el.dataset.k]=parseFloat(el.value||'0')})});
+  var box=document.getElementById('tiers');
+  box.querySelectorAll('input').forEach(function(el){el.addEventListener('input',function(){TIERS[+el.dataset.i][el.dataset.k]=parseFloat(el.value||'0')})});
+  box.querySelectorAll('select').forEach(function(el){el.addEventListener('change',function(){TIERS[+el.dataset.i].type=el.value})});
 }
 function delTier(i){TIERS.splice(i,1);renderTiers(TIERS)}
-document.getElementById('addTier').addEventListener('click',function(){TIERS.push({min:0,pct:10});renderTiers(TIERS)});
+document.getElementById('addTier').addEventListener('click',function(){TIERS.push({min:0,type:'pct',value:10});renderTiers(TIERS)});
 document.getElementById('cMode').addEventListener('change',applyModeUI);
 document.getElementById('saveCfg').addEventListener('click',function(){
   var body={mode:document.getElementById('cMode').value,flat_pct:parseFloat(document.getElementById('cFlat').value||'0'),
-            pct:parseFloat(document.getElementById('cPct').value||'0'),tiers:TIERS};
+            pct:parseFloat(document.getElementById('cPct').value||'0'),
+            flat_amount:parseFloat(document.getElementById('cAmount').value||'0'),tiers:TIERS};
   fetch('/api/commission-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Rule saved ✓');load()}else toast('Failed',true)});
 });
