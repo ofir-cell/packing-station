@@ -7804,8 +7804,13 @@ def api_org_branding_set():
     return jsonify({"ok": True, "brand": org_get(org_id)})
 
 def _parse_sale_dt(x):
-    x=(x or "").strip().replace("T"," ")
+    x=(x or "").strip().strip("\t").replace("T"," ")
     if not x: return None
+    # 12-hour clock with AM/PM (TikTok exports look like '10/04/2026 2:17:44 PM').
+    # Try these on the FULL string — truncating would chop off the AM/PM marker.
+    for fmt in ("%m/%d/%Y %I:%M:%S %p","%m/%d/%Y %I:%M %p","%Y-%m-%d %I:%M:%S %p"):
+        try: return datetime.strptime(x, fmt)
+        except Exception: pass
     for fmt in ("%Y-%m-%d %H:%M:%S","%m/%d/%Y %H:%M:%S","%Y/%m/%d %H:%M:%S",
                 "%m/%d/%Y %H:%M","%Y-%m-%d %H:%M"):
         try: return datetime.strptime(x[:19], fmt)
@@ -7875,6 +7880,9 @@ def api_show_detail():
         "duration_min":dur_min,"start":start,"end":end,
         "sales_per_hour_live":round(units/(dur_min/60.0),1) if dur_min else 0,
         "rev_per_hour_live":round(revenue/(dur_min/60.0),2) if dur_min else 0,
+        # Busiest clock hour by units sold, and the average units across hours that had sales.
+        "peak_hour":(max(hours.values(),key=lambda h:h["units"]) if hours else None),
+        "avg_units_per_active_hour":round(units/len(hours),1) if hours else 0,
         "giveaways":gv,"avg_pack_sec":round(sum(packsec)/len(packsec),1) if packsec else 0,"packed":len(packsec),
         "hours":[hours[k] for k in sorted(hours)],
         "has_times":bool(times),

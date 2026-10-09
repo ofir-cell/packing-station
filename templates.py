@@ -8841,9 +8841,17 @@ function openShow(gi){
       '<div class="m"><div class="l">Cancellations</div><div class="v">'+d.cancel_units+' ('+d.cancel_rate+'%)</div></div>'+
       '<div class="m"><div class="l">Show length</div><div class="v">'+dur+'</div></div>'+
       '<div class="m"><div class="l">Sales / live hr</div><div class="v">'+(d.rev_per_hour_live?money(d.rev_per_hour_live):'—')+'</div></div>'+
+      '<div class="m"><div class="l">Products / live hr</div><div class="v" style="color:#4f46e5">'+(d.sales_per_hour_live?d.sales_per_hour_live.toLocaleString():'—')+'</div></div>'+
+      '<div class="m"><div class="l">Peak hour</div><div class="v">'+(d.peak_hour?(hr12(d.peak_hour.hour)+' · '+d.peak_hour.units+' u'):'—')+'</div></div>'+
       '<div class="m"><div class="l">Avg pack time</div><div class="v">'+secFmt(d.avg_pack_sec)+'</div></div>';
     h+='</div>';
-    if(d.hours&&d.hours.length){h+='<div style="margin:8px 0 4px;font-size:12px;font-weight:700;color:#4f46e5;text-transform:uppercase;letter-spacing:.5px">Sales by hour of day</div><div class="chart-wrap">'+hourChart(d.hours)+'</div>';}
+    if(d.hours&&d.hours.length){
+      var summ='avg <b>'+(d.avg_units_per_active_hour||0).toLocaleString()+'</b> products/hr'+
+               (d.peak_hour?(' · peak '+hr12(d.peak_hour.hour)+' ('+d.peak_hour.units+' units)'):'');
+      h+='<div style="margin:8px 0 4px;font-size:12px;font-weight:700;color:#4f46e5;text-transform:uppercase;letter-spacing:.5px">Products sold by hour of day</div>'+
+         '<div class="muted" style="font-size:12.5px;margin-bottom:4px">'+summ+'</div>'+
+         '<div class="chart-wrap">'+hourChart(d.hours)+'</div>';
+    }
     h+='<div class="geo">';
     h+='<div class="col"><div style="font-size:12px;font-weight:700;color:#4f46e5;text-transform:uppercase;margin-bottom:4px">Top states</div>'+
        (d.top_states.length?d.top_states.map(function(x){return '<div class="b"><span>'+esc(x.k)+'</span><span class="muted">'+x.v+' units</span></div>'}).join(''):'<div class="muted">No state data (older import)</div>')+'</div>';
@@ -8853,15 +8861,17 @@ function openShow(gi){
     document.getElementById('showBox').innerHTML=h;
   });
 }
+function hr12(h){h=Number(h)||0;var ap=h<12?'am':'pm';var hh=h%12;if(hh===0)hh=12;return hh+ap;}
 function hourChart(hrs){
   var byh={};hrs.forEach(function(x){byh[x.hour]=x});
   var W=720,H=170,top=10,bot=26,n=24,bw=(W-30)/n;
-  var max=Math.max.apply(null,hrs.map(function(x){return x.revenue}))||1;
+  // Bars show PRODUCTS (units) sold per clock hour; revenue stays in the tooltip.
+  var max=Math.max.apply(null,hrs.map(function(x){return x.units}))||1;
   var bars='',lbls='';
-  for(var hh=0;hh<24;hh++){var v=byh[hh]?byh[hh].revenue:0;var bh=Math.round((H-top-bot)*(v/max));
+  for(var hh=0;hh<24;hh++){var u=byh[hh]?byh[hh].units:0;var bh=Math.round((H-top-bot)*(u/max));
     var x=28+hh*bw,y=H-bot-bh;
-    bars+='<rect class="bar" x="'+(x+1)+'" y="'+y+'" width="'+(bw-2)+'" height="'+Math.max(1,bh)+'" rx="2"><title>'+hh+':00 — '+money(v)+' ('+(byh[hh]?byh[hh].units:0)+' units)</title></rect>';
-    if(hh%3===0)lbls+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(H-bot+13)+'" text-anchor="middle">'+hh+'h</text>';
+    bars+='<rect class="bar" x="'+(x+1)+'" y="'+y+'" width="'+(bw-2)+'" height="'+Math.max(1,bh)+'" rx="2"><title>'+hr12(hh)+' — '+u+' products'+(byh[hh]?(' · '+money(byh[hh].revenue)):'')+'</title></rect>';
+    if(hh%3===0)lbls+='<text class="axtx" x="'+(x+bw/2)+'" y="'+(H-bot+13)+'" text-anchor="middle">'+hr12(hh)+'</text>';
   }
   return '<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'" style="min-width:600px">'+bars+lbls+'</svg>';
 }
