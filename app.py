@@ -1086,6 +1086,11 @@ def sdb_init(org):
         "ALTER TABLE shipment_items ADD COLUMN created_time TEXT",
         "ALTER TABLE shipment_items ADD COLUMN buyer_state TEXT",
         "ALTER TABLE shipment_items ADD COLUMN buyer_city TEXT",
+        # Per-item stock depletion: how many units of this line we've already taken off
+        # stock, and from which product. Lets deduction fire on the LATER of match/pack
+        # (so order doesn't matter), exactly once per unit, and be reversed on un-pack.
+        "ALTER TABLE shipment_items ADD COLUMN depleted_qty INTEGER DEFAULT 0",
+        "ALTER TABLE shipment_items ADD COLUMN depleted_sku TEXT",
         # Pre-import match: how many units we've already deducted for a binding,
         # so re-binding / unmapping can restore on_hand correctly.
         "ALTER TABLE show_product_map ADD COLUMN depleted_qty INTEGER DEFAULT 0",
@@ -6118,65 +6123,143 @@ def _ship_item_products(c, shipment_id):
         if psku: out.append((psku,qty))
     return out, label
 
+def _ship_bindings(c, label):
+    """(exact{(sticker,part):sku}, by_sticker{sticker:set(sku)}) for a show's bindings."""
+    exact={}; by_sticker={}
+    for m in c.execute("SELECT sticker_sku,part,product_sku FROM show_product_map WHERE import_label=?",(label,)).fetchall():
+        if not m["product_sku"]: continue
+        st=(m["sticker_sku"] or "").strip()
+        exact[(st,m["part"])]=m["product_sku"]
+        by_sticker.setdefault(st,set()).add(m["product_sku"])
+    return exact, by_sticker
+
+def _resolve_item_product(exact, by_sticker, sticker, product_name):
+    psku=exact.get((sticker,_part_num(product_name or "")))
+    if not psku:
+        cand=by_sticker.get(sticker)
+        if cand and len(cand)==1: psku=next(iter(cand))
+    return psku
+
 def _deplete_stock_for(c, shipment_id):
-    """Deduct inventory for a packed shipment's items — ONCE per shipment (guarded by
-    shipments.stock_depleted). This is the single point where a sale leaves the catalog:
-    the box is physically packed, so its items come off on_hand. Each sticker maps to a
-    real product via the show's bindings; unmapped stickers are skipped. Ledger line is
-    named by show."""
-    row=c.execute("SELECT COALESCE(stock_depleted,0) sd, packed_by FROM shipments WHERE shipment_id=?",(shipment_id,)).fetchone()
-    if not row or row["sd"]: return
-    pairs,label=_ship_item_products(c, shipment_id)
+    """Take a packed shipment's items off stock — PER ITEM, exactly once per unit.
+    Fires only when the box is packed/shipped AND the item's sticker is matched to a real
+    product; whichever happens last triggers it. Idempotent (tracked on the item), and
+    handles a sticker being re-mapped to a different product."""
+    row=c.execute("SELECT import_label, status, packed_by FROM shipments WHERE shipment_id=?",(shipment_id,)).fetchone()
+    if not row or (row["status"] or "") not in ("packed","shipped"): return
+    label=(row["import_label"] or "")
+    if not label: return
+    exact,by_st=_ship_bindings(c, label)
     now=datetime.now().isoformat(timespec='seconds'); who=(row["packed_by"] or "pack")[:60]
-    for psku,qty in pairs:
-        c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(qty,psku))
-        _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(psku,)).fetchone()
-        c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
-                  (psku,-qty,(_ac["avg_cost"] if _ac else 0) or 0,"sale packed ("+label+")",now,who))
-    c.execute("UPDATE shipments SET stock_depleted=1 WHERE shipment_id=?",(shipment_id,))
+    any_dep=False
+    for it in c.execute("""SELECT id,sku,product_name,quantity,COALESCE(depleted_qty,0) dq,depleted_sku
+                           FROM shipment_items WHERE shipment_id=? AND COALESCE(cancelled,0)=0""",(shipment_id,)).fetchall():
+        st=(it["sku"] or "").strip(); qty=it["quantity"] or 1
+        psku=_resolve_item_product(exact,by_st,st,it["product_name"])
+        dq=it["dq"] or 0; dsku=it["depleted_sku"]
+        if psku and dq>0 and dsku==psku:
+            any_dep=True; continue                      # already taken off the right product
+        if dq>0 and dsku and dsku!=psku:                # re-mapped (or unmapped) → restore old first
+            c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(dq,dsku))
+            c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
+                      (dsku,dq,"sale re-map restore ("+label+")",now,who))
+            c.execute("UPDATE shipment_items SET depleted_qty=0, depleted_sku=NULL WHERE id=?",(it["id"],))
+            dq=0
+        if psku and dq==0:
+            c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(qty,psku))
+            _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(psku,)).fetchone()
+            c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
+                      (psku,-qty,(_ac["avg_cost"] if _ac else 0) or 0,"sale packed ("+label+")",now,who))
+            c.execute("UPDATE shipment_items SET depleted_qty=?, depleted_sku=? WHERE id=?",(qty,psku,it["id"]))
+            any_dep=True
+    c.execute("UPDATE shipments SET stock_depleted=? WHERE shipment_id=?",(1 if any_dep else 0,shipment_id))
 
 def _undeplete_stock_for(c, shipment_id):
-    """Reverse a prior pack-time depletion — used when un-packing / reverting a packed
-    order so its items go back on the shelf. Only acts if it had been depleted."""
-    row=c.execute("SELECT COALESCE(stock_depleted,0) sd FROM shipments WHERE shipment_id=?",(shipment_id,)).fetchone()
-    if not row or not row["sd"]: return
-    pairs,label=_ship_item_products(c, shipment_id)
+    """Put a shipment's items back on the shelf (un-pack / revert / cancel of a packed
+    order). Restores exactly what was taken off, per item."""
+    row=c.execute("SELECT import_label FROM shipments WHERE shipment_id=?",(shipment_id,)).fetchone()
+    label=(row["import_label"] if row else "") or ""
     now=datetime.now().isoformat(timespec='seconds')
     try: who=(session.get("name","") or "revert")[:60]
     except Exception: who="revert"
-    for psku,qty in pairs:
-        c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(qty,psku))
+    for it in c.execute("""SELECT id,COALESCE(depleted_qty,0) dq,depleted_sku FROM shipment_items
+                           WHERE shipment_id=? AND COALESCE(depleted_qty,0)>0""",(shipment_id,)).fetchall():
+        if not it["depleted_sku"]: continue
+        c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(it["dq"],it["depleted_sku"]))
         c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
-                  (psku,qty,"unpacked — stock restored ("+label+")",now,who))
+                  (it["depleted_sku"],it["dq"],"unpacked — stock restored ("+label+")",now,who))
+        c.execute("UPDATE shipment_items SET depleted_qty=0, depleted_sku=NULL WHERE id=?",(it["id"],))
     c.execute("UPDATE shipments SET stock_depleted=0 WHERE shipment_id=?",(shipment_id,))
 
+def _deplete_show_packed(c, label, sticker=None):
+    """Catch-up: run per-item depletion for every already packed/shipped shipment in a
+    show (optionally only those that contain a given sticker). Called after a match so a
+    box packed BEFORE it was matched still gets deducted."""
+    if not label: return
+    if sticker:
+        sids=[r["shipment_id"] for r in c.execute(
+            """SELECT DISTINCT s.shipment_id FROM shipments s JOIN shipment_items i ON i.shipment_id=s.shipment_id
+               WHERE s.import_label=? AND s.status IN ('packed','shipped')
+                 AND i.sku=? AND COALESCE(i.cancelled,0)=0""",(label,sticker)).fetchall()]
+    else:
+        sids=[r["shipment_id"] for r in c.execute(
+            "SELECT shipment_id FROM shipments WHERE import_label=? AND status IN ('packed','shipped')",(label,)).fetchall()]
+    for sid in sids:
+        _deplete_stock_for(c, sid)
+
+def _resync_inventory(c):
+    """Rebuild stock to a correct baseline, then recompute from reality:
+    (1) Neutralize ALL prior automatic sale activity (every deduction/credit the stock
+        engine ever made) by adding its net effect back onto on_hand — leaving receipts
+        and manual adjustments untouched. (2) Clear per-item depletion markers.
+    (3) Deduct fresh, per item, for every currently packed/shipped shipment using the
+        current sticker→product bindings. Idempotent: safe to run again (the reset lines
+        are themselves 'sale …' moves, so a later run neutralizes them too)."""
+    now=datetime.now().isoformat(timespec='seconds')
+    try: who=(session.get("name","") or "resync")[:60]
+    except Exception: who="resync"
+    reset=0
+    for r in c.execute("""SELECT sku, COALESCE(SUM(qty),0) net FROM stock_moves
+                          WHERE note LIKE 'sale %' OR note LIKE 'unpacked%' OR note LIKE 'stock-model switch%'
+                          GROUP BY sku""").fetchall():
+        net=r["net"] or 0
+        if not net: continue
+        c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(net,r["sku"]))
+        c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
+                  (r["sku"],-net,"sale resync reset",now,who))
+        reset+=1
+    c.execute("UPDATE shipment_items SET depleted_qty=0, depleted_sku=NULL")
+    c.execute("UPDATE shipments SET stock_depleted=0")
+    sids=[s["shipment_id"] for s in c.execute(
+        "SELECT shipment_id FROM shipments WHERE status IN ('packed','shipped')").fetchall()]
+    for sid in sids: _deplete_stock_for(c, sid)
+    deducted=c.execute("SELECT COALESCE(SUM(depleted_qty),0) s FROM shipment_items").fetchone()["s"]
+    return {"products_reset":reset,"shipments_recomputed":len(sids),"units_deducted":deducted}
+
 def _migrate_stock_model_packtime(c):
-    """One-time switch from match-time depletion to pack-time depletion, per tenant.
-    (1) Reverse any stock already deducted at match (show_product_map.depleted_qty) back
-        onto on_hand. (2) Deduct for every shipment already packed/shipped so inventory
-        reflects what has actually left. Guarded by a settings flag so it runs once."""
+    """One-time, per tenant: move to the per-item 'deduct on match-or-pack' model and
+    rebaseline inventory with a full resync. Guarded by a settings flag so it runs once."""
     try:
         flag=c.execute("SELECT value FROM settings WHERE key='stock_model'").fetchone()
     except Exception:
         return
-    if flag and flag["value"]=="packtime_v2": return
-    now=datetime.now().isoformat(timespec='seconds')
-    for r in c.execute("""SELECT import_label,sticker_sku,part,product_sku,COALESCE(depleted_qty,0) dq
-                          FROM show_product_map WHERE COALESCE(depleted_qty,0)>0 AND product_sku IS NOT NULL""").fetchall():
-        c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(r["dq"],r["product_sku"]))
-        c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
-                  (r["product_sku"],r["dq"],"stock-model switch: reverse match deduction",now,"system"))
-        c.execute("UPDATE show_product_map SET depleted_qty=0 WHERE import_label=? AND sticker_sku=? AND part=?",
-                  (r["import_label"],r["sticker_sku"],r["part"]))
-    for s in c.execute("SELECT shipment_id FROM shipments WHERE status IN ('packed','shipped') AND COALESCE(stock_depleted,0)=0").fetchall():
-        _deplete_stock_for(c, s["shipment_id"])
-    c.execute("INSERT INTO settings(key,value) VALUES('stock_model','packtime_v2') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    if flag and flag["value"]=="packtime_v3": return
+    _resync_inventory(c)
+    c.execute("INSERT INTO settings(key,value) VALUES('stock_model','packtime_v3') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
     c.commit()
+
+@app.route("/api/inventory/resync",methods=["POST"])
+@req_role("admin")
+def api_inventory_resync():
+    """Admin: rebaseline + recompute stock from the currently packed/shipped boxes and
+    the current matches. Use after bulk-matching old shows, or to correct drift."""
+    c=sdb(); res=_resync_inventory(c); c.commit(); c.close()
+    return jsonify({"ok":True, **res})
 
 _stock_model_migrated=set()
 @app.before_request
 def _ensure_stock_model_once():
-    """Run the pack-time stock-model migration once per tenant per process, lazily."""
+    """Run the one-time stock-model migration/resync once per tenant per process."""
     try:
         org=session.get("org") or DEFAULT_ORG
     except Exception:
@@ -7056,6 +7139,9 @@ def api_preshow_map():
                     product_sku=excluded.product_sku,
                     mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
               (show,sticker,part,prod["sku"],_now,session.get("name","")[:60]))
+    # Catch-up: if boxes with this sticker were already packed (matched after packing),
+    # take their stock off now — the match was the last of the two steps.
+    _deplete_show_packed(c, show, sticker)
     c.commit()
     newoh=c.execute("SELECT on_hand FROM products WHERE sku=?",(prod["sku"],)).fetchone()
     c.close()
@@ -7109,6 +7195,8 @@ def api_preshow_map_bulk():
                   (show,sticker,part,prod["sku"],_now,_who))
         total_sold+=sold_qty
         done.append(sticker)
+    # Catch-up for already-packed boxes in this show (one pass for the whole range).
+    _deplete_show_packed(c, show)
     c.commit()
     newoh=c.execute("SELECT on_hand FROM products WHERE sku=?",(prod["sku"],)).fetchone()
     c.close()

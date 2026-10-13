@@ -7559,6 +7559,7 @@ __NAVBAR__
     <a class="btn btn-s" href="/admin/stocktake" style="text-decoration:none">🔢 Stock take</a>
     <a class="btn btn-s" href="/api/products/export.csv" style="text-decoration:none">⬇️ Export all</a>
     <select id="expShow" style="max-width:200px"><option value="">⬇️ Export by show…</option></select>
+    <button class="btn btn-s adminOnly" id="resyncBtn" title="Recompute stock from the currently packed boxes and matches">♻️ Resync stock</button>
     <a class="btn btn-s" href="/admin/purchasing" style="text-decoration:none">📥 Purchasing</a>
     <button class="btn btn-s" id="addBtn">+ New product</button>
   </div>
@@ -7833,6 +7834,15 @@ document.getElementById('lowBtn').addEventListener('click',function(){lowMode=!l
     window.open(url,'_blank');this.value='';
   });
 })();
+(function(){var b=document.getElementById('resyncBtn');if(!b)return;b.addEventListener('click',function(){
+  if(!confirm('Recompute stock from the currently packed boxes and matches? This corrects products that were packed before they were matched. Receipts and manual counts are untouched. Safe to run again.'))return;
+  b.disabled=true;var o=b.textContent;b.textContent='Resyncing…';
+  fetch('/api/inventory/resync',{method:'POST',headers:{'Content-Type':'application/json'}})
+   .then(function(r){return r.json()}).then(function(d){b.disabled=false;b.textContent=o;
+     if(!d.ok){toast(d.error||'Failed',true);return}
+     toast('Resynced ✓ · '+d.units_deducted+' units deducted across '+d.shipments_recomputed+' packed boxes');load();
+   }).catch(function(){b.disabled=false;b.textContent=o;toast('Failed',true)});
+});})();
 function refreshAll(){load();loadStats();loadBestsellers();}
 function fillParentList(){fetch('/api/products').then(function(r){return r.json()}).then(function(rows){
   document.getElementById('prodList2').innerHTML=(rows||[]).filter(function(p){return !p.parent_sku}).map(function(p){return '<option value="'+esc(p.sku)+'">'+esc(p.name||'')+'</option>'}).join('');})}
