@@ -1934,6 +1934,19 @@ UPS_SHIP_VERSION=os.environ.get("UPS_SHIP_VERSION","v2409")
 
 EASYPOST_ENABLED=bool(UPS_ENABLED or SHIPSTATION_ENABLED)   # back-compat alias used by the label routes
 
+# The carrier credentials above are a SINGLE shared account (ShipStation/UPS/Stamps),
+# billed to the owner's card. Only these orgs may buy labels on it — everyone else must
+# bring their own account. Set SHIPPING_LABEL_ORGS (comma-separated org ids) to allow
+# more of your own brands; defaults to just the founding tenant.
+_SHIP_LABEL_ORGS=set(x.strip() for x in os.environ.get("SHIPPING_LABEL_ORGS","").split(",") if x.strip()) or {DEFAULT_ORG}
+def _can_buy_labels():
+    try: org=current_org() or DEFAULT_ORG
+    except Exception: org=DEFAULT_ORG
+    return org in _SHIP_LABEL_ORGS
+_NO_LABEL_MSG=("Buying shipping labels is turned off for this workspace, because the "
+               "shipping account isn't yours. Connect your own carrier account to ship, "
+               "or contact support.")
+
 def _ss(method, path, payload=None):
     """Call the ShipStation V2 API. Raises RuntimeError('ShipStation: <msg>') on error."""
     data=json.dumps(payload).encode() if payload is not None else None
@@ -11829,6 +11842,8 @@ def api_giveaway_rates(gid):
 @app.route("/api/giveaway/<int:gid>/buy-label",methods=["POST"])
 @req_role("admin","cs")
 def api_giveaway_buy_label(gid):
+    if not _can_buy_labels():
+        return jsonify({"ok":False,"error":_NO_LABEL_MSG}),403
     if not EASYPOST_ENABLED:
         return jsonify({"ok":False,"error":"ShipStation not configured."})
     d=request.get_json() or {}
@@ -12092,6 +12107,7 @@ def api_label_rates():
 @app.route("/api/label/buy",methods=["POST"])
 @req_role("admin","cs")
 def api_label_buy():
+    if not _can_buy_labels(): return jsonify({"ok":False,"error":_NO_LABEL_MSG}),403
     if not EASYPOST_ENABLED: return jsonify({"ok":False,"error":"EasyPost not configured."})
     d=request.get_json() or {}
     sid=(d.get("shipment_id") or "").strip(); rid=(d.get("rate_id") or "").strip()
@@ -12167,6 +12183,7 @@ def api_label_rates_multi():
 @req_role("admin","cs")
 def api_label_buy_multi():
     """Buy one label per box for the chosen service; record each + return all labels."""
+    if not _can_buy_labels(): return jsonify({"ok":False,"error":_NO_LABEL_MSG}),403
     if not EASYPOST_ENABLED: return jsonify({"ok":False,"error":"EasyPost not configured."})
     d=request.get_json() or {}
     legs=d.get("legs") or []
