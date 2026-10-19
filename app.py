@@ -2345,8 +2345,11 @@ def _cleanup_groups(label):
         out.append(g)
     # Order to match the picking flow: Part ascending (1→2→3), then SKU ascending
     # (numeric first, then non-numeric). Items with no Part sort last.
+    # NOTE: g["part"] is a string like "Part 1" (or "" for no part), so pull the number
+    # out of it — the old isinstance(int) check never matched and mixed everything up.
     def sort_key(g):
-        p = g["part"] if isinstance(g["part"], int) else 9999
+        m = _re_cleanup.search(r"(\d+)", str(g.get("part") or ""))
+        p = int(m.group(1)) if m else 9999        # no Part → sorts last
         s = g["sku"]
         try:
             return (p, 0, int(s))

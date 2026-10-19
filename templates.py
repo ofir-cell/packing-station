@@ -5834,6 +5834,8 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
 
 /* Group rows — the actual checklist */
 .groups{display:flex;flex-direction:column;gap:10px}
+.part-hdr{font-size:13px;font-weight:900;letter-spacing:1px;color:#4f46e5;text-transform:uppercase;background:rgba(79,70,229,.08);border-radius:8px;padding:8px 12px;margin:8px 0 2px}
+.part-hdr:first-child{margin-top:0}
 .grp{display:grid;grid-template-columns:60px auto 1fr auto auto;gap:18px;align-items:center;background:var(--surface);border:2px solid var(--border);border-radius:16px;padding:18px 22px;cursor:pointer;transition:all .12s;user-select:none}
 .grp:hover{border-color:rgba(217,116,143,.3)}
 .grp:active{transform:scale(.995)}
@@ -5994,10 +5996,15 @@ function renderDetail(d){
         list.innerHTML='<div class="empty"><div class="icn">🎉</div><div class="ttl">No cancelled items for this show</div><div>Nothing to remove. Pickers can start whenever.</div></div>';
         return;
     }
-    list.innerHTML=groups.map(function(g){
+    var lastPart=null,html='';
+    groups.forEach(function(g){
+        // Section header per Part, so the list reads Part 1 (all stickers) then Part 2…
+        var pm=String(g.part||'').match(/(\\d+)/);
+        var hdr=pm?('PART '+pm[1]):'No part';
+        if(hdr!==lastPart){lastPart=hdr;html+='<div class="part-hdr">'+esc(hdr)+'</div>';}
         var done=g.removed_at?'done':'';
         var when=g.removed_at?('Cleared '+g.removed_at.replace('T',' ').slice(0,16)+'<br>by '+esc(g.removed_by||'')):'';
-        return '<div class="grp '+done+'" data-sku="'+esc(g.sku)+'" data-part="'+esc(g.part)+'">'+
+        html+='<div class="grp '+done+'" data-sku="'+esc(g.sku)+'" data-part="'+esc(g.part)+'">'+
             '<div class="g-box"></div>'+
             '<div class="g-sku">'+esc(g.sku||'?')+'</div>'+
             '<div class="g-info">'+
@@ -6007,7 +6014,8 @@ function renderDetail(d){
             '<div style="text-align:center"><div class="g-qty">×'+g.total_qty+'</div><div class="g-qty-lbl">to remove</div></div>'+
             '<div class="g-stamp">'+when+'</div>'+
         '</div>';
-    }).join('');
+    });
+    list.innerHTML=html;
     list.querySelectorAll('.grp').forEach(function(el){
         el.addEventListener('click',function(){toggleGroup(el)});
     });
