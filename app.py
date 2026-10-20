@@ -13278,6 +13278,75 @@ def _tt_page(title, msg):
             "<div style='font-size:22px;font-weight:900;margin-bottom:10px'>"+title+"</div>"
             "<div style='color:#586274;line-height:1.6;font-size:15px'>"+msg+"</div></div></body>")
 
+def _tt_ensure_cipher(org, shop_id, tok):
+    """Make sure we have the shop_cipher (needed for order API calls). If missing, fetch
+    the shop list once and store it. Safe no-op if we already have it."""
+    if not tok or tok.get("shop_cipher"): return tok
+    try:
+        sres=_tt_get_shops(tok["access_token"]); shops=((sres.get("data") or {}).get("shops") or [])
+        pick=None
+        for sh in shops:
+            if str(sh.get("id"))==str(shop_id): pick=sh; break
+        if not pick and len(shops)==1: pick=shops[0]
+        if pick:
+            c=pdb()
+            c.execute("UPDATE tiktok_shops SET shop_cipher=?, updated_at=CURRENT_TIMESTAMP WHERE org_id=? AND shop_id=?",
+                      (pick.get("cipher",""), org, str(shop_id)))
+            c.commit(); c.close()
+            tok["shop_cipher"]=pick.get("cipher","")
+    except Exception as e:
+        _tt_log("ensure cipher failed: %r"%e)
+    return tok
+
+def _tt_sweep_once():
+    """Safety sweep: poll each connected shop for recently-updated orders and ingest any
+    the webhook missed. Fully idempotent — _tt_apply_order never touches non-API shows."""
+    if not _tiktok_ready(): return
+    c=pdb()
+    shops=[dict(r) for r in c.execute("SELECT DISTINCT org_id, shop_id FROM tiktok_shops WHERE active=1").fetchall()]
+    c.close()
+    for sh in shops:
+        org=sh["org_id"]; shop_id=sh["shop_id"]
+        try:
+            tok=_tt_valid_token(org, shop_id)
+            if not tok or not tok.get("access_token"): continue
+            tok=_tt_ensure_cipher(org, shop_id, tok)
+            params={"page_size":50,"sort_field":"update_time","sort_order":"DESC"}
+            if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
+            res=_tt_request("POST", TIKTOK_API_BASE+"/order/%s/orders/search"%TIKTOK_API_VERSION,
+                            params=params, body={"update_time_ge": int(time.time())-2*3600},
+                            signed=True, access_token=tok["access_token"])
+            orders=((res.get("data") or {}).get("orders") or [])
+            if not orders: continue
+            sc=sdb(org)
+            skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
+            _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
+            ovh=_cfg["packaging_overhead_g"] if _cfg else 30
+            n=0
+            for o in orders:
+                try: _tt_apply_order(sc, o, sku_map=skus, overhead=ovh); n+=1
+                except Exception as e: _tt_log("sweep apply failed %s: %r"%(o.get("id"),e))
+            sc.commit(); sc.close()
+            _tt_log("sweep ingested %d order(s) for %s"%(n,org))
+        except Exception as e:
+            _tt_log("sweep failed for %s: %r"%(org,e))
+
+def _tt_sweep_loop():
+    # One gunicorn worker wins the file lock and runs the sweep; the rest skip.
+    try:
+        guard=open(os.path.join(DATA_DIR,".ttsweep.guard"),"a+")
+        fcntl.flock(guard.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except OSError:
+        return
+    except Exception:
+        return
+    while True:
+        time.sleep(300)   # every 5 minutes
+        try: _tt_sweep_once()
+        except Exception as e: _tt_log("sweep loop error: %r"%e)
+
+threading.Thread(target=_tt_sweep_loop,daemon=True).start()
+
 @app.route("/api/tiktok/connect")
 @req_role("admin")
 def api_tiktok_connect():
