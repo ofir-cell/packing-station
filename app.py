@@ -13162,6 +13162,55 @@ def api_tiktok_status():
                     "webhook_url":"https://www.getwhatnot.com/api/tiktok/webhook",
                     "shops":shops,"orders":orders,"event_count":(ev["n"] if ev else 0)})
 
+@app.route("/api/tiktok/pull", methods=["POST"])
+@req_role("admin")
+def api_tiktok_pull():
+    """Pull recent real orders from the connected shop so we can verify exactly what
+    TikTok sends (seller_sku = sticker, qty, price) without waiting for a live webhook."""
+    org=current_org() or DEFAULT_ORG
+    c=pdb()
+    row=c.execute("SELECT * FROM tiktok_shops WHERE org_id=? AND active=1 ORDER BY updated_at DESC LIMIT 1",(org,)).fetchone()
+    c.close()
+    if not row: return jsonify({"ok":False,"error":"No connected shop. Connect a shop first."})
+    row=dict(row); shop_id=row["shop_id"]
+    tok=_tt_valid_token(org, shop_id)
+    if not tok or not tok.get("access_token"): return jsonify({"ok":False,"error":"No valid access token for the shop."})
+    try: days=int((request.get_json() or {}).get("days") or 30)
+    except Exception: days=30
+    ge=int(time.time())-days*86400
+    params={"page_size":50,"sort_field":"create_time","sort_order":"DESC"}
+    if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
+    try:
+        res=_tt_request("POST", TIKTOK_API_BASE+"/order/%s/orders/search"%TIKTOK_API_VERSION,
+                        params=params, body={"create_time_ge":ge}, signed=True, access_token=tok["access_token"])
+    except Exception as e:
+        return jsonify({"ok":False,"error":"Request failed: "+str(e)[:300]})
+    if res.get("code"):
+        return jsonify({"ok":False,"error":(res.get("message") or ("code "+str(res.get("code")))),"code":res.get("code")})
+    data=res.get("data") or {}
+    orders=data.get("orders") or []
+    stored=0; preview=[]
+    for o in orders:
+        oid=str(o.get("id") or "")
+        if not oid: continue
+        agg={}
+        for li in (o.get("line_items") or []):
+            key=(li.get("seller_sku") or "", str(li.get("sku_id") or ""), li.get("product_name") or "")
+            a=agg.setdefault(key, {"seller_sku":key[0],"sku_id":key[1],"name":key[2],"qty":0,"price":""})
+            a["qty"]+=1; a["price"]=li.get("sale_price") or li.get("original_price") or a["price"]
+        items=list(agg.values())
+        c=pdb()
+        c.execute("""INSERT INTO tiktok_orders(order_id,org_id,shop_id,status,line_items,create_time,raw,updated_at)
+            VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+            ON CONFLICT(org_id,order_id) DO UPDATE SET status=excluded.status,line_items=excluded.line_items,
+              create_time=excluded.create_time,updated_at=CURRENT_TIMESTAMP""",
+          (oid,org,str(shop_id),str(o.get("order_status") or ""),json.dumps(items),
+           int(o.get("create_time") or 0),json.dumps(o)[:40000]))
+        c.commit(); c.close(); stored+=1
+        if len(preview)<10: preview.append({"order_id":oid,"status":o.get("order_status"),"items":items})
+    return jsonify({"ok":True,"shop":row.get("shop_name") or shop_id,"total":data.get("total_count"),
+                    "fetched":len(orders),"stored":stored,"preview":preview})
+
 @app.route("/admin/tiktok")
 @req_role("admin")
 def admin_tiktok_page():
@@ -13209,6 +13258,11 @@ th{color:#6b7280;font-weight:700;font-size:11px;text-transform:uppercase}
 
 <div class="card">
   <h2>Recent orders received <span id="evc" class="mut"></span></h2>
+  <div class="row" style="margin:0 0 12px">
+    <button id="pullBtn" class="btn g">⤓ Pull recent orders from TikTok</button>
+    <span class="mut">Fetches real orders now so you can verify the data (seller SKU = sticker, qty).</span>
+  </div>
+  <div id="pullMsg" class="mut"></div>
   <div id="orders" class="mut">Loading…</div>
 </div>
 </div>
@@ -13234,6 +13288,23 @@ fetch('/api/tiktok/status').then(function(r){return r.json();}).then(function(d)
     od.innerHTML=h+'</table>';}
 }).catch(function(){document.getElementById('cfg').textContent='error';});
 document.querySelectorAll('.copy').forEach(function(b){b.onclick=function(){var t=document.getElementById(b.getAttribute('data-c')).textContent;navigator.clipboard.writeText(t);b.textContent='Copied';setTimeout(function(){b.textContent='Copy';},1200);};});
+var pb=document.getElementById('pullBtn');
+pb.onclick=function(){
+  pb.disabled=true;var old=pb.textContent;pb.textContent='Pulling…';
+  var pm=document.getElementById('pullMsg');pm.textContent='';
+  fetch('/api/tiktok/pull',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({days:30})})
+   .then(function(r){return r.json();}).then(function(d){
+     pb.disabled=false;pb.textContent=old;
+     if(!d.ok){pm.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
+     pm.innerHTML='<span style="color:#166534">✓ Pulled '+d.fetched+' order(s) from '+esc(d.shop||'')+(d.total!=null?(' · '+d.total+' total in shop'):'')+'. Showing below.</span>';
+     var od=document.getElementById('orders');
+     if(!d.preview||!d.preview.length){od.innerHTML='<span class="mut">No recent orders in the last 30 days.</span>';return;}
+     var h='<table><tr><th>Order</th><th>Status</th><th>Items (seller SKU × qty)</th></tr>';
+     d.preview.forEach(function(o){var items=(o.items||[]).map(function(i){return '<b>'+esc(i.seller_sku||'(no sku)')+'</b> ×'+(i.qty||1)+(i.name?' <span class=mut>'+esc(i.name)+'</span>':'');}).join('<br>');
+       h+='<tr><td>'+esc(o.order_id)+'</td><td>'+esc(o.status||'')+'</td><td>'+items+'</td></tr>';});
+     od.innerHTML=h+'</table>';
+   }).catch(function(e){pb.disabled=false;pb.textContent=old;pm.innerHTML='<span style="color:#b91c1c">Network error</span>';});
+};
 </script>
 </body></html>"""
     return html.replace("__NAVBAR__",nav).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
