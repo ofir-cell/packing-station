@@ -13133,18 +13133,29 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
         for li in (order.get("line_items") or []):
             if li.get("package_id"): pkg=str(li["package_id"]); break
     ship_id = pkg or ("TT-"+oid)
-    # Migration: once a real package id appears, drop the earlier synthetic placeholder
-    # so the order isn't counted twice (pending TT-<id> → shipped PKG<id>).
+    # ── SAFETY: never touch a shipment this API path didn't create. ──────────────
+    # Existing CSV shows (and anything the warehouse is working) are OFF LIMITS. The
+    # API only ever creates/updates its own shipments (import_batch='tiktok-api').
+    # If this order already lives in a non-API shipment, leave it entirely alone.
+    other=c.execute("""SELECT s.shipment_id FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                       WHERE i.order_id=? AND COALESCE(s.import_batch,'')<>'tiktok-api' LIMIT 1""",(oid,)).fetchone()
+    if other:
+        return label   # order already owned by a CSV/other show — do not disturb it
+    # Migration: once a real package id appears, drop OUR earlier synthetic placeholder
+    # (API-owned only) so the order isn't counted twice (pending TT-<id> → shipped PKG<id>).
     if pkg and ("TT-"+oid)!=ship_id:
         c.execute("DELETE FROM shipment_items WHERE shipment_id=?", ("TT-"+oid,))
-        c.execute("DELETE FROM shipments WHERE shipment_id=?", ("TT-"+oid,))
-    # Dedup with the CSV path: if this order already exists as a shipment (CSV keys by
-    # package id, which we may not have yet), reuse that shipment instead of duplicating.
-    exo=c.execute("SELECT shipment_id FROM shipment_items WHERE order_id=? LIMIT 1",(oid,)).fetchone()
+        c.execute("DELETE FROM shipments WHERE shipment_id=? AND COALESCE(import_batch,'')='tiktok-api'", ("TT-"+oid,))
+    # Reuse our own earlier shipment for this order if it exists under a different key.
+    exo=c.execute("""SELECT i.shipment_id FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                     WHERE i.order_id=? AND COALESCE(s.import_batch,'')='tiktok-api' LIMIT 1""",(oid,)).fetchone()
     if exo and exo["shipment_id"] and exo["shipment_id"]!=ship_id:
-        # Prefer a real package-id shipment over our synthetic TT- one.
         if ship_id.startswith("TT-") or not pkg:
             ship_id=exo["shipment_id"]
+    # Final guard: if the target shipment_id exists but isn't API-owned, abort (protect it).
+    _own=c.execute("SELECT COALESCE(import_batch,'') ib FROM shipments WHERE shipment_id=?",(ship_id,)).fetchone()
+    if _own and _own["ib"]!="tiktok-api":
+        return label
     rows=_tt_order_rows(order)
     if not rows: return label
     addr_full, postal, state, city, rcpt = _tt_addr(order)
@@ -13186,25 +13197,28 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
             VALUES (?,?,?,?,?,?,?,?, 'tiktok', ?, ?, ?, ?,?,?)""",
           (ship_id, tracking, buyer_nick, buyer_name, addr_full, postal,
            (created_iso or "")[:10], new_status, "tiktok-api", label, ship_fee, dvs, dvd, dva))
-    # Rebuild items, preserving any picked flags (re-sync must not wipe floor progress).
-    prev_picked={}
-    for pr in c.execute("""SELECT sku, product_name, picked_at FROM shipment_items
-                           WHERE shipment_id=? AND COALESCE(picked,0)=1""",(ship_id,)).fetchall():
-        prev_picked[((pr["sku"] or "").strip(),(pr["product_name"] or "").strip())]=pr["picked_at"]
+    # Rebuild items, preserving floor progress (picked) AND inventory markers
+    # (depleted_qty/depleted_sku) so a re-sync mid-pack never loses work or double-counts stock.
+    prev={}
+    for pr in c.execute("""SELECT sku, product_name, picked, picked_at, depleted_qty, depleted_sku
+                           FROM shipment_items WHERE shipment_id=?""",(ship_id,)).fetchall():
+        prev[((pr["sku"] or "").strip(),(pr["product_name"] or "").strip())]=pr
     c.execute("DELETE FROM shipment_items WHERE shipment_id=?",(ship_id,))
     for r in rows:
         sku=r["sku"]; qty=max(1,r["quantity"])
         w=sku_map.get(sku)
-        _key=((sku or "").strip(),(r["product_name"] or "").strip()); _wasp=_key in prev_picked
+        _key=((sku or "").strip(),(r["product_name"] or "").strip()); p=prev.get(_key)
         item_cancel = 1 if (is_cancelled or r.get("cancelled_units",0)>=qty) else 0
         c.execute("""INSERT INTO shipment_items
                      (shipment_id, order_id, sku, product_name, quantity, item_weight_g, revenue,
-                      created_time, buyer_state, buyer_city, cancelled, cancel_reason, picked, picked_at)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      created_time, buyer_state, buyer_city, cancelled, cancel_reason,
+                      picked, picked_at, depleted_qty, depleted_sku)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                   (ship_id, oid, sku, r["product_name"], qty, w, r.get("revenue",0) or 0,
                    created_iso, state or None, city or None, item_cancel,
                    (order.get("cancel_reason") if item_cancel else None),
-                   1 if _wasp else 0, prev_picked.get(_key) if _wasp else None))
+                   (p["picked"] if p else 0), (p["picked_at"] if p else None),
+                   (p["depleted_qty"] if p else 0), (p["depleted_sku"] if p else None)))
     _recompute_shipment_weight(c, ship_id, overhead=overhead)
     return label
 
