@@ -13614,6 +13614,31 @@ def api_tiktok_pull():
                     "fetched":len(orders),"stored":stored,"preview":preview,
                     "shows":sorted(shows),"loaded":shipped})
 
+@app.route("/api/tiktok/debug")
+@req_role("admin")
+def api_tiktok_debug():
+    """Admin diagnostics: shows what TikTok's Get Authorized Shops returns, so we can see
+    why shop_cipher isn't being populated. Tokens are redacted."""
+    org=current_org() or DEFAULT_ORG
+    c=pdb()
+    r=c.execute("""SELECT org_id,shop_id,shop_cipher,shop_name,region,seller_name,
+                     access_expire_at,refresh_expire_at,granted_scopes,updated_at
+                   FROM tiktok_shops WHERE org_id=? ORDER BY updated_at DESC LIMIT 1""",(org,)).fetchone()
+    c.close()
+    if not r: return jsonify({"ok":False,"error":"No connected shop"})
+    row=dict(r); shop_id=row["shop_id"]
+    out={"ok":True,"now":int(time.time()),"stored":row,
+         "api_base":TIKTOK_API_BASE,"api_version":TIKTOK_API_VERSION}
+    tok=_tt_valid_token(org, shop_id)
+    out["have_access_token"]=bool(tok and tok.get("access_token"))
+    out["stored_cipher_present"]=bool(row.get("shop_cipher"))
+    try:
+        sres=_tt_get_shops(tok["access_token"]) if tok and tok.get("access_token") else {"error":"no token"}
+        out["get_authorized_shops"]=sres
+    except Exception as e:
+        out["get_authorized_shops_error"]=repr(e)
+    return jsonify(out)
+
 @app.route("/admin/tiktok")
 @req_role("admin")
 def admin_tiktok_page():
