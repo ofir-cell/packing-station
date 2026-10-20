@@ -6398,6 +6398,63 @@ def api_product_gen_barcode(sku):
     c.commit(); c.close()
     return jsonify({"ok":True,"barcode":code})
 
+@app.route("/api/barcode/lookup/<code>")
+@req_role("admin","cs")
+def api_barcode_lookup(code):
+    """Look up a product by its UPC/EAN barcode in online databases and return its
+    name/brand/category/image to pre-fill the new-product form. Flexible by design: if a
+    paid provider key (BARCODE_API_KEY) is set it's used first; otherwise free sources
+    (UPCitemdb trial, Open Beauty Facts, Open Food Facts). Barcodes you generate inside
+    the system won't be found — they aren't registered anywhere public."""
+    digits=re.sub(r'\D','',code or "")[:14]
+    if len(digits)<8:
+        return jsonify({"ok":False,"error":"Enter a real manufacturer barcode (8–14 digits)."})
+    import urllib.request as _u, json as _j
+    def _get(url, timeout=6):
+        req=_u.Request(url, headers={"User-Agent":"LiveOpsHub/1.0 (+inventory)","Accept":"application/json"})
+        with _u.urlopen(req, timeout=timeout) as r:
+            return _j.loads(r.read().decode("utf-8","replace"))
+    res=None
+    key=(os.environ.get("BARCODE_API_KEY") or "").strip()
+    if key:   # paid provider (Barcode Lookup API shape) — plug a key in later for coverage
+        try:
+            d=_get("https://api.barcodelookup.com/v3/products?formatted=y&barcode=%s&key=%s"%(digits,key))
+            ps=d.get("products") or []
+            if ps:
+                p=ps[0]; res={"name":p.get("product_name") or p.get("title") or "","brand":p.get("brand") or "",
+                              "category":p.get("category") or "","image":(p.get("images") or [""])[0] or "","source":"Barcode Lookup"}
+        except Exception as e: print("barcode paid lookup failed:",e,flush=True)
+    if not (res and res.get("name")):
+        try:
+            d=_get("https://api.upcitemdb.com/prod/trial/lookup?upc="+digits)
+            items=d.get("items") or []
+            if items:
+                it=items[0]; res={"name":it.get("title") or "","brand":it.get("brand") or "",
+                                  "category":it.get("category") or "","image":(it.get("images") or [""])[0] or "","source":"UPCitemdb"}
+        except Exception as e: print("upcitemdb lookup failed:",e,flush=True)
+    if not (res and res.get("name")):
+        for host,src in (("world.openbeautyfacts.org","Open Beauty Facts"),("world.openfoodfacts.org","Open Food Facts")):
+            try:
+                d=_get("https://%s/api/v2/product/%s.json"%(host,digits))
+                if d.get("status")==1:
+                    p=d.get("product") or {}
+                    nm=p.get("product_name") or p.get("product_name_en") or ""
+                    if nm:
+                        res={"name":nm,"brand":p.get("brands") or "",
+                             "category":(p.get("categories") or "").split(",")[-1].strip(),
+                             "image":p.get("image_url") or p.get("image_front_url") or "","source":src}
+                        break
+            except Exception as e: print(src,"lookup failed:",e,flush=True)
+    if not (res and res.get("name")):
+        return jsonify({"ok":False,"error":"No product found for that barcode online. Fill it in by hand.","code":digits})
+    img=(res.get("image") or "").strip()
+    if not img.lower().startswith("https://"): img=""     # only embed secure image URLs
+    return jsonify({"ok":True,"code":digits,
+                    "name":(res.get("name") or "").strip()[:120],
+                    "brand":(res.get("brand") or "").strip()[:80],
+                    "category":(res.get("category") or "").strip()[:60],
+                    "image":img[:500],"source":res.get("source","")})
+
 _PROD_IMG_EXT={"jpg","jpeg","png","webp","gif"}
 
 @app.route("/api/product/<sku>/image",methods=["POST"])

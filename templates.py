@@ -7595,6 +7595,7 @@ __NAVBAR__
         <div class="f full"><label>Barcode</label>
           <div style="display:flex;gap:6px">
             <input id="pBarcode" placeholder="Manufacturer barcode — or generate one" style="flex:1">
+            <button class="btn btn-s" id="pLookupBc" style="white-space:nowrap" title="Search online databases for this barcode">🔍 Lookup</button>
             <button class="btn btn-s" id="pGenBc" style="white-space:nowrap">Generate</button>
           </div>
         </div>
@@ -7772,6 +7773,7 @@ function fillP(p){
   var lbl=document.getElementById('pLabel');
   if(p.sku){lbl.href='/api/product/'+encodeURIComponent(p.sku)+'/label.pdf';lbl.style.visibility='visible'}else{lbl.style.visibility='hidden'}
   var hc=document.getElementById('pHistCsv');if(hc)hc.style.display=p.sku?'inline-block':'none';
+  foundImg='';
   document.getElementById('pResult').innerHTML='';calcMargin();
   loadHistory(p.sku);
 }
@@ -7800,6 +7802,7 @@ function saveP(cb){
   var body={name:name,sku:gv('pSku')||curSku,barcode:gv('pBarcode'),category:gv('pCat'),
     target_price:gv('pTarget')||0,supplier:gv('pSupplier'),reorder_point:gv('pReorder')||0,
     variant_name:gv('pVariant'),parent_sku:gv('pParent')};
+  if(foundImg)body.image_url=foundImg;   // image found via barcode lookup
   if(ROLE==='admin'){if(gv('pCost')!=='')body.cost=gv('pCost');if(gv('pQty')!=='')body.on_hand=gv('pQty');}
   fetch('/api/products',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json()}).then(function(d){
@@ -7812,8 +7815,24 @@ function saveP(cb){
 }
 document.getElementById('pSave').addEventListener('click',function(){saveP()});
 document.getElementById('pGenBc').addEventListener('click',function(){
-  function gen(sku){fetch('/api/product/'+encodeURIComponent(sku)+'/gen-barcode',{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d.ok){document.getElementById('pBarcode').value=d.barcode;toast('Barcode generated')}else toast(d.error||'Failed',true)})}
+  function gen(sku){fetch('/api/product/'+encodeURIComponent(sku)+'/gen-barcode',{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d.ok){document.getElementById('pBarcode').value=d.barcode;foundImg='';toast('Barcode generated')}else toast(d.error||'Failed',true)})}
   if(curSku)gen(curSku);else saveP(gen);
+});
+// 🔍 Barcode lookup — search online databases and pre-fill the form.
+var foundImg='';
+document.getElementById('pLookupBc').addEventListener('click',function(){
+  var code=(document.getElementById('pBarcode').value||'').replace(/\\D/g,'');
+  if(code.length<8){toast('Enter a manufacturer barcode first (8–14 digits)',true);return}
+  var b=this;b.disabled=true;var o=b.textContent;b.textContent='Searching…';
+  document.getElementById('pResult').textContent='Searching online databases…';
+  fetch('/api/barcode/lookup/'+encodeURIComponent(code)).then(function(r){return r.json()}).then(function(d){
+    b.disabled=false;b.textContent=o;
+    if(!d.ok){document.getElementById('pResult').innerHTML='<span style="color:#b45309">'+esc(d.error||'Not found')+'</span>';return}
+    var nm=document.getElementById('pName');if(!nm.value.trim()||confirm('Replace the name with "'+d.name+'"?'))nm.value=d.name;
+    var cat=document.getElementById('pCat');if(!cat.value.trim()&&(d.category||d.brand))cat.value=d.category||d.brand;
+    if(d.image){foundImg=d.image;document.getElementById('pImg').src=d.image;}
+    document.getElementById('pResult').innerHTML='✓ Found via <b>'+esc(d.source||'online DB')+'</b>'+(d.brand?(' · '+esc(d.brand)):'')+'. Review and Save.';
+  }).catch(function(){b.disabled=false;b.textContent=o;document.getElementById('pResult').innerHTML='<span style="color:#f43f5e">Lookup failed</span>'});
 });
 function uploadPhoto(f){
   if(!f)return;
