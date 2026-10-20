@@ -2443,6 +2443,11 @@ __NAVBAR__
   <div class="page-title">🏆 Leaderboard</div>
   <div class="subtitle" id="subtitle">Top packers — ranked by packages completed</div>
 
+  <div class="window-tabs" style="margin-bottom:14px">
+    <button class="window-tab kind-tab active" data-k="packer">📦 Packers</button>
+    <button class="window-tab kind-tab" data-k="picker">📋 Pickers</button>
+  </div>
+
   <div class="window-tabs">
     <button class="window-tab" data-w="today">Today</button>
     <button class="window-tab" data-w="week">This week</button>
@@ -2457,20 +2462,25 @@ __NAVBAR__
 <script>
 var ME=__ME__;
 var currentWindow='month';
+var currentKind='packer';
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+function isPicker(){return currentKind==='picker';}
 
 function load(w){
   currentWindow=w;
-  document.querySelectorAll('.window-tab').forEach(function(b){
+  document.querySelectorAll('.window-tab:not(.kind-tab)').forEach(function(b){
     b.classList.toggle('active', b.dataset.w===w);
   });
-  fetch('/api/leaderboard?window='+w).then(function(r){return r.json()}).then(function(d){
+  document.getElementById('subtitle').textContent = isPicker()
+    ? 'Top pickers — ranked by orders picked'
+    : 'Top packers — ranked by packages completed';
+  fetch('/api/leaderboard?window='+w+'&kind='+currentKind).then(function(r){return r.json()}).then(function(d){
     var lb=d.leaderboard||[];
     var podiumDiv=document.getElementById('podium');
     var restDiv=document.getElementById('restList');
     if(lb.length===0){
       podiumDiv.innerHTML='';
-      restDiv.innerHTML='<div class="empty">No packing activity yet for this period.</div>';
+      restDiv.innerHTML='<div class="empty">No '+(isPicker()?'picking':'packing')+' activity yet for this period.</div>';
       return;
     }
     // Podium for top 3
@@ -2488,7 +2498,7 @@ function load(w){
         slots+='<div class="podium-medal">'+medals[i]+'</div>';
         slots+='<div class="podium-name">'+esc(p.name)+'</div>';
         slots+='<div class="podium-count">'+p.count+'</div>';
-        slots+='<div class="podium-meta">packages · avg '+(p.avg_dur||0)+'s</div>';
+        slots+='<div class="podium-meta">'+(isPicker()?('orders · '+p.days+' days'):('packages · avg '+(p.avg_dur||0)+'s'))+'</div>';
         slots+='</div>';
       }
       podiumDiv.innerHTML='<div class="podium">'+slots+'</div>';
@@ -2501,14 +2511,23 @@ function load(w){
     }
     var rows=rest.map(function(p){
       var me=(p.name===ME)?' me':'';
-      return '<div class="rest-row'+me+'"><div class="rest-rank">#'+p.rank+'</div><div class="rest-name">'+esc(p.name)+'</div><div class="rest-stat"><span class="big">'+p.count+'</span> packs</div><div class="rest-stat desktop-only">'+(p.avg_dur||0)+'s avg</div><div class="rest-stat desktop-only">'+p.days+' days</div></div>';
+      var unit=isPicker()?' orders':' packs';
+      var midCol=isPicker()?'':((p.avg_dur||0)+'s avg');
+      return '<div class="rest-row'+me+'"><div class="rest-rank">#'+p.rank+'</div><div class="rest-name">'+esc(p.name)+'</div><div class="rest-stat"><span class="big">'+p.count+'</span>'+unit+'</div><div class="rest-stat desktop-only">'+midCol+'</div><div class="rest-stat desktop-only">'+p.days+' days</div></div>';
     }).join('');
     restDiv.innerHTML='<div class="rest-list">'+rows+'</div>';
   });
 }
 
-document.querySelectorAll('.window-tab').forEach(function(b){
+document.querySelectorAll('.window-tab:not(.kind-tab)').forEach(function(b){
   b.addEventListener('click',function(){load(b.dataset.w)});
+});
+document.querySelectorAll('.kind-tab').forEach(function(b){
+  b.addEventListener('click',function(){
+    currentKind=b.dataset.k;
+    document.querySelectorAll('.kind-tab').forEach(function(x){x.classList.toggle('active',x.dataset.k===currentKind)});
+    load(currentWindow);
+  });
 });
 load('month');
 </script>

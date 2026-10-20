@@ -4297,13 +4297,29 @@ def leaderboard_page():
         .replace("__NAVBAR__", _navbar("leaderboard"))
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
+def _picker_leaderboard(window='month', limit=25):
+    """Top pickers by orders (shipments) picked in the window. Mirrors _leaderboard but
+    sources from shipments.picked_by/picked_at (picking is tracked per order, not timed)."""
+    w = "picked_by IS NOT NULL AND TRIM(picked_by)!='' AND picked_at IS NOT NULL AND picked_at!=''"
+    if window == 'today':   w += " AND substr(picked_at,1,10)=date('now')"
+    elif window == 'week':  w += " AND picked_at >= date('now','-7 days')"
+    elif window == 'month': w += " AND substr(picked_at,1,7)=strftime('%Y-%m','now')"
+    c = sdb()
+    rows = c.execute("SELECT picked_by nm, COUNT(*) c, COUNT(DISTINCT substr(picked_at,1,10)) d, MAX(picked_at) last "
+                     "FROM shipments WHERE "+w+" GROUP BY picked_by ORDER BY c DESC LIMIT ?", (limit,)).fetchall()
+    c.close()
+    return [{'rank': i+1, 'name': r['nm'], 'count': r['c'], 'avg_dur': 0,
+             'days': r['d'], 'last_date': (r['last'] or '')[:10]} for i, r in enumerate(rows)]
+
 @app.route("/api/leaderboard")
 @req_login
 def api_leaderboard():
     window = request.args.get("window", "month")
     if window not in ("today", "week", "month", "all"):
         window = "month"
-    return jsonify({"window": window, "leaderboard": _leaderboard(window, 25)})
+    kind = request.args.get("kind", "packer")
+    lb = _picker_leaderboard(window, 25) if kind == "picker" else _leaderboard(window, 25)
+    return jsonify({"window": window, "kind": kind, "leaderboard": lb})
 
 @app.route("/api/packer-of-month")
 @req_login
