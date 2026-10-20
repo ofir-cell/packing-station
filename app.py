@@ -2033,6 +2033,11 @@ TIKTOK_API_BASE=os.environ.get("TIKTOK_API_BASE","https://open-api.tiktokglobals
 TIKTOK_API_VERSION=os.environ.get("TIKTOK_API_VERSION","202309").strip()
 # Where the seller is sent to grant access. The app's redirect URL (set in
 # Partner Center) must be https://getwhatnot.com/api/tiktok/callback.
+# Custom (self-developed) apps have no Service ID; TikTok instead shows a full
+# authorization URL on the app page. Paste it into TIKTOK_AUTHORIZE_URL and we
+# just append the state param. If that's set it wins; otherwise we build the URL
+# from the portal + service_id (App Store apps) or app_key.
+TIKTOK_AUTHORIZE_URL=os.environ.get("TIKTOK_AUTHORIZE_URL","").strip()
 TIKTOK_AUTH_PORTAL=os.environ.get("TIKTOK_AUTH_PORTAL","https://services.us.tiktokshop.com/open/authorize").strip()
 def _tiktok_ready():
     return bool(TIKTOK_APP_KEY and TIKTOK_APP_SECRET)
@@ -13056,8 +13061,15 @@ def api_tiktok_connect():
     if not _tiktok_ready():
         return _tt_page("Not configured","The TikTok app credentials are not set on the server yet."),400
     org=current_org() or DEFAULT_ORG
+    state=_tt_state(org)
+    # Custom apps: paste TikTok's own authorization URL into TIKTOK_AUTHORIZE_URL; we
+    # just append state. Otherwise build it from the portal + service_id / app_key.
+    if TIKTOK_AUTHORIZE_URL:
+        base=TIKTOK_AUTHORIZE_URL
+        sep="&" if "?" in base else "?"
+        return redirect(base+sep+"state="+state)
     import urllib.parse as _up
-    params={"state":_tt_state(org)}
+    params={"state":state}
     if TIKTOK_SERVICE_ID: params["service_id"]=TIKTOK_SERVICE_ID
     else: params["app_key"]=TIKTOK_APP_KEY
     return redirect(TIKTOK_AUTH_PORTAL+"?"+_up.urlencode(params))
