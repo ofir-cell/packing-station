@@ -7631,6 +7631,7 @@ __NAVBAR__
         </div>
         <div class="f adminOnly"><label>Cost price ($)</label><input id="pCost" type="number" step="0.01" placeholder="0.00" style="width:100%"></div>
         <div class="f"><label>Target sell price ($)</label><input id="pTarget" type="number" step="0.01" placeholder="0.00" style="width:100%"></div>
+        <div class="f"><label>Retail price / MSRP ($)</label><input id="pRetail" type="number" step="0.01" placeholder="0.00" style="width:100%"></div>
         <div class="f adminOnly"><label>Quantity on hand</label><input id="pQty" type="number" placeholder="0" style="width:100%"></div>
         <div class="f"><label>Reorder point (alert when ≤)</label><input id="pReorder" type="number" placeholder="0" style="width:100%"></div>
         <div class="f"><label>Supplier</label><input id="pSupplier" placeholder="Optional" style="width:100%"></div>
@@ -7794,6 +7795,7 @@ function fillP(p){
   document.getElementById('pBarcode').value=p.barcode||'';
   document.getElementById('pCost').value=(p.avg_cost!=null?p.avg_cost:'');
   document.getElementById('pTarget').value=(p.target_price||'');
+  document.getElementById('pRetail').value=(p.retail_price||'');
   document.getElementById('pQty').value=(p.on_hand!=null?p.on_hand:'');
   document.getElementById('pReorder').value=(p.reorder_point||'');
   document.getElementById('pSupplier').value=p.supplier||'';
@@ -7830,7 +7832,7 @@ document.getElementById('pTarget').addEventListener('input',calcMargin);
 function saveP(cb){
   var name=gv('pName');if(!name){toast('Name required',true);return}
   var body={name:name,sku:gv('pSku')||curSku,barcode:gv('pBarcode'),category:gv('pCat'),
-    target_price:gv('pTarget')||0,supplier:gv('pSupplier'),reorder_point:gv('pReorder')||0,
+    target_price:gv('pTarget')||0,retail_price:gv('pRetail')||0,supplier:gv('pSupplier'),reorder_point:gv('pReorder')||0,
     variant_name:gv('pVariant'),parent_sku:gv('pParent')};
   if(foundImg)body.image_url=foundImg;   // image found via barcode lookup
   if(ROLE==='admin'){if(gv('pCost')!=='')body.cost=gv('pCost');if(gv('pQty')!=='')body.on_hand=gv('pQty');}
@@ -7840,7 +7842,9 @@ function saveP(cb){
       curSku=d.sku;document.getElementById('pSku').value=d.sku;
       var lbl=document.getElementById('pLabel');lbl.href='/api/product/'+encodeURIComponent(d.sku)+'/label.pdf';lbl.style.visibility='visible';
       document.getElementById('pTitle').textContent='Product · '+d.sku;
-      load();if(cb)cb(d.sku);else{toast('Saved ✓');document.getElementById('pResult').innerHTML='✓ Saved.';}
+      load();
+      if(cb){cb(d.sku);}
+      else{toast('Saved ✓ — ready for next');fillP({});document.getElementById('pBarcode').focus();}
     });
 }
 document.getElementById('pSave').addEventListener('click',function(){saveP()});
@@ -7860,6 +7864,7 @@ document.getElementById('pLookupBc').addEventListener('click',function(){
     if(!d.ok){document.getElementById('pResult').innerHTML='<span style="color:#b45309">'+esc(d.error||'Not found')+'</span>';return}
     var nm=document.getElementById('pName');if(!nm.value.trim()||confirm('Replace the name with "'+d.name+'"?'))nm.value=d.name;
     var cat=document.getElementById('pCat');if(!cat.value.trim()&&(d.category||d.brand))cat.value=d.category||d.brand;
+    var rt=document.getElementById('pRetail');if(d.price&&!parseFloat(rt.value||0))rt.value=d.price;
     if(d.image){foundImg=d.image;document.getElementById('pImg').src=d.image;}
     document.getElementById('pResult').innerHTML='✓ Found via <b>'+esc(d.source||'online DB')+'</b>'+(d.brand?(' · '+esc(d.brand)):'')+'. Review and Save.';
   }).catch(function(){b.disabled=false;b.textContent=o;document.getElementById('pResult').innerHTML='<span style="color:#f43f5e">Lookup failed</span>'});

@@ -1154,6 +1154,7 @@ def sdb_init(org):
         "ALTER TABLE new_hires ADD COLUMN preferred_language TEXT DEFAULT 'en'",
         # Product page: target sell price + uploaded image storage key.
         "ALTER TABLE products ADD COLUMN target_price REAL DEFAULT 0",
+        "ALTER TABLE products ADD COLUMN retail_price REAL DEFAULT 0",
         "ALTER TABLE products ADD COLUMN image_key TEXT",
         "ALTER TABLE products ADD COLUMN supplier TEXT",
         "ALTER TABLE products ADD COLUMN reorder_point INTEGER DEFAULT 0",
@@ -6500,6 +6501,10 @@ def api_product_save():
     # Target sell price + supplier + reorder point are editable by admin/cs.
     if "target_price" in d:
         c.execute("UPDATE products SET target_price=? WHERE sku=?",(float(d.get("target_price") or 0),sku))
+    if "retail_price" in d:
+        try: _rp=float(d.get("retail_price") or 0)
+        except Exception: _rp=0
+        c.execute("UPDATE products SET retail_price=? WHERE sku=?",(_rp,sku))
     if "supplier" in d:
         c.execute("UPDATE products SET supplier=? WHERE sku=?",((d.get("supplier") or "").strip() or None,sku))
     if "reorder_point" in d:
@@ -6555,16 +6560,33 @@ def _barcode_lookup_online(code):
             d=_get("https://api.barcodelookup.com/v3/products?formatted=y&barcode=%s&key=%s"%(digits,key))
             ps=d.get("products") or []
             if ps:
-                p=ps[0]; res={"name":p.get("product_name") or p.get("title") or "","brand":p.get("brand") or "",
-                              "category":p.get("category") or "","image":(p.get("images") or [""])[0] or "","source":"Barcode Lookup"}
+                p=ps[0]
+                _pr=0
+                try:
+                    _pr=float(re.sub(r'[^0-9.]','',str(p.get("msrp") or "")) or 0)
+                except Exception: _pr=0
+                if not _pr:
+                    _sp=[float(re.sub(r'[^0-9.]','',str(s.get("price") or "")) or 0) for s in (p.get("stores") or [])]
+                    _sp=[x for x in _sp if x>0]
+                    if _sp: _pr=min(_sp)
+                res={"name":p.get("product_name") or p.get("title") or "","brand":p.get("brand") or "",
+                     "category":p.get("category") or "","image":(p.get("images") or [""])[0] or "",
+                     "price":_pr or 0,"source":"Barcode Lookup"}
         except Exception as e: print("barcode paid lookup failed:",e,flush=True)
     if not (res and res.get("name")):
         try:
             d=_get("https://api.upcitemdb.com/prod/trial/lookup?upc="+digits)
             items=d.get("items") or []
             if items:
-                it=items[0]; res={"name":it.get("title") or "","brand":it.get("brand") or "",
-                                  "category":it.get("category") or "","image":(it.get("images") or [""])[0] or "","source":"UPCitemdb"}
+                it=items[0]
+                _pr=it.get("lowest_recorded_price") or it.get("highest_recorded_price") or 0
+                if not _pr:
+                    for _o in (it.get("offers") or []):
+                        _op=_o.get("list_price") or _o.get("price")
+                        if _op: _pr=_op; break
+                res={"name":it.get("title") or "","brand":it.get("brand") or "",
+                     "category":it.get("category") or "","image":(it.get("images") or [""])[0] or "",
+                     "price":_pr or 0,"source":"UPCitemdb"}
         except Exception as e: print("upcitemdb lookup failed:",e,flush=True)
     if not (res and res.get("name")):
         for host,src in (("world.openbeautyfacts.org","Open Beauty Facts"),("world.openfoodfacts.org","Open Food Facts")):
@@ -6582,8 +6604,11 @@ def _barcode_lookup_online(code):
     if not (res and res.get("name")): return None
     img=(res.get("image") or "").strip()
     if not img.lower().startswith("https://"): img=""
+    try: price=round(float(res.get("price") or 0),2)
+    except Exception: price=0
     return {"code":digits,"name":(res.get("name") or "").strip()[:120],"brand":(res.get("brand") or "").strip()[:80],
-            "category":(res.get("category") or "").strip()[:60],"image":img[:500],"source":res.get("source","")}
+            "category":(res.get("category") or "").strip()[:60],"image":img[:500],
+            "price":(price if price>0 else 0),"source":res.get("source","")}
 
 def _resolve_or_create_product_by_barcode(c, code, who=""):
     """Find a product by barcode/sku; if missing, pull it from the online barcode DBs and
@@ -6599,14 +6624,15 @@ def _resolve_or_create_product_by_barcode(c, code, who=""):
     except Exception as e: print("auto-create lookup failed:",e,flush=True)
     if info:
         name=info["name"]; cat=info.get("category") or ""; img=info.get("image") or ""; src=info.get("source","")
+        retail=info.get("price") or 0
     else:
-        name="New product • "+code; cat="Needs review"; img=""; src="unverified"
+        name="New product • "+code; cat="Needs review"; img=""; src="unverified"; retail=0
     try:
-        c.execute("""INSERT INTO products(sku,name,barcode,image_url,category,on_hand,avg_cost,updated_at,created_at)
-                     VALUES(?,?,?,?,?,0,0,?,?)
+        c.execute("""INSERT INTO products(sku,name,barcode,image_url,category,retail_price,on_hand,avg_cost,updated_at,created_at)
+                     VALUES(?,?,?,?,?,?,0,0,?,?)
                      ON CONFLICT(sku) DO UPDATE SET name=COALESCE(NULLIF(products.name,''),excluded.name),
                        barcode=excluded.barcode, updated_at=excluded.updated_at""",
-                  (code, name, code, img, cat, now, now))
+                  (code, name, code, img, cat, retail, now, now))
         c.commit()
     except Exception as e:
         print("auto-create product failed:",e,flush=True)
