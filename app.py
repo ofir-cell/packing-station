@@ -5043,6 +5043,14 @@ def api_shipments_import():
                     oid = n.get("order_id") or pkg_id
                     _ord_ship[oid] = max(_ord_ship.get(oid, 0), sf)
             ship_fee = round(sum(_ord_ship.values()), 2)
+            # Dedup with the TikTok API path: if these orders were already loaded live as
+            # synthetic "TT-<order_id>" shipments, drop those placeholders now that we have
+            # the real package id, so the order isn't counted twice.
+            for _oid in {(n.get("order_id") or "").strip() for n in group if (n.get("order_id") or "").strip()}:
+                _synth="TT-"+_oid
+                if _synth!=pkg_id:
+                    c.execute("DELETE FROM shipment_items WHERE shipment_id=?", (_synth,))
+                    c.execute("DELETE FROM shipments WHERE shipment_id=?", (_synth,))
             existing = c.execute("SELECT shipment_id FROM shipments WHERE shipment_id=?", (pkg_id,)).fetchone()
             if existing:
                 c.execute("""UPDATE shipments
@@ -13034,7 +13042,171 @@ def _tt_ingest_order(org, shop_id, order_id):
       (str(order_id), org, str(shop_id), str(o.get("order_status") or o.get("status") or ""),
        json.dumps(items), int(o.get("create_time") or 0), json.dumps(o)[:40000]))
     c.commit(); c.close()
+    # Phase 1: also materialize the order as a shipment in the tenant's DB so it flows
+    # into the live show automatically (same tables the CSV uses).
+    try:
+        sc=sdb(org); _tt_apply_order(sc, o); sc.commit(); sc.close()
+    except Exception as e:
+        _tt_log("apply-to-shipment failed %s: %r"%(order_id,e))
     _tt_log("ingested order %s (%d line groups) for %s"%(order_id,len(items),org))
+
+# ── API order → shipments (Phase 1: replace the CSV, keep the upload button) ──
+def _tt_addr(order):
+    """Extract (address_full, postal, state, city, recipient_name) from a TikTok order.
+    recipient_address is absent while UNPAID/ON_HOLD (pending) — returns blanks then."""
+    ra=order.get("recipient_address") or {}
+    if not ra: return ("","","","","")
+    full=(ra.get("full_address") or "").strip()
+    line1=(ra.get("address_line1") or "").strip(); line2=(ra.get("address_line2") or "").strip()
+    postal=(ra.get("postal_code") or "").strip()
+    region=(ra.get("region_code") or "").strip()
+    name=(ra.get("name") or "").strip()
+    state=""; city=""
+    for d in (ra.get("district_info") or []):
+        lvl=(d.get("address_level_name") or "").lower(); nm=(d.get("address_name") or "").strip()
+        if not nm: continue
+        if ("state" in lvl) or ("province" in lvl) or ("region" in lvl and not state): state=nm
+        elif ("city" in lvl) or ("town" in lvl): city=nm
+    if not full:
+        full=", ".join(p for p in [line1,line2,city,state,postal,region] if p)
+    return (full, postal, state, city, name)
+
+def _tt_order_rows(order):
+    """Aggregate a TikTok order's line items into per-(seller_sku,product) rows with qty
+    and revenue — the data the shipment_items table needs. seller_sku = the sticker number."""
+    agg={}
+    for li in (order.get("line_items") or []):
+        sku=(li.get("seller_sku") or "").strip()
+        name=(li.get("product_name") or "").strip()
+        key=(sku, name)
+        try: q=int(li.get("quantity") or 1)
+        except Exception: q=1
+        try: price=float(str(li.get("sale_price") or li.get("original_price") or "0").replace(",","").replace("$","") or 0)
+        except Exception: price=0.0
+        a=agg.setdefault(key, {"sku":sku,"product_name":name,"quantity":0,"revenue":0.0,
+                               "is_gift":bool(li.get("is_gift")),"cancelled_units":0})
+        a["quantity"]+=q
+        a["revenue"]+=price*q
+        if (li.get("display_status") or "").upper()=="CANCELLED" or (li.get("cancel_reason") or ""):
+            a["cancelled_units"]+=q
+        if li.get("is_gift"): a["is_gift"]=True
+    return list(agg.values())
+
+def _tt_label_for_order(c, order):
+    """Pick the show (import_label) for an order from its LIVE session room_id, so orders
+    auto-group into the right show. Falls back to a dated TikTok label with no room."""
+    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_rooms(
+        room_id TEXT PRIMARY KEY, import_label TEXT, first_seen TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    room=""
+    for li in (order.get("line_items") or []):
+        room=(li.get("room_id") or "").strip()
+        if room: break
+    ct=order.get("create_time") or 0
+    try: dstr=datetime.fromtimestamp(int(ct)).strftime("%b %d") if ct else datetime.now().strftime("%b %d")
+    except Exception: dstr=datetime.now().strftime("%b %d")
+    if not room:
+        return "TikTok "+dstr
+    row=c.execute("SELECT import_label FROM tiktok_rooms WHERE room_id=?",(room,)).fetchone()
+    if row and row["import_label"]: return row["import_label"]
+    label="TikTok Live "+dstr+" ("+room[-4:]+")"
+    c.execute("INSERT OR IGNORE INTO tiktok_rooms(room_id,import_label) VALUES(?,?)",(room,label))
+    return label
+
+def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
+    """Create/update a shipment (+items) from a TikTok API order, in the SAME shipments/
+    shipment_items tables the CSV importer uses, so every existing screen works unchanged.
+    Idempotent: safe to call repeatedly as the order's status changes. Returns the label."""
+    oid=str(order.get("id") or "")
+    if not oid: return None
+    if label is None: label=_tt_label_for_order(c, order)
+    if sku_map is None:
+        sku_map={r["sku"]: r["weight_g"] for r in c.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
+    if overhead is None:
+        _cfg=c.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
+        overhead=_cfg["packaging_overhead_g"] if _cfg else 30
+    status_api=(order.get("status") or "").upper()
+    is_cancelled = status_api=="CANCELLED"
+    pkg=""
+    for p in (order.get("packages") or []):
+        if p.get("id"): pkg=str(p["id"]); break
+    if not pkg:
+        for li in (order.get("line_items") or []):
+            if li.get("package_id"): pkg=str(li["package_id"]); break
+    ship_id = pkg or ("TT-"+oid)
+    # Migration: once a real package id appears, drop the earlier synthetic placeholder
+    # so the order isn't counted twice (pending TT-<id> → shipped PKG<id>).
+    if pkg and ("TT-"+oid)!=ship_id:
+        c.execute("DELETE FROM shipment_items WHERE shipment_id=?", ("TT-"+oid,))
+        c.execute("DELETE FROM shipments WHERE shipment_id=?", ("TT-"+oid,))
+    # Dedup with the CSV path: if this order already exists as a shipment (CSV keys by
+    # package id, which we may not have yet), reuse that shipment instead of duplicating.
+    exo=c.execute("SELECT shipment_id FROM shipment_items WHERE order_id=? LIMIT 1",(oid,)).fetchone()
+    if exo and exo["shipment_id"] and exo["shipment_id"]!=ship_id:
+        # Prefer a real package-id shipment over our synthetic TT- one.
+        if ship_id.startswith("TT-") or not pkg:
+            ship_id=exo["shipment_id"]
+    rows=_tt_order_rows(order)
+    if not rows: return label
+    addr_full, postal, state, city, rcpt = _tt_addr(order)
+    buyer_nick=(order.get("buyer_nickname") or "").strip()
+    buyer_name=rcpt or buyer_nick
+    tracking=(order.get("tracking_number") or "").strip() or None
+    try: ct=int(order.get("create_time") or 0); created_iso=datetime.fromtimestamp(ct).isoformat(timespec="seconds") if ct else None
+    except Exception: created_iso=None
+    pay=order.get("payment") or {}
+    try: ship_fee=round(float(str(pay.get("shipping_fee") or "0").replace(",","").replace("$","") or 0),2)
+    except Exception: ship_fee=0.0
+    # delivery status straight from the order timestamps
+    dvs=dvd=dva=None
+    if order.get("delivery_time"): dvs,dvd,dva=("DELIVERED","Delivered · per TikTok",datetime.fromtimestamp(int(order["delivery_time"])).isoformat(timespec="seconds"))
+    elif order.get("collection_time") or order.get("rts_time"): dvs,dvd=("IN_TRANSIT","Shipped · per TikTok")
+    # all-gift order → giveaway; else cancelled → cancelled; else keep local packed/shipped
+    all_gift = rows and all(r["is_gift"] for r in rows)
+    ex=c.execute("SELECT shipment_id, status FROM shipments WHERE shipment_id=?",(ship_id,)).fetchone()
+    if is_cancelled: new_status="cancelled"
+    elif all_gift: new_status="giveaway"
+    else: new_status="pending"
+    if ex and ex["status"] in ("packed","shipped") and not is_cancelled:
+        new_status=ex["status"]   # don't undo warehouse progress
+    if ex:
+        c.execute("""UPDATE shipments SET tracking_code=COALESCE(?,tracking_code),
+                       buyer_username=?, buyer_name=?, address_full=COALESCE(NULLIF(?,''),address_full),
+                       postal_code=COALESCE(NULLIF(?,''),postal_code), platform='tiktok',
+                       import_label=COALESCE(import_label,?), shipping_fee=?, status=?,
+                       delivery_status=COALESCE(?,delivery_status), delivery_detail=COALESCE(?,delivery_detail),
+                       delivered_at=COALESCE(?,delivered_at)
+                     WHERE shipment_id=?""",
+                  (tracking, buyer_nick, buyer_name, addr_full, postal, label, ship_fee, new_status,
+                   dvs, dvd, dva, ship_id))
+    else:
+        c.execute("""INSERT INTO shipments
+            (shipment_id, tracking_code, buyer_username, buyer_name, address_full, postal_code,
+             show_date, status, platform, import_batch, import_label, shipping_fee,
+             delivery_status, delivery_detail, delivered_at)
+            VALUES (?,?,?,?,?,?,?,?, 'tiktok', ?, ?, ?, ?,?,?)""",
+          (ship_id, tracking, buyer_nick, buyer_name, addr_full, postal,
+           (created_iso or "")[:10], new_status, "tiktok-api", label, ship_fee, dvs, dvd, dva))
+    # Rebuild items, preserving any picked flags (re-sync must not wipe floor progress).
+    prev_picked={}
+    for pr in c.execute("""SELECT sku, product_name, picked_at FROM shipment_items
+                           WHERE shipment_id=? AND COALESCE(picked,0)=1""",(ship_id,)).fetchall():
+        prev_picked[((pr["sku"] or "").strip(),(pr["product_name"] or "").strip())]=pr["picked_at"]
+    c.execute("DELETE FROM shipment_items WHERE shipment_id=?",(ship_id,))
+    for r in rows:
+        sku=r["sku"]; qty=max(1,r["quantity"])
+        w=sku_map.get(sku)
+        _key=((sku or "").strip(),(r["product_name"] or "").strip()); _wasp=_key in prev_picked
+        item_cancel = 1 if (is_cancelled or r.get("cancelled_units",0)>=qty) else 0
+        c.execute("""INSERT INTO shipment_items
+                     (shipment_id, order_id, sku, product_name, quantity, item_weight_g, revenue,
+                      created_time, buyer_state, buyer_city, cancelled, cancel_reason, picked, picked_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (ship_id, oid, sku, r["product_name"], qty, w, r.get("revenue",0) or 0,
+                   created_iso, state or None, city or None, item_cancel,
+                   (order.get("cancel_reason") if item_cancel else None),
+                   1 if _wasp else 0, prev_picked.get(_key) if _wasp else None))
+    _recompute_shipment_weight(c, ship_id, overhead=overhead)
+    return label
 
 def _tt_webhook_verify(body_bytes, sig_header):
     """Best-effort webhook signature check: HMAC-SHA256(app_key + body, app_secret)."""
@@ -13208,8 +13380,25 @@ def api_tiktok_pull():
            int(o.get("create_time") or 0),json.dumps(o)[:40000]))
         c.commit(); c.close(); stored+=1
         if len(preview)<10: preview.append({"order_id":oid,"status":o.get("order_status"),"items":items})
+    # Phase 1: materialize every pulled order into the tenant's shows (shipments).
+    shows=set(); shipped=0
+    try:
+        sc=sdb(org)
+        skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
+        _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
+        ovh=_cfg["packaging_overhead_g"] if _cfg else 30
+        for o in orders:
+            try:
+                lbl=_tt_apply_order(sc, o, sku_map=skus, overhead=ovh)
+                if lbl: shows.add(lbl); shipped+=1
+            except Exception as e:
+                _tt_log("pull apply failed %s: %r"%(o.get("id"),e))
+        sc.commit(); sc.close()
+    except Exception as e:
+        _tt_log("pull apply batch failed: %r"%e)
     return jsonify({"ok":True,"shop":row.get("shop_name") or shop_id,"total":data.get("total_count"),
-                    "fetched":len(orders),"stored":stored,"preview":preview})
+                    "fetched":len(orders),"stored":stored,"preview":preview,
+                    "shows":sorted(shows),"loaded":shipped})
 
 @app.route("/admin/tiktok")
 @req_role("admin")
@@ -13259,8 +13448,8 @@ th{color:#6b7280;font-weight:700;font-size:11px;text-transform:uppercase}
 <div class="card">
   <h2>Recent orders received <span id="evc" class="mut"></span></h2>
   <div class="row" style="margin:0 0 12px">
-    <button id="pullBtn" class="btn g">⤓ Pull recent orders from TikTok</button>
-    <span class="mut">Fetches real orders now so you can verify the data (seller SKU = sticker, qty).</span>
+    <button id="pullBtn" class="btn g">⤓ Pull &amp; load recent orders into shows</button>
+    <span class="mut">Fetches real orders and loads them into shows automatically (by live session). The CSV upload still works as before.</span>
   </div>
   <div id="pullMsg" class="mut"></div>
   <div id="orders" class="mut">Loading…</div>
@@ -13296,7 +13485,8 @@ pb.onclick=function(){
    .then(function(r){return r.json();}).then(function(d){
      pb.disabled=false;pb.textContent=old;
      if(!d.ok){pm.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
-     pm.innerHTML='<span style="color:#166534">✓ Pulled '+d.fetched+' order(s) from '+esc(d.shop||'')+(d.total!=null?(' · '+d.total+' total in shop'):'')+'. Showing below.</span>';
+     var shw=(d.shows&&d.shows.length)?(' → loaded into show(s): '+d.shows.map(esc).join(', ')):'';
+     pm.innerHTML='<span style="color:#166534">✓ Pulled '+d.fetched+' order(s) from '+esc(d.shop||'')+(d.total!=null?(' · '+d.total+' total in shop'):'')+shw+'</span>';
      var od=document.getElementById('orders');
      if(!d.preview||!d.preview.length){od.innerHTML='<span class="mut">No recent orders in the last 30 days.</span>';return;}
      var h='<table><tr><th>Order</th><th>Status</th><th>Items (seller SKU × qty)</th></tr>';
