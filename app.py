@@ -12985,10 +12985,47 @@ def _tt_store_shop(org, token_data, shop, who=""):
 
 def _tt_org_for_shop(shop_id):
     if not shop_id: return None
+    shop_id=str(shop_id)
     c=pdb()
-    r=c.execute("SELECT org_id FROM tiktok_shops WHERE shop_id=? ORDER BY active DESC, updated_at DESC LIMIT 1",(str(shop_id),)).fetchone()
+    r=c.execute("SELECT org_id FROM tiktok_shops WHERE shop_id=? ORDER BY active DESC, updated_at DESC LIMIT 1",(shop_id,)).fetchone()
     c.close()
-    return r["org_id"] if r else None
+    if r: return r["org_id"]
+    # Self-heal: the stored shop_id may be wrong (if Get Authorized Shops failed at connect
+    # we stored a fallback id). Re-fetch each connected org's shop list and, if this webhook's
+    # shop_id belongs to one of them, correct the stored shop_id + cipher so it matches.
+    c=pdb()
+    stored=[dict(x) for x in c.execute("SELECT org_id, shop_id FROM tiktok_shops WHERE active=1").fetchall()]
+    c.close()
+    for row in stored:
+        org=row["org_id"]
+        try:
+            tok=_tt_valid_token(org, row["shop_id"])
+            if not tok or not tok.get("access_token"): continue
+            sres=_tt_get_shops(tok["access_token"])
+            for sh in ((sres.get("data") or {}).get("shops") or []):
+                if str(sh.get("id"))==shop_id:
+                    c=pdb()
+                    c.execute("""UPDATE tiktok_shops SET shop_id=?, shop_cipher=?,
+                                   shop_name=COALESCE(NULLIF(?,''),shop_name), region=COALESCE(NULLIF(?,''),region),
+                                   updated_at=CURRENT_TIMESTAMP
+                                 WHERE org_id=? AND shop_id=?""",
+                              (shop_id, sh.get("cipher",""), sh.get("name",""), sh.get("region",""), org, row["shop_id"]))
+                    c.commit(); c.close()
+                    _tt_log("self-healed shop_id %s -> %s for org %s"%(row["shop_id"], shop_id, org))
+                    return org
+        except Exception as e:
+            _tt_log("org self-heal failed for %s: %r"%(org,e))
+    # Last resort: exactly one shop is connected → attribute to it and adopt the shop_id,
+    # so a single-shop setup never drops orders even if the shop-list refetch failed.
+    if len(stored)==1:
+        org=stored[0]["org_id"]
+        c=pdb()
+        c.execute("UPDATE tiktok_shops SET shop_id=?, updated_at=CURRENT_TIMESTAMP WHERE org_id=? AND shop_id=?",
+                  (shop_id, org, stored[0]["shop_id"]))
+        c.commit(); c.close()
+        _tt_log("adopted shop_id %s for sole org %s"%(shop_id, org))
+        return org
+    return None
 
 def _tt_valid_token(org, shop_id):
     """Return a dict with a usable access_token for this shop, refreshing if near expiry."""
