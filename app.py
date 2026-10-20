@@ -13149,6 +13149,7 @@ def _tt_ingest_order(org, shop_id, order_id):
     Does NOT deplete stock yet — that happens when the order is assigned to a live show."""
     tok=_tt_valid_token(org, shop_id)
     if not tok or not tok.get("access_token"): return
+    tok=_tt_ensure_cipher(org, shop_id, tok)
     params={"ids":order_id}
     if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
     res=_tt_request("GET", TIKTOK_API_BASE+"/order/%s/orders"%TIKTOK_API_VERSION,
@@ -13559,6 +13560,7 @@ def api_tiktok_pull():
     row=dict(row); shop_id=row["shop_id"]
     tok=_tt_valid_token(org, shop_id)
     if not tok or not tok.get("access_token"): return jsonify({"ok":False,"error":"No valid access token for the shop."})
+    tok=_tt_ensure_cipher(org, shop_id, tok)
     try: days=int((request.get_json() or {}).get("days") or 30)
     except Exception: days=30
     ge=int(time.time())-days*86400
