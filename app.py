@@ -3841,6 +3841,19 @@ def index():
             .replace("__SID__", session.get("station","S1")))
     return redirect("/home")
 
+@app.route("/api/pack/mystats")
+@req_role("worker","admin","cs","picker","manager")
+def api_pack_mystats():
+    """The current packer's own stats for today: how many they packed, and their rank
+    among today's packers — WITHOUT exposing any other worker's name or count."""
+    me=session.get("name","Unknown") or "Unknown"
+    agg=_aggregate_by_worker(_filter_by_window(_read_log(),'today'))
+    mine=int(agg.get(me,{}).get('count',0))
+    total=len(agg)                                   # distinct packers active today
+    ahead=sum(1 for v in agg.values() if int(v.get('count',0))>mine)  # strictly ahead
+    rank=(ahead+1) if mine>0 else None               # standard competition ranking
+    return jsonify({"ok":True,"count":mine,"rank":rank,"total":total})
+
 @app.route("/home")
 @req_login
 def home_page():

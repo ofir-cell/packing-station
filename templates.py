@@ -624,7 +624,7 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 body.sw{background:linear-gradient(135deg,#ffffff,#fffbeb)}
 body.sf{background:linear-gradient(135deg,#ffffff,#f0fdf4)}
 </style></head><body class="sr">
-<div class="top"><div class="brand-tag"><span class="brand-mark-mini">__BRANDMARK__</span><span class="badge">__STATION__ — __NAME__</span></div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span data-i18n="camera">Camera</span></div><button class="role-switch" id="langBtn" onclick="toggleLang()" style="cursor:pointer">ES</button><a href="/pick" class="role-switch" data-i18n="switchpick">📋 Switch to Picking</a><a href="/home" class="portal-b" data-i18n="portal">🏠 Portal</a><button class="out-b" id="endBtn" data-i18n="endshift">End Shift</button></div></div>
+<div class="top"><div class="brand-tag"><span class="brand-mark-mini">__BRANDMARK__</span><span class="badge">__STATION__ — __NAME__</span><span class="badge" id="todayStat" style="margin-left:8px;background:linear-gradient(135deg,#ecfdf5,#d1fae5);color:#065f46;font-weight:800">📦 —</span></div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span data-i18n="camera">Camera</span></div><button class="role-switch" id="langBtn" onclick="toggleLang()" style="cursor:pointer">ES</button><a href="/pick" class="role-switch" data-i18n="switchpick">📋 Switch to Picking</a><a href="/home" class="portal-b" data-i18n="portal">🏠 Portal</a><button class="out-b" id="endBtn" data-i18n="endshift">End Shift</button></div></div>
 <div class="pv"><video id="pv" autoplay muted playsinline></video></div>
 
 <div class="x on" id="xw"><div class="w-icon">👋</div><div class="w-title"><span data-i18n="welcomeg">Welcome</span>, __NAME__!</div><div class="w-sub"><span data-i18n="youareat">You are at</span> <b>__STATION__</b></div><div class="w-msg" data-i18n="greatshift">Have a great shift! Your camera is being set up...</div></div>
@@ -921,7 +921,7 @@ function capPhoto(){var v=document.getElementById('pv'),c=document.createElement
 function upload(){go('u');var dur=Math.round((Date.now()-t0)/1000);var vb=new Blob(ch,{type:'video/webm'});
 capPhoto().then(function(pb){var fd=new FormData();fd.append('tracking',ct);fd.append('station','__SID__');fd.append('duration',dur);fd.append('video',vb,ct+'.webm');if(pb)fd.append('photo',pb,ct+'.jpg');
 return fetch('/api/upload',{method:'POST',body:fd})}).then(function(r){return r.json()}).then(function(d){
-if(d.ok){n++;document.getElementById('cn').textContent=n;document.getElementById('dkk').textContent=ct;document.getElementById('ddd').textContent='Duration: '+dur+'s';go('d');setTimeout(function(){go('r')},3000)}
+if(d.ok){n++;document.getElementById('cn').textContent=n;document.getElementById('dkk').textContent=ct;document.getElementById('ddd').textContent='Duration: '+dur+'s';loadMyStats();go('d');setTimeout(function(){go('r')},3000)}
 else{alert('Failed');go('r')}}).catch(function(){alert('Upload failed');go('r')})}
 // USPS labels carry "service + ZIP + tracking" in the barcode (up to ~33 digits)
 // but humans only see the 22-digit tracking. Strip the prefix on entry so the
@@ -933,6 +933,13 @@ hideReminder();
 if(t===ct){stopRec().then(upload)}else{stopRec().then(upload).then(function(){setTimeout(function(){startRec(t)},500)})}});
 function startTmr(){stopTmr();ti=setInterval(function(){var s=Math.floor((Date.now()-t0)/1000);document.getElementById('rmm').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')},200)}
 function stopTmr(){if(ti){clearInterval(ti);ti=null}}
+// Packer's own daily count + rank (no other names/counts shown — privacy by design).
+function loadMyStats(){fetch('/api/pack/mystats').then(function(r){return r.json()}).then(function(d){
+  if(!d||!d.ok)return;var el=document.getElementById('todayStat');if(!el)return;
+  var t='📦 '+d.count+(d.count===1?' today':' today');
+  if(d.rank&&d.total>1){t+=' · #'+d.rank+'/'+d.total;}
+  el.textContent=t;}).catch(function(){});}
+loadMyStats();setInterval(loadMyStats,120000);
 </script></body></html>'''
 
 # ── DASHBOARD ─────────────────────────────────────────────
