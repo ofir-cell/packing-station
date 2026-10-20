@@ -38,7 +38,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML,
-    SCANIT_HTML, APPLY_HTML, TRACK_HTML, EQUIPMENT_HTML)
+    SCANIT_HTML, APPLY_HTML, TRACK_HTML, EQUIPMENT_HTML, LIVE_HTML)
 from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
 
 
@@ -1356,6 +1356,30 @@ def sdb_init(org):
         note TEXT,
         moved_at TEXT DEFAULT CURRENT_TIMESTAMP,
         moved_by TEXT
+    )""")
+    # LIVE MODE — stock depletes in real time as the assistant scans each unit during the
+    # show (sale-time, before any CSV exists). One row per scan. The CSV import later
+    # reconciles the quantities against TikTok's truth (see live_reconcile).
+    c.execute("""CREATE TABLE IF NOT EXISTS live_sales(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        import_label TEXT NOT NULL,
+        sticker_sku TEXT,
+        part INTEGER DEFAULT 0,
+        product_sku TEXT NOT NULL,
+        qty INTEGER DEFAULT 1,
+        unit_cost REAL DEFAULT 0,
+        unit_price REAL DEFAULT 0,
+        sold_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        sold_by TEXT
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_live_sales_show ON live_sales(import_label)")
+    # How much extra stock the CSV reconcile has already applied per (show, product), so
+    # re-importing the CSV stays idempotent.
+    c.execute("""CREATE TABLE IF NOT EXISTS live_reconcile(
+        import_label TEXT NOT NULL,
+        product_sku TEXT NOT NULL,
+        applied_extra INTEGER DEFAULT 0,
+        PRIMARY KEY (import_label, product_sku)
     )""")
     # Every CSV import, keyed by a hash of the file contents — so re-uploading the
     # exact same file can be detected and flagged instead of silently re-importing.
@@ -5043,6 +5067,12 @@ def api_shipments_import():
     alog("shipments.import","%s '%s': %d new, %d updated"%(platform,label,inserted,updated))
     # A winner who was waiting for an order may now have one in this import — attach it.
     gv_attached=_autoattach_giveaways()
+    # If this show was run in Live Mode, true-up the live depletions against the CSV truth.
+    live_reconciled=None
+    try:
+        _rc=sdb(); live_reconciled=_reconcile_live_with_csv(_rc, label); _rc.commit(); _rc.close()
+    except Exception as _e:
+        print("live reconcile error:",_e,flush=True)
     warnings=[]
     if platform=="whatnot" and not revenue_parsed:
         warnings.append("No prices could be read from this file, so revenue is 0 for every "
@@ -5065,6 +5095,7 @@ def api_shipments_import():
         "unique_skus": len(unique_skus),
         "skus_missing_weight": len(sku_missing),
         "missing_sku_list": sku_missing[:50],
+        "live_reconciled": live_reconciled,
     })
 
 
@@ -6165,6 +6196,7 @@ def _deplete_stock_for(c, shipment_id):
     if not row or (row["status"] or "") not in ("packed","shipped"): return
     label=(row["import_label"] or "")
     if not label: return
+    if _show_is_live(c, label): return          # live shows deplete at sale-time, not pack-time
     exact,by_st=_ship_bindings(c, label)
     now=datetime.now().isoformat(timespec='seconds'); who=(row["packed_by"] or "pack")[:60]
     any_dep=False
@@ -7315,6 +7347,154 @@ def api_preshow_unmap():
     c.commit(); c.close()
     return jsonify({"ok":True})
 
+# ── LIVE MODE — deplete stock in real time as the show sells ───────────────────
+def _show_is_live(c, label):
+    """True if this show was run in Live Mode (has live-sale scans). Stock for such
+    shows is handled by the live scans + CSV reconcile, NOT by pack-time depletion."""
+    if not label: return False
+    try:
+        return bool(c.execute("SELECT 1 FROM live_sales WHERE import_label=? LIMIT 1",(label,)).fetchone())
+    except Exception:
+        return False
+
+def _live_totals(c, label):
+    rows=c.execute("""SELECT l.product_sku, SUM(l.qty) units,
+                             SUM(l.qty*COALESCE(l.unit_cost,0)) cogs,
+                             SUM(l.qty*COALESCE(l.unit_price,0)) revenue,
+                             p.name name
+                      FROM live_sales l LEFT JOIN products p ON p.sku=l.product_sku
+                      WHERE l.import_label=? GROUP BY l.product_sku
+                      ORDER BY units DESC""",(label,)).fetchall()
+    items=[dict(r) for r in rows]
+    units=sum((r["units"] or 0) for r in rows)
+    cogs=round(sum((r["cogs"] or 0) for r in rows),2)
+    revenue=round(sum((r["revenue"] or 0) for r in rows),2)
+    return {"units":units,"cogs":cogs,"revenue":revenue,"profit":round(revenue-cogs,2),
+            "has_prices":revenue>0,"products":items}
+
+@app.route("/api/live/scan",methods=["POST"])
+@req_role("admin","cs","worker","picker")
+def api_live_scan():
+    """One live sale: bind the sticker to the scanned product (first time), deplete the
+    units now, and record it. Works even with no stock counted yet — on_hand may go
+    negative; that's fine, it's data we reconcile against the CSV later."""
+    d=request.get_json() or {}
+    show=(d.get("show") or "").strip()
+    sticker=(d.get("sticker") or "").strip()
+    try: part=int(d.get("part") or 0)
+    except Exception: part=0
+    try: qty=max(1,min(999,int(d.get("qty") or 1)))
+    except Exception: qty=1
+    code=(d.get("code") or "").strip()
+    product_sku=(d.get("product_sku") or "").strip()
+    try: price=float(d.get("price")) if d.get("price") not in (None,"") else None
+    except Exception: price=None
+    if not show: return jsonify({"ok":False,"error":"Pick/name the live first"})
+    c=sdb()
+    prod=None
+    if product_sku:
+        prod=c.execute("SELECT * FROM products WHERE sku=?",(product_sku,)).fetchone()
+    elif code:
+        prod=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
+    if not prod:
+        c.close()
+        return jsonify({"ok":False,"error":"Product not found in catalog","not_found":True,"code":code or product_sku})
+    now=datetime.now().isoformat(timespec='seconds'); who=session.get("name","")[:60]
+    cost=prod["avg_cost"] or 0
+    # Default the sale price to the catalog target price if none given, so live profit has
+    # a number to work with until the CSV brings the real price.
+    if price is None: price=prod["target_price"] or 0
+    # Bind the sticker to this product (first scan wins; re-scan updates it).
+    if sticker:
+        c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by)
+                     VALUES(?,?,?,?,0,?,?)
+                     ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET
+                        product_sku=excluded.product_sku,mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
+                  (show,sticker,part,prod["sku"],now,who))
+    # Deplete now (allowed to go negative — stock may not be counted yet).
+    c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(qty,prod["sku"]))
+    c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
+              (prod["sku"],-qty,cost,"live sale ("+show+")",now,who))
+    c.execute("""INSERT INTO live_sales(import_label,sticker_sku,part,product_sku,qty,unit_cost,unit_price,sold_at,sold_by)
+                 VALUES(?,?,?,?,?,?,?,?,?)""",(show,sticker,part,prod["sku"],qty,cost,price,now,who))
+    c.commit()
+    oh=c.execute("SELECT on_hand FROM products WHERE sku=?",(prod["sku"],)).fetchone()["on_hand"]
+    tot=_live_totals(c, show)
+    c.close()
+    return jsonify({"ok":True,"product":{"sku":prod["sku"],"name":prod["name"],"image_url":prod["image_url"],
+                    "on_hand":oh,"unit_cost":cost,"unit_price":price},"qty":qty,"sticker":sticker,"totals":tot})
+
+@app.route("/api/live/summary")
+@req_role("admin","cs","worker","picker")
+def api_live_summary():
+    show=(request.args.get("show") or "").strip()
+    if not show: return jsonify({"ok":False,"error":"show required"})
+    c=sdb()
+    tot=_live_totals(c, show)
+    recent=[dict(r) for r in c.execute("""SELECT l.id,l.sticker_sku,l.qty,l.product_sku,l.sold_by,l.sold_at,p.name
+                      FROM live_sales l LEFT JOIN products p ON p.sku=l.product_sku
+                      WHERE l.import_label=? ORDER BY l.id DESC LIMIT 25""",(show,)).fetchall()]
+    c.close()
+    return jsonify({"ok":True,"show":show,"totals":tot,"recent":recent})
+
+@app.route("/api/live/undo",methods=["POST"])
+@req_role("admin","cs","worker","picker")
+def api_live_undo():
+    """Undo one live-sale scan (restores its units). Pass {id} or omit to undo the last."""
+    d=request.get_json() or {}
+    show=(d.get("show") or "").strip()
+    sid=d.get("id")
+    c=sdb()
+    if sid:
+        row=c.execute("SELECT * FROM live_sales WHERE id=? AND import_label=?",(sid,show)).fetchone()
+    else:
+        row=c.execute("SELECT * FROM live_sales WHERE import_label=? ORDER BY id DESC LIMIT 1",(show,)).fetchone()
+    if not row:
+        c.close(); return jsonify({"ok":False,"error":"Nothing to undo"})
+    c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(row["qty"],row["product_sku"]))
+    c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
+              (row["product_sku"],row["qty"],"live sale undo ("+show+")",
+               datetime.now().isoformat(timespec='seconds'),session.get("name","")[:60]))
+    c.execute("DELETE FROM live_sales WHERE id=?",(row["id"],))
+    c.commit()
+    tot=_live_totals(c, show)
+    c.close()
+    return jsonify({"ok":True,"totals":tot})
+
+def _reconcile_live_with_csv(c, label):
+    """After the CSV import, make the live-mode stock match TikTok's truth. For each
+    product: target = units actually sold per the CSV (via sticker→product bindings,
+    cancellations excluded); live already removed SUM(live_sales.qty); adjust on_hand by
+    the difference. Idempotent via live_reconcile.applied_extra."""
+    if not _show_is_live(c, label): return None
+    # CSV sold units per product (through the bindings), cancellations excluded.
+    exact,by_st=_ship_bindings(c, label)
+    csv_sold={}
+    for it in c.execute("""SELECT i.sku, i.product_name, i.quantity FROM shipment_items i
+                           JOIN shipments s ON s.shipment_id=i.shipment_id
+                           WHERE s.import_label=? AND COALESCE(i.cancelled,0)=0""",(label,)).fetchall():
+        psku=_resolve_item_product(exact,by_st,(it["sku"] or "").strip(),it["product_name"])
+        if psku: csv_sold[psku]=csv_sold.get(psku,0)+(it["quantity"] or 0)
+    live_by={r["product_sku"]:(r["u"] or 0) for r in c.execute(
+        "SELECT product_sku, SUM(qty) u FROM live_sales WHERE import_label=? GROUP BY product_sku",(label,)).fetchall()}
+    applied={r["product_sku"]:(r["applied_extra"] or 0) for r in c.execute(
+        "SELECT product_sku, applied_extra FROM live_reconcile WHERE import_label=?",(label,)).fetchall()}
+    now=datetime.now().isoformat(timespec='seconds'); changed=0; total_delta=0
+    skus=set(csv_sold)|set(live_by)|set(applied)
+    for sku in skus:
+        target=csv_sold.get(sku,0); live=live_by.get(sku,0); prev=applied.get(sku,0)
+        need_extra=target-live                 # extra to remove beyond the live scans
+        delta=need_extra-prev                   # change since last reconcile
+        if delta!=0:
+            c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(delta,sku))
+            c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
+                      (sku,-delta,"live reconcile ("+label+")",now,"reconcile"))
+            changed+=1; total_delta+=delta
+        c.execute("""INSERT INTO live_reconcile(import_label,product_sku,applied_extra) VALUES(?,?,?)
+                     ON CONFLICT(import_label,product_sku) DO UPDATE SET applied_extra=excluded.applied_extra""",
+                  (label,sku,need_extra))
+    return {"products_adjusted":changed,"units_delta":total_delta}
+
 @app.route("/api/profit")
 @req_role("admin")
 def api_profit():
@@ -7768,6 +7948,11 @@ def api_equipment_set():
 @req_role("admin","cs")
 def equipment_page():
     return EQUIPMENT_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("equipment")).replace("__NAVBAR_CSS__",_NAVBAR_CSS).replace("__ROLE__",session.get("role",""))
+
+@app.route("/admin/live")
+@req_role("admin","cs","worker","picker")
+def live_page():
+    return LIVE_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("live")).replace("__NAVBAR_CSS__",_NAVBAR_CSS).replace("__ROLE__",session.get("role",""))
 
 # ── GEOGRAPHY ANALYTICS — where orders ship, by state (audience map) ──
 _US_STATES={"AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",

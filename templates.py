@@ -103,6 +103,8 @@ def _navbar(active_page=""):
 
         # Warehouse floor tasks (workers / pickers).
         floor = []
+        if has("admin", "cs", "worker", "picker"):
+            floor.append(("live", "/admin/live", "🔴 Live Mode"))
         if has("worker"):
             floor.append(("pack", "/", "📦 Pack"))
         if has("worker", "picker"):
@@ -12423,5 +12425,188 @@ document.getElementById('copy').addEventListener('click',function(){
   var lines=DATA.items.filter(function(i){return i.link}).map(function(i){return i.qty+'x '+i.name+': '+i.link});
   navigator.clipboard.writeText(lines.join('\\n')).then(function(){toast('Links copied ✓')});
 });
+</script>
+</body></html>'''
+
+
+# ── LIVE MODE — real-time scan-to-deplete during the show, with running profit ──
+LIVE_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light only">
+''' + _FONT + '''
+<title>Live Mode</title>
+__NAVBAR_CSS__
+<style>
+html{color-scheme:light only}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',sans-serif;background:#f6f7fb;color:#141b26;min-height:100vh}
+.page-hdr{padding:20px 24px 6px;max-width:1000px;margin:0 auto}
+.page-title{font-size:22px;font-weight:900}.page-title .dot{color:#e11d48}
+.wrap{max-width:1000px;margin:0 auto;padding:8px 24px 60px}
+.card{background:#fff;border:1px solid rgba(17,24,39,0.09);border-radius:16px;padding:18px 20px;margin-bottom:16px}
+.card h2{font-size:13px;font-weight:800;color:#4f46e5;text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px}
+label{display:block;font-size:11px;font-weight:700;color:#6b7280;margin:0 0 4px;text-transform:uppercase;letter-spacing:.4px}
+input{background:#fff;border:2px solid rgba(17,24,39,0.13);border-radius:12px;padding:12px 14px;font-size:16px;color:#141b26;font-family:inherit;outline:none;width:100%}
+input:focus{border-color:#4f46e5}
+.row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+.f{flex:1;min-width:120px}
+.btn{border:none;border-radius:12px;padding:12px 18px;font-size:15px;font-weight:800;cursor:pointer;font-family:inherit}
+.btn-p{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff}.btn-s{background:rgba(17,24,39,0.08);color:#141b26;border:1px solid rgba(17,24,39,0.14)}
+.cur{background:#eef2ff;border:2px solid #c7d2fe;border-radius:14px;padding:12px 16px;text-align:center;min-width:110px}
+.cur .lab{font-size:10px;font-weight:800;color:#4f46e5;text-transform:uppercase;letter-spacing:.5px}
+.cur .num{font-size:30px;font-weight:900;color:#141b26}
+.scanbox{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap}
+.big{flex:2;min-width:220px}.big input{font-size:22px;padding:16px;border-width:3px;border-color:#4f46e5}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.kpi{background:#fff;border:1px solid rgba(17,24,39,0.09);border-radius:14px;padding:14px 16px}
+.kpi .l{font-size:11px;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.kpi .v{font-size:26px;font-weight:900;margin-top:2px}
+.kpi.units .v{color:#141b26}.kpi.cogs .v{color:#b45309}.kpi.rev .v{color:#059669}.kpi.profit .v{color:#4f46e5}
+.last{min-height:56px;display:flex;align-items:center;gap:12px;margin-top:12px;padding:12px;border-radius:12px;background:#f3f4f6}
+.last.ok{background:#ecfdf5;border:1px solid #a7f3d0}.last.err{background:#fef2f2;border:1px solid #fecaca}
+.last img,.last .ph{width:44px;height:44px;border-radius:10px;object-fit:cover;background:#e5e7eb;flex-shrink:0}
+.last .nm{font-weight:800}.last .sub{font-size:12.5px;color:#586274}
+.recent{margin-top:4px}
+.rrow{display:flex;align-items:center;gap:10px;padding:8px 4px;border-top:1px solid rgba(17,24,39,0.07);font-size:14px}
+.rrow .rx{margin-left:auto;color:#e11d48;cursor:pointer;font-weight:800;padding:2px 8px}
+.rrow .rsku{font-family:monospace;color:#4f46e5}
+.hint{font-size:12px;color:#6b7280;margin-top:8px}
+.modal{position:fixed;inset:0;background:rgba(17,24,39,.5);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
+.modal.on{display:flex}.box{background:#fff;border-radius:16px;padding:22px;max-width:520px;width:100%;max-height:80vh;overflow:auto}
+.pickrow{display:flex;gap:10px;align-items:center;padding:10px;border-radius:10px;cursor:pointer;border:1px solid transparent}
+.pickrow:hover{background:#f3f4f6;border-color:#c7d2fe}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#141b26;color:#fff;padding:12px 22px;border-radius:12px;font-weight:700;display:none;z-index:300}
+.toast.err{background:#e11d48}
+@media(max-width:640px){.kpis{grid-template-columns:repeat(2,1fr)}}
+</style></head><body>
+__NAVBAR__
+<div class="page-hdr"><div class="page-title"><span class="dot">🔴</span> Live Mode <span style="color:#6b7280;font-weight:600;font-size:14px">__NAME__</span></div>
+<div class="hint">Scan each product as it sells — stock drops in real time. Works even before stock is counted. Import the show CSV at the end to true-up the numbers.</div></div>
+<div class="wrap">
+  <div class="card">
+    <h2>1 · This live</h2>
+    <div class="row">
+      <div class="f" style="flex:2"><label>Live / show name</label><input id="show" list="recentShows" placeholder="e.g. 10/20 Peach Live"><datalist id="recentShows"></datalist></div>
+      <div class="f" style="max-width:120px"><label>Part (lane)</label>
+        <select id="part" style="width:100%;padding:12px;border:2px solid rgba(17,24,39,0.13);border-radius:12px;font-family:inherit;font-size:16px">
+          <option value="0" selected>No part</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></div>
+    </div>
+  </div>
+
+  <div class="card" id="scanCard" style="opacity:.5;pointer-events:none">
+    <h2>2 · Scan each product that sells</h2>
+    <div class="scanbox">
+      <div class="cur"><div class="lab">Sticker #</div><input class="num" id="sticker" type="number" value="1" style="width:92px;text-align:center;border:none;background:transparent;font-size:30px;font-weight:900"></div>
+      <div class="big"><label>Scan product barcode / UPC</label><input id="code" placeholder="📷 scan or type…" autocomplete="off"></div>
+      <div class="f" style="max-width:90px"><label>Qty</label><input id="qty" type="number" value="1" min="1"></div>
+      <div class="f" style="max-width:120px"><label>Sell price $ <span style="text-transform:none;color:#9aa3b0">(opt)</span></label><input id="price" type="number" step="0.01" placeholder="auto"></div>
+      <button class="btn btn-s" id="pickBtn">🔍 Search</button>
+    </div>
+    <div class="last" id="last"><span class="sub">Scan a product to begin…</span></div>
+    <div class="hint">Each scan removes <b>Qty</b> units from that product and advances the sticker. Same product selling again? Keep the sticker and scan again, or bump Qty.</div>
+  </div>
+
+  <div class="card">
+    <h2>📊 Live totals</h2>
+    <div class="kpis">
+      <div class="kpi units"><div class="l">Units sold</div><div class="v" id="kUnits">0</div></div>
+      <div class="kpi cogs"><div class="l">COGS (cost)</div><div class="v" id="kCogs">$0</div></div>
+      <div class="kpi rev"><div class="l">Revenue</div><div class="v" id="kRev">$0</div></div>
+      <div class="kpi profit"><div class="l">Profit</div><div class="v" id="kProfit">$0</div></div>
+    </div>
+    <div class="recent" id="recent"></div>
+  </div>
+</div>
+
+<div class="modal" id="pickModal"><div class="box">
+  <h3 style="margin-bottom:12px">Find product</h3>
+  <input id="pickQ" placeholder="Search name / SKU / barcode" style="margin-bottom:12px">
+  <div id="pickRows"></div>
+  <div style="margin-top:12px;text-align:right"><button class="btn btn-s" onclick="closePick()">Cancel</button></div>
+</div></div>
+<div class="toast" id="t"></div>
+<script>
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+function toast(m,e){var x=document.getElementById('t');x.textContent=m;x.className=e?'toast err':'toast';x.style.display='block';setTimeout(function(){x.style.display='none'},2000)}
+function money(v){return '$'+Number(v||0).toLocaleString(undefined,{maximumFractionDigits:2})}
+function show(){return document.getElementById('show').value.trim()}
+function part(){return parseInt(document.getElementById('part').value||'0')}
+function curSticker(){return document.getElementById('sticker').value.trim()}
+function qty(){return Math.max(1,parseInt(document.getElementById('qty').value||'1'))}
+
+fetch('/api/shows/recent').then(function(r){return r.json()}).then(function(sh){
+  var dl=document.getElementById('recentShows');(sh||[]).forEach(function(s){var o=document.createElement('option');o.value=s;dl.appendChild(o)});
+});
+function enable(on){var c=document.getElementById('scanCard');c.style.opacity=on?'1':'.5';c.style.pointerEvents=on?'auto':'none';if(on)document.getElementById('code').focus()}
+document.getElementById('show').addEventListener('input',function(){var on=!!show();enable(on);if(on)loadSummary()});
+
+function renderTotals(t){
+  document.getElementById('kUnits').textContent=(t.units||0).toLocaleString();
+  document.getElementById('kCogs').textContent=money(t.cogs);
+  document.getElementById('kRev').textContent=t.has_prices?money(t.revenue):'—';
+  document.getElementById('kProfit').textContent=t.has_prices?money(t.profit):'—';
+}
+function renderRecent(rows){
+  var el=document.getElementById('recent');
+  if(!rows||!rows.length){el.innerHTML='';return}
+  el.innerHTML=rows.map(function(r){
+    return '<div class="rrow"><span class="rsku">#'+esc(r.sticker_sku||'-')+'</span> '+esc(r.name||r.product_sku)+
+      ' <b>×'+r.qty+'</b> <span style="color:#9aa3b0;font-size:12px">'+esc((r.sold_by||''))+'</span>'+
+      '<span class="rx" data-id="'+r.id+'" title="Undo">✕ undo</span></div>';
+  }).join('');
+  el.querySelectorAll('.rx').forEach(function(x){x.addEventListener('click',function(){undo(this.getAttribute('data-id'))})});
+}
+function loadSummary(){
+  if(!show())return;
+  fetch('/api/live/summary?show='+encodeURIComponent(show())).then(function(r){return r.json()}).then(function(d){
+    if(d.ok){renderTotals(d.totals);renderRecent(d.recent)}
+  });
+}
+function showLast(ok,html){var l=document.getElementById('last');l.className='last '+(ok?'ok':'err');l.innerHTML=html}
+
+function doScan(payload){
+  payload.show=show();payload.part=part();payload.sticker=curSticker();payload.qty=qty();
+  var pr=document.getElementById('price').value;if(pr!=='')payload.price=parseFloat(pr);
+  return fetch('/api/live/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json()});
+}
+function afterScan(d){
+  if(d.ok){
+    var p=d.product;var img=p.image_url?'<img src="'+esc(p.image_url)+'">':'<div class="ph"></div>';
+    showLast(true,img+'<div><div class="nm">✓ '+esc(p.name||p.sku)+' ×'+d.qty+'</div>'+
+      '<div class="sub">Sticker '+esc(d.sticker||'-')+' · on hand now <b>'+p.on_hand+'</b> · cost '+money(p.unit_cost)+(p.unit_price?(' · price '+money(p.unit_price)):'')+'</div></div>');
+    renderTotals(d.totals);loadSummary();
+    // advance sticker, clear code + price, refocus
+    document.getElementById('sticker').value=(parseInt(curSticker()||'0')+1);
+    var cc=document.getElementById('code');cc.value='';document.getElementById('price').value='';cc.focus();
+  } else if(d.not_found){ openPick(document.getElementById('code').value.trim()); }
+  else toast(d.error||'Failed',true);
+}
+document.getElementById('code').addEventListener('keydown',function(e){
+  if(e.key!=='Enter')return;
+  var code=this.value.trim();if(!code)return;
+  if(!show()){toast('Name the live first',true);return}
+  doScan({code:code}).then(afterScan);
+});
+function undo(id){
+  fetch('/api/live/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:show(),id:id})})
+   .then(function(r){return r.json()}).then(function(d){if(d.ok){renderTotals(d.totals);loadSummary();toast('Undone')}else toast(d.error||'Failed',true)});
+}
+// ── search modal ──
+document.getElementById('pickBtn').addEventListener('click',function(){openPick('')});
+function openPick(q){document.getElementById('pickModal').classList.add('on');var e=document.getElementById('pickQ');e.value=q||'';document.getElementById('pickRows').innerHTML='';e.focus();if(q)searchProducts(q)}
+function closePick(){document.getElementById('pickModal').classList.remove('on');document.getElementById('code').focus()}
+var pq=null;
+document.getElementById('pickQ').addEventListener('input',function(){clearTimeout(pq);var v=this.value.trim();pq=setTimeout(function(){searchProducts(v)},200)});
+function searchProducts(v){
+  fetch('/api/products'+(v?('?q='+encodeURIComponent(v)):'')).then(function(r){return r.json()}).then(function(rows){
+    document.getElementById('pickRows').innerHTML=(rows||[]).map(function(p){
+      var img=p.image_url?'<img src="'+esc(p.image_url)+'" style="width:40px;height:40px;border-radius:8px;object-fit:cover">':'<div style="width:40px;height:40px;border-radius:8px;background:#e5e7eb"></div>';
+      return '<div class="pickrow" data-sku="'+esc(p.sku)+'">'+img+'<div><div style="font-weight:700">'+esc(p.name||p.sku)+'</div><div style="font-size:12px;color:#6b7280"><span class="rsku">'+esc(p.sku)+'</span> · '+esc(p.barcode||'no barcode')+'</div></div></div>';
+    }).join('')||'<div style="color:#6b7280">No matches</div>';
+    document.getElementById('pickRows').querySelectorAll('.pickrow').forEach(function(el){
+      el.addEventListener('click',function(){var sku=el.getAttribute('data-sku');closePick();doScan({product_sku:sku}).then(afterScan)});
+    });
+  });
+}
 </script>
 </body></html>'''
