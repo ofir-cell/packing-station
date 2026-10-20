@@ -13158,8 +13158,8 @@ def api_tiktok_status():
     ev=c.execute("SELECT COUNT(*) n FROM tiktok_events WHERE org_id=?",(org,)).fetchone()
     c.close()
     return jsonify({"ok":True,"configured":_tiktok_ready(),"has_service_id":bool(TIKTOK_SERVICE_ID),
-                    "redirect_url":"https://getwhatnot.com/api/tiktok/callback",
-                    "webhook_url":"https://getwhatnot.com/api/tiktok/webhook",
+                    "redirect_url":"https://www.getwhatnot.com/api/tiktok/callback",
+                    "webhook_url":"https://www.getwhatnot.com/api/tiktok/webhook",
                     "shops":shops,"orders":orders,"event_count":(ev["n"] if ev else 0)})
 
 @app.route("/admin/tiktok")
