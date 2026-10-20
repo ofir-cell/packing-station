@@ -168,6 +168,8 @@ def _navbar(active_page=""):
             if has("admin"):
                 _admin_items.append(("setup", "/setup", "🚀 Company setup"))
             _admin_items.append(("hires", "/admin/hires", "🧑‍💼 New Hires"))
+            if has("admin"):
+                _admin_items.append(("tiktok", "/admin/tiktok", "🎵 TikTok Shop"))
             _admin_items.append(("settings", "/admin/settings", "⚙️ Settings"))
             _admin_items.append(("audit", "/admin/audit", "🧾 Audit log"))
             user_sections.append(("Team & Admin", _admin_items))

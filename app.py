@@ -458,6 +458,55 @@ def pdb_init():
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_guides_status ON guides(status)")
+    # ── TikTok Shop: per-shop OAuth tokens (one row per authorized shop) ──
+    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_shops(
+        org_id TEXT NOT NULL,
+        shop_id TEXT NOT NULL,
+        shop_cipher TEXT DEFAULT '',
+        shop_name TEXT DEFAULT '',
+        region TEXT DEFAULT '',
+        seller_name TEXT DEFAULT '',
+        open_id TEXT DEFAULT '',
+        access_token TEXT DEFAULT '',
+        access_expire_at INTEGER DEFAULT 0,
+        refresh_token TEXT DEFAULT '',
+        refresh_expire_at INTEGER DEFAULT 0,
+        granted_scopes TEXT DEFAULT '',
+        active INTEGER DEFAULT 1,
+        authorized_by TEXT DEFAULT '',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(org_id, shop_id)
+    )""")
+    # Raw webhook events (audit trail + idempotency). type is the TikTok topic code.
+    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_events(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        shop_id TEXT DEFAULT '',
+        org_id TEXT DEFAULT '',
+        type INTEGER DEFAULT 0,
+        order_id TEXT DEFAULT '',
+        status TEXT DEFAULT '',
+        payload TEXT DEFAULT '',
+        received_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        processed INTEGER DEFAULT 0
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tt_events_order ON tiktok_events(order_id)")
+    # Orders pulled from TikTok (parked here until assigned to a live show / depleted).
+    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_orders(
+        order_id TEXT NOT NULL,
+        org_id TEXT NOT NULL,
+        shop_id TEXT DEFAULT '',
+        status TEXT DEFAULT '',
+        buyer TEXT DEFAULT '',
+        line_items TEXT DEFAULT '',
+        create_time INTEGER DEFAULT 0,
+        assigned_show TEXT DEFAULT '',
+        depleted INTEGER DEFAULT 0,
+        raw TEXT DEFAULT '',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(org_id, order_id)
+    )""")
     c.commit(); c.close()
 
 pdb_init()
@@ -1971,6 +2020,23 @@ _NO_LABEL_MSG=("Buying shipping labels is turned off for this workspace, because
                "shipping account isn't yours. Connect your own carrier account to ship, "
                "or contact support.")
 
+# ── TikTok Shop API (live order sync) ──────────────────────────────
+# App credentials come from the TikTok Shop Partner Center app ("LiveOpsHub").
+# Set TIKTOK_APP_KEY / TIKTOK_APP_SECRET in the environment (never in code).
+# Hosts default to the US production endpoints but are overridable in case
+# TikTok moves them.
+TIKTOK_APP_KEY=os.environ.get("TIKTOK_APP_KEY","").strip()
+TIKTOK_APP_SECRET=os.environ.get("TIKTOK_APP_SECRET","").strip()
+TIKTOK_SERVICE_ID=os.environ.get("TIKTOK_SERVICE_ID","").strip()
+TIKTOK_AUTH_BASE=os.environ.get("TIKTOK_AUTH_BASE","https://auth.tiktok-shops.com").rstrip("/")
+TIKTOK_API_BASE=os.environ.get("TIKTOK_API_BASE","https://open-api.tiktokglobalshop.com").rstrip("/")
+TIKTOK_API_VERSION=os.environ.get("TIKTOK_API_VERSION","202309").strip()
+# Where the seller is sent to grant access. The app's redirect URL (set in
+# Partner Center) must be https://getwhatnot.com/api/tiktok/callback.
+TIKTOK_AUTH_PORTAL=os.environ.get("TIKTOK_AUTH_PORTAL","https://services.us.tiktokshop.com/open/authorize").strip()
+def _tiktok_ready():
+    return bool(TIKTOK_APP_KEY and TIKTOK_APP_SECRET)
+
 def _ss(method, path, payload=None):
     """Call the ShipStation V2 API. Raises RuntimeError('ShipStation: <msg>') on error."""
     data=json.dumps(payload).encode() if payload is not None else None
@@ -3278,7 +3344,7 @@ _CSRF_SAFE=("GET","HEAD","OPTIONS","TRACE")
 # The public lead form is unauthenticated — there is no session for a forged request
 # to ride on, so CSRF adds nothing, and it must be POSTable from the marketing site
 # on a different origin. It is rate-limited by IP instead.
-_CSRF_EXEMPT={"/api/lead","/api/apply"}
+_CSRF_EXEMPT={"/api/lead","/api/apply","/api/tiktok/webhook"}
 
 @app.before_request
 def _csrf_protect():
@@ -12801,6 +12867,364 @@ def api_scanit_favorite_toggle():
     c.commit(); c.close()
     return jsonify({"ok":True,"favorited":fav})
 
+
+# ════════════════════════════════════════════════════════════════════
+#  TikTok Shop integration — OAuth, webhooks, order ingestion
+#  Docs: HMAC-SHA256 request signing; token exchange at auth.tiktok-shops.com;
+#  API calls at open-api.tiktokglobalshop.com with x-tts-access-token header.
+# ════════════════════════════════════════════════════════════════════
+def _tt_log(msg):
+    try: print("[tiktok]", msg, flush=True)
+    except Exception: pass
+
+def _tt_sign(path, query_params, body_str="", content_type="application/json"):
+    """TikTok Shop request signature (HMAC-SHA256). Params exclude sign & access_token,
+    sorted alphabetically, concatenated {key}{value}, prefixed with the path, body
+    appended (unless multipart), wrapped in the app secret, then HMAC-SHA256 hex."""
+    import hmac as _h, hashlib as _hs
+    secret=TIKTOK_APP_SECRET
+    keys=sorted(k for k in query_params if k not in ("sign","access_token"))
+    base=path
+    for k in keys:
+        base+="%s%s"%(k, query_params[k])
+    if content_type!="multipart/form-data" and body_str:
+        base+=body_str
+    wrapped=secret+base+secret
+    return _h.new(secret.encode("utf-8"), wrapped.encode("utf-8"), _hs.sha256).hexdigest()
+
+def _tt_request(method, url, params=None, headers=None, body=None, signed=False, access_token=None, timeout=30):
+    """Low-level TikTok HTTP call via urllib. Returns parsed JSON dict (raises on transport error)."""
+    import urllib.request as _ur, urllib.parse as _up, urllib.error as _ue
+    params=dict(params or {})
+    hdrs={k.lower():v for k,v in (headers or {}).items()}
+    parsed=_up.urlparse(url); path=parsed.path
+    body_str=""
+    if body is not None:
+        body_str=json.dumps(body, separators=(',',':'))
+        hdrs.setdefault("content-type","application/json")
+    if signed:
+        params["app_key"]=TIKTOK_APP_KEY
+        params["timestamp"]=str(int(time.time()))
+        if access_token: hdrs["x-tts-access-token"]=access_token
+        ct=hdrs.get("content-type","application/json")
+        params["sign"]=_tt_sign(path, params, body_str, ct)
+    qs=_up.urlencode(params)
+    full=url+("?"+qs if qs else "")
+    data=body_str.encode("utf-8") if body_str else None
+    req=_ur.Request(full, data=data, method=method, headers=hdrs)
+    try:
+        with _ur.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8") or "{}")
+    except _ue.HTTPError as e:
+        try: return json.loads(e.read().decode("utf-8") or "{}")
+        except Exception: raise
+
+def _tt_token_exchange(auth_code):
+    return _tt_request("GET", TIKTOK_AUTH_BASE+"/api/v2/token/get",
+        params={"app_key":TIKTOK_APP_KEY,"app_secret":TIKTOK_APP_SECRET,
+                "auth_code":auth_code,"grant_type":"authorized_code"})
+
+def _tt_token_refresh(refresh_token):
+    return _tt_request("GET", TIKTOK_AUTH_BASE+"/api/v2/token/refresh",
+        params={"app_key":TIKTOK_APP_KEY,"app_secret":TIKTOK_APP_SECRET,
+                "refresh_token":refresh_token,"grant_type":"refresh_token"})
+
+def _tt_get_shops(access_token):
+    return _tt_request("GET", TIKTOK_API_BASE+"/authorization/%s/shops"%TIKTOK_API_VERSION,
+        signed=True, access_token=access_token)
+
+def _tt_state(org):
+    """Signed state param carrying the org through the OAuth redirect (CSRF-safe)."""
+    import hmac as _h, base64 as _b
+    raw="%s|%d|%s"%(org, int(time.time()), secrets.token_urlsafe(8))
+    sig=_h.new((SECRET_KEY or "x").encode(), raw.encode(), hashlib.sha256).hexdigest()[:16]
+    return _b.urlsafe_b64encode(("%s|%s"%(raw,sig)).encode()).decode()
+
+def _tt_state_org(state):
+    import hmac as _h, base64 as _b
+    try:
+        dec=_b.urlsafe_b64decode(state.encode()).decode()
+        org,ts,nonce,sig=dec.split("|")
+        good=_h.new((SECRET_KEY or "x").encode(), ("%s|%s|%s"%(org,ts,nonce)).encode(), hashlib.sha256).hexdigest()[:16]
+        if _h.compare_digest(good,sig) and (int(time.time())-int(ts))<3600:
+            return org
+    except Exception: pass
+    return None
+
+def _tt_store_shop(org, token_data, shop, who=""):
+    now_scopes=token_data.get("granted_scopes")
+    scopes=",".join(now_scopes) if isinstance(now_scopes,list) else str(now_scopes or "")
+    c=pdb()
+    c.execute("""INSERT INTO tiktok_shops(org_id,shop_id,shop_cipher,shop_name,region,seller_name,open_id,
+         access_token,access_expire_at,refresh_token,refresh_expire_at,granted_scopes,active,authorized_by,updated_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,CURRENT_TIMESTAMP)
+         ON CONFLICT(org_id,shop_id) DO UPDATE SET shop_cipher=excluded.shop_cipher,shop_name=excluded.shop_name,
+           region=excluded.region,seller_name=excluded.seller_name,open_id=excluded.open_id,
+           access_token=excluded.access_token,access_expire_at=excluded.access_expire_at,
+           refresh_token=excluded.refresh_token,refresh_expire_at=excluded.refresh_expire_at,
+           granted_scopes=excluded.granted_scopes,active=1,updated_at=CURRENT_TIMESTAMP""",
+      (org, str(shop.get("id","")), shop.get("cipher",""), shop.get("name",""), shop.get("region",""),
+       token_data.get("seller_name",""), token_data.get("open_id",""),
+       token_data.get("access_token",""), int(token_data.get("access_token_expire_in") or 0),
+       token_data.get("refresh_token",""), int(token_data.get("refresh_token_expire_in") or 0),
+       scopes, who))
+    c.commit(); c.close()
+
+def _tt_org_for_shop(shop_id):
+    if not shop_id: return None
+    c=pdb()
+    r=c.execute("SELECT org_id FROM tiktok_shops WHERE shop_id=? ORDER BY active DESC, updated_at DESC LIMIT 1",(str(shop_id),)).fetchone()
+    c.close()
+    return r["org_id"] if r else None
+
+def _tt_valid_token(org, shop_id):
+    """Return a dict with a usable access_token for this shop, refreshing if near expiry."""
+    c=pdb()
+    row=c.execute("SELECT * FROM tiktok_shops WHERE org_id=? AND shop_id=? AND active=1",(org,str(shop_id))).fetchone()
+    c.close()
+    if not row: return None
+    row=dict(row)
+    now=int(time.time()); exp=row.get("access_expire_at") or 0
+    if exp and now < exp-300:
+        return row
+    try:
+        res=_tt_token_refresh(row["refresh_token"]); data=res.get("data") or {}
+        if data.get("access_token"):
+            c=pdb()
+            c.execute("""UPDATE tiktok_shops SET access_token=?,access_expire_at=?,refresh_token=?,refresh_expire_at=?,updated_at=CURRENT_TIMESTAMP
+                         WHERE org_id=? AND shop_id=?""",
+                (data["access_token"], int(data.get("access_token_expire_in") or 0),
+                 data.get("refresh_token") or row["refresh_token"], int(data.get("refresh_token_expire_in") or 0),
+                 org, str(shop_id)))
+            c.commit(); c.close()
+            row["access_token"]=data["access_token"]; row["access_expire_at"]=int(data.get("access_token_expire_in") or 0)
+    except Exception as e:
+        _tt_log("token refresh failed for %s/%s: %r"%(org,shop_id,e))
+    return row
+
+def _tt_ingest_order(org, shop_id, order_id):
+    """Fetch an order's detail and park it in tiktok_orders (line items collapsed to qty).
+    Does NOT deplete stock yet — that happens when the order is assigned to a live show."""
+    tok=_tt_valid_token(org, shop_id)
+    if not tok or not tok.get("access_token"): return
+    params={"ids":order_id}
+    if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
+    res=_tt_request("GET", TIKTOK_API_BASE+"/order/%s/orders"%TIKTOK_API_VERSION,
+                    params=params, signed=True, access_token=tok["access_token"])
+    orders=((res.get("data") or {}).get("orders") or [])
+    if not orders: return
+    o=orders[0]
+    agg={}
+    for li in (o.get("line_items") or []):
+        key=(li.get("seller_sku") or "", str(li.get("sku_id") or ""), li.get("product_name") or "")
+        a=agg.setdefault(key, {"seller_sku":key[0],"sku_id":key[1],"name":key[2],"qty":0,"price":""})
+        a["qty"]+=1
+        a["price"]=li.get("sale_price") or li.get("original_price") or a["price"]
+    items=list(agg.values())
+    c=pdb()
+    c.execute("""INSERT INTO tiktok_orders(order_id,org_id,shop_id,status,line_items,create_time,raw,updated_at)
+         VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+         ON CONFLICT(org_id,order_id) DO UPDATE SET status=excluded.status,line_items=excluded.line_items,
+           create_time=excluded.create_time,updated_at=CURRENT_TIMESTAMP""",
+      (str(order_id), org, str(shop_id), str(o.get("order_status") or o.get("status") or ""),
+       json.dumps(items), int(o.get("create_time") or 0), json.dumps(o)[:40000]))
+    c.commit(); c.close()
+    _tt_log("ingested order %s (%d line groups) for %s"%(order_id,len(items),org))
+
+def _tt_webhook_verify(body_bytes, sig_header):
+    """Best-effort webhook signature check: HMAC-SHA256(app_key + body, app_secret)."""
+    if not sig_header or not TIKTOK_APP_SECRET: return False
+    try:
+        import hmac as _h, hashlib as _hs
+        calc=_h.new(TIKTOK_APP_SECRET.encode(), TIKTOK_APP_KEY.encode()+(body_bytes or b""), _hs.sha256).hexdigest()
+        return _h.compare_digest(calc, sig_header.strip())
+    except Exception:
+        return False
+
+def _tt_page(title, msg):
+    return ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>"+title+"</title><body style='font-family:-apple-system,Segoe UI,Roboto,sans-serif;"
+            "background:#f5f3ff;color:#1a2130;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0'>"
+            "<div style='max-width:460px;background:#fff;border:1px solid #e4e7ec;border-radius:18px;padding:34px;"
+            "box-shadow:0 10px 30px rgba(20,27,38,.08);text-align:center'>"
+            "<div style='font-size:22px;font-weight:900;margin-bottom:10px'>"+title+"</div>"
+            "<div style='color:#586274;line-height:1.6;font-size:15px'>"+msg+"</div></div></body>")
+
+@app.route("/api/tiktok/connect")
+@req_role("admin")
+def api_tiktok_connect():
+    if not _tiktok_ready():
+        return _tt_page("Not configured","The TikTok app credentials are not set on the server yet."),400
+    org=current_org() or DEFAULT_ORG
+    import urllib.parse as _up
+    params={"state":_tt_state(org)}
+    if TIKTOK_SERVICE_ID: params["service_id"]=TIKTOK_SERVICE_ID
+    else: params["app_key"]=TIKTOK_APP_KEY
+    return redirect(TIKTOK_AUTH_PORTAL+"?"+_up.urlencode(params))
+
+@app.route("/api/tiktok/callback")
+def api_tiktok_callback():
+    code=request.args.get("code") or request.args.get("auth_code") or ""
+    state=request.args.get("state") or ""
+    org=_tt_state_org(state) or current_org()
+    if not code:
+        return _tt_page("Authorization failed","No authorization code was returned by TikTok. Please try connecting again."),400
+    if not org:
+        return _tt_page("Authorization failed","Could not identify your workspace. Please start again from inside the app."),400
+    try:
+        res=_tt_token_exchange(code)
+    except Exception as e:
+        _tt_log("token exchange error: %r"%e)
+        return _tt_page("Token exchange failed","Could not reach TikTok to exchange the code. Please try again."),502
+    data=res.get("data") or {}
+    if not data.get("access_token"):
+        return _tt_page("Token exchange failed", (res.get("message") or "TikTok did not return an access token.")[:300]),502
+    who=session.get("name","") or "oauth"
+    shops=[]
+    try:
+        sres=_tt_get_shops(data["access_token"])
+        shops=((sres.get("data") or {}).get("shops") or [])
+    except Exception as e:
+        _tt_log("get shops failed: %r"%e)
+    if not shops:
+        shops=[{"id":data.get("open_id") or "unknown","name":data.get("seller_name") or "",
+                "cipher":"","region":data.get("seller_base_region") or ""}]
+    for sh in shops:
+        _tt_store_shop(org, data, sh, who)
+    names=", ".join((sh.get("name") or str(sh.get("id"))) for sh in shops)
+    return _tt_page("✅ TikTok Shop connected",
+                    "Connected "+str(len(shops))+" shop(s): "+names+".<br>You can close this window and return to the app.")
+
+@app.route("/api/tiktok/webhook", methods=["POST","GET"])
+def api_tiktok_webhook():
+    # Some verification flows do a GET with a challenge/echo param.
+    if request.method=="GET":
+        ch=request.args.get("challenge") or request.args.get("verify_token") or ""
+        return (ch,200) if ch else ("ok",200)
+    body=request.get_data() or b""
+    sig=request.headers.get("Authorization","") or request.headers.get("authorization","")
+    verified=_tt_webhook_verify(body, sig)
+    try: payload=json.loads(body.decode("utf-8") or "{}")
+    except Exception: payload={}
+    ttype=payload.get("type")
+    try: ttype=int(ttype)
+    except Exception: ttype=0
+    shop_id=str(payload.get("shop_id") or "")
+    d=payload.get("data") or {}
+    order_id=str(d.get("order_id") or "")
+    status=str(d.get("order_status") or d.get("status") or "")
+    org=_tt_org_for_shop(shop_id)
+    try:
+        c=pdb()
+        c.execute("INSERT INTO tiktok_events(shop_id,org_id,type,order_id,status,payload) VALUES(?,?,?,?,?,?)",
+                  (shop_id, org or "", ttype, order_id, status, body.decode("utf-8",errors="replace")[:20000]))
+        c.commit(); c.close()
+    except Exception as e:
+        _tt_log("event log failed: %r"%e)
+    # Seller deauthorization (topic 6): mark the shop inactive.
+    if ttype==6 and shop_id:
+        try:
+            c=pdb(); c.execute("UPDATE tiktok_shops SET active=0,updated_at=CURRENT_TIMESTAMP WHERE shop_id=?",(shop_id,)); c.commit(); c.close()
+        except Exception: pass
+    # Order status change (topic 1): fetch + park the order. Never let this block the 200 ack.
+    if ttype==1 and order_id and org:
+        try: _tt_ingest_order(org, shop_id, order_id)
+        except Exception as e: _tt_log("ingest failed %s: %r"%(order_id,e))
+    return jsonify({"code":0,"message":"success"})
+
+@app.route("/api/tiktok/status")
+@req_role("admin")
+def api_tiktok_status():
+    org=current_org() or DEFAULT_ORG
+    c=pdb()
+    shops=[dict(r) for r in c.execute(
+        "SELECT shop_id,shop_name,region,seller_name,active,access_expire_at,granted_scopes,updated_at "
+        "FROM tiktok_shops WHERE org_id=? ORDER BY updated_at DESC",(org,)).fetchall()]
+    orders=[dict(r) for r in c.execute(
+        "SELECT order_id,status,line_items,create_time,depleted,assigned_show,updated_at "
+        "FROM tiktok_orders WHERE org_id=? ORDER BY updated_at DESC LIMIT 50",(org,)).fetchall()]
+    ev=c.execute("SELECT COUNT(*) n FROM tiktok_events WHERE org_id=?",(org,)).fetchone()
+    c.close()
+    return jsonify({"ok":True,"configured":_tiktok_ready(),"has_service_id":bool(TIKTOK_SERVICE_ID),
+                    "redirect_url":"https://getwhatnot.com/api/tiktok/callback",
+                    "webhook_url":"https://getwhatnot.com/api/tiktok/webhook",
+                    "shops":shops,"orders":orders,"event_count":(ev["n"] if ev else 0)})
+
+@app.route("/admin/tiktok")
+@req_role("admin")
+def admin_tiktok_page():
+    nav=_navbar("tiktok")
+    html="""<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>TikTok Shop</title>
+__NAVBAR_CSS__
+<style>
+body{margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;background:#f6f7fb;color:#1a2130}
+.wrap{max-width:900px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:22px;margin:14px 0 4px}.sub{color:#6b7280;font-size:14px;margin-bottom:18px}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:18px 20px;margin-bottom:16px;box-shadow:0 2px 8px rgba(20,27,38,.04)}
+.card h2{font-size:15px;margin:0 0 12px;font-weight:800}
+.row{display:flex;align-items:center;gap:10px;margin:8px 0;flex-wrap:wrap}
+.lbl{font-size:12px;font-weight:700;color:#6b7280;min-width:120px}
+code{background:#f3f4f6;border:1px solid #e5e7eb;border-radius:7px;padding:5px 9px;font-size:13px;word-break:break-all}
+.btn{display:inline-block;background:linear-gradient(135deg,#ff0050,#ee1d52);color:#fff;border:none;border-radius:10px;padding:11px 18px;font-size:14px;font-weight:800;cursor:pointer;text-decoration:none}
+.btn.g{background:#eef2ff;color:#4338ca}
+.pill{display:inline-block;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:700}
+.pill.ok{background:#dcfce7;color:#166534}.pill.off{background:#fee2e2;color:#991b1b}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #f0f1f4}
+th{color:#6b7280;font-weight:700;font-size:11px;text-transform:uppercase}
+.mut{color:#9aa1ab;font-size:13px}
+.copy{cursor:pointer;background:#fff;border:1px solid #d1d5db;border-radius:7px;padding:4px 8px;font-size:12px}
+</style></head><body>__NAVBAR__
+<div class="wrap">
+<h1>🎵 TikTok Shop</h1>
+<div class="sub">Connect your TikTok Shop so live orders flow into the system automatically — no CSV.</div>
+
+<div class="card">
+  <h2>Connection</h2>
+  <div class="row"><span class="lbl">App configured</span> <span id="cfg" class="pill off">checking…</span></div>
+  <div class="row"><span class="lbl">Redirect URL</span> <code id="redir">—</code> <button class="copy" data-c="redir">Copy</button></div>
+  <div class="row"><span class="lbl">Webhook URL</span> <code id="hook">—</code> <button class="copy" data-c="hook">Copy</button></div>
+  <div class="row" style="margin-top:14px">
+     <a class="btn" href="/api/tiktok/connect">Connect / add a shop →</a>
+     <span class="mut">Opens TikTok to authorize. Sign in as the shop owner (e.g. Peach).</span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Connected shops</h2>
+  <div id="shops" class="mut">Loading…</div>
+</div>
+
+<div class="card">
+  <h2>Recent orders received <span id="evc" class="mut"></span></h2>
+  <div id="orders" class="mut">Loading…</div>
+</div>
+</div>
+<script>
+function esc(s){return (s==null?'':String(s)).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+fetch('/api/tiktok/status').then(function(r){return r.json();}).then(function(d){
+  var cfg=document.getElementById('cfg');
+  if(d.configured){cfg.className='pill ok';cfg.textContent='Yes';}else{cfg.className='pill off';cfg.textContent='No — set app key/secret';}
+  document.getElementById('redir').textContent=d.redirect_url||'';
+  document.getElementById('hook').textContent=d.webhook_url||'';
+  document.getElementById('evc').textContent=d.event_count?('· '+d.event_count+' webhook events'):'';
+  var sh=document.getElementById('shops');
+  if(!d.shops||!d.shops.length){sh.innerHTML='<span class="mut">No shops connected yet. Click “Connect / add a shop”.</span>';}
+  else{var h='<table><tr><th>Shop</th><th>Region</th><th>Seller</th><th>Status</th><th>Updated</th></tr>';
+    d.shops.forEach(function(s){h+='<tr><td>'+esc(s.shop_name||s.shop_id)+'</td><td>'+esc(s.region||'')+'</td><td>'+esc(s.seller_name||'')+
+      '</td><td>'+(s.active?'<span class="pill ok">Active</span>':'<span class="pill off">Revoked</span>')+'</td><td class="mut">'+esc((s.updated_at||'').replace('T',' ').slice(0,16))+'</td></tr>';});
+    sh.innerHTML=h+'</table>';}
+  var od=document.getElementById('orders');
+  if(!d.orders||!d.orders.length){od.innerHTML='<span class="mut">No orders yet. They appear here as TikTok pushes them.</span>';}
+  else{var h='<table><tr><th>Order</th><th>Status</th><th>Items (seller SKU × qty)</th><th>Received</th></tr>';
+    d.orders.forEach(function(o){var items='';try{items=(JSON.parse(o.line_items||'[]')).map(function(i){return esc(i.seller_sku||i.name||'?')+' ×'+(i.qty||1);}).join(', ');}catch(e){}
+      h+='<tr><td>'+esc(o.order_id)+'</td><td>'+esc(o.status||'')+'</td><td>'+items+'</td><td class="mut">'+esc((o.updated_at||'').replace('T',' ').slice(0,16))+'</td></tr>';});
+    od.innerHTML=h+'</table>';}
+}).catch(function(){document.getElementById('cfg').textContent='error';});
+document.querySelectorAll('.copy').forEach(function(b){b.onclick=function(){var t=document.getElementById(b.getAttribute('data-c')).textContent;navigator.clipboard.writeText(t);b.textContent='Copied';setTimeout(function(){b.textContent='Copy';},1200);};});
+</script>
+</body></html>"""
+    return html.replace("__NAVBAR__",nav).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 if __name__=="__main__":
     print("="*50)
