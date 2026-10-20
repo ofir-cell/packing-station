@@ -6538,17 +6538,11 @@ def api_product_gen_barcode(sku):
     c.commit(); c.close()
     return jsonify({"ok":True,"barcode":code})
 
-@app.route("/api/barcode/lookup/<code>")
-@req_role("admin","cs")
-def api_barcode_lookup(code):
-    """Look up a product by its UPC/EAN barcode in online databases and return its
-    name/brand/category/image to pre-fill the new-product form. Flexible by design: if a
-    paid provider key (BARCODE_API_KEY) is set it's used first; otherwise free sources
-    (UPCitemdb trial, Open Beauty Facts, Open Food Facts). Barcodes you generate inside
-    the system won't be found — they aren't registered anywhere public."""
+def _barcode_lookup_online(code):
+    """Look a barcode up in online databases. Returns a dict {code,name,brand,category,
+    image,source} or None. Shared by the lookup API and the scan auto-create flow."""
     digits=re.sub(r'\D','',code or "")[:14]
-    if len(digits)<8:
-        return jsonify({"ok":False,"error":"Enter a real manufacturer barcode (8–14 digits)."})
+    if len(digits)<8: return None
     import urllib.request as _u, json as _j
     def _get(url, timeout=6):
         req=_u.Request(url, headers={"User-Agent":"LiveOpsHub/1.0 (+inventory)","Accept":"application/json"})
@@ -6556,7 +6550,7 @@ def api_barcode_lookup(code):
             return _j.loads(r.read().decode("utf-8","replace"))
     res=None
     key=(os.environ.get("BARCODE_API_KEY") or "").strip()
-    if key:   # paid provider (Barcode Lookup API shape) — plug a key in later for coverage
+    if key:
         try:
             d=_get("https://api.barcodelookup.com/v3/products?formatted=y&barcode=%s&key=%s"%(digits,key))
             ps=d.get("products") or []
@@ -6585,15 +6579,52 @@ def api_barcode_lookup(code):
                              "image":p.get("image_url") or p.get("image_front_url") or "","source":src}
                         break
             except Exception as e: print(src,"lookup failed:",e,flush=True)
-    if not (res and res.get("name")):
-        return jsonify({"ok":False,"error":"No product found for that barcode online. Fill it in by hand.","code":digits})
+    if not (res and res.get("name")): return None
     img=(res.get("image") or "").strip()
-    if not img.lower().startswith("https://"): img=""     # only embed secure image URLs
-    return jsonify({"ok":True,"code":digits,
-                    "name":(res.get("name") or "").strip()[:120],
-                    "brand":(res.get("brand") or "").strip()[:80],
-                    "category":(res.get("category") or "").strip()[:60],
-                    "image":img[:500],"source":res.get("source","")})
+    if not img.lower().startswith("https://"): img=""
+    return {"code":digits,"name":(res.get("name") or "").strip()[:120],"brand":(res.get("brand") or "").strip()[:80],
+            "category":(res.get("category") or "").strip()[:60],"image":img[:500],"source":res.get("source","")}
+
+def _resolve_or_create_product_by_barcode(c, code, who=""):
+    """Find a product by barcode/sku; if missing, pull it from the online barcode DBs and
+    create it so a live scan never dead-ends on 'not found'. Returns (product_row, created,
+    source). If nothing is found online a stub is created (flagged for admin to complete)."""
+    code=(code or "").strip()
+    if not code: return (None, False, "")
+    row=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
+    if row: return (row, False, "")
+    now=datetime.now().isoformat(timespec='seconds')
+    info=None
+    try: info=_barcode_lookup_online(code)
+    except Exception as e: print("auto-create lookup failed:",e,flush=True)
+    if info:
+        name=info["name"]; cat=info.get("category") or ""; img=info.get("image") or ""; src=info.get("source","")
+    else:
+        name="New product • "+code; cat="Needs review"; img=""; src="unverified"
+    try:
+        c.execute("""INSERT INTO products(sku,name,barcode,image_url,category,on_hand,avg_cost,updated_at,created_at)
+                     VALUES(?,?,?,?,?,0,0,?,?)
+                     ON CONFLICT(sku) DO UPDATE SET name=COALESCE(NULLIF(products.name,''),excluded.name),
+                       barcode=excluded.barcode, updated_at=excluded.updated_at""",
+                  (code, name, code, img, cat, now, now))
+        c.commit()
+    except Exception as e:
+        print("auto-create product failed:",e,flush=True)
+    row=c.execute("SELECT * FROM products WHERE sku=?",(code,)).fetchone()
+    return (row, True, src)
+
+@app.route("/api/barcode/lookup/<code>")
+@req_role("admin","cs")
+def api_barcode_lookup(code):
+    """Look up a product by its UPC/EAN barcode in online databases and return its
+    name/brand/category/image to pre-fill the new-product form."""
+    digits=re.sub(r'\D','',code or "")[:14]
+    if len(digits)<8:
+        return jsonify({"ok":False,"error":"Enter a real manufacturer barcode (8–14 digits)."})
+    r=_barcode_lookup_online(digits)
+    if not r:
+        return jsonify({"ok":False,"error":"No product found for that barcode online. Fill it in by hand.","code":digits})
+    return jsonify({"ok":True, **r})
 
 _PROD_IMG_EXT={"jpg","jpeg","png","webp","gif"}
 
@@ -7500,10 +7531,15 @@ def api_live_scan():
     if not show: return jsonify({"ok":False,"error":"Pick/name the live first"})
     c=sdb()
     prod=None
+    auto_created=False; auto_source=""
     if product_sku:
         prod=c.execute("SELECT * FROM products WHERE sku=?",(product_sku,)).fetchone()
     elif code:
         prod=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
+    if not prod and code:
+        # Unknown barcode → pull it from the online DBs and create the product on the fly,
+        # so a scan during a live never dead-ends. Flagged for admin review if unverified.
+        prod, auto_created, auto_source = _resolve_or_create_product_by_barcode(c, code, who=session.get("name",""))
     if not prod:
         c.close()
         return jsonify({"ok":False,"error":"Product not found in catalog","not_found":True,"code":code or product_sku})
@@ -7530,7 +7566,8 @@ def api_live_scan():
     tot=_live_totals(c, show)
     c.close()
     return jsonify({"ok":True,"product":{"sku":prod["sku"],"name":prod["name"],"image_url":prod["image_url"],
-                    "on_hand":oh,"unit_cost":cost,"unit_price":price},"qty":qty,"sticker":sticker,"totals":tot})
+                    "on_hand":oh,"unit_cost":cost,"unit_price":price},"qty":qty,"sticker":sticker,"totals":tot,
+                    "auto_created":auto_created,"auto_source":auto_source})
 
 @app.route("/api/live/summary")
 @req_role("admin","cs","worker","picker")
