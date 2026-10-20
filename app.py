@@ -13404,12 +13404,21 @@ def _tt_sweep_once():
             tok=_tt_valid_token(org, shop_id)
             if not tok or not tok.get("access_token"): continue
             tok=_tt_ensure_cipher(org, shop_id, tok)
-            params={"page_size":50,"sort_field":"update_time","sort_order":"DESC"}
-            if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
-            res=_tt_request("POST", TIKTOK_API_BASE+"/order/%s/orders/search"%TIKTOK_API_VERSION,
-                            params=params, body={"update_time_ge": int(time.time())-2*3600},
-                            signed=True, access_token=tok["access_token"])
-            orders=((res.get("data") or {}).get("orders") or [])
+            base_params={"page_size":100,"sort_field":"update_time","sort_order":"DESC"}
+            if tok.get("shop_cipher"): base_params["shop_cipher"]=tok["shop_cipher"]
+            orders=[]; page_token=""; pages=0
+            while pages<30:
+                p=dict(base_params)
+                if page_token: p["page_token"]=page_token
+                res=_tt_request("POST", TIKTOK_API_BASE+"/order/%s/orders/search"%TIKTOK_API_VERSION,
+                                params=p, body={"update_time_ge": int(time.time())-2*3600},
+                                signed=True, access_token=tok["access_token"])
+                if res.get("code"): break
+                d=res.get("data") or {}
+                orders.extend(d.get("orders") or [])
+                page_token=d.get("next_page_token") or ""
+                pages+=1
+                if not page_token: break
             if not orders: continue
             sc=sdb(org)
             skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
@@ -13564,17 +13573,28 @@ def api_tiktok_pull():
     try: days=int((request.get_json() or {}).get("days") or 30)
     except Exception: days=30
     ge=int(time.time())-days*86400
-    params={"page_size":50,"sort_field":"create_time","sort_order":"DESC"}
-    if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
-    try:
-        res=_tt_request("POST", TIKTOK_API_BASE+"/order/%s/orders/search"%TIKTOK_API_VERSION,
-                        params=params, body={"create_time_ge":ge}, signed=True, access_token=tok["access_token"])
-    except Exception as e:
-        return jsonify({"ok":False,"error":"Request failed: "+str(e)[:300]})
-    if res.get("code"):
-        return jsonify({"ok":False,"error":(res.get("message") or ("code "+str(res.get("code")))),"code":res.get("code")})
-    data=res.get("data") or {}
-    orders=data.get("orders") or []
+    base_params={"page_size":100,"sort_field":"create_time","sort_order":"DESC"}
+    if tok.get("shop_cipher"): base_params["shop_cipher"]=tok["shop_cipher"]
+    # Paginate through ALL orders in the window (a live can have hundreds).
+    orders=[]; total=None; page_token=""; pages=0
+    while pages<50:
+        p=dict(base_params)
+        if page_token: p["page_token"]=page_token
+        try:
+            res=_tt_request("POST", TIKTOK_API_BASE+"/order/%s/orders/search"%TIKTOK_API_VERSION,
+                            params=p, body={"create_time_ge":ge}, signed=True, access_token=tok["access_token"])
+        except Exception as e:
+            if orders: break   # keep what we already pulled
+            return jsonify({"ok":False,"error":"Request failed: "+str(e)[:300]})
+        if res.get("code"):
+            if orders: break
+            return jsonify({"ok":False,"error":(res.get("message") or ("code "+str(res.get("code")))),"code":res.get("code")})
+        data=res.get("data") or {}
+        orders.extend(data.get("orders") or [])
+        total=data.get("total_count")
+        page_token=data.get("next_page_token") or ""
+        pages+=1
+        if not page_token: break
     stored=0; preview=[]
     for o in orders:
         oid=str(o.get("id") or "")
@@ -13610,9 +13630,9 @@ def api_tiktok_pull():
         sc.commit(); sc.close()
     except Exception as e:
         _tt_log("pull apply batch failed: %r"%e)
-    return jsonify({"ok":True,"shop":row.get("shop_name") or shop_id,"total":data.get("total_count"),
+    return jsonify({"ok":True,"shop":row.get("shop_name") or shop_id,"total":total,
                     "fetched":len(orders),"stored":stored,"preview":preview,
-                    "shows":sorted(shows),"loaded":shipped})
+                    "shows":sorted(shows),"loaded":shipped,"pages":pages})
 
 @app.route("/api/tiktok/debug")
 @req_role("admin")
