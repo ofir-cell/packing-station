@@ -8818,19 +8818,54 @@ def render_hire_file_page(h, steps, sigs, uploads, workflow_name):
 @app.route("/admin/employee/<username>")
 @req_role("admin", "cs")
 def admin_employee_card(username):
-    """Open an employee's card from their login: resolve the linked hire record
-    (new_hires.provisioned_username) and show it. Falls back with a friendly note."""
+    """A per-user employee card: details, roles, work stats (packing/picking), and a link
+    to the full hire file when the login is linked to a New Hires record."""
     u=(username or "").strip().lower()
-    c=sdb()
-    h=c.execute("""SELECT id FROM new_hires WHERE LOWER(COALESCE(provisioned_username,''))=?
-                   ORDER BY id DESC LIMIT 1""",(u,)).fetchone()
+    users=ldj(USERS_FILE)
+    info=users.get(u)
+    if not info or info.get("org",DEFAULT_ORG)!=session.get("org",DEFAULT_ORG):
+        return _tt_page("User not found","No user '"+esc(u)+"'.<br><br><a href='/users' style='color:#4f46e5;font-weight:700'>← Back to Users</a>"),404
+    name=info.get("name") or u
+    roles=[info.get("role")]+list(info.get("extra_roles") or [])
+    role_html="".join("<span class='rb'>"+esc(role_label(r))+"</span>" for r in roles if r)
+    rows=_read_log()
+    pk_total=sum(1 for r in rows if (r.get('worker','') or '')==name)
+    pk_today=sum(1 for r in _filter_by_window(rows,'today') if (r.get('worker','') or '')==name)
+    c=sdb(); today=datetime.now().strftime('%Y-%m-%d')
+    pick_total=c.execute("SELECT COUNT(*) FROM shipments WHERE picked_by=?",(name,)).fetchone()[0]
+    pick_today=c.execute("SELECT COUNT(*) FROM shipments WHERE picked_by=? AND substr(picked_at,1,10)=?",(name,today)).fetchone()[0]
+    hire=c.execute("SELECT id FROM new_hires WHERE LOWER(COALESCE(provisioned_username,''))=? ORDER BY id DESC LIMIT 1",(u,)).fetchone()
     c.close()
-    if h:
-        return redirect("/admin/hires/"+str(h["id"]))
-    return (_tt_page("No employee card yet",
-            "This login ("+esc(u)+") isn't linked to an employee/hire record, so there's no card to open yet. "
-            "Create one from New Hires, or go back to Users.<br><br>"
-            "<a href='/users' style='color:#4f46e5;font-weight:700'>← Back to Users</a>"))
+    last=(info.get("last_login") or "").replace("T"," ")[:16] or "Never"
+    inits="".join(w[0] for w in (name.split()[:2] or [u[:1]])).upper()[:2]
+    hire_btn=("<a class='cta' href='/admin/hires/"+str(hire['id'])+"'>📄 Full employee file — ID, documents, onboarding →</a>") if hire else "<div class='nohire'>No onboarding file linked to this login yet. Create one from New Hires.</div>"
+    def stat(lbl,val,sub=""):
+        return "<div class='st'><div class='sv'>"+str(val)+"</div><div class='sl'>"+lbl+"</div>"+("<div class='ss'>"+sub+"</div>" if sub else "")+"</div>"
+    html="""<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>"""+esc(name)+"""</title>__NAVBAR_CSS__
+<style>body{margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;background:#f6f7fb;color:#1a2130}
+.wrap{max-width:760px;margin:0 auto;padding:20px 16px 80px}.bk{color:#6b7280;font-size:13px;text-decoration:none}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:22px;margin-top:12px;box-shadow:0 2px 10px rgba(20,27,38,.05)}
+.hd{display:flex;align-items:center;gap:16px}
+.av{width:66px;height:66px;border-radius:16px;background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800}
+.nm{font-size:22px;font-weight:800}.un{color:#9aa1ab;font-size:14px}
+.rb{display:inline-block;background:#eef2ff;color:#4338ca;border-radius:999px;padding:4px 11px;font-size:12px;font-weight:700;margin:6px 6px 0 0}
+.meta{display:flex;gap:22px;flex-wrap:wrap;margin-top:14px;color:#6b7280;font-size:13px}.meta b{color:#1a2130}
+.sts{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-top:16px}
+.st{background:#f8f9fc;border-radius:12px;padding:16px;text-align:center}.sv{font-size:28px;font-weight:800}.sl{font-size:12px;color:#6b7280;margin-top:3px}.ss{font-size:11px;color:#9aa1ab}
+.cta{display:inline-block;margin-top:18px;background:#4f46e5;color:#fff;padding:12px 18px;border-radius:12px;font-weight:700;text-decoration:none}
+.nohire{margin-top:18px;color:#9aa1ab;font-size:13px}
+.acts{margin-top:18px;display:flex;gap:10px;flex-wrap:wrap}.acts a{font-size:13px;font-weight:700;color:#4f46e5;text-decoration:none;border:1px solid #ddd6fe;border-radius:10px;padding:9px 14px}
+</style></head><body>__NAVBAR__
+<div class="wrap">
+<a class="bk" href="/users">← Back to Users</a>
+<div class="card">
+  <div class="hd"><div class="av">"""+esc(inits)+"""</div><div><div class="nm">"""+esc(name)+"""</div><div class="un">@"""+esc(u)+"""</div><div>"""+role_html+"""</div></div></div>
+  <div class="meta"><span>Status: <b>"""+("Active" if info.get("last_login") else "Never logged in")+"""</b></span><span>Last login: <b>"""+esc(last)+"""</b></span><span>Badge: <b>"""+("Yes" if info.get("badge_token") else "No")+"""</b></span></div>
+  <div class="sts">"""+stat("Packed · all time",pk_total)+stat("Packed today",pk_today)+stat("Picked · all time",pick_total)+stat("Picked today",pick_today)+"""</div>
+  """+hire_btn+"""
+  <div class="acts"><a href="/users">Edit roles / password</a><a href="/leaderboard">🏆 Leaderboard</a></div>
+</div></div></body></html>"""
+    return html.replace("__NAVBAR__",_navbar("users")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/admin/hires/<int:hire_id>")
 @req_role("admin", "cs")
