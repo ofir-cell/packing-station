@@ -5958,11 +5958,23 @@ def api_shows():
         ORDER BY last_import DESC
     """, (cap_dt,)).fetchall()
     done_map = {r["import_label"]: dict(r) for r in c.execute("SELECT * FROM show_state").fetchall()}
+    # First→last ORDER time per show (when the live actually ran), from the item timestamps.
+    span_map = {}
+    for r in c.execute("""SELECT s.import_label lbl, MIN(i.created_time) mn, MAX(i.created_time) mx
+                          FROM shipments s JOIN shipment_items i ON i.shipment_id=s.shipment_id
+                          WHERE s.import_label IS NOT NULL AND s.import_label!=''
+                            AND i.created_time IS NOT NULL AND i.created_time!=''
+                          GROUP BY s.import_label""").fetchall():
+        span_map[r["lbl"]] = (r["mn"], r["mx"])
     c.close()
     # Attach cleanup status so the picker can warn / block on unclean shows.
     out = []
     for r in rows:
         d = dict(r)
+        sp = span_map.get(d["name"])
+        if sp:
+            d["live_start"], d["live_end"] = sp[0], sp[1]
+            d["time_range"] = _fmt_live_range(sp[0], sp[1])
         _st = done_map.get(d["name"])
         _is_done = bool(_st and _st.get("done"))
         # Unfinished shows always show (any age); DONE shows age out of the window.
@@ -13382,45 +13394,112 @@ def _tt_order_rows(order):
         if li.get("is_gift"): a["is_gift"]=True
     return list(agg.values())
 
-# A new live session only begins after this many seconds of quiet. Parts of the same
-# broadcast (and the permanent catalog products, like the fragrance sample, sold during
-# it) fall inside the window and stay in ONE show. A real second live later the same day
-# is separated by a long gap and becomes its own show.
-TT_SESSION_GAP_SEC = 4*3600
+# Default keywords that mark a product as a permanent STORE item (e.g. the fragrance
+# sample) rather than a live listing. Store items never open their own show — they ride
+# into whichever live was running when they sold. Editable per tenant (tiktok_store_products).
+TT_STORE_KW_DEFAULT = ["sample","mystery","shipping","protection","insurance","add-on","add on","warranty","gift card","tip"]
+
+def _tt_store_keywords(c):
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS tiktok_store_products(keyword TEXT PRIMARY KEY)")
+        rows=[r["keyword"] for r in c.execute("SELECT keyword FROM tiktok_store_products").fetchall()]
+        if not rows:
+            for k in TT_STORE_KW_DEFAULT:
+                c.execute("INSERT OR IGNORE INTO tiktok_store_products(keyword) VALUES(?)",(k,))
+            rows=list(TT_STORE_KW_DEFAULT)
+        return [k.strip().lower() for k in rows if k and k.strip()]
+    except Exception:
+        return list(TT_STORE_KW_DEFAULT)
+
+def _tt_base_listing(pname):
+    """A listing's identity with its trailing 'PART N' (and stray sticker counters) removed,
+    so Part 1/2/3 of the same show collapse to one name."""
+    s=(pname or "").strip()
+    s=re.sub(r'\s*(?:[-·|]+\s*)?part\s*\d+\s*$','',s,flags=re.I)   # trailing "PART 3"
+    s=re.sub(r'\s*[-·|]\s*\d+\s*$','',s)                            # trailing " - 3"
+    return s.strip()[:80]
+
+def _tt_order_day(ct):
+    try: return datetime.fromtimestamp(int(ct)).strftime("%Y-%m-%d")
+    except Exception: return datetime.now().strftime("%Y-%m-%d")
+
+def _tt_is_store_order(c, order):
+    """True when EVERY line item is a permanent store product (sample etc.) — such an order
+    is a passenger that joins the live running at its time, never its own show."""
+    kws=_tt_store_keywords(c)
+    lis=order.get("line_items") or []
+    if not lis: return False
+    for li in lis:
+        nm=(li.get("product_name") or "").lower()
+        if not any(k in nm for k in kws): return False
+    return True
 
 def _tt_label_for_order(c, order):
-    """Pick the show (import_label) for an order by WHEN it was bought, not by TikTok's
-    room/PART/product. Every order within a live window (gap-based) lands in the same show,
-    so parts and catalog items never split. A show is named by the live's date; a second
-    live the same day is disambiguated by its start time."""
-    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_sessions(
-        session_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        import_label TEXT, start_ts INTEGER, end_ts INTEGER,
-        first_seen TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    """Pick the show (import_label) for an order by WHAT LISTING it is, not by TikTok's
+    room/PART. One show == one listing on one day, so every PART of a live (sticker resets
+    to 1 each part) stays in ONE show, and a different listing opens a new show. Permanent
+    store products (the sample) don't open a show — they ride into the live running at that
+    time. The show name carries the live date; the time range is shown in the list."""
     try: ct=int(order.get("create_time") or 0)
     except Exception: ct=0
     if not ct: ct=int(time.time())
-    gap=TT_SESSION_GAP_SEC
-    # Does this order belong to an existing live session? (within `gap` of its span)
-    row=c.execute("""SELECT session_id, import_label, start_ts, end_ts FROM tiktok_sessions
-                     WHERE ? >= start_ts-? AND ? <= end_ts+?
-                     ORDER BY ABS(((start_ts+end_ts)/2) - ?) LIMIT 1""",
-                  (ct,gap,ct,gap,ct)).fetchone()
-    if row:
-        ns=min(row["start_ts"], ct); ne=max(row["end_ts"], ct)
-        if ns!=row["start_ts"] or ne!=row["end_ts"]:
-            c.execute("UPDATE tiktok_sessions SET start_ts=?, end_ts=? WHERE session_id=?",
-                      (ns,ne,row["session_id"]))
-        return row["import_label"]
-    # New live session → label by date, add start time only if that date already has a show.
-    try: dt=datetime.fromtimestamp(ct)
-    except Exception: dt=datetime.now()
-    base="Live · "+dt.strftime("%b %d")
-    clash=c.execute("SELECT 1 FROM tiktok_sessions WHERE import_label=? OR import_label LIKE ? LIMIT 1",
-                    (base, base+" · %")).fetchone()
-    label=base if not clash else (base+" · "+dt.strftime("%-I:%M %p"))
-    c.execute("INSERT INTO tiktok_sessions(import_label,start_ts,end_ts) VALUES(?,?,?)",(label,ct,ct))
-    return label
+    day=_tt_order_day(ct)
+    try: ds=datetime.fromtimestamp(ct).strftime("%b %d")
+    except Exception: ds=datetime.now().strftime("%b %d")
+    # anchor listing (first line item that isn't a store product; else first item)
+    kws=_tt_store_keywords(c)
+    anchor=""
+    for li in (order.get("line_items") or []):
+        nm=(li.get("product_name") or "").strip()
+        if nm and not any(k in nm.lower() for k in kws): anchor=nm; break
+    if not anchor and _tt_is_store_order(c, order):
+        # Passenger: attach to the live running that day whose time window covers this order.
+        lbl=_tt_live_at_time(c, ct, day)
+        if lbl: return lbl
+        return "Live · "+ds   # no live that day yet → plain dated show
+    if not anchor:
+        for li in (order.get("line_items") or []):
+            if (li.get("product_name") or "").strip(): anchor=li["product_name"].strip(); break
+    base=_tt_base_listing(anchor) or ("TikTok "+ds)
+    return "%s · %s"%(base, ds)   # stable: same listing + same day → same show
+
+def _tt_live_at_time(c, ct, day):
+    """Find the live show (import_label) that was active at epoch `ct` on `day`, by looking
+    at which TikTok show's first→last order window covers `ct`. Falls back to the busiest
+    show that day. Used to place passenger (store-product) orders into the right live."""
+    try:
+        rows=c.execute("""SELECT s.import_label lbl,
+                                  MIN(i.created_time) mn, MAX(i.created_time) mx, COUNT(*) n
+                           FROM shipments s JOIN shipment_items i ON i.shipment_id=s.shipment_id
+                           WHERE COALESCE(s.import_batch,'')='tiktok-api'
+                             AND substr(COALESCE(i.created_time,''),1,10)=?
+                             AND s.import_label IS NOT NULL
+                           GROUP BY s.import_label""",(day,)).fetchall()
+    except Exception:
+        rows=[]
+    cover=None; busiest=None; bn=-1
+    for r in rows:
+        if r["n"]>bn: bn=r["n"]; busiest=r["lbl"]
+        mn=_iso_to_epoch(r["mn"]); mx=_iso_to_epoch(r["mx"])
+        if mn is not None and mx is not None and mn-900<=ct<=mx+900:
+            cover=r["lbl"]
+    return cover or busiest
+
+def _iso_to_epoch(s):
+    if not s: return None
+    try: return int(datetime.fromisoformat(str(s)[:19]).timestamp())
+    except Exception: return None
+
+def _fmt_live_range(mn, mx):
+    """Human live window: 'Oct 20 · 6:00–8:32 PM' (or across days 'Oct 20 6:00 PM – Oct 21 1:10 AM')."""
+    try:
+        a=datetime.fromisoformat(str(mn)[:19]); b=datetime.fromisoformat(str(mx)[:19])
+    except Exception:
+        return ""
+    def t(d): return d.strftime("%-I:%M %p")
+    if a.date()==b.date():
+        return "%s · %s–%s"%(a.strftime("%b %d"), a.strftime("%-I:%M"), t(b))
+    return "%s %s – %s %s"%(a.strftime("%b %d"), t(a), b.strftime("%b %d"), t(b))
 
 def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
     """Create/update a shipment (+items) from a TikTok API order, in the SAME shipments/
@@ -13814,7 +13893,15 @@ def _tt_pull_core(org, days=30):
         skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
         _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
         ovh=_cfg["packaging_overhead_g"] if _cfg else 30
-        for o in orders:
+        # Two passes, each in chronological order: real listings first (they define each
+        # live's first→last time window), then store-product passengers (the sample), which
+        # read those windows to land in the live that was running when they sold.
+        def _ck(o):
+            try: return int(o.get("create_time") or 0)
+            except Exception: return 0
+        anchors=[o for o in orders if not _tt_is_store_order(sc, o)]
+        riders =[o for o in orders if _tt_is_store_order(sc, o)]
+        for o in sorted(anchors, key=_ck)+sorted(riders, key=_ck):
             try:
                 lbl=_tt_apply_order(sc, o, sku_map=skus, overhead=ovh)
                 if lbl: shows.add(lbl); shipped+=1
@@ -13873,6 +13960,26 @@ def api_tiktok_regroup():
     res=_tt_pull_core(org, days)
     res["regrouped"]=True; res["cleared"]=wiped
     return jsonify(res)
+
+@app.route("/api/tiktok/store-products", methods=["GET","POST"])
+@req_role("admin")
+def api_tiktok_store_products():
+    """Get/replace the keyword list that marks a product as a permanent STORE item (the
+    sample etc.). Store items ride into the live running at their time instead of opening
+    their own show. Match is case-insensitive substring on the product name."""
+    org=current_org() or DEFAULT_ORG
+    c=sdb(org)
+    c.execute("CREATE TABLE IF NOT EXISTS tiktok_store_products(keyword TEXT PRIMARY KEY)")
+    if request.method=="POST":
+        raw=(request.get_json(silent=True) or {}).get("keywords") or []
+        if isinstance(raw,str): raw=[x for x in re.split(r'[,\n]', raw)]
+        kws=[k.strip() for k in raw if k and k.strip()]
+        c.execute("DELETE FROM tiktok_store_products")
+        for k in kws: c.execute("INSERT OR IGNORE INTO tiktok_store_products(keyword) VALUES(?)",(k,))
+        c.commit()
+    kws=_tt_store_keywords(c)
+    c.commit(); c.close()
+    return jsonify({"ok":True,"keywords":kws})
 
 @app.route("/api/tiktok/debug")
 @req_role("admin")
@@ -13945,6 +14052,16 @@ th{color:#6b7280;font-weight:700;font-size:11px;text-transform:uppercase}
 </div>
 
 <div class="card">
+  <h2>Store products (ride into the live)</h2>
+  <div class="mut" style="margin-bottom:8px">Products sold from the permanent shop (e.g. the fragrance sample) shouldn't open their own show — they join whichever live was running when they sold. List keyword(s) found in those product names, comma-separated.</div>
+  <div class="row">
+    <input id="storeKw" type="text" placeholder="sample, mystery, shipping protection" style="flex:1;min-width:240px;padding:10px 12px;border:1px solid #d1d5db;border-radius:9px;font-size:14px">
+    <button id="storeSave" class="btn g">Save</button>
+  </div>
+  <div id="storeMsg" class="mut"></div>
+</div>
+
+<div class="card">
   <h2>Recent orders received <span id="evc" class="mut"></span></h2>
   <div class="row" style="margin:0 0 12px">
     <button id="pullBtn" class="btn g">⤓ Pull &amp; load recent orders into shows</button>
@@ -13997,6 +14114,20 @@ pb.onclick=function(){
        h+='<tr><td>'+esc(o.order_id)+'</td><td>'+esc(o.status||'')+'</td><td>'+items+'</td></tr>';});
      od.innerHTML=h+'</table>';
    }).catch(function(e){pb.disabled=false;pb.textContent=old;pm.innerHTML='<span style="color:#b91c1c">Network error</span>';});
+};
+fetch('/api/tiktok/store-products').then(function(r){return r.json();}).then(function(d){
+  if(d&&d.keywords)document.getElementById('storeKw').value=d.keywords.join(', ');
+}).catch(function(){});
+document.getElementById('storeSave').onclick=function(){
+  var b=this;b.disabled=true;var sm=document.getElementById('storeMsg');sm.textContent='';
+  fetch('/api/tiktok/store-products',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({keywords:document.getElementById('storeKw').value})})
+   .then(function(r){return r.json();}).then(function(d){
+     b.disabled=false;
+     if(d&&d.ok){document.getElementById('storeKw').value=(d.keywords||[]).join(', ');
+       sm.innerHTML='<span style="color:#166534">✓ Saved. Run “Fix show grouping” to re-apply.</span>';}
+     else sm.innerHTML='<span style="color:#b91c1c">Could not save</span>';
+   }).catch(function(){b.disabled=false;sm.innerHTML='<span style="color:#b91c1c">Network error</span>';});
 };
 var rb=document.getElementById('regroupBtn');
 rb.onclick=function(){

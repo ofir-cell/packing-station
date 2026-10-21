@@ -4786,7 +4786,7 @@ function renderList(){
         '<span class="n pend"><b>'+(sh.pending||0)+'</b><span>pending</span></span>'+
         '<span class="n pack"><b>'+packed+'</b><span>packed</span></span>'+
       '</span>'+
-      '<span class="row-when">'+fmtDateShort(sh.last_import)+(sh.done&&sh.done_by?'<br>✓ '+escapeHtml(sh.done_by):'')+'</span>'+
+      '<span class="row-when">'+(sh.time_range?('🔴 '+escapeHtml(sh.time_range)):fmtDateShort(sh.last_import))+(sh.done&&sh.done_by?'<br>✓ '+escapeHtml(sh.done_by):'')+'</span>'+
       '<span class="row-acts">'+
         '<button class="'+(sh.done?'ra-undo':'ra-done')+'" onclick="toggleDone(event,\\''+en+'\\','+(sh.done?'false':'true')+')">'+(sh.done?'↩︎ Undo':'✓ Done')+'</button>'+
         '<button class="ra-undo" title="Rename this live" onclick="renameShow(event,\\''+en+'\\')">✏️</button>'+
