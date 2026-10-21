@@ -1230,7 +1230,7 @@ function renderUsers(){
                   status==='inactive'?'<span style="color:#94a3b8;font-weight:700">⚪ Inactive</span>':
                   '<span style="color:#d97706;font-weight:700">🟠 Never</span>';
         var loginTxt=v.last_login?('<b>'+li.txt+'</b> <span style="color:#94a3b8;font-size:11px">· '+li.ago+'</span>'):'<span style="color:#94a3b8">—</span>';
-        rows+='<tr><td><b>'+k+'</b></td><td><span>'+(v.name||'')+'</span> <button class="act-btn" data-u="'+k+'" data-nm="'+(v.name||'').replace(/"/g,'&quot;')+'" data-a="name" title="Edit display name" style="padding:2px 8px;font-size:13px;vertical-align:middle">✏️</button></td><td><span class="role '+rc+'">'+ulbl(v.role)+'</span>'+xr+'</td><td>'+badge+'</td><td>'+loginTxt+'</td><td>';
+        rows+='<tr><td><a href="/admin/employee/'+encodeURIComponent(k)+'" title="Open employee card" style="color:#4f46e5;font-weight:800;text-decoration:none">'+k+'</a></td><td><a href="/admin/employee/'+encodeURIComponent(k)+'" title="Open employee card" style="color:#1a2130;text-decoration:none">'+(v.name||'')+'</a> <button class="act-btn" data-u="'+k+'" data-nm="'+(v.name||'').replace(/"/g,'&quot;')+'" data-a="name" title="Edit display name" style="padding:2px 8px;font-size:13px;vertical-align:middle">✏️</button></td><td><span class="role '+rc+'">'+ulbl(v.role)+'</span>'+xr+'</td><td>'+badge+'</td><td>'+loginTxt+'</td><td>';
         rows+='<div class="actions"><button class="act-btn" data-u="'+k+'" data-a="roles">Edit Roles</button>';
         if(k!=='admin'){
             rows+='<button class="act-btn act-pw" data-u="'+k+'" data-a="pw">Change Password</button><button class="act-btn act-del" data-u="'+k+'" data-a="del">Delete</button>';

@@ -8815,6 +8815,23 @@ def render_hire_file_page(h, steps, sigs, uploads, workflow_name):
         .replace("__GENERATED_AT__", datetime.now().strftime("%Y-%m-%d %H:%M")))
 
 
+@app.route("/admin/employee/<username>")
+@req_role("admin", "cs")
+def admin_employee_card(username):
+    """Open an employee's card from their login: resolve the linked hire record
+    (new_hires.provisioned_username) and show it. Falls back with a friendly note."""
+    u=(username or "").strip().lower()
+    c=sdb()
+    h=c.execute("""SELECT id FROM new_hires WHERE LOWER(COALESCE(provisioned_username,''))=?
+                   ORDER BY id DESC LIMIT 1""",(u,)).fetchone()
+    c.close()
+    if h:
+        return redirect("/admin/hires/"+str(h["id"]))
+    return (_tt_page("No employee card yet",
+            "This login ("+esc(u)+") isn't linked to an employee/hire record, so there's no card to open yet. "
+            "Create one from New Hires, or go back to Users.<br><br>"
+            "<a href='/users' style='color:#4f46e5;font-weight:700'>← Back to Users</a>"))
+
 @app.route("/admin/hires/<int:hire_id>")
 @req_role("admin", "cs")
 def admin_hire_detail(hire_id):
