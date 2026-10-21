@@ -13346,16 +13346,15 @@ def _tt_label_for_order(c, order):
     ct=order.get("create_time") or 0
     try: dstr=datetime.fromtimestamp(int(ct)).strftime("%b %d") if ct else datetime.now().strftime("%b %d")
     except Exception: dstr=datetime.now().strftime("%b %d")
-    nice=(pname or "").strip()[:80]
+    # One show per LIVE SESSION (room) — all PARTs of a live stay together as one show.
+    # Different lives never merge (each live is a different room). The listing's trailing
+    # "PART N" is stripped from the name so the show reads as the whole live.
+    nice=re.sub(r'\s*(?:part)\s*\d+\s*$','',(pname or ''),flags=re.I).strip()[:80]
     if not room:
         return nice or ("TikTok "+dstr)
-    # One show per (live session, listing). skey keeps them apart even when the listing
-    # name repeats across different lives.
-    skey=room+"||"+nice
-    row=c.execute("SELECT import_label FROM tiktok_rooms WHERE room_id=?",(skey,)).fetchone()
+    row=c.execute("SELECT import_label FROM tiktok_rooms WHERE room_id=?",(room,)).fetchone()
     if row and row["import_label"]:
         return row["import_label"]
-    # Assign (or reuse) a sequential live number for this room so all its PARTs share it.
     lv=c.execute("SELECT live_num FROM tiktok_lives WHERE room_id=?",(room,)).fetchone()
     if lv and lv["live_num"]:
         livenum=lv["live_num"]
@@ -13363,7 +13362,7 @@ def _tt_label_for_order(c, order):
         livenum=(c.execute("SELECT COALESCE(MAX(live_num),0)+1 FROM tiktok_lives").fetchone()[0]) or 1
         c.execute("INSERT OR IGNORE INTO tiktok_lives(room_id,live_num) VALUES(?,?)",(room,livenum))
     label="Live %d · %s"%(livenum, nice) if nice else ("Live %d · %s"%(livenum,dstr))
-    c.execute("INSERT OR IGNORE INTO tiktok_rooms(room_id,import_label) VALUES(?,?)",(skey,label))
+    c.execute("INSERT OR IGNORE INTO tiktok_rooms(room_id,import_label) VALUES(?,?)",(room,label))
     return label
 
 def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
