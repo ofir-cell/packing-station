@@ -105,6 +105,7 @@ def _navbar(active_page=""):
         floor = []
         if has("admin", "cs", "worker", "picker"):
             floor.append(("live", "/admin/live", "🔴 Live Mode"))
+            floor.append(("matchlive", "/admin/match-live", "🔗 Match Live"))
         if has("worker"):
             floor.append(("pack", "/", "📦 Pack"))
         if has("worker", "picker"):
@@ -12654,5 +12655,197 @@ function searchProducts(v){
     });
   });
 }
+</script>
+</body></html>'''
+
+
+LIVE_MATCH_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Live Match</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#f6f7fb;color:#1a2130;min-height:100vh;color-scheme:light}
+.wrap{max-width:980px;margin:0 auto;padding:16px 16px 80px}
+.toprow{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.toprow label{font-size:13px;color:#6b7280;font-weight:700}
+select{padding:10px 12px;border:1.5px solid #e4e7ec;border-radius:10px;font-size:15px;font-family:inherit;background:#fff;color:#1a2130;max-width:420px}
+.bulk{margin-left:auto;background:#f5f3ff;color:#4338ca;border:1.5px solid #ddd6fe;border-radius:10px;padding:9px 14px;font-size:13px;font-weight:700;cursor:pointer}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;box-shadow:0 2px 12px rgba(20,27,38,.05)}
+.chd{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #eef0f3}
+.chd .who{display:flex;align-items:center;gap:11px}
+.av{width:34px;height:34px;border-radius:9px;background:#dbeafe;color:#1d4ed8;display:flex;align-items:center;justify-content:center;font-weight:800}
+.chd .nm{font-weight:800;font-size:15px}.chd .sub{font-size:12px;color:#9aa1ab}
+.livepill{background:#dcfce7;color:#166534;font-size:12px;font-weight:700;padding:6px 12px;border-radius:999px;display:inline-flex;align-items:center;gap:6px}
+.cols{display:grid;grid-template-columns:1.45fr 1fr}
+@media(max-width:720px){.cols{grid-template-columns:1fr}}
+.left{padding:18px;border-right:1px solid #eef0f3}
+@media(max-width:720px){.left{border-right:none;border-bottom:1px solid #eef0f3}}
+.right{padding:18px}
+.lh{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.lh .t{font-size:14px;color:#6b7280;font-weight:700}
+.back{color:#2563eb;font-size:14px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+.curtop{display:flex;align-items:center;gap:16px;margin-bottom:16px}
+.stk{width:86px;height:86px;border-radius:16px;background:#dbeafe;color:#1d4ed8;display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0}
+.stk .l{font-size:12px;opacity:.8}.stk .n{font-size:38px;font-weight:900;line-height:1}
+.curmeta .s{font-size:13px;color:#9aa1ab}.curmeta .big{font-size:24px;font-weight:900;margin:1px 0}
+.curmeta .pr{font-size:14px;color:#6b7280;margin-top:3px}
+.scanlbl{font-size:14px;color:#374151;font-weight:600;margin-bottom:6px}
+.scanrow{display:flex;align-items:center;gap:10px}
+.scanrow input{flex:1;padding:14px 15px;border:2px solid #e4e7ec;border-radius:12px;font-size:16px;font-family:inherit;outline:none}
+.scanrow input:focus{border-color:#3b82f6}
+.ok{margin-top:15px;background:#dcfce7;border-radius:14px;padding:14px;display:none;align-items:center;gap:13px}
+.ok.show{display:flex}
+.ok .im{width:48px;height:48px;border-radius:11px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.ok .im img{width:100%;height:100%;object-fit:cover}
+.ok .mt{font-size:12px;color:#166534}.ok .nm{font-weight:800;color:#065f46;font-size:16px}
+.ok .ck{margin-left:auto;color:#16a34a;font-size:26px}
+.err{margin-top:12px;color:#b91c1c;font-weight:700;font-size:14px;display:none}
+.rh{font-size:15px;font-weight:800;margin-bottom:3px}
+.rsub{font-size:12px;color:#9aa1ab;margin-bottom:12px}
+.wrow{display:flex;align-items:center;justify-content:space-between;border:1.5px solid #e4e7ec;border-radius:12px;padding:13px 15px;margin-bottom:9px;cursor:pointer}
+.wrow:hover{border-color:#3b82f6;background:#f5f8ff}
+.wrow.cur{border-color:#3b82f6;background:#eff6ff}
+.wrow b{font-size:16px}.wrow .p{color:#9aa1ab;font-size:13px;margin-left:6px}
+.wrow .cv{color:#c7cdd6;font-size:18px}
+.more{font-size:12px;color:#9aa1ab;text-align:center;padding:4px}
+.mh{font-size:14px;font-weight:800;color:#6b7280;margin:16px 0 9px}
+.mchips{display:flex;flex-wrap:wrap;gap:7px}
+.mchip{background:#fff;border:1px solid #eef0f3;border-radius:999px;padding:7px 12px;font-size:13px;color:#374151;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.mchip:hover{background:#fef2f2;border-color:#fecaca}.mchip b{color:#111827}
+.empty{color:#9aa1ab;font-size:14px}
+.foot{display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid #eef0f3;background:#fafbfc}
+.foot span{font-size:12.5px;color:#6b7280}
+.alldone{text-align:center;padding:30px;color:#166534;font-weight:700}
+</style></head><body>
+__NAVBAR__
+<div class="wrap">
+  <div class="toprow">
+    <label>Live:</label>
+    <select id="showSel"></select>
+    <button class="bulk" id="bulkBtn">⇄ Bulk range</button>
+  </div>
+
+  <div class="card">
+    <div class="chd">
+      <div class="who"><div class="av">P</div><div><div class="nm" id="shName">—</div><div class="sub">Live assistant · __NAME__</div></div></div>
+      <span class="livepill">● Live now</span>
+    </div>
+    <div class="cols">
+      <div class="left">
+        <div class="lh"><span class="t">Match this number to a product</span><span class="back" id="backBtn">↩ back</span></div>
+        <div id="curWrap">
+          <div class="curtop">
+            <div class="stk"><span class="l">sticker</span><span class="n" id="curNum">—</span></div>
+            <div class="curmeta">
+              <div class="s">sold in this live</div>
+              <div class="big" id="curQty">—</div>
+              <div class="pr" id="curPrice"></div>
+            </div>
+          </div>
+          <div class="scanlbl">Scan the product barcode</div>
+          <div class="scanrow"><span style="font-size:20px">🔳</span><input id="scan" placeholder="Waiting for scan…" autocomplete="off"></div>
+          <div class="ok" id="okBox"><div class="im"><img id="okImg" src="" alt=""></div><div><div class="mt" id="okMt"></div><div class="nm" id="okNm"></div></div><span class="ck">✓</span></div>
+          <div class="err" id="errBox"></div>
+        </div>
+        <div class="alldone" id="allDone" style="display:none">🎉 All sold stickers matched. New sales appear automatically.</div>
+      </div>
+      <div class="right">
+        <div class="rh">Waiting to match <span id="wc" style="color:#b45309;font-weight:800"></span></div>
+        <div class="rsub">Tap any number — including ones you skipped.</div>
+        <div id="waiting"><div class="empty">Loading…</div></div>
+        <div class="mh">Just matched · tap to fix</div>
+        <div class="mchips" id="matched"><div class="empty">—</div></div>
+      </div>
+    </div>
+    <div class="foot">ℹ️ <span>You see the sale price to confirm the match — never costs, profit, or customer details.</span></div>
+  </div>
+</div>
+<script>
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+var SHOW='',CUR=null,WAIT=[],busy=false;
+var scan=document.getElementById('scan');
+function focusScan(){try{scan.focus()}catch(e){}}
+function loadShows(){
+  fetch('/api/shows/recent').then(function(r){return r.json()}).then(function(names){
+    names=names||[];var sel=document.getElementById('showSel');
+    sel.innerHTML=names.map(function(n){return '<option>'+esc(n)+'</option>'}).join('');
+    if(names.length){SHOW=names[0];sel.value=SHOW;document.getElementById('shName').textContent=SHOW;load();}
+    sel.onchange=function(){SHOW=sel.value;CUR=null;document.getElementById('shName').textContent=SHOW;load();};
+  });
+}
+function setCur(st){
+  CUR=st;document.getElementById('okBox').className='ok';document.getElementById('errBox').style.display='none';
+  var cw=document.getElementById('curWrap'),dn=document.getElementById('allDone');
+  if(!st){cw.style.display='none';dn.style.display=WAIT.length?'none':'block';return;}
+  cw.style.display='block';dn.style.display='none';
+  document.getElementById('curNum').textContent=st.sticker;
+  document.getElementById('curQty').textContent=(st.qty||1)+(((st.qty||1)==1)?' unit':' units');
+  document.getElementById('curPrice').innerHTML=st.price?('🏷 sold at $'+esc(st.price)):'';
+  scan.value='';focusScan();
+  document.querySelectorAll('#waiting .wrow').forEach(function(w){w.classList.toggle('cur',w.getAttribute('data-s')===String(st.sticker))});
+}
+function load(){
+  if(!SHOW)return;
+  fetch('/api/live/match-queue?show='+encodeURIComponent(SHOW)).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;WAIT=d.waiting||[];
+    document.getElementById('wc').textContent=WAIT.length?('· '+WAIT.length):'';
+    // current = selected if still waiting, else first in queue
+    var keep=CUR&&WAIT.some(function(w){return String(w.sticker)===String(CUR.sticker)});
+    var curSt=keep?WAIT.filter(function(w){return String(w.sticker)===String(CUR.sticker)})[0]:WAIT[0]||null;
+    // right list: the NEXT few (skip the current), max 6
+    var rest=WAIT.filter(function(w){return !curSt||String(w.sticker)!==String(curSt.sticker)}).slice(0,6);
+    var wd=document.getElementById('waiting');
+    wd.innerHTML=rest.length?rest.map(function(w){
+      return '<div class="wrow" data-s="'+esc(w.sticker)+'"><span><b>Sticker '+esc(w.sticker)+'</b>'+(w.price?('<span class="p">· $'+esc(w.price)+'</span>'):'')+'</span><span class="cv">›</span></div>';
+    }).join(''):'<div class="empty">Nothing else waiting 🎉</div>';
+    if(WAIT.length>rest.length+(curSt?1:0))wd.innerHTML+='<div class="more">+'+(WAIT.length-rest.length-(curSt?1:0))+' more waiting</div>';
+    wd.querySelectorAll('.wrow').forEach(function(el){el.onclick=function(){
+      var s=el.getAttribute('data-s');var w=WAIT.filter(function(x){return String(x.sticker)===s})[0];if(w)setCur(w);
+    }});
+    var md=document.getElementById('matched');
+    md.innerHTML=(d.matched&&d.matched.length)?d.matched.map(function(m){
+      return '<span class="mchip" data-s="'+esc(m.sticker)+'"><b>'+esc(m.sticker)+'</b> → '+esc(m.name||m.product_sku||'?')+' ✎</span>';
+    }).join(''):'<div class="empty">—</div>';
+    md.querySelectorAll('.mchip').forEach(function(el){el.onclick=function(){
+      setCur({sticker:el.getAttribute('data-s'),qty:1,price:''});
+    }});
+    setCur(curSt);
+  });
+}
+function doMatch(code){
+  if(!CUR||!code||busy)return;busy=true;
+  var err=document.getElementById('errBox');err.style.display='none';
+  fetch('/api/live/match',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({show:SHOW,sticker:CUR.sticker,code:code})})
+   .then(function(r){return r.json()}).then(function(d){
+     busy=false;
+     if(!d.ok){err.textContent='⚠️ '+(d.error||'Not matched');err.style.display='block';scan.value='';focusScan();return;}
+     var ob=document.getElementById('okBox');
+     document.getElementById('okImg').src=(d.product&&d.product.image_url)||'';
+     document.getElementById('okMt').textContent='Sticker '+d.sticker+' matched'+(d.auto_created?' · added from barcode':'');
+     document.getElementById('okNm').textContent=(d.product&&d.product.name)||d.product.sku;
+     ob.className='ok show';CUR=null;load();
+   }).catch(function(){busy=false;err.textContent='Network error';err.style.display='block';focusScan();});
+}
+scan.addEventListener('keydown',function(e){if(e.key==='Enter'){var v=scan.value.trim();if(v)doMatch(v);}});
+document.getElementById('backBtn').onclick=function(){
+  if(!CUR||!WAIT.length)return;var i=WAIT.findIndex(function(w){return String(w.sticker)===String(CUR.sticker)});
+  if(i>0)setCur(WAIT[i-1]);
+};
+document.getElementById('bulkBtn').onclick=function(){
+  if(!SHOW){alert('Pick a live first');return;}
+  var from=prompt('Bulk match — FROM sticker number:');if(from===null)return;
+  var to=prompt('TO sticker number:');if(to===null)return;
+  var code=prompt('Scan or type the product barcode for '+from+'–'+to+':');if(!code)return;
+  from=parseInt(from,10);to=parseInt(to,10);if(isNaN(from)||isNaN(to)||to<from){alert('Invalid range');return;}
+  var seq=Promise.resolve(),n=0;
+  for(var s=from;s<=to;s++){(function(st){seq=seq.then(function(){return fetch('/api/live/match',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:SHOW,sticker:String(st),code:code})}).then(function(){n++})})})(s);}
+  seq.then(function(){alert('Matched '+n+' stickers');load();});
+};
+document.addEventListener('click',function(e){if(!e.target.closest('button,select,.wrow,.mchip,.back'))focusScan();});
+setInterval(load,4000);
+loadShows();
 </script>
 </body></html>'''

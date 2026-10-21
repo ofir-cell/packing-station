@@ -38,7 +38,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML,
-    SCANIT_HTML, APPLY_HTML, TRACK_HTML, EQUIPMENT_HTML, LIVE_HTML)
+    SCANIT_HTML, APPLY_HTML, TRACK_HTML, EQUIPMENT_HTML, LIVE_HTML, LIVE_MATCH_HTML)
 from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
 
 
@@ -7538,6 +7538,66 @@ def api_preshow_unmap():
     c.commit(); c.close()
     return jsonify({"ok":True})
 
+# ── LIVE MATCH — the assistant identifies each sold sticker during the live ────
+@app.route("/api/live/match-queue")
+@req_role("admin","cs","worker","picker","host")
+def api_live_match_queue():
+    """What the live assistant works from: sold sticker numbers (TikTok's per-sale counter)
+    not yet linked to a product, plus what's matched. Giveaway lines are excluded."""
+    show=(request.args.get("show") or "").strip()
+    if not show: return jsonify({"ok":False,"error":"show required"})
+    c=sdb()
+    waiting=[dict(r) for r in c.execute("""
+        SELECT i.sku sticker, COUNT(*) qty, MAX(i.revenue) price, MAX(i.product_name) listing
+        FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+        WHERE s.import_label=? AND COALESCE(i.cancelled,0)=0 AND COALESCE(i.sku,'')<>''
+          AND i.sku NOT LIKE '%GIVEAWAY%'
+          AND NOT EXISTS (SELECT 1 FROM show_product_map m
+                          WHERE m.import_label=s.import_label AND m.sticker_sku=i.sku)
+        GROUP BY i.sku
+        ORDER BY (CASE WHEN i.sku GLOB '[0-9]*' THEN 0 ELSE 1 END), CAST(i.sku AS INTEGER), i.sku""",(show,)).fetchall()]
+    matched=[dict(r) for r in c.execute("""
+        SELECT m.sticker_sku sticker, m.product_sku, p.name, p.image_url
+        FROM show_product_map m LEFT JOIN products p ON p.sku=m.product_sku
+        WHERE m.import_label=? ORDER BY m.mapped_at DESC LIMIT 24""",(show,)).fetchall()]
+    mc=c.execute("SELECT COUNT(*) FROM show_product_map WHERE import_label=?",(show,)).fetchone()[0]
+    c.close()
+    return jsonify({"ok":True,"show":show,"waiting":waiting,"matched":matched,
+                    "waiting_count":len(waiting),"matched_count":mc})
+
+@app.route("/api/live/match", methods=["POST"])
+@req_role("admin","cs","worker","picker","host")
+def api_live_match():
+    """Link a sold sticker to a product by scanning the product barcode. Unknown barcodes
+    are auto-created from the online DBs so the assistant never dead-ends."""
+    d=request.get_json() or {}
+    show=(d.get("show") or "").strip(); sticker=(d.get("sticker") or "").strip()
+    try: part=int(d.get("part") or 0)
+    except Exception: part=0
+    code=(d.get("code") or "").strip(); product_sku=(d.get("product_sku") or "").strip()
+    if not show or not sticker: return jsonify({"ok":False,"error":"show and sticker required"})
+    c=sdb()
+    prod=None; auto_created=False
+    if product_sku:
+        prod=c.execute("SELECT * FROM products WHERE sku=?",(product_sku,)).fetchone()
+    elif code:
+        prod=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
+        if not prod:
+            prod,auto_created,_src=_resolve_or_create_product_by_barcode(c, code, who=session.get("name",""))
+    if not prod:
+        c.close(); return jsonify({"ok":False,"error":"Scan a product barcode","not_found":True})
+    _now=datetime.now().isoformat(timespec='seconds')
+    c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by)
+                 VALUES(?,?,?,?,0,?,?)
+                 ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET
+                    product_sku=excluded.product_sku,mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
+              (show,sticker,part,prod["sku"],_now,session.get("name","")[:60]))
+    _deplete_show_packed(c, show, sticker)
+    c.commit()
+    pr=dict(prod); c.close()
+    return jsonify({"ok":True,"sticker":sticker,"auto_created":auto_created,
+                    "product":{"sku":pr["sku"],"name":pr["name"],"image_url":pr.get("image_url")}})
+
 # ── LIVE MODE — deplete stock in real time as the show sells ───────────────────
 def _show_is_live(c, label):
     """True if this show was run in Live Mode (has live-sale scans). Stock for such
@@ -8150,6 +8210,11 @@ def equipment_page():
 @req_role("admin","cs","worker","picker")
 def live_page():
     return LIVE_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("live")).replace("__NAVBAR_CSS__",_NAVBAR_CSS).replace("__ROLE__",session.get("role",""))
+
+@app.route("/admin/match-live")
+@req_role("admin","cs","worker","picker","host")
+def match_live_page():
+    return LIVE_MATCH_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("matchlive")).replace("__NAVBAR_CSS__",_NAVBAR_CSS).replace("__ROLE__",session.get("role",""))
 
 # ── GEOGRAPHY ANALYTICS — where orders ship, by state (audience map) ──
 _US_STATES={"AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
