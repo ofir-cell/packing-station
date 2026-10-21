@@ -13492,9 +13492,10 @@ def _tt_ensure_cipher(org, shop_id, tok):
         _tt_log("ensure cipher failed: %r"%e)
     return tok
 
-def _tt_sweep_once():
-    """Safety sweep: poll each connected shop for recently-updated orders and ingest any
-    the webhook missed. Fully idempotent — _tt_apply_order never touches non-API shows."""
+def _tt_sweep_once(window_sec=7200):
+    """Poll each connected shop for orders updated in the last window_sec and ingest them.
+    Run often with a short window for near-real-time; occasionally wide as a safety net.
+    Fully idempotent — _tt_apply_order never touches non-API shows."""
     if not _tiktok_ready(): return
     c=pdb()
     shops=[dict(r) for r in c.execute("SELECT DISTINCT org_id, shop_id FROM tiktok_shops WHERE active=1").fetchall()]
@@ -13512,7 +13513,7 @@ def _tt_sweep_once():
                 p=dict(base_params)
                 if page_token: p["page_token"]=page_token
                 res=_tt_request("POST", TIKTOK_API_BASE+"/order/%s/orders/search"%TIKTOK_API_VERSION,
-                                params=p, body={"update_time_ge": int(time.time())-2*3600},
+                                params=p, body={"update_time_ge": int(time.time())-int(window_sec)},
                                 signed=True, access_token=tok["access_token"])
                 if res.get("code"): break
                 d=res.get("data") or {}
@@ -13530,7 +13531,7 @@ def _tt_sweep_once():
                 try: _tt_apply_order(sc, o, sku_map=skus, overhead=ovh); n+=1
                 except Exception as e: _tt_log("sweep apply failed %s: %r"%(o.get("id"),e))
             sc.commit(); sc.close()
-            _tt_log("sweep ingested %d order(s) for %s"%(n,org))
+            if n: _tt_log("sweep ingested %d order(s) for %s"%(n,org))
         except Exception as e:
             _tt_log("sweep failed for %s: %r"%(org,e))
 
@@ -13543,9 +13544,13 @@ def _tt_sweep_loop():
         return
     except Exception:
         return
+    i=0
     while True:
-        time.sleep(300)   # every 5 minutes
-        try: _tt_sweep_once()
+        time.sleep(20)    # near-real-time: every 20 seconds
+        i+=1
+        # Short recent window each tick (fast, few orders); a wide safety window every ~5 min.
+        win = 7200 if (i % 15 == 0) else 420
+        try: _tt_sweep_once(window_sec=win)
         except Exception as e: _tt_log("sweep loop error: %r"%e)
 
 threading.Thread(target=_tt_sweep_loop,daemon=True).start()
