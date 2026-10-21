@@ -13492,6 +13492,8 @@ def _tt_ensure_cipher(org, shop_id, tok):
         _tt_log("ensure cipher failed: %r"%e)
     return tok
 
+_tt_last_event = 0   # unix time of the last order webhook — drives fast "live" polling
+
 def _tt_sweep_once(window_sec=7200):
     """Poll each connected shop for orders updated in the last window_sec and ingest them.
     Run often with a short window for near-real-time; occasionally wide as a safety net.
@@ -13544,13 +13546,20 @@ def _tt_sweep_loop():
         return
     except Exception:
         return
-    i=0
+    last_wide=0; idle_tick=0
     while True:
-        time.sleep(20)    # near-real-time: every 20 seconds
-        i+=1
-        # Short recent window each tick (fast, few orders); a wide safety window every ~5 min.
-        win = 7200 if (i % 15 == 0) else 420
-        try: _tt_sweep_once(window_sec=win)
+        time.sleep(5)
+        now=time.time()
+        active = (now - _tt_last_event) < 420   # a sale came in within the last 7 minutes
+        try:
+            if now - last_wide >= 300:
+                last_wide=now; _tt_sweep_once(window_sec=7200)   # wide safety every ~5 min
+            elif active:
+                _tt_sweep_once(window_sec=180)                   # LIVE: ~5s latency
+            else:
+                idle_tick += 1
+                if idle_tick % 6 == 0:                           # idle: ~every 30s
+                    _tt_sweep_once(window_sec=420)
         except Exception as e: _tt_log("sweep loop error: %r"%e)
 
 threading.Thread(target=_tt_sweep_loop,daemon=True).start()
@@ -13638,10 +13647,14 @@ def api_tiktok_webhook():
         try:
             c=pdb(); c.execute("UPDATE tiktok_shops SET active=0,updated_at=CURRENT_TIMESTAMP WHERE shop_id=?",(shop_id,)); c.commit(); c.close()
         except Exception: pass
-    # Order status change (topic 1): fetch + park the order. Never let this block the 200 ack.
-    if ttype==1 and order_id and org:
-        try: _tt_ingest_order(org, shop_id, order_id)
-        except Exception as e: _tt_log("ingest failed %s: %r"%(order_id,e))
+    # Order status change (topic 1): signal live activity so the background poller switches
+    # to ~5s fast polling, and best-effort fetch this one order now. Never block the 200 ack.
+    if ttype==1:
+        global _tt_last_event
+        _tt_last_event=time.time()
+        if order_id and org:
+            try: _tt_ingest_order(org, shop_id, order_id)
+            except Exception as e: _tt_log("ingest failed %s: %r"%(order_id,e))
     return jsonify({"code":0,"message":"success"})
 
 @app.route("/api/tiktok/status")
