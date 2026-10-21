@@ -13227,19 +13227,28 @@ def _tt_label_for_order(c, order):
     auto-group into the right show. Falls back to a dated TikTok label with no room."""
     c.execute("""CREATE TABLE IF NOT EXISTS tiktok_rooms(
         room_id TEXT PRIMARY KEY, import_label TEXT, first_seen TEXT DEFAULT CURRENT_TIMESTAMP)""")
-    room=""
+    room=""; pname=""
     for li in (order.get("line_items") or []):
-        room=(li.get("room_id") or "").strip()
-        if room: break
+        if not room: room=(li.get("room_id") or "").strip()
+        if not pname: pname=(li.get("product_name") or "").strip()
+        if room and pname: break
     ct=order.get("create_time") or 0
     try: dstr=datetime.fromtimestamp(int(ct)).strftime("%b %d") if ct else datetime.now().strftime("%b %d")
     except Exception: dstr=datetime.now().strftime("%b %d")
+    # Prefer the live's product/listing name (what the seller calls the live),
+    # e.g. "$1 PERFUMES & BEAUTY 10/20 PART 3". Fall back to a dated label.
+    nice=pname[:90] if pname else ""
     if not room:
-        return "TikTok "+dstr
+        return nice or ("TikTok "+dstr)
     row=c.execute("SELECT import_label FROM tiktok_rooms WHERE room_id=?",(room,)).fetchone()
-    if row and row["import_label"]: return row["import_label"]
-    label="TikTok Live "+dstr+" ("+room[-4:]+")"
-    c.execute("INSERT OR IGNORE INTO tiktok_rooms(room_id,import_label) VALUES(?,?)",(room,label))
+    old=(row["import_label"] if row else "") or ""
+    # Keep a custom name already set; only auto-overwrite our own generated format.
+    _auto = old.startswith("TikTok Live ") or old.startswith("TikTok ") or not old
+    if old and not _auto:
+        return old
+    label = nice or old or ("TikTok Live "+dstr+" ("+room[-4:]+")")
+    c.execute("""INSERT INTO tiktok_rooms(room_id,import_label) VALUES(?,?)
+                 ON CONFLICT(room_id) DO UPDATE SET import_label=excluded.import_label""",(room,label))
     return label
 
 def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
