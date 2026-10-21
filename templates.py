@@ -4779,6 +4779,7 @@ function renderList(){
       '<span class="row-when">'+fmtDateShort(sh.last_import)+(sh.done&&sh.done_by?'<br>✓ '+escapeHtml(sh.done_by):'')+'</span>'+
       '<span class="row-acts">'+
         '<button class="'+(sh.done?'ra-undo':'ra-done')+'" onclick="toggleDone(event,\\''+en+'\\','+(sh.done?'false':'true')+')">'+(sh.done?'↩︎ Undo':'✓ Done')+'</button>'+
+        '<button class="ra-undo" title="Rename this live" onclick="renameShow(event,\\''+en+'\\')">✏️</button>'+
         '<button class="ra-del" title="Delete this show (manager PIN)" onclick="deleteShow(event,\\''+en+'\\')">🗑</button>'+
       '</span>'+
     '</a>';
@@ -4804,6 +4805,18 @@ function toggleDone(ev,name,done){
    .then(function(r){return r.json()}).then(function(d){
      if(d.ok){if(done){dropCard(nm);}else{loadShows();}return}
      if(d.need_pin_setup){alert('No Manager PIN set yet. An admin must set it in Team → Permissions.');return}
+     alert(d.error||'Failed');
+   }).catch(function(){alert('Request failed')});
+}
+function renameShow(ev,name){
+  ev.preventDefault();ev.stopPropagation();
+  var nm=decodeURIComponent(name);
+  var nn=prompt('Name this live — all its orders will show under this name:', nm);
+  if(nn===null)return;nn=nn.trim();if(!nn||nn===nm)return;
+  fetch('/api/shows/rename',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({label:nm,name:nn})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(d.ok){loadShows();return}
      alert(d.error||'Failed');
    }).catch(function(){alert('Request failed')});
 }

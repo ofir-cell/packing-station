@@ -6104,6 +6104,30 @@ def api_show_delete():
     alog("show.delete", "%s (%d shipments)" % (label, n))
     return jsonify({"ok": True, "deleted": n})
 
+@app.route("/api/shows/rename", methods=["POST"])
+@req_role("admin","cs")
+def api_show_rename():
+    """Rename a show (its import_label) across every table that keys on it, and update the
+    TikTok LIVE-ID → name mapping so future orders from that live use the new name too."""
+    d = request.get_json() or {}
+    old = (d.get("label") or "").strip()
+    new = (d.get("name") or "").strip()[:90]
+    if not old or not new:
+        return jsonify({"ok": False, "error": "Enter a name"})
+    if old == new:
+        return jsonify({"ok": True, "renamed": False, "new": new})
+    c = sdb()
+    if c.execute("SELECT 1 FROM shipments WHERE import_label=? LIMIT 1", (new,)).fetchone():
+        c.close(); return jsonify({"ok": False, "error": "A show with that name already exists."})
+    n = c.execute("SELECT COUNT(*) FROM shipments WHERE import_label=?", (old,)).fetchone()[0]
+    for tbl in ("shipments","show_state","cleanup_state","show_product_map","live_sales","live_reconcile","tiktok_rooms"):
+        try: c.execute("UPDATE %s SET import_label=? WHERE import_label=?" % tbl, (new, old))
+        except Exception: pass
+    c.commit(); c.close()
+    try: alog("show.rename", "%s -> %s (%d shipments)" % (old, new, n))
+    except Exception: pass
+    return jsonify({"ok": True, "renamed": True, "count": n, "new": new})
+
 @app.route("/admin/permissions")
 @req_role("admin")
 def permissions_page():
