@@ -1230,7 +1230,7 @@ function renderUsers(){
                   status==='inactive'?'<span style="color:#94a3b8;font-weight:700">⚪ Inactive</span>':
                   '<span style="color:#d97706;font-weight:700">🟠 Never</span>';
         var loginTxt=v.last_login?('<b>'+li.txt+'</b> <span style="color:#94a3b8;font-size:11px">· '+li.ago+'</span>'):'<span style="color:#94a3b8">—</span>';
-        rows+='<tr><td><b>'+k+'</b></td><td>'+(v.name||'')+'</td><td><span class="role '+rc+'">'+ulbl(v.role)+'</span>'+xr+'</td><td>'+badge+'</td><td>'+loginTxt+'</td><td>';
+        rows+='<tr><td><b>'+k+'</b></td><td><span>'+(v.name||'')+'</span> <button class="act-btn" data-u="'+k+'" data-nm="'+(v.name||'').replace(/"/g,'&quot;')+'" data-a="name" title="Edit display name" style="padding:2px 8px;font-size:13px;vertical-align:middle">✏️</button></td><td><span class="role '+rc+'">'+ulbl(v.role)+'</span>'+xr+'</td><td>'+badge+'</td><td>'+loginTxt+'</td><td>';
         rows+='<div class="actions"><button class="act-btn" data-u="'+k+'" data-a="roles">Edit Roles</button>';
         if(k!=='admin'){
             rows+='<button class="act-btn act-pw" data-u="'+k+'" data-a="pw">Change Password</button><button class="act-btn act-del" data-u="'+k+'" data-a="del">Delete</button>';
@@ -1242,6 +1242,15 @@ function renderUsers(){
     document.querySelectorAll('[data-a="pw"]').forEach(function(b){b.addEventListener('click',function(){changePw(this.dataset.u)})});
     document.querySelectorAll('[data-a="del"]').forEach(function(b){b.addEventListener('click',function(){delUser(this.dataset.u)})});
     document.querySelectorAll('[data-a="roles"]').forEach(function(b){b.addEventListener('click',function(){editRoles(this.dataset.u)})});
+    document.querySelectorAll('[data-a="name"]').forEach(function(b){b.addEventListener('click',function(){editName(this.dataset.u,this.dataset.nm)})});
+}
+function editName(u,cur){
+    var nn=prompt('Display name for '+u+':', cur||'');
+    if(nn===null)return;nn=nn.trim();if(!nn||nn===cur)return;
+    fetch('/api/users/name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,name:nn})})
+      .then(function(r){return r.json()}).then(function(d){
+        if(d.ok){loadUsers();}else{alert(d.error||'Failed')}
+      }).catch(function(){alert('Request failed')});
 }
 ['uSearch','uRole','uActive'].forEach(function(id){
     var el=document.getElementById(id);

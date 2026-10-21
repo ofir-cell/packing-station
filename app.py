@@ -10106,6 +10106,21 @@ def api_user_roles():
     alog("user.roles",u+" -> "+role+("+"+",".join(extra) if extra else ""))
     return jsonify({"ok":True})
 
+@app.route("/api/users/name",methods=["POST"])
+@req_role("admin")
+def api_user_name():
+    """Update a user's display name."""
+    d=request.get_json() or {}
+    u=(d.get("username") or "").strip().lower()
+    name=(d.get("name") or "").strip()[:60]
+    if not name: return jsonify({"ok":False,"error":"Enter a name"})
+    with update_json(USERS_FILE) as users:
+        if u not in users or not _same_org_user(users,u):
+            return jsonify({"ok":False,"error":"User not found"}),404
+        users[u]["name"]=name
+    alog("user.rename", u+" -> "+name)
+    return jsonify({"ok":True,"name":name})
+
 @app.route("/api/users/delete",methods=["POST"])
 @req_role("admin")
 def api_del():
