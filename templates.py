@@ -12764,7 +12764,8 @@ __NAVBAR__
 </div>
 <script>
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
-var SHOW='',CUR=null,WAIT=[],busy=false;
+function numOf(s){var n=parseInt(s,10);return isNaN(n)?-1:n;}
+var SHOW='',CUR=null,WAIT=[],busy=false,frontier=-1;
 var scan=document.getElementById('scan');
 function focusScan(){try{scan.focus()}catch(e){}}
 function loadShows(){
@@ -12778,7 +12779,13 @@ function loadShows(){
 function setCur(st){
   CUR=st;document.getElementById('okBox').className='ok';document.getElementById('errBox').style.display='none';
   var cw=document.getElementById('curWrap'),dn=document.getElementById('allDone');
-  if(!st){cw.style.display='none';dn.style.display=WAIT.length?'none':'block';return;}
+  if(!st){
+    cw.style.display='none';dn.style.display='block';
+    dn.innerHTML=WAIT.length
+      ? '✓ Caught up with the live — waiting for the next sale.<br><span style="color:#9aa1ab;font-weight:600;font-size:13px">'+WAIT.length+' older sticker(s) still open — tap one on the right to fill a gap.</span>'
+      : '🎉 All sold stickers matched. New sales appear automatically.';
+    return;
+  }
   cw.style.display='block';dn.style.display='none';
   document.getElementById('curNum').textContent=st.sticker;
   document.getElementById('curQty').textContent=(st.qty||1)+(((st.qty||1)==1)?' unit':' units');
@@ -12791,9 +12798,15 @@ function load(){
   fetch('/api/live/match-queue?show='+encodeURIComponent(SHOW)).then(function(r){return r.json()}).then(function(d){
     if(!d.ok)return;WAIT=d.waiting||[];
     document.getElementById('wc').textContent=WAIT.length?('· '+WAIT.length):'';
-    // current = selected if still waiting, else first in queue
+    // Ride the live FORWARD: default to the newest sale (highest number). Never auto-drop
+    // into the older backlog — those gaps are filled later by tapping. WAIT is sorted
+    // newest-first by the server, so WAIT[0] is the newest unmatched sticker.
+    var top=null; for(var k=0;k<WAIT.length;k++){ if(numOf(WAIT[k].sticker)>=0){ top=WAIT[k]; break; } }
     var keep=CUR&&WAIT.some(function(w){return String(w.sticker)===String(CUR.sticker)});
-    var curSt=keep?WAIT.filter(function(w){return String(w.sticker)===String(CUR.sticker)})[0]:WAIT[0]||null;
+    var curSt;
+    if(keep){ curSt=WAIT.filter(function(w){return String(w.sticker)===String(CUR.sticker)})[0]; }
+    else if(top && numOf(top.sticker)>frontier){ curSt=top; frontier=numOf(top.sticker); } // a new sale arrived
+    else { curSt=null; }  // caught up at the frontier — wait for the next sale
     // right list: the NEXT few (skip the current), max 6
     var rest=WAIT.filter(function(w){return !curSt||String(w.sticker)!==String(curSt.sticker)}).slice(0,6);
     var wd=document.getElementById('waiting');

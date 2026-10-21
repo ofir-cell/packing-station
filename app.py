@@ -7555,7 +7555,7 @@ def api_live_match_queue():
           AND NOT EXISTS (SELECT 1 FROM show_product_map m
                           WHERE m.import_label=s.import_label AND m.sticker_sku=i.sku)
         GROUP BY i.sku
-        ORDER BY (CASE WHEN i.sku GLOB '[0-9]*' THEN 0 ELSE 1 END), CAST(i.sku AS INTEGER), i.sku""",(show,)).fetchall()]
+        ORDER BY (CASE WHEN i.sku GLOB '[0-9]*' THEN 0 ELSE 1 END), CAST(i.sku AS INTEGER) DESC, i.sku DESC""",(show,)).fetchall()]
     matched=[dict(r) for r in c.execute("""
         SELECT m.sticker_sku sticker, m.product_sku, p.name, p.image_url
         FROM show_product_map m LEFT JOIN products p ON p.sku=m.product_sku
