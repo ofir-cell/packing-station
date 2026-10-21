@@ -12768,12 +12768,18 @@ function numOf(s){var n=parseInt(s,10);return isNaN(n)?-1:n;}
 var SHOW='',CUR=null,WAIT=[],busy=false,frontier=-1;
 var scan=document.getElementById('scan');
 function focusScan(){try{scan.focus()}catch(e){}}
+var autoShow=true;  // follow the newest active live automatically until the user picks one
 function loadShows(){
   fetch('/api/shows/recent').then(function(r){return r.json()}).then(function(names){
     names=names||[];var sel=document.getElementById('showSel');
-    sel.innerHTML=names.map(function(n){return '<option>'+esc(n)+'</option>'}).join('');
-    if(names.length){SHOW=names[0];sel.value=SHOW;document.getElementById('shName').textContent=SHOW;load();}
-    sel.onchange=function(){SHOW=sel.value;CUR=null;document.getElementById('shName').textContent=SHOW;load();};
+    sel.innerHTML=names.map(function(n){return '<option'+(n===SHOW?' selected':'')+'>'+esc(n)+'</option>'}).join('');
+    if(!names.length)return;
+    // The list is newest-active first. Auto-follow it unless the user chose a show manually.
+    if(autoShow && names[0]!==SHOW){ SHOW=names[0]; CUR=null; frontier=-1; }
+    else if(!SHOW){ SHOW=names[0]; }
+    sel.value=SHOW; document.getElementById('shName').textContent=SHOW;
+    sel.onchange=function(){autoShow=false;SHOW=sel.value;CUR=null;frontier=-1;document.getElementById('shName').textContent=SHOW;load();};
+    load();
   });
 }
 function setCur(st){
@@ -12863,6 +12869,7 @@ document.getElementById('bulkBtn').onclick=function(){
 };
 document.addEventListener('click',function(e){if(!e.target.closest('button,select,.wrow,.mchip,.back'))focusScan();});
 setInterval(load,4000);
+setInterval(loadShows,15000);   // detect when the live moves to a new PART and follow it
 loadShows();
 </script>
 </body></html>'''
