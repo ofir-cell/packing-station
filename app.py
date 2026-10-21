@@ -13382,39 +13382,44 @@ def _tt_order_rows(order):
         if li.get("is_gift"): a["is_gift"]=True
     return list(agg.values())
 
+# A new live session only begins after this many seconds of quiet. Parts of the same
+# broadcast (and the permanent catalog products, like the fragrance sample, sold during
+# it) fall inside the window and stay in ONE show. A real second live later the same day
+# is separated by a long gap and becomes its own show.
+TT_SESSION_GAP_SEC = 4*3600
+
 def _tt_label_for_order(c, order):
-    """Pick the show (import_label) for an order. A show is one (LIVE session + listing/PART),
-    so different lives never merge and each PART keeps its own 1..N sticker numbering.
-    Named "Live <n> · <listing>" where <n> is a per-tenant sequential live number."""
-    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_rooms(
-        room_id TEXT PRIMARY KEY, import_label TEXT, first_seen TEXT DEFAULT CURRENT_TIMESTAMP)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_lives(
-        room_id TEXT PRIMARY KEY, live_num INTEGER, first_seen TEXT DEFAULT CURRENT_TIMESTAMP)""")
-    room=""; pname=""
-    for li in (order.get("line_items") or []):
-        if not room: room=(li.get("room_id") or "").strip()
-        if not pname: pname=(li.get("product_name") or "").strip()
-        if room and pname: break
-    ct=order.get("create_time") or 0
-    try: dstr=datetime.fromtimestamp(int(ct)).strftime("%b %d") if ct else datetime.now().strftime("%b %d")
-    except Exception: dstr=datetime.now().strftime("%b %d")
-    # One show per LIVE SESSION (room) — all PARTs of a live stay together as one show.
-    # Different lives never merge (each live is a different room). The listing's trailing
-    # "PART N" is stripped from the name so the show reads as the whole live.
-    nice=re.sub(r'\s*(?:part)\s*\d+\s*$','',(pname or ''),flags=re.I).strip()[:80]
-    if not room:
-        return nice or ("TikTok "+dstr)
-    row=c.execute("SELECT import_label FROM tiktok_rooms WHERE room_id=?",(room,)).fetchone()
-    if row and row["import_label"]:
+    """Pick the show (import_label) for an order by WHEN it was bought, not by TikTok's
+    room/PART/product. Every order within a live window (gap-based) lands in the same show,
+    so parts and catalog items never split. A show is named by the live's date; a second
+    live the same day is disambiguated by its start time."""
+    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_sessions(
+        session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        import_label TEXT, start_ts INTEGER, end_ts INTEGER,
+        first_seen TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    try: ct=int(order.get("create_time") or 0)
+    except Exception: ct=0
+    if not ct: ct=int(time.time())
+    gap=TT_SESSION_GAP_SEC
+    # Does this order belong to an existing live session? (within `gap` of its span)
+    row=c.execute("""SELECT session_id, import_label, start_ts, end_ts FROM tiktok_sessions
+                     WHERE ? >= start_ts-? AND ? <= end_ts+?
+                     ORDER BY ABS(((start_ts+end_ts)/2) - ?) LIMIT 1""",
+                  (ct,gap,ct,gap,ct)).fetchone()
+    if row:
+        ns=min(row["start_ts"], ct); ne=max(row["end_ts"], ct)
+        if ns!=row["start_ts"] or ne!=row["end_ts"]:
+            c.execute("UPDATE tiktok_sessions SET start_ts=?, end_ts=? WHERE session_id=?",
+                      (ns,ne,row["session_id"]))
         return row["import_label"]
-    lv=c.execute("SELECT live_num FROM tiktok_lives WHERE room_id=?",(room,)).fetchone()
-    if lv and lv["live_num"]:
-        livenum=lv["live_num"]
-    else:
-        livenum=(c.execute("SELECT COALESCE(MAX(live_num),0)+1 FROM tiktok_lives").fetchone()[0]) or 1
-        c.execute("INSERT OR IGNORE INTO tiktok_lives(room_id,live_num) VALUES(?,?)",(room,livenum))
-    label="Live %d · %s"%(livenum, nice) if nice else ("Live %d · %s"%(livenum,dstr))
-    c.execute("INSERT OR IGNORE INTO tiktok_rooms(room_id,import_label) VALUES(?,?)",(room,label))
+    # New live session → label by date, add start time only if that date already has a show.
+    try: dt=datetime.fromtimestamp(ct)
+    except Exception: dt=datetime.now()
+    base="Live · "+dt.strftime("%b %d")
+    clash=c.execute("SELECT 1 FROM tiktok_sessions WHERE import_label=? OR import_label LIKE ? LIMIT 1",
+                    (base, base+" · %")).fetchone()
+    label=base if not clash else (base+" · "+dt.strftime("%-I:%M %p"))
+    c.execute("INSERT INTO tiktok_sessions(import_label,start_ts,end_ts) VALUES(?,?,?)",(label,ct,ct))
     return label
 
 def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
@@ -13749,22 +13754,17 @@ def api_tiktok_status():
                     "webhook_url":"https://www.getwhatnot.com/api/tiktok/webhook",
                     "shops":shops,"orders":orders,"event_count":(ev["n"] if ev else 0)})
 
-@app.route("/api/tiktok/pull", methods=["POST"])
-@req_role("admin")
-def api_tiktok_pull():
-    """Pull recent real orders from the connected shop so we can verify exactly what
-    TikTok sends (seller_sku = sticker, qty, price) without waiting for a live webhook."""
-    org=current_org() or DEFAULT_ORG
+def _tt_pull_core(org, days=30):
+    """Pull recent real orders from the connected shop and materialize them into shows.
+    Returns a result dict (never raises). Shared by the Sync button and the regroup action."""
     c=pdb()
     row=c.execute("SELECT * FROM tiktok_shops WHERE org_id=? AND active=1 ORDER BY updated_at DESC LIMIT 1",(org,)).fetchone()
     c.close()
-    if not row: return jsonify({"ok":False,"error":"No connected shop. Connect a shop first."})
+    if not row: return {"ok":False,"error":"No connected shop. Connect a shop first."}
     row=dict(row); shop_id=row["shop_id"]
     tok=_tt_valid_token(org, shop_id)
-    if not tok or not tok.get("access_token"): return jsonify({"ok":False,"error":"No valid access token for the shop."})
+    if not tok or not tok.get("access_token"): return {"ok":False,"error":"No valid access token for the shop."}
     tok=_tt_ensure_cipher(org, shop_id, tok)
-    try: days=int((request.get_json() or {}).get("days") or 30)
-    except Exception: days=30
     ge=int(time.time())-days*86400
     base_params={"page_size":100,"sort_field":"create_time","sort_order":"DESC"}
     if tok.get("shop_cipher"): base_params["shop_cipher"]=tok["shop_cipher"]
@@ -13778,10 +13778,10 @@ def api_tiktok_pull():
                             params=p, body={"create_time_ge":ge}, signed=True, access_token=tok["access_token"])
         except Exception as e:
             if orders: break   # keep what we already pulled
-            return jsonify({"ok":False,"error":"Request failed: "+str(e)[:300]})
+            return {"ok":False,"error":"Request failed: "+str(e)[:300]}
         if res.get("code"):
             if orders: break
-            return jsonify({"ok":False,"error":(res.get("message") or ("code "+str(res.get("code")))),"code":res.get("code")})
+            return {"ok":False,"error":(res.get("message") or ("code "+str(res.get("code")))),"code":res.get("code")}
         data=res.get("data") or {}
         orders.extend(data.get("orders") or [])
         total=data.get("total_count")
@@ -13823,9 +13823,56 @@ def api_tiktok_pull():
         sc.commit(); sc.close()
     except Exception as e:
         _tt_log("pull apply batch failed: %r"%e)
-    return jsonify({"ok":True,"shop":row.get("shop_name") or shop_id,"total":total,
-                    "fetched":len(orders),"stored":stored,"preview":preview,
-                    "shows":sorted(shows),"loaded":shipped,"pages":pages})
+    return {"ok":True,"shop":row.get("shop_name") or shop_id,"total":total,
+            "fetched":len(orders),"stored":stored,"preview":preview,
+            "shows":sorted(shows),"loaded":shipped,"pages":pages}
+
+@app.route("/api/tiktok/pull", methods=["POST"])
+@req_role("admin")
+def api_tiktok_pull():
+    """Pull recent real orders from the connected shop (Sync button)."""
+    org=current_org() or DEFAULT_ORG
+    try: days=int((request.get_json(silent=True) or {}).get("days") or 30)
+    except Exception: days=30
+    return jsonify(_tt_pull_core(org, days))
+
+@app.route("/api/tiktok/regroup", methods=["POST"])
+@req_role("admin")
+def api_tiktok_regroup():
+    """One-click fix for shows that split by PART/product. Clears every TikTok-API show
+    (and its session memory) WITHOUT touching CSV shows or any warehouse progress on
+    non-TikTok data, then re-pulls so orders re-group into one show per live session.
+    Shipments already packed/shipped keep their status on re-ingest (handled in apply)."""
+    org=current_org() or DEFAULT_ORG
+    try: days=int((request.get_json(silent=True) or {}).get("days") or 45)
+    except Exception: days=45
+    wiped=0
+    try:
+        sc=sdb(org)
+        # labels currently owned by the API path (so we can clean their side-tables too)
+        labels=[r["import_label"] for r in sc.execute(
+            "SELECT DISTINCT import_label FROM shipments WHERE import_batch='tiktok-api' AND import_label IS NOT NULL").fetchall()]
+        ids=[r["shipment_id"] for r in sc.execute(
+            "SELECT shipment_id FROM shipments WHERE import_batch='tiktok-api'").fetchall()]
+        for sid in ids:
+            sc.execute("DELETE FROM shipment_items WHERE shipment_id=?",(sid,))
+        wiped=sc.execute("DELETE FROM shipments WHERE import_batch='tiktok-api'").rowcount
+        # forget session windows so re-grouping starts clean
+        for t in ("tiktok_sessions","tiktok_rooms","tiktok_lives"):
+            try: sc.execute("DELETE FROM "+t)
+            except Exception: pass
+        # drop orphaned per-show state for the labels we just removed
+        for lbl in labels:
+            for t in ("show_state","cleanup_state","show_product_map","live_sales","live_reconcile"):
+                try: sc.execute("DELETE FROM "+t+" WHERE import_label=?",(lbl,))
+                except Exception: pass
+        sc.commit(); sc.close()
+    except Exception as e:
+        _tt_log("regroup wipe failed: %r"%e)
+        return jsonify({"ok":False,"error":"Could not clear old shows: "+str(e)[:200]})
+    res=_tt_pull_core(org, days)
+    res["regrouped"]=True; res["cleared"]=wiped
+    return jsonify(res)
 
 @app.route("/api/tiktok/debug")
 @req_role("admin")
@@ -13903,6 +13950,10 @@ th{color:#6b7280;font-weight:700;font-size:11px;text-transform:uppercase}
     <button id="pullBtn" class="btn g">⤓ Pull &amp; load recent orders into shows</button>
     <span class="mut">Fetches real orders and loads them into shows automatically (by live session). The CSV upload still works as before.</span>
   </div>
+  <div class="row" style="margin:0 0 12px">
+    <button id="regroupBtn" class="btn g" style="background:#fef3c7;color:#92400e">↻ Fix show grouping (merge parts into one live)</button>
+    <span class="mut">Rebuilds every TikTok show so all parts &amp; items of a live sit in ONE show named by date. Does not touch CSV shows or packing progress.</span>
+  </div>
   <div id="pullMsg" class="mut"></div>
   <div id="orders" class="mut">Loading…</div>
 </div>
@@ -13946,6 +13997,19 @@ pb.onclick=function(){
        h+='<tr><td>'+esc(o.order_id)+'</td><td>'+esc(o.status||'')+'</td><td>'+items+'</td></tr>';});
      od.innerHTML=h+'</table>';
    }).catch(function(e){pb.disabled=false;pb.textContent=old;pm.innerHTML='<span style="color:#b91c1c">Network error</span>';});
+};
+var rb=document.getElementById('regroupBtn');
+rb.onclick=function(){
+  if(!confirm('Rebuild all TikTok shows into one-per-live? CSV shows and packing progress are untouched.'))return;
+  rb.disabled=true;pb.disabled=true;var old=rb.textContent;rb.textContent='Regrouping…';
+  var pm=document.getElementById('pullMsg');pm.textContent='';
+  fetch('/api/tiktok/regroup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({days:45})})
+   .then(function(r){return r.json();}).then(function(d){
+     rb.disabled=false;pb.disabled=false;rb.textContent=old;
+     if(!d.ok){pm.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
+     var shw=(d.shows&&d.shows.length)?('<br>Shows now: '+d.shows.map(esc).join(', ')):'';
+     pm.innerHTML='<span style="color:#166534">✓ Regrouped — cleared '+(d.cleared||0)+' old shipment(s), re-loaded '+(d.loaded||0)+' into '+((d.shows||[]).length)+' show(s).'+shw+'</span>';
+   }).catch(function(e){rb.disabled=false;pb.disabled=false;rb.textContent=old;pm.innerHTML='<span style="color:#b91c1c">Network error</span>';});
 };
 </script>
 </body></html>"""
