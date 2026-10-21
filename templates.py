@@ -105,6 +105,7 @@ def _navbar(active_page=""):
         floor = []
         if has("admin", "cs", "worker", "picker"):
             floor.append(("live", "/admin/live", "🔴 Live Mode"))
+            floor.append(("matchlive", "/admin/match-live", "🔗 Match Live"))
         if has("worker"):
             floor.append(("pack", "/", "📦 Pack"))
         if has("worker", "picker"):
@@ -12654,5 +12655,172 @@ function searchProducts(v){
     });
   });
 }
+</script>
+</body></html>'''
+
+
+LIVE_MATCH_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Live Match</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#f6f7fb;color:#1a2130;min-height:100vh;color-scheme:light}
+.wrap{max-width:900px;margin:0 auto;padding:18px 16px 90px}
+.page-hdr{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.page-title{display:flex;align-items:center;gap:10px;font-size:20px;font-weight:800}
+select{padding:10px 12px;border:1.5px solid #e4e7ec;border-radius:10px;font-size:15px;font-family:inherit;background:#fff;color:#1a2130}
+.stats{display:flex;gap:8px}
+.pill{background:#eef2ff;color:#4338ca;border-radius:999px;padding:6px 13px;font-size:13px;font-weight:700}
+.pill.w{background:#fef3c7;color:#92400e}
+.cur{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:22px;box-shadow:0 2px 10px rgba(20,27,38,.05);margin-bottom:14px}
+.cur-top{display:flex;align-items:center;gap:18px;margin-bottom:16px}
+.stk{width:92px;height:92px;border-radius:16px;background:linear-gradient(135deg,var(--brand,#6366f1),#4f46e5);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0}
+.stk .lbl{font-size:12px;opacity:.85}
+.stk .num{font-size:40px;font-weight:900;line-height:1}
+.cur-meta{flex:1;min-width:0}
+.cur-meta .big{font-size:18px;font-weight:800}
+.cur-meta .sub{color:#6b7280;font-size:14px;margin-top:3px}
+.scanrow{display:flex;align-items:center;gap:10px}
+.scanrow input{flex:1;padding:15px 16px;border:2px solid #c7d2fe;border-radius:12px;font-size:17px;font-family:inherit;outline:none}
+.scanrow input:focus{border-color:var(--brand,#6366f1)}
+.ok{margin-top:14px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:12px;padding:13px 15px;display:none;align-items:center;gap:13px}
+.ok.show{display:flex}
+.ok img{width:46px;height:46px;border-radius:10px;object-fit:cover;background:#f1f5f9}
+.ok .nm{font-weight:800;color:#065f46}.ok .t{font-size:12px;color:#059669}
+.err{margin-top:12px;color:#b91c1c;font-weight:700;font-size:14px;display:none}
+.sec{font-size:13px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.4px;margin:18px 0 8px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{background:#fff;border:1.5px solid #e4e7ec;border-radius:12px;padding:10px 13px;cursor:pointer;font-size:15px;font-weight:700;min-width:58px;text-align:center}
+.chip:hover{border-color:var(--brand,#6366f1);background:#f5f3ff}
+.chip.cur{border-color:var(--brand,#6366f1);background:#eef2ff;color:#4338ca}
+.chip small{display:block;font-weight:600;color:#9aa1ab;font-size:11px}
+.mchip{background:#fff;border:1px solid #eef0f3;border-radius:999px;padding:7px 12px;font-size:13px;color:#374151;cursor:pointer}
+.mchip:hover{background:#fef2f2;border-color:#fecaca}
+.mchip b{color:#111827}
+.empty{color:#9aa1ab;font-size:14px;padding:10px 0}
+.bulk{background:#f5f3ff;color:#4338ca;border:1.5px solid #ddd6fe;border-radius:10px;padding:9px 14px;font-size:13px;font-weight:700;cursor:pointer}
+</style></head><body>
+__NAVBAR__
+<div class="wrap">
+  <div class="page-hdr">
+    <div class="page-title">🔗 <span>Live Match</span> <span style="color:#9aa1ab;font-weight:600;font-size:15px">__NAME__</span></div>
+    <div class="stats"><span class="pill" id="pMatched">0 matched</span><span class="pill w" id="pWaiting">0 waiting</span></div>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+    <label style="font-size:13px;color:#6b7280;font-weight:700">Live:</label>
+    <select id="showSel"></select>
+    <button class="bulk" id="bulkBtn">⇄ Bulk range</button>
+  </div>
+
+  <div class="cur" id="curCard" style="display:none">
+    <div class="cur-top">
+      <div class="stk"><span class="lbl">sticker</span><span class="num" id="curNum">—</span></div>
+      <div class="cur-meta">
+        <div class="big" id="curListing">—</div>
+        <div class="sub" id="curSub"></div>
+      </div>
+    </div>
+    <div class="scanrow">
+      <span style="font-size:22px">🔫</span>
+      <input id="scan" placeholder="Scan the product barcode…" autocomplete="off">
+    </div>
+    <div class="ok" id="okBox"><img id="okImg" src="" alt=""><div><div class="nm" id="okNm"></div><div class="t" id="okT"></div></div></div>
+    <div class="err" id="errBox"></div>
+  </div>
+  <div class="empty" id="allDone" style="display:none">🎉 All stickers matched for this live. New sales will appear here automatically.</div>
+
+  <div class="sec">Waiting to match <span id="wc" style="color:#b45309"></span></div>
+  <div class="chips" id="waiting"><div class="empty">Loading…</div></div>
+
+  <div class="sec">Just matched · tap to redo</div>
+  <div class="chips" id="matched"><div class="empty">—</div></div>
+</div>
+<script>
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
+var SHOW='',CUR=null,WAIT=[],busy=false;
+var scan=document.getElementById('scan');
+function focusScan(){try{scan.focus()}catch(e){}}
+function loadShows(){
+  fetch('/api/shows/recent').then(function(r){return r.json()}).then(function(names){
+    var sel=document.getElementById('showSel');
+    names=names||[];
+    sel.innerHTML=names.map(function(n){return '<option value="'+esc(n)+'">'+esc(n)+'</option>'}).join('');
+    if(names.length){SHOW=names[0];sel.value=SHOW;load();}
+    sel.onchange=function(){SHOW=sel.value;CUR=null;load();};
+  });
+}
+function setCur(st){
+  CUR=st;var c=document.getElementById('curCard'),done=document.getElementById('allDone');
+  document.getElementById('okBox').className='ok';document.getElementById('errBox').style.display='none';
+  if(!st){c.style.display='none';done.style.display=WAIT.length?'none':'block';return;}
+  done.style.display='none';c.style.display='block';
+  document.getElementById('curNum').textContent=st.sticker;
+  document.getElementById('curListing').textContent=st.listing||'(no listing name)';
+  var sub=[];if(st.qty)sub.push(st.qty+' sold');if(st.price)sub.push('$'+st.price);
+  document.getElementById('curSub').textContent=sub.join(' · ');
+  scan.value='';focusScan();
+  document.querySelectorAll('#waiting .chip').forEach(function(ch){ch.classList.toggle('cur',ch.getAttribute('data-s')===String(st.sticker))});
+}
+function load(){
+  if(!SHOW)return;
+  fetch('/api/live/match-queue?show='+encodeURIComponent(SHOW)).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok)return;
+    WAIT=d.waiting||[];
+    document.getElementById('pMatched').textContent=(d.matched_count||0)+' matched';
+    document.getElementById('pWaiting').textContent=WAIT.length+' waiting';
+    document.getElementById('wc').textContent=WAIT.length?('· '+WAIT.length):'';
+    var wd=document.getElementById('waiting');
+    wd.innerHTML=WAIT.length?WAIT.map(function(w){
+      return '<div class="chip'+(CUR&&String(CUR.sticker)===String(w.sticker)?' cur':'')+'" data-s="'+esc(w.sticker)+'">'+esc(w.sticker)+'<small>'+(w.price?('$'+esc(w.price)):'·')+'</small></div>';
+    }).join(''):'<div class="empty">Nothing waiting 🎉</div>';
+    wd.querySelectorAll('.chip').forEach(function(ch){ch.onclick=function(){
+      var s=ch.getAttribute('data-s');var w=WAIT.filter(function(x){return String(x.sticker)===s})[0];if(w)setCur(w);
+    }});
+    var md=document.getElementById('matched');
+    md.innerHTML=(d.matched&&d.matched.length)?d.matched.map(function(m){
+      return '<span class="mchip" data-s="'+esc(m.sticker)+'"><b>'+esc(m.sticker)+'</b> → '+esc(m.name||m.product_sku||'?')+'</span>';
+    }).join(''):'<div class="empty">—</div>';
+    md.querySelectorAll('.mchip').forEach(function(ch){ch.onclick=function(){
+      var s=ch.getAttribute('data-s');
+      setCur({sticker:s,listing:'(re-matching #'+s+')',qty:0,price:''});
+    }});
+    // keep current, or auto-advance to the first waiting sticker
+    if(!CUR||!WAIT.some(function(w){return String(w.sticker)===String(CUR.sticker)})){
+      setCur(WAIT[0]||null);
+    }
+  });
+}
+function doMatch(code){
+  if(!CUR||!code||busy)return;busy=true;
+  var err=document.getElementById('errBox');err.style.display='none';
+  fetch('/api/live/match',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({show:SHOW,sticker:CUR.sticker,code:code})})
+   .then(function(r){return r.json()}).then(function(d){
+     busy=false;
+     if(!d.ok){err.textContent='⚠️ '+(d.error||'Not matched');err.style.display='block';scan.value='';focusScan();return;}
+     var ob=document.getElementById('okBox');
+     document.getElementById('okImg').src=(d.product&&d.product.image_url)||'';
+     document.getElementById('okNm').textContent=(d.product&&d.product.name)||d.product.sku;
+     document.getElementById('okT').textContent='Sticker '+d.sticker+' matched'+(d.auto_created?' · added from barcode':'');
+     ob.className='ok show';
+     load();
+   }).catch(function(){busy=false;err.textContent='Network error';err.style.display='block';focusScan();});
+}
+scan.addEventListener('keydown',function(e){if(e.key==='Enter'){var v=scan.value.trim();if(v)doMatch(v);}});
+document.getElementById('bulkBtn').onclick=function(){
+  if(!SHOW){alert('Pick a live first');return;}
+  var from=prompt('Bulk match — FROM sticker number:');if(from===null)return;
+  var to=prompt('TO sticker number:');if(to===null)return;
+  var code=prompt('Scan or type the product barcode for stickers '+from+'–'+to+':');if(!code)return;
+  from=parseInt(from,10);to=parseInt(to,10);if(isNaN(from)||isNaN(to)||to<from){alert('Invalid range');return;}
+  var seq=Promise.resolve(),n=0;
+  for(var s=from;s<=to;s++){(function(st){seq=seq.then(function(){return fetch('/api/live/match',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:SHOW,sticker:String(st),code:code})}).then(function(){n++})})})(s);}
+  seq.then(function(){alert('Matched '+n+' stickers');load();});
+};
+document.addEventListener('click',focusScan);
+setInterval(load,4000);
+loadShows();
 </script>
 </body></html>'''
