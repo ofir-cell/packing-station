@@ -5277,18 +5277,20 @@ def api_shipments_recent():
     limit = min(request.args.get("limit", type=int) or 200, 500)
     show = (request.args.get("show") or "").strip()
     c = sdb()
+    _stk = ("(SELECT GROUP_CONCAT(DISTINCT i.sku) FROM shipment_items i "
+            "WHERE i.shipment_id=shipments.shipment_id AND COALESCE(i.cancelled,0)=0) AS stickers")
     if show:
         rows = c.execute("""SELECT shipment_id, tracking_code, buyer_username, buyer_name,
                                    total_items, expected_weight_g, actual_weight_g, weight_status,
                                    status, missing_weights, show_date, imported_at, import_label, platform,
-                                   delivery_status, delivery_detail, delivered_at, tracked_at
+                                   delivery_status, delivery_detail, delivered_at, tracked_at, """+_stk+"""
                             FROM shipments WHERE import_label=?
                             ORDER BY imported_at DESC LIMIT ?""", (show, limit)).fetchall()
     else:
         rows = c.execute("""SELECT shipment_id, tracking_code, buyer_username, buyer_name,
                                    total_items, expected_weight_g, actual_weight_g, weight_status,
                                    status, missing_weights, show_date, imported_at, import_label, platform,
-                                   delivery_status, delivery_detail, delivered_at, tracked_at
+                                   delivery_status, delivery_detail, delivered_at, tracked_at, """+_stk+"""
                             FROM shipments ORDER BY imported_at DESC LIMIT ?""", (limit,)).fetchall()
     c.close()
     return jsonify([dict(r) for r in rows])

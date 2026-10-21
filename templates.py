@@ -3972,7 +3972,7 @@ function renderTable(){
     return s.status===_statusFilter;
   });
   var DEL={DELIVERED:['#059669','✅ Delivered'],IN_TRANSIT:['#2563eb','✈️ In transit'],OUT_FOR_DELIVERY:['#0891b2','📬 Out for delivery'],PRE_TRANSIT:['#b45309','🚚 Shipped'],EXCEPTION:['#f43f5e','⚠️ Exception'],RETURNED:['#c2410c','↩️ Returned'],UNKNOWN:['#64748b','—']};
-  var html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Shipment</th><th>Buyer</th><th>Items</th><th>Tracking</th><th>Status</th><th>USPS</th><th>Show date</th></tr></thead><tbody>';
+  var html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Shipment</th><th>Buyer</th><th>SKU</th><th>Tracking</th><th>Status</th><th>USPS</th><th>Show date</th></tr></thead><tbody>';
   view.forEach(function(s,i){
     var trk=s.tracking_code?'<a href="https://tools.usps.com/go/TrackConfirmAction?tLabels='+encodeURIComponent(s.tracking_code)+'" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="col-tracking" style="text-decoration:underline" title="Track on USPS.com">'+escapeHtml(s.tracking_code)+' ↗</a>':'<span class="col-id" style="opacity:.5">—</span>';
     var dv=s.delivery_status?(DEL[s.delivery_status]||['#64748b',s.delivery_status]):null;
@@ -3980,7 +3980,7 @@ function renderTable(){
     html+='<tr class="row" data-i="'+i+'">'+
       '<td class="col-id">'+escapeHtml(s.shipment_id)+'</td>'+
       '<td>'+escapeHtml(s.buyer_name||s.buyer_username||'?')+'</td>'+
-      '<td>'+s.total_items+'</td>'+
+      '<td style="font-weight:700">'+escapeHtml(s.stickers||s.total_items||'')+'</td>'+
       '<td>'+trk+'</td>'+
       '<td><span class="status-pill st-'+s.status+'">'+s.status.replace('_',' ')+'</span></td>'+
       '<td>'+delCell+'</td>'+
