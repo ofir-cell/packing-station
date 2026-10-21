@@ -6100,8 +6100,9 @@ def api_show_delete():
     c.execute("""DELETE FROM shipment_items WHERE shipment_id IN
                  (SELECT shipment_id FROM shipments WHERE import_label=?)""", (label,))
     c.execute("DELETE FROM shipments WHERE import_label=?", (label,))
-    try: c.execute("DELETE FROM show_state WHERE import_label=?", (label,))
-    except Exception: pass
+    for _t in ("show_state","cleanup_state","show_product_map","live_sales","live_reconcile","tiktok_rooms"):
+        try: c.execute("DELETE FROM %s WHERE import_label=?" % _t, (label,))
+        except Exception: pass
     c.commit(); c.close()
     alog("show.delete", "%s (%d shipments)" % (label, n))
     return jsonify({"ok": True, "deleted": n})
@@ -13315,10 +13316,13 @@ def _tt_order_rows(order):
     return list(agg.values())
 
 def _tt_label_for_order(c, order):
-    """Pick the show (import_label) for an order from its LIVE session room_id, so orders
-    auto-group into the right show. Falls back to a dated TikTok label with no room."""
+    """Pick the show (import_label) for an order. A show is one (LIVE session + listing/PART),
+    so different lives never merge and each PART keeps its own 1..N sticker numbering.
+    Named "Live <n> · <listing>" where <n> is a per-tenant sequential live number."""
     c.execute("""CREATE TABLE IF NOT EXISTS tiktok_rooms(
         room_id TEXT PRIMARY KEY, import_label TEXT, first_seen TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_lives(
+        room_id TEXT PRIMARY KEY, live_num INTEGER, first_seen TEXT DEFAULT CURRENT_TIMESTAMP)""")
     room=""; pname=""
     for li in (order.get("line_items") or []):
         if not room: room=(li.get("room_id") or "").strip()
@@ -13327,20 +13331,24 @@ def _tt_label_for_order(c, order):
     ct=order.get("create_time") or 0
     try: dstr=datetime.fromtimestamp(int(ct)).strftime("%b %d") if ct else datetime.now().strftime("%b %d")
     except Exception: dstr=datetime.now().strftime("%b %d")
-    # Prefer the live's product/listing name (what the seller calls the live),
-    # e.g. "$1 PERFUMES & BEAUTY 10/20 PART 3". Fall back to a dated label.
-    nice=pname[:90] if pname else ""
+    nice=(pname or "").strip()[:80]
     if not room:
         return nice or ("TikTok "+dstr)
-    row=c.execute("SELECT import_label FROM tiktok_rooms WHERE room_id=?",(room,)).fetchone()
-    old=(row["import_label"] if row else "") or ""
-    # Keep a custom name already set; only auto-overwrite our own generated format.
-    _auto = old.startswith("TikTok Live ") or old.startswith("TikTok ") or not old
-    if old and not _auto:
-        return old
-    label = nice or old or ("TikTok Live "+dstr+" ("+room[-4:]+")")
-    c.execute("""INSERT INTO tiktok_rooms(room_id,import_label) VALUES(?,?)
-                 ON CONFLICT(room_id) DO UPDATE SET import_label=excluded.import_label""",(room,label))
+    # One show per (live session, listing). skey keeps them apart even when the listing
+    # name repeats across different lives.
+    skey=room+"||"+nice
+    row=c.execute("SELECT import_label FROM tiktok_rooms WHERE room_id=?",(skey,)).fetchone()
+    if row and row["import_label"]:
+        return row["import_label"]
+    # Assign (or reuse) a sequential live number for this room so all its PARTs share it.
+    lv=c.execute("SELECT live_num FROM tiktok_lives WHERE room_id=?",(room,)).fetchone()
+    if lv and lv["live_num"]:
+        livenum=lv["live_num"]
+    else:
+        livenum=(c.execute("SELECT COALESCE(MAX(live_num),0)+1 FROM tiktok_lives").fetchone()[0]) or 1
+        c.execute("INSERT OR IGNORE INTO tiktok_lives(room_id,live_num) VALUES(?,?)",(room,livenum))
+    label="Live %d · %s"%(livenum, nice) if nice else ("Live %d · %s"%(livenum,dstr))
+    c.execute("INSERT OR IGNORE INTO tiktok_rooms(room_id,import_label) VALUES(?,?)",(skey,label))
     return label
 
 def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
