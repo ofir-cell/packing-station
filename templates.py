@@ -12853,9 +12853,13 @@ document.getElementById('bulkBtn').onclick=function(){
   var to=prompt('TO sticker number:');if(to===null)return;
   var code=prompt('Scan or type the product barcode for '+from+'–'+to+':');if(!code)return;
   from=parseInt(from,10);to=parseInt(to,10);if(isNaN(from)||isNaN(to)||to<from){alert('Invalid range');return;}
+  // Only match stickers that ACTUALLY sold (are in the waiting queue) within the range —
+  // never blindly fill a 1..N range that includes numbers with no sale.
+  var targets=WAIT.filter(function(w){var x=numOf(w.sticker);return x>=from&&x<=to;}).map(function(w){return w.sticker;});
+  if(!targets.length){alert('No sold stickers between '+from+' and '+to+' are waiting.');return;}
   var seq=Promise.resolve(),n=0;
-  for(var s=from;s<=to;s++){(function(st){seq=seq.then(function(){return fetch('/api/live/match',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:SHOW,sticker:String(st),code:code})}).then(function(){n++})})})(s);}
-  seq.then(function(){alert('Matched '+n+' stickers');load();});
+  targets.forEach(function(st){seq=seq.then(function(){return fetch('/api/live/match',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:SHOW,sticker:String(st),code:code})}).then(function(){n++})})});
+  seq.then(function(){alert('Matched '+n+' sold sticker(s)');load();});
 };
 document.addEventListener('click',function(e){if(!e.target.closest('button,select,.wrow,.mchip,.back'))focusScan();});
 setInterval(load,4000);
