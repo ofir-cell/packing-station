@@ -13252,12 +13252,13 @@ def _tt_ingest_order(org, shop_id, order_id):
         a["price"]=li.get("sale_price") or li.get("original_price") or a["price"]
     items=list(agg.values())
     c=pdb()
+    _nl=datetime.now().isoformat(timespec='seconds')
     c.execute("""INSERT INTO tiktok_orders(order_id,org_id,shop_id,status,line_items,create_time,raw,updated_at)
-         VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+         VALUES(?,?,?,?,?,?,?,?)
          ON CONFLICT(org_id,order_id) DO UPDATE SET status=excluded.status,line_items=excluded.line_items,
-           create_time=excluded.create_time,updated_at=CURRENT_TIMESTAMP""",
+           create_time=excluded.create_time,updated_at=excluded.updated_at""",
       (str(order_id), org, str(shop_id), str(o.get("order_status") or o.get("status") or ""),
-       json.dumps(items), int(o.get("create_time") or 0), json.dumps(o)[:40000]))
+       json.dumps(items), int(o.get("create_time") or 0), json.dumps(o)[:40000], _nl))
     c.commit(); c.close()
     # Phase 1: also materialize the order as a shipment in the tenant's DB so it flows
     # into the live show automatically (same tables the CSV uses).
@@ -13703,11 +13704,11 @@ def api_tiktok_pull():
         items=list(agg.values())
         c=pdb()
         c.execute("""INSERT INTO tiktok_orders(order_id,org_id,shop_id,status,line_items,create_time,raw,updated_at)
-            VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+            VALUES(?,?,?,?,?,?,?,?)
             ON CONFLICT(org_id,order_id) DO UPDATE SET status=excluded.status,line_items=excluded.line_items,
-              create_time=excluded.create_time,updated_at=CURRENT_TIMESTAMP""",
+              create_time=excluded.create_time,updated_at=excluded.updated_at""",
           (oid,org,str(shop_id),str(o.get("order_status") or ""),json.dumps(items),
-           int(o.get("create_time") or 0),json.dumps(o)[:40000]))
+           int(o.get("create_time") or 0),json.dumps(o)[:40000],datetime.now().isoformat(timespec='seconds')))
         c.commit(); c.close(); stored+=1
         if len(preview)<10: preview.append({"order_id":oid,"status":o.get("order_status"),"items":items})
     # Phase 1: materialize every pulled order into the tenant's shows (shipments).
