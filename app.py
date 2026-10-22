@@ -13796,13 +13796,16 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
             VALUES (?,?,?,?,?,?,?,?, 'tiktok', ?, ?, ?, ?,?,?)""",
           (ship_id, tracking, buyer_nick, buyer_name, addr_full, postal,
            (created_iso or "")[:10], new_status, "tiktok-api", label, ship_fee, dvs, dvd, dva))
-    # Rebuild items, preserving floor progress (picked) AND inventory markers
-    # (depleted_qty/depleted_sku) so a re-sync mid-pack never loses work or double-counts stock.
+    # Rebuild ONLY THIS ORDER'S items, preserving floor progress (picked) AND inventory
+    # markers (depleted_qty/depleted_sku). Scoped by order_id so that when several orders
+    # are combined into one shipping package (shared shipment_id), each refreshes just its
+    # own lines and the package accumulates every buyer's products instead of the last
+    # order overwriting the rest.
     prev={}
     for pr in c.execute("""SELECT sku, product_name, picked, picked_at, depleted_qty, depleted_sku
-                           FROM shipment_items WHERE shipment_id=?""",(ship_id,)).fetchall():
+                           FROM shipment_items WHERE shipment_id=? AND order_id=?""",(ship_id,oid)).fetchall():
         prev[((pr["sku"] or "").strip(),(pr["product_name"] or "").strip())]=pr
-    c.execute("DELETE FROM shipment_items WHERE shipment_id=?",(ship_id,))
+    c.execute("DELETE FROM shipment_items WHERE shipment_id=? AND order_id=?",(ship_id,oid))
     for r in rows:
         sku=r["sku"]; qty=max(1,r["quantity"])
         w=sku_map.get(sku)
