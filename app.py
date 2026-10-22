@@ -3908,6 +3908,15 @@ def home_page():
         .replace("__NAVBAR__", _navbar("home"))
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
+def _parse_date_any(s):
+    """Parse a show_date that may be ISO (2026-10-20) or US (10/20/2026) — returns date or None."""
+    s=(s or "").strip()[:10]
+    if not s: return None
+    for fmt in ("%Y-%m-%d","%m/%d/%Y","%Y/%m/%d","%m-%d-%Y"):
+        try: return datetime.strptime(s, fmt).date()
+        except Exception: pass
+    return None
+
 @app.route("/api/today")
 @req_login
 def api_today():
@@ -3937,26 +3946,34 @@ def api_today():
     except Exception: floor["waiting_to_pack"]=0
     out["floor"]=floor
 
-    shows=[]
+    BACKLOG_DAYS=45   # older open shows are stale leftovers, not current backlog
+    shows=[]; stale=0; ful_p=ful_k=ful_e=0
     try:
-        rows=c.execute("""SELECT import_label lbl, MIN(show_date) sd, COUNT(*) total,
+        rows=c.execute("""SELECT import_label lbl, MIN(show_date) sd, MAX(imported_at) imp, COUNT(*) total,
                             SUM(CASE WHEN status IN ('packed','shipped') THEN 1 ELSE 0 END) packed,
+                            SUM(CASE WHEN status='picked' THEN 1 ELSE 0 END) picked,
                             SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending
                           FROM shipments
                           WHERE import_label IS NOT NULL AND import_label!=''
                             AND status NOT IN ('cancelled','giveaway')
-                          GROUP BY import_label HAVING pending>0 ORDER BY sd ASC""").fetchall()
+                            AND import_label NOT IN (SELECT import_label FROM show_state WHERE done=1)
+                          GROUP BY import_label HAVING pending>0""").fetchall()
         for r in rows:
-            r=dict(r); sd=(r["sd"] or "")[:10]
-            try: age=(now.date()-datetime.fromisoformat(sd).date()).days if sd else 0
-            except Exception: age=0
+            r=dict(r)
+            d=_parse_date_any(r["sd"]) or _parse_date_any((r["imp"] or "")[:10])
+            age=(now.date()-d).days if d else 0
+            if age>BACKLOG_DAYS: stale+=1; continue   # drop ancient leftovers
             tot=r["total"] or 1
-            shows.append({"name":r["lbl"],"date":sd,"age_days":age,"total":r["total"],
+            ful_p+=r["packed"] or 0; ful_k+=r["picked"] or 0; ful_e+=r["pending"] or 0
+            shows.append({"name":r["lbl"],"date":(r["sd"] or "")[:10],"age_days":max(0,age),"total":r["total"],
                           "packed":r["packed"] or 0,"pending":r["pending"] or 0,
                           "pct":round(100*(r["packed"] or 0)/tot)})
+        shows.sort(key=lambda s:(-s["age_days"], s["name"]))
     except Exception: pass
     out["backlog"]={"lives":len(shows),"orders":sum(s["pending"] for s in shows),
-                    "oldest_age":max([s["age_days"] for s in shows],default=0),"shows":shows}
+                    "oldest_age":max([s["age_days"] for s in shows],default=0),
+                    "stale":stale,"shows":shows[:20]}
+    out["fulfillment"]={"packed":ful_p,"picked":ful_k,"pending":ful_e}
 
     cur=None
     try:
@@ -3965,16 +3982,8 @@ def api_today():
                         ORDER BY packed_at DESC LIMIT 1""",(today,)).fetchone()
         if rr: cur=rr["lbl"]
     except Exception: pass
-    if not cur and shows: cur=shows[-1]["name"]
+    if not cur and shows: cur=shows[-1]["name"]   # newest open show (sorted oldest-first)
     out["current_show"]=cur
-
-    try:
-        fr=c.execute("""SELECT SUM(CASE WHEN status IN ('packed','shipped') THEN 1 ELSE 0 END) packed,
-                               SUM(CASE WHEN status='picked' THEN 1 ELSE 0 END) picked,
-                               SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending
-                        FROM shipments WHERE status IN ('pending','picked','packed','shipped')""").fetchone()
-        out["fulfillment"]={"packed":fr["packed"] or 0,"picked":fr["picked"] or 0,"pending":fr["pending"] or 0}
-    except Exception: out["fulfillment"]={"packed":0,"picked":0,"pending":0}
 
     alllog=_read_log(); series=[]
     for i in range(6,-1,-1):

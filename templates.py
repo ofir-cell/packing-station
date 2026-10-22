@@ -2650,7 +2650,7 @@ function backlogBlock(d){var b=d.backlog;if(!b.lives)return '<div class="sec">Ba
  var h='<div class="sec">How far behind are we</div><div class="backlog"><div class="big">'+b.lives+(b.lives===1?' live':' lives')+'</div><div><b>'+b.orders+' orders still to pack across '+b.lives+' open show'+(b.lives===1?'':'s')+'</b><small>Oldest open show is '+b.oldest_age+' day'+(b.oldest_age===1?'':'s')+' back.'+(d.current_show?(' Current table: '+esc(d.current_show)+'.'):'')+'</small></div></div>';
  h+='<div class="queue">';b.shows.forEach(function(s){var oldC=s.age_days>=2?' old':'';var ageT=s.age_days===0?'Today':(s.age_days+(s.age_days===1?' day':' days'));
   h+='<a class="qr" href="/admin/shipments?show='+encodeURIComponent(s.name)+'"><span class="age'+oldC+'">'+ageT+'</span><span class="nm"><b>'+esc(s.name)+'</b><small>'+esc(s.date||'')+'</small></span><span class="prog"><span class="bar"><i style="width:'+s.pct+'%"></i></span><small>'+s.pct+'% packed</small></span><span class="left">'+s.pending+'</span></a>';});
- h+='</div>';return h;}
+ h+='</div>';if(b.stale)h+='<div class="subt" style="margin:8px 2px 0">+ '+b.stale+' older show'+(b.stale===1?'':'s')+' (45+ days) hidden — close them under Shows if already done.</div>';return h;}
 function numbersBlock(d){var m=d.money||{};var f=d.floor;
  var h='<div class="sec">Today’s numbers <span class="adm">· admin only</span></div><div class="row r4" style="margin-bottom:14px">'+
   '<div class="card"><div class="l">Sold today</div><div class="v">'+(m.sold_today||0)+'</div><div class="s">orders in live</div></div>'+
