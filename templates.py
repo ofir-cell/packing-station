@@ -77,188 +77,123 @@ def _navbar(active_page=""):
             '.then(function(r){return r.json()}).then(function(d){'
             'location.href=(d&&d.redirect)||"/admin/organizations"})}</script>')
 
-    # ── Top-row entries (operations / fast links only) ──
+    # ── Grouped sidebar (role-gated). One accordion group per area; several can
+    #    stay open at once. Items a role can't see are dropped; empty groups vanish. ──
+    def _vis(items): return [it for it in items if it]
+    today = None; flat = None; groups = []
     if role == "superadmin":
-        # Platform owner: no tenant screens — the platform consoles only.
-        entries = [("organizations", "/admin/organizations", "🏢 Organizations"),
-                   ("support", "/admin/support", "🛟 Support"),
-                   ("guides", "/admin/guides", "📚 Guides")]
+        flat = [("organizations", "/admin/organizations", "🏢 Organizations"),
+                ("support", "/admin/support", "🛟 Support"),
+                ("guides", "/admin/guides", "📚 Guides")]
     else:
-        # Grouped, decluttered nav. A few high-value items stay as direct links;
-        # everything else is tucked into a small number of labelled dropdown menus
-        # so the bar stays clean no matter how many roles a person holds. A group
-        # with a single item is flattened to a plain link.
-        def _grp(label, items):
-            items = [it for it in items if it]
-            if len(items) == 1:
-                return items[0]
-            return {"label": label, "items": items} if items else None
-
-        entries = [("home", "/home", "🏠 Home")]
-
-        # Operations hub — the main work surface for office roles (kept direct).
-        if has("admin", "cs", "manager"):
-            entries.append(("operations", "/operations", "📦 Operations"))
-            entries.append(("track", "/admin/track", "🔎 Track"))
-
-        # Warehouse floor tasks (workers / pickers).
-        floor = []
-        if has("admin", "cs", "worker", "picker"):
-            floor.append(("live", "/admin/live", "🔴 Live Mode"))
-            floor.append(("matchlive", "/admin/match-live", "🔗 Match Live"))
-        if has("worker"):
-            floor.append(("pack", "/", "📦 Pack"))
-        if has("worker", "picker"):
-            floor.append(("preshow", "/admin/preshow", "🔗 Match Products"))
-        _f = _grp("🧰 Warehouse", floor)
-        if _f: entries.append(_f)
-
-        # Analytics (office roles). Money-sensitive views stay admin-only.
-        analytics = []
-        if has("admin", "cs", "manager"):
-            analytics.append(("packer", "/admin/packer-analytics", "📈 Packer Analytics"))
-            if has("admin"):
-                analytics.append(("hosts", "/admin/hosts", "⭐ Host Analytics"))
-                analytics.append(("profit", "/admin/profit", "💰 Profit"))
-            analytics.append(("geo", "/admin/geo", "🗺️ Geography"))
-            analytics.append(("analytics", "/admin/analytics", "📊 Analytics"))
-        _an = _grp("📊 Analytics", analytics)
-        if _an: entries.append(_an)
-
-        # HR / People (office roles). Replaces the old Team & Access group now that
-        # work-schedule items are retired; Users is consolidated here.
-        hr = []
-        if has("admin", "manager"):
-            hr.append(("users", "/users", "👥 Users"))
-        if has("admin", "cs", "manager"):
-            hr.append(("hires", "/admin/hires", "🧑‍💼 New Hires"))
-        if has("admin", "manager"):
-            hr.append(("badges", "/users/badges", "📇 Badges"))
-        if has("admin", "cs", "manager"):
-            hr.append(("onboarding", "/onboarding", "✅ Onboarding"))
-            hr.append(("documents", "/documents", "📄 Documents"))
-        _hr = _grp("🧑‍💼 HR", hr)
-        if _hr: entries.append(_hr)
-
-        # Resources (news / help / guides) — always grouped.
-        res = [("announcements", "/announcements", "📣 News")]
-        if has("admin", "cs", "manager") or has("worker", "picker"):
-            res.append(("guides", "/guides", "📚 Guides"))
-        if has("admin", "cs", "manager"):
-            res.append(("support", "/support", "🛟 Support"))
-        if has("admin", "cs"):
-            res.append(("equipment", "/admin/equipment", "🛒 Equipment"))
-        _r = _grp("📚 Resources", res)
-        if _r: entries.append(_r)
-
-    # ── Avatar menu sections (personal + team/settings) ──
-    # Each section: (title, [(key,url,label),...]). Titles of "" render with no header.
-    if role == "superadmin":
-        # Platform owner has no personal/tenant sections — only Logout.
-        user_sections = []
-    else:
-        _common = [
-            ("me", "/me", "👤 My Profile"),
-            ("leaderboard", "/leaderboard", "🏆 Leaderboard"),
+        today = ("home", "/home", "🏠 Today")
+        groups = [
+          ("Live & orders", "🔴", _vis([
+            ("live", "/admin/live", "Live Mode") if has("admin","cs","worker","picker") else None,
+            ("matchlive", "/admin/match-live", "Match Live") if has("admin","cs","worker","picker") else None,
+            ("preshow", "/admin/preshow", "Match Products") if has("worker","picker") else None,
+            ("pack", "/", "Pack station") if has("worker") else None,
+            ("shows", "/admin/shows", "Shows & orders") if has("admin","cs") else None,
+            ("tiktok", "/admin/tiktok", "TikTok Shop") if has("admin") else None,
+          ])),
+          ("Fulfillment", "📦", _vis([
+            ("shipments", "/admin/shipments", "Shipments") if has("admin","cs") else None,
+            ("track", "/admin/track", "Track") if has("admin","cs","worker","picker") else None,
+            ("cleanup", "/admin/cleanup", "Table Cleanup") if has("admin","cs","worker") else None,
+            ("issues", "/admin/issues", "Picking / Packing Issues") if has("admin","cs") else None,
+            ("giveaway", "/admin/giveaway", "Giveaways") if has("admin","cs") else None,
+            ("inbound", "/admin/inbound", "Inbound Labels") if has("admin","cs") else None,
+            ("customers", "/customers", "Customers") if has("admin","cs") else None,
+          ])),
+          ("Inventory", "📥", _vis([
+            ("inventory", "/inventory", "Inventory") if has("admin","cs") else None,
+            ("purchasing", "/admin/purchasing", "Purchasing") if has("admin") else None,
+            ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation") if has("admin","cs") else None,
+            ("stocktake", "/admin/stocktake", "Stock Take") if has("admin","cs") else None,
+          ])),
+          ("Analytics", "📊", _vis([
+            ("packer", "/admin/packer-analytics", "Packer Analytics") if has("admin","cs") else None,
+            ("hosts", "/admin/hosts", "Host Analytics") if has("admin") else None,
+            ("profit", "/admin/profit", "Profit") if has("admin") else None,
+            ("geo", "/admin/geo", "Geography") if has("admin","cs") else None,
+            ("analytics", "/admin/analytics", "Analytics") if has("admin","cs") else None,
+            ("repeat", "/admin/repeat-customers", "Repeat Customers") if has("admin","cs") else None,
+          ])),
+          ("Team", "🧑‍💼", _vis([
+            ("users", "/users", "Users") if has("admin") else None,
+            ("hires", "/admin/hires", "New Hires") if has("admin","cs") else None,
+            ("badges", "/users/badges", "Badges") if has("admin") else None,
+          ])),
+          ("Resources", "📚", _vis([
+            ("announcements", "/announcements", "News"),
+            ("guides", "/guides", "Guides") if has("admin","cs","worker","picker") else None,
+            ("support", "/support", "Support") if has("admin","cs") else None,
+            ("equipment", "/admin/equipment", "Equipment") if has("admin","cs") else None,
+          ])),
+          ("Settings", "⚙️", _vis([
+            ("setup", "/setup", "Company setup") if has("admin") else None,
+            ("settings", "/admin/settings", "Settings") if has("admin") else None,
+            ("permissions", "/admin/permissions", "Permissions & PIN") if has("admin") else None,
+            ("audit", "/admin/audit", "Audit log") if has("admin") else None,
+          ])),
+          ("Me", "👤", _vis([
+            ("me", "/me", "My Profile"),
+            ("leaderboard", "/leaderboard", "Leaderboard") if has("admin","cs","worker","picker") else None,
+            ("onboarding", "/onboarding", "Onboarding"),
+            ("documents", "/documents", "Documents"),
+          ])),
         ]
-        # Non-management roles reach Onboarding / Documents here (management roles
-        # have them in the HR menu, so they aren't duplicated for those roles).
-        if not has("admin", "cs", "manager"):
-            _common.append(("onboarding", "/onboarding", "✅ Onboarding"))
-            _common.append(("documents", "/documents", "📄 Documents"))
-        user_sections = [("", _common)]
-        if has("admin", "manager"):
-            # Org configuration lives here; people/HR screens are in the HR menu.
-            _admin_items = []
-            if has("admin"):
-                _admin_items.append(("setup", "/setup", "🚀 Company setup"))
-                _admin_items.append(("tiktok", "/admin/tiktok", "🎵 TikTok Shop"))
-            _admin_items.append(("settings", "/admin/settings", "⚙️ Settings"))
-            _admin_items.append(("permissions", "/admin/permissions", "🔐 Permissions & PIN"))
-            _admin_items.append(("audit", "/admin/audit", "🧾 Audit log"))
-            user_sections.append(("Admin", _admin_items))
+        groups = [(lbl, ic, its) for (lbl, ic, its) in groups if its]
 
-    # ── Render row ──
+    # ── Render the sidebar ──
     logo = ('<img src="' + str(_e(brand["logo_url"])) + '" alt="" class="brand-logo">') if brand["logo_url"] else ""
-    nav_html = _brand_style() + imp_banner
-    nav_html += '<nav class="topnav"><div class="topnav-inner">'
     _home_url = "/admin/organizations" if role == "superadmin" else "/home"
-    nav_html += ('<a href="' + _home_url + '" class="topnav-brand">' + logo +
+    show_search = (role != "superadmin") and has("admin", "cs")
+    nav_html = _brand_style() + imp_banner
+    nav_html += '<button class="sb-toggle" aria-label="Open menu" onclick="document.body.classList.toggle(\'sb-open\')">☰</button>'
+    nav_html += '<div class="sb-ov" onclick="document.body.classList.remove(\'sb-open\')"></div>'
+    nav_html += '<nav class="sidebar">'
+    nav_html += ('<a class="sb-brand" href="' + _home_url + '">' + logo +
                  '<span class="brand-txt"><span class="brand-mark">' + str(_e(brand["mark"])) +
                  '</span><span class="brand-sub">' + str(_e(brand["sub"])) + '</span></span></a>')
-    # Any Operations sub-page should light up the Operations link. (Analytics/HR
-    # pages now have their own menus, so they're not listed here.)
-    ops_children = {"shows","shipments","cleanup","issues","customers",
-                    "sku_lookup","shipstatus","inbound","giveaway","inventory","purchasing",
-                    "repeat"}
-    nav_html += '<div class="topnav-links">'
-    for e in entries:
-        if isinstance(e, tuple):
-            key, url, label = e
-            is_active = (key == active_page) or (key == "operations" and active_page in ops_children)
-            cls = "topnav-link active" if is_active else "topnav-link"
-            nav_html += '<a href="' + url + '" class="' + cls + '">' + label + '</a>'
-        else:
-            group_active = any(it[0] == active_page for it in e["items"])
-            gcls = "nav-group" + (" active" if group_active else "")
-            nav_html += '<details class="' + gcls + '"><summary class="topnav-link">' + e["label"] + '<span class="caret">▾</span></summary>'
-            nav_html += '<div class="nav-menu">'
-            for it_key, it_url, it_label in e["items"]:
-                it_cls = "nav-menu-item active" if it_key == active_page else "nav-menu-item"
-                nav_html += '<a href="' + it_url + '" class="' + it_cls + '">' + it_label + '</a>'
-            nav_html += '</div></details>'
-    nav_html += '</div>'
-
-    # ── Global search box (management roles only — never on the iPad/pack station) ──
-    show_search = (role != "superadmin") and has("admin", "cs")
     if show_search:
-        nav_html += ('<div class="topnav-search">'
-            '<span class="gs-ico">🔍</span>'
+        nav_html += ('<div class="sb-search"><span class="gs-ico">🔍</span>'
             '<input id="gSearch" type="search" autocomplete="off" spellcheck="false" '
-            'placeholder="Search orders, customers, products, screens…">'
-            '<span class="gs-kbd">⌘K</span>'
-            '<div class="gsearch-panel" id="gSearchPanel"></div>'
-            '</div>')
-
-    # ── Render avatar user menu (right) ──
-    # Users/Badges/Permissions now live under Settings, so treat them as the
-    # Settings entry for highlighting purposes.
-    settings_children = {"users", "badges", "permissions"}
-    eff_active = "settings" if active_page in settings_children else active_page
-    umenu_active = any(it[0] == eff_active for _title, items in user_sections for it in items)
-    ucls = "nav-user-group" + (" active" if umenu_active else "")
-    nav_html += '<div class="topnav-user">'
-    nav_html += '<details class="' + ucls + '"><summary class="user-avatar-btn" title="' + name + '">'
-    nav_html += '<span class="user-avatar">' + initials + '</span>'
-    nav_html += '<span class="user-name-inline">' + name + '</span><span class="caret">▾</span>'
-    nav_html += '</summary><div class="nav-menu user-menu">'
-    nav_html += '<div class="user-menu-head"><span class="user-avatar lg">' + initials + '</span>'
-    _rlabel={"admin":"Admin","manager":"Warehouse Manager","cs":"Customer Service","host":"Host","worker":"Warehouse Associate","picker":"Warehouse Associate","assistant":"Host","superadmin":"Platform Owner"}.get(role,(role or "").title())
-    nav_html += '<span class="user-menu-id"><b>' + name + '</b><small>' + str(_e(_rlabel.upper())) + '</small></span></div>'
-    for title, items in user_sections:
-        if title:
-            nav_html += '<div class="user-menu-title">' + str(_e(title)) + '</div>'
-        for it_key, it_url, it_label in items:
-            it_cls = "nav-menu-item active" if it_key == eff_active else "nav-menu-item"
-            nav_html += '<a href="' + it_url + '" class="' + it_cls + '">' + it_label + '</a>'
-    nav_html += '<div class="user-menu-div"></div>'
-    nav_html += '<div class="user-menu-title">Theme</div><div class="theme-row">'
-    for _tv,_tn,_acc,_surf in (("","Classic","#d9748f","#f6f7f9"),
-                               ("taupe","Taupe & Teal","#0f766e","#f4f1ec"),
-                               ("sage","Sage & Stone","#5b7355","#eef0ea"),
-                               ("slate","Slate & Blush","#c2607d","#f1f2f4")):
-        nav_html += ('<button type="button" class="theme-swatch" data-theme="' + _tv +
-                     '" onclick="setSiteTheme(\'' + _tv + '\')"><span class="ts-dots">'
-                     '<i style="background:' + _acc + '"></i><i style="background:' + _surf + '"></i>'
-                     '</span>' + _tn + '</button>')
-    nav_html += '</div>'
-    nav_html += '<div class="user-menu-div"></div>'
-    nav_html += '<a href="/logout" class="nav-menu-item logout">🚪 Logout</a>'
-    nav_html += '</div></details>'
-    nav_html += '</div>'
-    nav_html += '</div></nav>'
-    # Single-open + click-outside-to-close behaviour (covers row groups + user menu)
-    nav_html += '<script>(function(){var ds=document.querySelectorAll(".nav-group,.nav-user-group");ds.forEach(function(d){d.addEventListener("toggle",function(){if(d.open)ds.forEach(function(o){if(o!==d)o.open=false})})});document.addEventListener("click",function(e){if(!e.target.closest(".nav-group")&&!e.target.closest(".nav-user-group"))ds.forEach(function(d){d.open=false})});document.addEventListener("keydown",function(e){if(e.key==="Escape")ds.forEach(function(d){d.open=false})});try{var ct=localStorage.getItem("siteTheme")||"";document.querySelectorAll(".theme-swatch").forEach(function(s){s.classList.toggle("on",(s.getAttribute("data-theme")||"")===ct);});}catch(e){}})();</script>'
+            'placeholder="Search orders, people, pages…">'
+            '<div class="gsearch-panel" id="gSearchPanel"></div></div>')
+    if flat:
+        for key, url, label in flat:
+            nav_html += '<a class="sb-flat' + (' active' if key == active_page else '') + '" href="' + url + '">' + label + '</a>'
+    if today:
+        tk, tu, tl = today
+        nav_html += '<a class="sb-top' + (' active' if active_page == tk else '') + '" href="' + tu + '">' + tl + '</a>'
+    for glabel, gicon, items in groups:
+        is_open = any(k == active_page for k, u, l in items)
+        nav_html += ('<details class="sb-grp"' + (' open' if is_open else '') +
+                     '><summary><span class="ic">' + gicon + '</span>' + glabel +
+                     '<span class="car">▾</span></summary><div class="sb-sub">')
+        for k, u, l in items:
+            nav_html += '<a href="' + u + '" class="' + ('active' if k == active_page else '') + '">' + l + '</a>'
+        nav_html += '</div></details>'
+    # ── Footer: user identity, theme switcher, logout ──
+    if role != "superadmin":
+        _rlabel={"admin":"Admin","manager":"Warehouse Manager","cs":"Customer Service","host":"Host","worker":"Warehouse Associate","picker":"Warehouse Associate","assistant":"Host"}.get(role,(role or "").title())
+        nav_html += ('<div class="sb-user"><div class="sb-user-head"><span class="user-avatar">' + initials +
+                     '</span><span class="sb-user-id"><b>' + name + '</b><small>' + str(_e(_rlabel.upper())) + '</small></span></div>')
+        nav_html += '<div class="theme-row">'
+        for _tv,_tn,_acc,_surf in (("","Classic","#d9748f","#f6f7f9"),
+                                   ("taupe","Taupe & Teal","#0f766e","#f4f1ec"),
+                                   ("sage","Sage & Stone","#5b7355","#eef0ea"),
+                                   ("slate","Slate & Blush","#c2607d","#f1f2f4")):
+            nav_html += ('<button type="button" class="theme-swatch" data-theme="' + _tv +
+                         '" onclick="setSiteTheme(\'' + _tv + '\')"><span class="ts-dots">'
+                         '<i style="background:' + _acc + '"></i><i style="background:' + _surf + '"></i>'
+                         '</span>' + _tn + '</button>')
+        nav_html += '</div><a class="sb-logout" href="/logout">🚪 Logout</a></div>'
+    else:
+        nav_html += '<div class="sb-user"><a class="sb-logout" href="/logout">🚪 Logout</a></div>'
+    nav_html += '</nav>'
+    nav_html += '<script>(function(){try{var ct=localStorage.getItem("siteTheme")||"";document.querySelectorAll(".theme-swatch").forEach(function(s){s.classList.toggle("on",(s.getAttribute("data-theme")||"")===ct);});}catch(e){}document.querySelectorAll(".sb-sub a").forEach(function(a){a.addEventListener("click",function(){document.body.classList.remove("sb-open");});});})();</script>'
     if show_search:
         nav_html += ('<script>(function(){'
             'var inp=document.getElementById("gSearch");if(!inp)return;'
@@ -275,7 +210,7 @@ def _navbar(active_page=""):
             'inp.addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();if(first)location.href=first;}else if(e.key==="Escape"){inp.value="";close();inp.blur();}});'
             'inp.addEventListener("focus",function(){if(inp.value.trim().length>=1&&!panel.classList.contains("open"))run(inp.value.trim());});'
             'document.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&(e.key==="k"||e.key==="K")){e.preventDefault();inp.focus();inp.select();}});'
-            'document.addEventListener("click",function(e){if(!e.target.closest(".topnav-search"))close();});'
+            'document.addEventListener("click",function(e){if(!e.target.closest(".sb-search"))close();});'
             '})();</script>')
     return nav_html
 
@@ -395,6 +330,50 @@ _NAVBAR_CSS='''<style>
 .user-avatar-btn{padding:5px}
 .nav-menu{position:static;margin-top:4px;width:100%;animation:none;background:rgba(17,24,39,0.048);box-shadow:none}
 .user-menu{position:absolute;width:auto}
+}
+/* ══ Sidebar navigation (replaces the old top bar) ══ */
+.sb-toggle{display:none;position:fixed;top:12px;left:12px;z-index:140;width:42px;height:42px;border-radius:11px;border:1px solid var(--border);background:#fff;color:var(--text);font-size:18px;cursor:pointer;align-items:center;justify-content:center}
+.sb-ov{display:none;position:fixed;inset:0;background:rgba(20,20,20,.38);z-index:120}
+.sidebar{position:fixed;left:0;top:0;bottom:0;width:256px;background:var(--bg);border-right:1px solid var(--border);overflow-y:auto;z-index:130;padding:14px 12px 16px;font-family:'DM Sans',sans-serif;display:flex;flex-direction:column;gap:2px}
+.sb-brand{display:flex;align-items:center;gap:10px;padding:6px 8px 12px;text-decoration:none}
+.sb-brand .brand-mark{font-size:15px;font-weight:900;color:var(--brand-ink);letter-spacing:.6px;line-height:1.15}
+.sb-brand .brand-sub{font-size:8px;font-weight:700;color:var(--text-dim);letter-spacing:1.6px;text-transform:uppercase;margin-top:2px}
+.sb-search{position:relative;display:flex;align-items:center;gap:7px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:0 10px;height:38px;margin-bottom:6px}
+.sb-search:focus-within{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-glow)}
+.sb-search .gs-ico{font-size:13px;opacity:.7}
+.sb-search input{border:none;background:none;outline:none;flex:1;min-width:0;font-family:inherit;font-size:13px;color:var(--text)}
+.sb-top{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:11px;font-size:14px;font-weight:700;color:var(--text);text-decoration:none}
+.sb-top:hover{background:var(--surface)}
+.sb-top.active{background:var(--brand-glow);color:var(--brand-ink)}
+.sb-flat{display:block;padding:10px 12px;border-radius:10px;font-size:13.5px;font-weight:600;color:var(--text-muted);text-decoration:none}
+.sb-flat:hover{background:var(--surface);color:var(--text)}
+.sb-flat.active{background:var(--brand-glow);color:var(--brand-ink)}
+.sb-grp>summary{list-style:none;display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:11px;font-size:13.5px;font-weight:700;color:var(--text);cursor:pointer;margin-top:2px}
+.sb-grp>summary::-webkit-details-marker,.sb-grp>summary::marker{display:none}
+.sb-grp>summary:hover{background:var(--surface)}
+.sb-grp>summary .ic{font-size:16px;width:20px;text-align:center}
+.sb-grp>summary .car{margin-left:auto;font-size:11px;color:var(--text-dim);transition:transform .18s}
+.sb-grp[open]>summary .car{transform:rotate(180deg)}
+.sb-grp[open]>summary{color:var(--brand-ink)}
+.sb-sub{padding:1px 0 4px}
+.sb-sub a{display:block;padding:8px 12px 8px 43px;border-radius:9px;font-size:13px;color:var(--text-muted);text-decoration:none;font-weight:600}
+.sb-sub a:hover{background:var(--surface);color:var(--text)}
+.sb-sub a.active{background:var(--brand-glow);color:var(--brand-ink);font-weight:700}
+.sb-user{margin-top:auto;padding-top:10px;border-top:1px solid var(--border)}
+.sb-user-head{display:flex;align-items:center;gap:10px;padding:6px 8px 8px}
+.sb-user .user-avatar{width:36px;height:36px;border-radius:50%;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:#fff;background:var(--brand);letter-spacing:.5px}
+.sb-user-id{display:flex;flex-direction:column;min-width:0}
+.sb-user-id b{font-size:13.5px;color:var(--text);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sb-user-id small{font-size:9.5px;color:var(--text-dim);font-weight:700;letter-spacing:1px}
+.sb-logout{display:block;padding:9px 12px;border-radius:9px;font-size:13px;font-weight:700;color:#e11d48;text-decoration:none;margin-top:4px}
+.sb-logout:hover{background:rgba(244,63,94,.1)}
+.sb-search .gsearch-panel{left:0;right:0;width:auto;max-width:none;top:calc(100% + 6px)}
+@media(min-width:900px){ body:has(.sidebar){padding-left:256px} }
+@media(max-width:899px){
+  .sidebar{transform:translateX(-100%);transition:transform .22s ease;box-shadow:0 0 60px rgba(0,0,0,.25)}
+  body.sb-open .sidebar{transform:none}
+  body.sb-open .sb-ov{display:block}
+  .sb-toggle{display:flex}
 }
 </style><script>(function(){try{var t=localStorage.getItem('siteTheme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
 window.setSiteTheme=function(t){try{if(t){localStorage.setItem('siteTheme',t);document.documentElement.setAttribute('data-theme',t);}else{localStorage.removeItem('siteTheme');document.documentElement.removeAttribute('data-theme');}}catch(e){}document.querySelectorAll('.theme-swatch').forEach(function(s){s.classList.toggle('on',(s.getAttribute('data-theme')||'')===(t||''));});};</script>'''
