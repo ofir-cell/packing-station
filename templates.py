@@ -104,6 +104,7 @@ def _navbar(active_page=""):
             ("giveaway", "/admin/giveaway", "Giveaways") if has("admin","cs") else None,
             ("inbound", "/admin/inbound", "Inbound Labels") if has("admin","cs") else None,
             ("customers", "/customers", "Customers") if has("admin","cs") else None,
+            ("dash", "/dashboard", "Packing Videos") if has("admin","cs") else None,
           ])),
           ("Inventory", "📥", _vis([
             ("inventory", "/inventory", "Inventory") if has("admin","cs") else None,
