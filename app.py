@@ -8140,20 +8140,13 @@ OPS_GROUPS = [
         ("🚧", "Picking / Packing Issues", "Flagged / unresolved orders", "/admin/issues", False),
         ("🎥", "Search Recordings", "Find a packing video", "/dashboard", False),
         ("🔎", "Customer Lookup", "Orders & history by buyer", "/customers", False),
+        ("🔁", "Repeat Customers", "Returning buyers & loyalty", "/admin/repeat-customers", False),
     ]),
     ("shipping", "🚚 Shipping", [
         ("📦", "Inbound Labels", "Supplier inbound labels", "/admin/inbound", False),
     ]),
     ("giveaway", "🎁 Giveaways", [
         ("🎁", "Giveaways", "Winners, addresses & label printing", "/giveaway", False),
-    ]),
-    ("insights", "📊 Insights & Money", [
-        ("📊", "Warehouse Analytics", "Pack + pick speed, volume & shifts", "/admin/packer-analytics", False),
-        ("🗺️", "Geography", "Where orders ship, by state", "/admin/geo-analytics", False),
-        ("🔁", "Repeat Customers", "Returning buyers & loyalty", "/admin/repeat-customers", False),
-        ("🎤", "Host Analytics", "Sales & commission by host", "/admin/hosts", True),
-        ("📈", "Analytics", "Overall performance", "/analytics", True),
-        ("💰", "Profit", "Margins & cost of goods", "/admin/profit", True),
     ]),
 ]
 
@@ -13314,6 +13307,28 @@ def _tt_valid_token(org, shop_id):
         _tt_log("token refresh failed for %s/%s: %r"%(org,shop_id,e))
     return row
 
+def _tt_is_paused(org):
+    """When paused, TikTok keeps broadcasting and webhooks keep arriving (and are parked),
+    but orders are NOT materialized into shows/shipments. Lets staff organize/test the
+    pipeline mid-live without data flooding in. Orders aren't lost — a Sync/Pull after
+    un-pausing picks them up."""
+    try:
+        c=pdb()
+        c.execute("CREATE TABLE IF NOT EXISTS tiktok_control(org_id TEXT PRIMARY KEY, paused INTEGER DEFAULT 0)")
+        r=c.execute("SELECT paused FROM tiktok_control WHERE org_id=?",(org,)).fetchone()
+        c.close()
+        return bool(r and r["paused"])
+    except Exception:
+        return False
+
+def _tt_set_paused(org, paused):
+    c=pdb()
+    c.execute("CREATE TABLE IF NOT EXISTS tiktok_control(org_id TEXT PRIMARY KEY, paused INTEGER DEFAULT 0)")
+    c.execute("""INSERT INTO tiktok_control(org_id,paused) VALUES(?,?)
+                 ON CONFLICT(org_id) DO UPDATE SET paused=excluded.paused""",(org, 1 if paused else 0))
+    c.commit(); c.close()
+    return bool(paused)
+
 def _tt_ingest_order(org, shop_id, order_id):
     """Fetch an order's detail and park it in tiktok_orders (line items collapsed to qty).
     Does NOT deplete stock yet — that happens when the order is assigned to a live show."""
@@ -13344,7 +13359,11 @@ def _tt_ingest_order(org, shop_id, order_id):
        json.dumps(items), int(o.get("create_time") or 0), json.dumps(o)[:40000], _nl))
     c.commit(); c.close()
     # Phase 1: also materialize the order as a shipment in the tenant's DB so it flows
-    # into the live show automatically (same tables the CSV uses).
+    # into the live show automatically (same tables the CSV uses). Skipped while paused —
+    # the order stays parked in tiktok_orders above and a later Sync/Pull brings it in.
+    if _tt_is_paused(org):
+        _tt_log("ingest paused — parked %s without materializing for %s"%(order_id,org))
+        return
     try:
         sc=sdb(org); _tt_apply_order(sc, o); sc.commit(); sc.close()
     except Exception as e:
@@ -13661,6 +13680,7 @@ def _tt_sweep_once(window_sec=7200):
     c.close()
     for sh in shops:
         org=sh["org_id"]; shop_id=sh["shop_id"]
+        if _tt_is_paused(org): continue   # ingestion paused for this org — skip
         try:
             tok=_tt_valid_token(org, shop_id)
             if not tok or not tok.get("access_token"): continue
@@ -13830,7 +13850,18 @@ def api_tiktok_status():
     return jsonify({"ok":True,"configured":_tiktok_ready(),"has_service_id":bool(TIKTOK_SERVICE_ID),
                     "redirect_url":"https://www.getwhatnot.com/api/tiktok/callback",
                     "webhook_url":"https://www.getwhatnot.com/api/tiktok/webhook",
+                    "paused":_tt_is_paused(org),
                     "shops":shops,"orders":orders,"event_count":(ev["n"] if ev else 0)})
+
+@app.route("/api/tiktok/pause", methods=["POST"])
+@req_role("admin")
+def api_tiktok_pause():
+    """Pause/resume automatic ingestion. Paused = webhooks still arrive and are parked,
+    but nothing is written into shows/shipments until resumed."""
+    org=current_org() or DEFAULT_ORG
+    d=request.get_json(silent=True) or {}
+    paused=_tt_set_paused(org, bool(d.get("paused")))
+    return jsonify({"ok":True,"paused":paused})
 
 def _tt_pull_core(org, days=30):
     """Pull recent real orders from the connected shop and materialize them into shows.
@@ -14046,6 +14077,16 @@ th{color:#6b7280;font-weight:700;font-size:11px;text-transform:uppercase}
 </div>
 
 <div class="card">
+  <h2>Live ingestion</h2>
+  <div class="row">
+    <span class="lbl">Status</span>
+    <span id="ingState" class="pill ok">checking…</span>
+    <button id="pauseBtn" class="btn g" style="margin-left:4px">…</button>
+  </div>
+  <div class="mut" id="pauseMsg" style="margin-top:6px">When paused, TikTok keeps broadcasting and orders keep arriving — but nothing is loaded into shows until you resume. Nothing is lost; a Sync after resuming brings them in.</div>
+</div>
+
+<div class="card">
   <h2>Connected shops</h2>
   <div id="shops" class="mut">Loading…</div>
 </div>
@@ -14082,6 +14123,7 @@ fetch('/api/tiktok/status').then(function(r){return r.json();}).then(function(d)
   document.getElementById('redir').textContent=d.redirect_url||'';
   document.getElementById('hook').textContent=d.webhook_url||'';
   document.getElementById('evc').textContent=d.event_count?('· '+d.event_count+' webhook events'):'';
+  applyPause(!!d.paused);
   var sh=document.getElementById('shops');
   if(!d.shops||!d.shops.length){sh.innerHTML='<span class="mut">No shops connected yet. Click “Connect / add a shop”.</span>';}
   else{var h='<table><tr><th>Shop</th><th>Region</th><th>Seller</th><th>Status</th><th>Updated</th></tr>';
@@ -14095,6 +14137,14 @@ fetch('/api/tiktok/status').then(function(r){return r.json();}).then(function(d)
       h+='<tr><td>'+esc(o.order_id)+'</td><td>'+esc(o.status||'')+'</td><td>'+items+'</td><td class="mut">'+esc((o.updated_at||'').replace('T',' ').slice(0,16))+'</td></tr>';});
     od.innerHTML=h+'</table>';}
 }).catch(function(){document.getElementById('cfg').textContent='error';});
+var _paused=false;
+function applyPause(p){_paused=p;var st=document.getElementById('ingState');var b=document.getElementById('pauseBtn');
+  if(p){st.className='pill off';st.textContent='⏸ Paused';b.textContent='▶ Resume ingestion';b.style.background='#dcfce7';b.style.color='#166534';}
+  else{st.className='pill ok';st.textContent='● Live — ingesting';b.textContent='⏸ Pause ingestion';b.style.background='#fef3c7';b.style.color='#92400e';}}
+document.getElementById('pauseBtn').onclick=function(){var b=this;b.disabled=true;
+  fetch('/api/tiktok/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:!_paused})})
+   .then(function(r){return r.json();}).then(function(d){b.disabled=false;if(d&&d.ok)applyPause(!!d.paused);})
+   .catch(function(){b.disabled=false;});};
 document.querySelectorAll('.copy').forEach(function(b){b.onclick=function(){var t=document.getElementById(b.getAttribute('data-c')).textContent;navigator.clipboard.writeText(t);b.textContent='Copied';setTimeout(function(){b.textContent='Copy';},1200);};});
 var pb=document.getElementById('pullBtn');
 pb.onclick=function(){
