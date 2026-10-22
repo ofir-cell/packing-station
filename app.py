@@ -34,7 +34,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
     INVENTORY_HTML, PURCHASING_HTML, STOCKTAKE_HTML, AUDIT_HTML, ROSTER_HTML, MYSCHEDULE_HTML, MYAVAIL_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
-    PICKER_HTML, REPEAT_HTML,
+    PICKER_HTML, REPEAT_HTML, DATACHECK_HTML,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML,
@@ -4049,6 +4049,49 @@ def api_today():
         ahead=sum(1 for v in agg.values() if int(v.get('count',0))>mine)
         out["me"]={"packed":mine,"rank":(ahead+1) if mine>0 else None,"total_packers":len(agg)}
     return jsonify(out)
+
+@app.route("/api/admin/duplicates")
+@req_role("admin")
+def api_admin_duplicates():
+    """Scan the tenant's data for likely duplicates / fragmentation so a manager can spot
+    double-counted orders. Read-only — reports, never changes anything."""
+    c=sdb(); out={"ok":True}
+    def q(sql):
+        try: return [dict(r) for r in c.execute(sql).fetchall()]
+        except Exception: return []
+    # 1) The same order sitting in more than one shipment (true duplicate line)
+    out["dup_orders"]=q("""SELECT order_id, COUNT(DISTINCT shipment_id) n,
+                             GROUP_CONCAT(DISTINCT shipment_id) sids
+                           FROM shipment_items WHERE COALESCE(order_id,'')!=''
+                           GROUP BY order_id HAVING n>1 ORDER BY n DESC LIMIT 300""")
+    # 2) The same tracking number on more than one shipment
+    out["dup_tracking"]=q("""SELECT tracking_code, COUNT(*) n, GROUP_CONCAT(shipment_id) sids
+                             FROM shipments WHERE COALESCE(tracking_code,'')!=''
+                             GROUP BY tracking_code HAVING n>1 ORDER BY n DESC LIMIT 300""")
+    # 3) The same order present in BOTH a CSV show and an API show (cross-source dup)
+    out["cross_source"]=q("""SELECT i.order_id,
+                               SUM(CASE WHEN COALESCE(s.import_batch,'')='tiktok-api' THEN 1 ELSE 0 END) api,
+                               SUM(CASE WHEN COALESCE(s.import_batch,'')!='tiktok-api' THEN 1 ELSE 0 END) other,
+                               GROUP_CONCAT(DISTINCT s.import_label) shows
+                             FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                             WHERE COALESCE(i.order_id,'')!=''
+                             GROUP BY i.order_id HAVING api>0 AND other>0 ORDER BY (api+other) DESC LIMIT 300""")
+    # 4) One buyer with several separate shipments in the same show (not combined)
+    out["fragmented"]=q("""SELECT buyer_username, import_label, COUNT(*) n,
+                             GROUP_CONCAT(shipment_id) sids
+                           FROM shipments
+                           WHERE COALESCE(buyer_username,'')!='' AND status NOT IN ('cancelled','giveaway')
+                           GROUP BY buyer_username, import_label HAVING n>1 ORDER BY n DESC LIMIT 300""")
+    c.close()
+    out["counts"]={k:len(out[k]) for k in ("dup_orders","dup_tracking","cross_source","fragmented")}
+    return jsonify(out)
+
+@app.route("/admin/data-check")
+@req_role("admin")
+def data_check_page():
+    return (DATACHECK_HTML
+        .replace("__NAVBAR__", _navbar("datacheck"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
 @app.route("/welcome")
 @req_login

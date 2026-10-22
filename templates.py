@@ -136,6 +136,7 @@ def _navbar(active_page=""):
             ("settings", "/admin/settings", "Settings") if has("admin") else None,
             ("permissions", "/admin/permissions", "Permissions & PIN") if has("admin") else None,
             ("audit", "/admin/audit", "Audit log") if has("admin") else None,
+            ("datacheck", "/admin/data-check", "Data check") if has("admin") else None,
           ])),
           ("Me", "👤", _vis([
             ("me", "/me", "My Profile"),
@@ -12603,5 +12604,73 @@ document.addEventListener('click',function(e){if(!e.target.closest('button,selec
 setInterval(load,4000);
 setInterval(loadShows,15000);   // detect when the live moves to a new PART and follow it
 loadShows();
+</script>
+</body></html>'''
+
+
+DATACHECK_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Data check</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:'DM Sans',-apple-system,sans-serif;background:var(--surface);color:var(--text)}
+.wrap{max-width:980px;margin:0 auto;padding:26px 24px 80px}
+h1{font-size:24px;font-weight:900;margin:0 0 4px}
+.sub{color:var(--text-muted);font-size:14px;margin-bottom:18px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:22px}
+.c{background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:16px 18px;cursor:pointer}
+.c.on{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand-glow)}
+.c .l{font-size:12px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:.4px}
+.c .v{font-size:30px;font-weight:900;margin-top:6px}
+.c .v.bad{color:#c2410c}.c .v.ok{color:var(--brand-ink)}
+.c .d{font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.4}
+.panel{background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:4px 6px}
+.panel h2{font-size:14px;font-weight:800;margin:12px 12px 4px}
+.rowi{display:flex;gap:12px;align-items:center;padding:10px 12px;font-size:13px;border-top:1px solid var(--border)}
+.rowi:first-of-type{border-top:none}
+.rowi b{font-weight:800}
+.rowi .mut{color:var(--text-muted);font-size:12px;word-break:break-all}
+.rowi .cnt{margin-left:auto;font-weight:900;color:#c2410c;white-space:nowrap}
+.empty{padding:26px;text-align:center;color:var(--text-dim)}
+.loading{padding:50px;text-align:center;color:var(--text-dim)}
+.ref{background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:8px 13px;font-size:13px;font-weight:700;cursor:pointer;color:var(--text);font-family:inherit}
+</style></head><body>
+__NAVBAR__
+<div class="wrap">
+<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap">
+<div><h1>🔎 Data check</h1><div class="sub">Scans for duplicate or fragmented orders. Read-only — nothing is changed.</div></div>
+<button class="ref" onclick="load()">↻ Re-scan</button>
+</div>
+<div class="cards" id="cards"><div class="loading">Scanning…</div></div>
+<div id="detail"></div>
+</div>
+<script>
+function esc(s){return (s==null?'':String(s)).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+var DATA=null,SEL='cross_source';
+var META={
+ cross_source:{t:"Cross-source duplicates",d:"Same order in both a CSV show and an API show. These double-count — the most important to clean."},
+ dup_tracking:{t:"Duplicate tracking",d:"Same tracking number on more than one shipment."},
+ dup_orders:{t:"Duplicate orders",d:"The same order id sits in more than one shipment."},
+ fragmented:{t:"Not combined",d:"One buyer with several separate shipments in the same show — candidates to combine."}
+};
+function card(k){var n=(DATA.counts&&DATA.counts[k])||0;var m=META[k];
+ return '<div class="c'+(SEL===k?' on':'')+'" onclick="sel(\\''+k+'\\')"><div class="l">'+esc(m.t)+'</div><div class="v '+(n>0?'bad':'ok')+'">'+n+'</div><div class="d">'+esc(m.d)+'</div></div>';}
+function sel(k){SEL=k;render();}
+function detail(){var k=SEL,rows=DATA[k]||[],m=META[k];
+ var h='<div class="panel"><h2>'+esc(m.t)+' — '+rows.length+'</h2>';
+ if(!rows.length){h+='<div class="empty">None found 🎉</div></div>';return h;}
+ rows.forEach(function(r){
+  if(k==='cross_source')h+='<div class="rowi"><b>Order '+esc(r.order_id)+'</b><span class="mut">in shows: '+esc(r.shows||'')+'</span><span class="cnt">CSV+API</span></div>';
+  else if(k==='dup_tracking')h+='<div class="rowi"><b>'+esc(r.tracking_code)+'</b><span class="mut">'+esc(r.sids||'')+'</span><span class="cnt">×'+r.n+'</span></div>';
+  else if(k==='dup_orders')h+='<div class="rowi"><b>Order '+esc(r.order_id)+'</b><span class="mut">'+esc(r.sids||'')+'</span><span class="cnt">×'+r.n+'</span></div>';
+  else h+='<div class="rowi"><b>@'+esc(r.buyer_username)+'</b><span class="mut">'+esc(r.import_label||'')+'</span><span class="cnt">'+r.n+' shipments</span></div>';
+ });
+ h+='</div>';return h;}
+function render(){document.getElementById('cards').innerHTML=['cross_source','dup_tracking','dup_orders','fragmented'].map(card).join('');document.getElementById('detail').innerHTML=detail();}
+function load(){document.getElementById('cards').innerHTML='<div class="loading">Scanning…</div>';document.getElementById('detail').innerHTML='';
+ fetch('/api/admin/duplicates').then(function(r){return r.json();}).then(function(d){DATA=d;render();}).catch(function(){document.getElementById('cards').innerHTML='<div class="empty">Could not scan.</div>';});}
+load();
 </script>
 </body></html>'''
