@@ -2406,6 +2406,8 @@ def _cleanup_groups(label):
         FROM shipment_items i
         JOIN shipments s ON s.shipment_id = i.shipment_id
         WHERE s.import_label = ? AND COALESCE(i.cancelled, 0) = 1
+          AND NOT (COALESCE(s.import_batch,'')='tiktok-api'
+                   AND COALESCE(i.picked,0)=0 AND COALESCE(i.depleted_qty,0)=0)
     """, (label,)).fetchall()
     state_rows = c.execute("""
         SELECT sku, part, removed_at, removed_by
