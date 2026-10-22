@@ -110,27 +110,35 @@ def _navbar(active_page=""):
             floor.append(("pack", "/", "📦 Pack"))
         if has("worker", "picker"):
             floor.append(("preshow", "/admin/preshow", "🔗 Match Products"))
-        if has("worker", "picker"):
-            floor.append(("track", "/admin/track", "🔎 Find by tracking"))
         _f = _grp("🧰 Warehouse", floor)
         if _f: entries.append(_f)
 
-        # Scanit — live-selling tool (kept direct, used on-air).
-        if has("host", "assistant", "admin", "cs", "manager"):
-            entries.append(("scanit", "/scanit", "🍑 Scanit"))
-
-        # Team & schedule.
-        team = []
+        # Analytics (office roles). Money-sensitive views stay admin-only.
+        analytics = []
         if has("admin", "cs", "manager"):
-            team.append(("roster", "/admin/roster", "🗓️ Roster"))
+            analytics.append(("packer", "/admin/packer-analytics", "📈 Packer Analytics"))
+            if has("admin"):
+                analytics.append(("hosts", "/admin/hosts", "⭐ Host Analytics"))
+                analytics.append(("profit", "/admin/profit", "💰 Profit"))
+            analytics.append(("geo", "/admin/geo", "🗺️ Geography"))
+            analytics.append(("analytics", "/admin/analytics", "📊 Analytics"))
+        _an = _grp("📊 Analytics", analytics)
+        if _an: entries.append(_an)
+
+        # HR / People (office roles). Replaces the old Team & Access group now that
+        # work-schedule items are retired; Users is consolidated here.
+        hr = []
         if has("admin", "manager"):
-            team.append(("users", "/users", "👥 Users"))
-            team.append(("badges", "/users/badges", "📇 Badges"))
-        if has("host", "assistant"):
-            team.append(("myavail", "/my-availability", "🕒 My Availability"))
-            team.append(("myschedule", "/my-schedule", "🗓️ My Schedule"))
-        _t = _grp("👥 Team & Access", team)
-        if _t: entries.append(_t)
+            hr.append(("users", "/users", "👥 Users"))
+        if has("admin", "cs", "manager"):
+            hr.append(("hires", "/admin/hires", "🧑‍💼 New Hires"))
+        if has("admin", "manager"):
+            hr.append(("badges", "/users/badges", "📇 Badges"))
+        if has("admin", "cs", "manager"):
+            hr.append(("onboarding", "/onboarding", "✅ Onboarding"))
+            hr.append(("documents", "/documents", "📄 Documents"))
+        _hr = _grp("🧑‍💼 HR", hr)
+        if _hr: entries.append(_hr)
 
         # Resources (news / help / guides) — always grouped.
         res = [("announcements", "/announcements", "📣 News")]
@@ -152,32 +160,23 @@ def _navbar(active_page=""):
         _common = [
             ("me", "/me", "👤 My Profile"),
             ("leaderboard", "/leaderboard", "🏆 Leaderboard"),
-            ("documents", "/documents", "📄 Documents"),
-            ("onboarding", "/onboarding", "✅ Onboarding"),
         ]
-        if has("worker", "picker"):
-            _common.append(("guides", "/guides", "📚 Guides"))
-        if has("host", "assistant"):
-            _common.append(("myavail", "/my-availability", "🕒 My Availability"))
-            _common.append(("myschedule", "/my-schedule", "🗓️ My Schedule"))
+        # Non-management roles reach Onboarding / Documents here (management roles
+        # have them in the HR menu, so they aren't duplicated for those roles).
+        if not has("admin", "cs", "manager"):
+            _common.append(("onboarding", "/onboarding", "✅ Onboarding"))
+            _common.append(("documents", "/documents", "📄 Documents"))
         user_sections = [("", _common)]
         if has("admin", "manager"):
-            # Users / Badges / Permissions live *inside* Settings now, so they're
-            # not repeated here — Settings is the single entry point for org config.
-            # Company setup + billing stay admin-only (managers are near-admin).
+            # Org configuration lives here; people/HR screens are in the HR menu.
             _admin_items = []
             if has("admin"):
                 _admin_items.append(("setup", "/setup", "🚀 Company setup"))
-            _admin_items.append(("hires", "/admin/hires", "🧑‍💼 New Hires"))
-            if has("admin"):
                 _admin_items.append(("tiktok", "/admin/tiktok", "🎵 TikTok Shop"))
             _admin_items.append(("settings", "/admin/settings", "⚙️ Settings"))
+            _admin_items.append(("permissions", "/admin/permissions", "🔐 Permissions & PIN"))
             _admin_items.append(("audit", "/admin/audit", "🧾 Audit log"))
-            user_sections.append(("Team & Admin", _admin_items))
-        elif has("cs"):
-            user_sections.append(("Team", [
-                ("hires", "/admin/hires", "🧑‍💼 New Hires"),
-            ]))
+            user_sections.append(("Admin", _admin_items))
 
     # ── Render row ──
     logo = ('<img src="' + str(_e(brand["logo_url"])) + '" alt="" class="brand-logo">') if brand["logo_url"] else ""
@@ -187,10 +186,11 @@ def _navbar(active_page=""):
     nav_html += ('<a href="' + _home_url + '" class="topnav-brand">' + logo +
                  '<span class="brand-txt"><span class="brand-mark">' + str(_e(brand["mark"])) +
                  '</span><span class="brand-sub">' + str(_e(brand["sub"])) + '</span></span></a>')
-    # Any Operations sub-page should light up the Operations link.
-    ops_children = {"shows","shipments","cleanup","issues","dash","packer","customers",
-                    "sku_lookup","shipstatus","inbound","giveaway","inventory","profit","purchasing",
-                    "hosts","analytics","geo","pickeran","repeat"}
+    # Any Operations sub-page should light up the Operations link. (Analytics/HR
+    # pages now have their own menus, so they're not listed here.)
+    ops_children = {"shows","shipments","cleanup","issues","customers",
+                    "sku_lookup","shipstatus","inbound","giveaway","inventory","purchasing",
+                    "repeat"}
     nav_html += '<div class="topnav-links">'
     for e in entries:
         if isinstance(e, tuple):
@@ -5696,7 +5696,7 @@ setInterval(refreshMyStats,30000);
 ISSUES_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>Picking issues — __BRANDMARK__</title>
+<title>Picking / Packing Issues — __BRANDMARK__</title>
 __NAVBAR_CSS__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -5760,7 +5760,7 @@ __NAVBAR__
 <div class="wrap">
   <div class="page-head">
     <div>
-      <div class="page-title">🚧 Picking issues</div>
+      <div class="page-title">🚧 Picking / Packing Issues</div>
     </div>
     <button class="refresh-btn" id="refreshBtn">↻ Refresh</button>
   </div>

@@ -8137,12 +8137,11 @@ OPS_GROUPS = [
         ("📥", "Purchasing", "Supplier orders & receiving", "/admin/purchasing", False),
         ("🔢", "Stock Take", "Count & reconcile stock", "/admin/stocktake", False),
         ("🧹", "Table Cleanup", "Clear tables between shows", "/admin/cleanup", False),
-        ("🚧", "Picking Issues", "Flagged / unresolved picks", "/admin/issues", False),
+        ("🚧", "Picking / Packing Issues", "Flagged / unresolved orders", "/admin/issues", False),
         ("🎥", "Search Recordings", "Find a packing video", "/dashboard", False),
         ("🔎", "Customer Lookup", "Orders & history by buyer", "/customers", False),
     ]),
     ("shipping", "🚚 Shipping", [
-        ("🚚", "Shipping Status", "USPS tracking dashboard", "/shipping-status", False),
         ("📦", "Inbound Labels", "Supplier inbound labels", "/admin/inbound", False),
     ]),
     ("giveaway", "🎁 Giveaways", [
