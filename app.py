@@ -3908,6 +3908,25 @@ def home_page():
         .replace("__NAVBAR__", _navbar("home"))
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
+def _autodone_show(c, label, by="auto"):
+    """Mark a show DONE automatically once there's nothing left to pack (no pending and
+    no picked-but-unpacked orders). Idempotent; no-op if the show is empty or still has work."""
+    if not label: return
+    try:
+        r=c.execute("""SELECT COUNT(*) total,
+                         SUM(CASE WHEN status IN ('pending','picked') THEN 1 ELSE 0 END) openn
+                       FROM shipments WHERE import_label=?""",(label,)).fetchone()
+        if not r or not r["total"]: return
+        if (r["openn"] or 0)==0:
+            c.execute("""INSERT INTO show_state(import_label,done,done_at,done_by) VALUES(?,1,?,?)
+                         ON CONFLICT(import_label) DO UPDATE SET done=1,
+                           done_at=COALESCE(show_state.done_at,excluded.done_at),
+                           done_by=COALESCE(show_state.done_by,excluded.done_by)""",
+                      (label, datetime.now().isoformat(timespec='seconds'), by))
+            return True
+    except Exception: pass
+    return False
+
 def _parse_date_any(s):
     """Parse a show_date that may be ISO (2026-10-20) or US (10/20/2026) — returns date or None."""
     s=(s or "").strip()[:10]
@@ -3956,7 +3975,6 @@ def api_today():
                           FROM shipments
                           WHERE import_label IS NOT NULL AND import_label!=''
                             AND status NOT IN ('cancelled','giveaway')
-                            AND import_label NOT IN (SELECT import_label FROM show_state WHERE done=1)
                           GROUP BY import_label HAVING pending>0""").fetchall()
         for r in rows:
             r=dict(r)
@@ -4194,7 +4212,7 @@ def api_upload():
     # Skip if no matching shipment, if it's already shipped, or if it's cancelled.
     try:
         c = sdb()
-        row = c.execute("SELECT shipment_id, status FROM shipments WHERE tracking_code=?", (trk,)).fetchone()
+        row = c.execute("SELECT shipment_id, status, import_label FROM shipments WHERE tracking_code=?", (trk,)).fetchone()
         if row and row["status"] not in ("shipped", "cancelled"):
             c.execute("""UPDATE shipments
                          SET status='packed', packed_at=CURRENT_TIMESTAMP, packed_by=?
@@ -4202,6 +4220,9 @@ def api_upload():
             # Deplete inventory for the items in this shipment (once per shipment).
             try: _deplete_stock_for(c, row["shipment_id"])
             except Exception as e: print("stock deplete failed for", trk, ":", e, flush=True)
+            # Auto-close the show the moment its last order is packed.
+            try: _autodone_show(c, row["import_label"])
+            except Exception: pass
             c.commit()
         c.close()
     except Exception as e:
@@ -6120,6 +6141,12 @@ def api_shows():
         GROUP BY import_label
         ORDER BY last_import DESC
     """, (cap_dt,)).fetchall()
+    # Auto-close any show whose last order is packed (retroactive + live).
+    for _r in rows:
+        if (_r["pending"] or 0)==0:
+            try: _autodone_show(c, _r["name"])
+            except Exception: pass
+    c.commit()
     done_map = {r["import_label"]: dict(r) for r in c.execute("SELECT * FROM show_state").fetchall()}
     # First→last ORDER time per show (when the live actually ran), from the item timestamps.
     span_map = {}
