@@ -242,12 +242,23 @@ def _navbar(active_page=""):
             it_cls = "nav-menu-item active" if it_key == eff_active else "nav-menu-item"
             nav_html += '<a href="' + it_url + '" class="' + it_cls + '">' + it_label + '</a>'
     nav_html += '<div class="user-menu-div"></div>'
+    nav_html += '<div class="user-menu-title">Theme</div><div class="theme-row">'
+    for _tv,_tn,_acc,_surf in (("","Classic","#d9748f","#f6f7f9"),
+                               ("taupe","Taupe & Teal","#0f766e","#f4f1ec"),
+                               ("sage","Sage & Stone","#5b7355","#eef0ea"),
+                               ("slate","Slate & Blush","#c2607d","#f1f2f4")):
+        nav_html += ('<button type="button" class="theme-swatch" data-theme="' + _tv +
+                     '" onclick="setSiteTheme(\'' + _tv + '\')"><span class="ts-dots">'
+                     '<i style="background:' + _acc + '"></i><i style="background:' + _surf + '"></i>'
+                     '</span>' + _tn + '</button>')
+    nav_html += '</div>'
+    nav_html += '<div class="user-menu-div"></div>'
     nav_html += '<a href="/logout" class="nav-menu-item logout">🚪 Logout</a>'
     nav_html += '</div></details>'
     nav_html += '</div>'
     nav_html += '</div></nav>'
     # Single-open + click-outside-to-close behaviour (covers row groups + user menu)
-    nav_html += '<script>(function(){var ds=document.querySelectorAll(".nav-group,.nav-user-group");ds.forEach(function(d){d.addEventListener("toggle",function(){if(d.open)ds.forEach(function(o){if(o!==d)o.open=false})})});document.addEventListener("click",function(e){if(!e.target.closest(".nav-group")&&!e.target.closest(".nav-user-group"))ds.forEach(function(d){d.open=false})});document.addEventListener("keydown",function(e){if(e.key==="Escape")ds.forEach(function(d){d.open=false})})})();</script>'
+    nav_html += '<script>(function(){var ds=document.querySelectorAll(".nav-group,.nav-user-group");ds.forEach(function(d){d.addEventListener("toggle",function(){if(d.open)ds.forEach(function(o){if(o!==d)o.open=false})})});document.addEventListener("click",function(e){if(!e.target.closest(".nav-group")&&!e.target.closest(".nav-user-group"))ds.forEach(function(d){d.open=false})});document.addEventListener("keydown",function(e){if(e.key==="Escape")ds.forEach(function(d){d.open=false})});try{var ct=localStorage.getItem("siteTheme")||"";document.querySelectorAll(".theme-swatch").forEach(function(s){s.classList.toggle("on",(s.getAttribute("data-theme")||"")===ct);});}catch(e){}})();</script>'
     if show_search:
         nav_html += ('<script>(function(){'
             'var inp=document.getElementById("gSearch");if(!inp)return;'
@@ -284,6 +295,31 @@ _NAVBAR_CSS='''<style>
   --text-muted:#586274;
   --text-dim:#7b8494;
 }
+/* ── Site colour themes (switchable). A [data-theme] on <html> recolours the
+   whole UI because every screen reads these tokens. Higher specificity than the
+   per-tenant :root brand override, so the chosen theme wins its accent too. ── */
+:root[data-theme="taupe"]{
+  --brand:#0f766e;--brand-strong:#0c5e58;--brand-ink:#0a4d48;--brand-glow:rgba(15,118,110,.16);
+  --bg:#ffffff;--surface:#f4f1ec;--surface-strong:#eae4db;--border:#e0dad0;
+  --text:#2b2a28;--text-muted:#6e6a63;--text-dim:#938d82;
+}
+:root[data-theme="sage"]{
+  --brand:#5b7355;--brand-strong:#4a5f45;--brand-ink:#3f5a3a;--brand-glow:rgba(91,115,85,.16);
+  --bg:#ffffff;--surface:#eef0ea;--surface-strong:#e2e6da;--border:#d6dbcf;
+  --text:#2e3a2b;--text-muted:#5e655a;--text-dim:#868d7e;
+}
+:root[data-theme="slate"]{
+  --brand:#c2607d;--brand-strong:#a84e68;--brand-ink:#8f3f56;--brand-glow:rgba(194,96,125,.16);
+  --bg:#ffffff;--surface:#f1f2f4;--surface-strong:#e6e8ec;--border:#d9dce1;
+  --text:#26303b;--text-muted:#5a6572;--text-dim:#828c98;
+}
+.theme-row{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px 8px 8px}
+.theme-swatch{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:var(--text-muted);background:none;border:1px solid var(--border);border-radius:8px;padding:5px 7px;cursor:pointer;font-family:inherit;text-align:left}
+.theme-swatch:hover{background:var(--surface-strong);color:var(--text)}
+.theme-swatch.on{border-color:var(--brand);color:var(--text);box-shadow:0 0 0 2px var(--brand-glow)}
+.theme-swatch .ts-dots{display:inline-flex;flex-shrink:0}
+.theme-swatch .ts-dots i{width:12px;height:12px;border-radius:50%;display:block;border:1px solid rgba(0,0,0,.1)}
+.theme-swatch .ts-dots i:last-child{margin-left:-4px}
 .topnav{background:rgba(255,255,255,.88);border-bottom:1px solid var(--border);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);position:sticky;top:0;z-index:100;font-family:'DM Sans',sans-serif}
 .topnav-inner{max-width:1600px;margin:0 auto;padding:0 28px;display:flex;align-items:center;gap:28px;height:64px}
 .topnav-brand{display:flex;flex-direction:row;align-items:center;gap:10px;line-height:1;text-decoration:none;flex-shrink:0;padding:6px 0}
@@ -360,7 +396,8 @@ _NAVBAR_CSS='''<style>
 .nav-menu{position:static;margin-top:4px;width:100%;animation:none;background:rgba(17,24,39,0.048);box-shadow:none}
 .user-menu{position:absolute;width:auto}
 }
-</style>'''
+</style><script>(function(){try{var t=localStorage.getItem('siteTheme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+window.setSiteTheme=function(t){try{if(t){localStorage.setItem('siteTheme',t);document.documentElement.setAttribute('data-theme',t);}else{localStorage.removeItem('siteTheme');document.documentElement.removeAttribute('data-theme');}}catch(e){}document.querySelectorAll('.theme-swatch').forEach(function(s){s.classList.toggle('on',(s.getAttribute('data-theme')||'')===(t||''));});};</script>'''
 
 
 _FONT = '<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">'
