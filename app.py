@@ -3839,7 +3839,7 @@ def index():
         return (WORKER_HTML
             .replace("__NAME__", esc(session["name"]))
             .replace("__STATION__", session.get("station_name",""))
-            .replace("__SID__", session.get("station","S1")))
+            .replace("__SID__", session.get("station","S1")) + _heartbeat_js("pack"))
     return redirect("/home")
 
 @app.route("/api/pack/mystats")
@@ -3855,6 +3855,47 @@ def api_pack_mystats():
     rank=(ahead+1) if mine>0 else None               # standard competition ranking
     return jsonify({"ok":True,"count":mine,"rank":rank,"total":total})
 
+def _presence_ping(name, kind, station=None):
+    """Record a live heartbeat from a pack/pick station so the manager dashboard can
+    show who's actually on the floor right now (not just who packed earlier)."""
+    if not name: return
+    try:
+        c=sdb()
+        c.execute("CREATE TABLE IF NOT EXISTS presence(name TEXT PRIMARY KEY, kind TEXT, station TEXT, last_seen TEXT)")
+        c.execute("""INSERT INTO presence(name,kind,station,last_seen) VALUES(?,?,?,?)
+                     ON CONFLICT(name) DO UPDATE SET kind=excluded.kind, station=excluded.station, last_seen=excluded.last_seen""",
+                  (name, kind, station, datetime.now().isoformat(timespec='seconds')))
+        c.commit(); c.close()
+    except Exception: pass
+
+def _presence_counts(window_sec=150):
+    """How many packers / pickers have sent a heartbeat in the last window_sec."""
+    try:
+        c=sdb()
+        c.execute("CREATE TABLE IF NOT EXISTS presence(name TEXT PRIMARY KEY, kind TEXT, station TEXT, last_seen TEXT)")
+        cutoff=(datetime.now()-timedelta(seconds=window_sec)).isoformat(timespec='seconds')
+        rows=c.execute("SELECT kind, COUNT(*) n FROM presence WHERE last_seen>=? GROUP BY kind",(cutoff,)).fetchall()
+        c.close()
+    except Exception:
+        rows=[]
+    out={"pack":0,"pick":0}
+    for r in rows:
+        if r["kind"] in out: out[r["kind"]]=r["n"]
+    return out
+
+@app.route("/api/heartbeat", methods=["POST"])
+@req_login
+def api_heartbeat():
+    kind=((request.get_json(silent=True) or {}).get("kind") or "pack")
+    if kind not in ("pack","pick"): kind="pack"
+    _presence_ping(session.get("name"), kind, session.get("station_name"))
+    return jsonify({"ok":True})
+
+def _heartbeat_js(kind):
+    return ('<script>(function(){function hb(){fetch("/api/heartbeat",{method:"POST",'
+            'headers:{"Content-Type":"application/json"},body:JSON.stringify({kind:"'+kind+'"})}).catch(function(){});}'
+            'hb();setInterval(hb,60000);})();</script>')
+
 @app.route("/home")
 @req_login
 def home_page():
@@ -3866,6 +3907,119 @@ def home_page():
         .replace("__BRANDSUB__", esc(brand.get("sub", "Employee Hub")))
         .replace("__NAVBAR__", _navbar("home"))
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/today")
+@req_login
+def api_today():
+    """Everything the Today dashboard shows, role-aware. Managers/admins get the full
+    floor status + backlog; admins also get money; workers get just their own stats."""
+    role=session.get("role",""); roles=set(session.get("roles") or [role])
+    is_admin = "admin" in roles
+    is_mgr = is_admin or ("manager" in roles) or ("cs" in roles)
+    now=datetime.now(); today=now.strftime("%Y-%m-%d")
+    out={"role":role,"is_admin":is_admin,"is_manager":is_mgr,"name":session.get("name",""),"ts":now.strftime("%-I:%M %p")}
+
+    pres=_presence_counts()
+    tlog=_filter_by_window(_read_log(),'today')
+    agg=_aggregate_by_worker(tlog)
+    try: avg=sum(float(r.get('duration_seconds',0) or 0) for r in tlog)/max(1,len(tlog))
+    except Exception: avg=0
+    floor={"packers_online":pres["pack"],"pickers_online":pres["pick"],
+           "packers_today":len(agg),"packed_today":len(tlog),"avg_pack_sec":round(avg)}
+
+    c=sdb()
+    try:
+        pr=c.execute("SELECT COUNT(*) n, COUNT(DISTINCT picked_by) w FROM shipments WHERE substr(COALESCE(picked_at,''),1,10)=?",(today,)).fetchone()
+        floor["picked_today"]=pr["n"]; floor["pickers_today"]=pr["w"]
+    except Exception:
+        floor["picked_today"]=0; floor["pickers_today"]=0
+    try: floor["waiting_to_pack"]=c.execute("SELECT COUNT(*) n FROM shipments WHERE status='picked'").fetchone()["n"]
+    except Exception: floor["waiting_to_pack"]=0
+    out["floor"]=floor
+
+    shows=[]
+    try:
+        rows=c.execute("""SELECT import_label lbl, MIN(show_date) sd, COUNT(*) total,
+                            SUM(CASE WHEN status IN ('packed','shipped') THEN 1 ELSE 0 END) packed,
+                            SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending
+                          FROM shipments
+                          WHERE import_label IS NOT NULL AND import_label!=''
+                            AND status NOT IN ('cancelled','giveaway')
+                          GROUP BY import_label HAVING pending>0 ORDER BY sd ASC""").fetchall()
+        for r in rows:
+            r=dict(r); sd=(r["sd"] or "")[:10]
+            try: age=(now.date()-datetime.fromisoformat(sd).date()).days if sd else 0
+            except Exception: age=0
+            tot=r["total"] or 1
+            shows.append({"name":r["lbl"],"date":sd,"age_days":age,"total":r["total"],
+                          "packed":r["packed"] or 0,"pending":r["pending"] or 0,
+                          "pct":round(100*(r["packed"] or 0)/tot)})
+    except Exception: pass
+    out["backlog"]={"lives":len(shows),"orders":sum(s["pending"] for s in shows),
+                    "oldest_age":max([s["age_days"] for s in shows],default=0),"shows":shows}
+
+    cur=None
+    try:
+        rr=c.execute("""SELECT import_label lbl FROM shipments
+                        WHERE substr(COALESCE(packed_at,''),1,10)=? AND import_label IS NOT NULL
+                        ORDER BY packed_at DESC LIMIT 1""",(today,)).fetchone()
+        if rr: cur=rr["lbl"]
+    except Exception: pass
+    if not cur and shows: cur=shows[-1]["name"]
+    out["current_show"]=cur
+
+    try:
+        fr=c.execute("""SELECT SUM(CASE WHEN status IN ('packed','shipped') THEN 1 ELSE 0 END) packed,
+                               SUM(CASE WHEN status='picked' THEN 1 ELSE 0 END) picked,
+                               SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending
+                        FROM shipments WHERE status IN ('pending','picked','packed','shipped')""").fetchone()
+        out["fulfillment"]={"packed":fr["packed"] or 0,"picked":fr["picked"] or 0,"pending":fr["pending"] or 0}
+    except Exception: out["fulfillment"]={"packed":0,"picked":0,"pending":0}
+
+    alllog=_read_log(); series=[]
+    for i in range(6,-1,-1):
+        d=(now-timedelta(days=i))
+        ds=d.strftime("%Y-%m-%d")
+        series.append({"day":d.strftime("%a"),"count":sum(1 for r in alllog if r.get('date','')==ds),"today":i==0})
+    out["packed_7day"]=series
+
+    try: out["issues"]=c.execute("SELECT COUNT(*) n FROM shipments WHERE status='issue'").fetchone()["n"]
+    except Exception: out["issues"]=0
+
+    if is_admin:
+        money={"sold_today":0,"revenue_today":0,"repeat_buyers":0}
+        try:
+            m=c.execute("""SELECT COUNT(DISTINCT i.shipment_id) orders, COALESCE(SUM(i.revenue),0) rev
+                           FROM shipment_items i WHERE substr(COALESCE(i.created_time,''),1,10)=?""",(today,)).fetchone()
+            money["sold_today"]=m["orders"] or 0; money["revenue_today"]=round(m["rev"] or 0,2)
+        except Exception: pass
+        try:
+            rb=c.execute("""SELECT COUNT(*) n FROM (
+                             SELECT buyer_username FROM shipments
+                             WHERE substr(COALESCE(show_date,''),1,10)=? AND COALESCE(buyer_username,'')!=''
+                             GROUP BY buyer_username
+                             HAVING (SELECT COUNT(*) FROM shipments s2
+                                WHERE s2.buyer_username=shipments.buyer_username
+                                  AND substr(COALESCE(s2.show_date,''),1,10)<?)>0)""",(today,today)).fetchone()
+            money["repeat_buyers"]=rb["n"] or 0
+        except Exception: pass
+        out["money"]=money
+
+    tc=0
+    try:
+        for s in shows:
+            cp=_cleanup_progress(s["name"])
+            if not cp.get("is_clean", True): tc+=1
+    except Exception: pass
+    out["tables_to_clean"]=tc
+    c.close()
+
+    if not is_mgr:
+        me=session.get("name","Unknown") or "Unknown"
+        mine=int(agg.get(me,{}).get('count',0))
+        ahead=sum(1 for v in agg.values() if int(v.get('count',0))>mine)
+        out["me"]={"packed":mine,"rank":(ahead+1) if mine>0 else None,"total_packers":len(agg)}
+    return jsonify(out)
 
 @app.route("/welcome")
 @req_login
@@ -5686,7 +5840,7 @@ def pick_page():
     return (PICK_HTML
         .replace("__ROLE__", session.get("role", ""))
         .replace("__NAME__", esc(session.get("name", "")))
-        .replace("__STATION__", session.get("station_name", "")))
+        .replace("__STATION__", session.get("station_name", "")) + _heartbeat_js("pick"))
 
 @app.route("/api/pick/queue")
 @req_role("picker", "worker", "admin", "cs")

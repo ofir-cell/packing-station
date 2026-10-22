@@ -2568,412 +2568,120 @@ load('month');
 HOME_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
-<title>Home — __BRANDSUB__</title>
+<title>Today — __BRANDSUB__</title>
 __NAVBAR_CSS__
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
-/* Soft ambient gradient behind everything */
-body::before{content:'';position:fixed;inset:0;background:radial-gradient(900px 500px at 12% -10%, rgba(217,116,143,.06), transparent 60%),radial-gradient(700px 500px at 92% -10%, rgba(168,85,247,.05), transparent 60%);pointer-events:none;z-index:-1}
-.wrap{max-width:1240px;margin:0 auto;padding:48px 28px 0}
-
-/* Hero greeting */
-.hero{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:36px;flex-wrap:wrap}
-.greet-eyebrow{font-size:12px;font-weight:700;color:var(--brand);text-transform:uppercase;letter-spacing:2px;margin-bottom:6px}
-.greet-title{font-size:44px;font-weight:900;color:#141b26;line-height:1.05;letter-spacing:-1px}
-.greet-title .name{background:linear-gradient(135deg,var(--brand),var(--brand-strong));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-.greet-sub{font-size:15px;color:var(--text-muted);margin-top:8px;font-weight:500}
-.quick-stats{display:flex;gap:12px;flex-wrap:wrap}
-.qs{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 18px;min-width:120px}
-.qs .lbl{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
-.qs .val{font-size:26px;font-weight:800;color:#141b26;line-height:1;margin-top:6px}
-.qs.brand{background:linear-gradient(135deg,rgba(217,116,143,.12),rgba(217,116,143,.03));border-color:rgba(217,116,143,.22)}
-.qs.brand .val{color:var(--brand)}
-
-/* Champions of the Month — packer / picker / host */
-.champs{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:40px}
-@media(max-width:900px){.champs{grid-template-columns:1fr}}
-.potm{display:none;align-items:center;gap:16px;padding:20px 22px;background:linear-gradient(135deg,rgba(251,191,36,.12),rgba(245,158,11,.04));border:1px solid rgba(251,191,36,.22);border-radius:18px;text-decoration:none;color:inherit;transition:transform .2s,border-color .2s}
-.potm.show{display:flex}
-.potm:hover{transform:translateY(-2px);border-color:rgba(251,191,36,.4)}
-.potm-icon{font-size:44px;line-height:1;filter:drop-shadow(0 6px 12px rgba(251,191,36,.3))}
-.potm-text{flex:1;min-width:0}
-.potm-lbl{font-size:11px;color:#b45309;text-transform:uppercase;letter-spacing:1.2px;font-weight:700;margin-bottom:3px}
-.potm-name{font-size:20px;font-weight:800;color:#141b26;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.potm-stats{font-size:12px;color:var(--text-muted)}
-.potm-stats b{color:var(--text);font-weight:700}
-.potm-arrow{font-size:18px;color:#b45309;font-weight:700}
-.potm.pick{background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(99,102,241,.04));border-color:rgba(99,102,241,.22)}
-.potm.pick:hover{border-color:rgba(99,102,241,.42)}
-.potm.pick .potm-lbl,.potm.pick .potm-arrow{color:#4f46e5}
-.potm.pick .potm-icon{filter:drop-shadow(0 6px 12px rgba(99,102,241,.3))}
-.potm.host{background:linear-gradient(135deg,rgba(124,58,237,.12),rgba(124,58,237,.04));border-color:rgba(124,58,237,.22)}
-.potm.host:hover{border-color:rgba(124,58,237,.42)}
-.potm.host .potm-lbl,.potm.host .potm-arrow{color:#7c3aed}
-.potm.host .potm-icon{filter:drop-shadow(0 6px 12px rgba(124,58,237,.3))}
-
-/* Fulfillment widget (admin/cs) — orders still to pick/pack by show */
-.fulfil{display:none;margin-bottom:40px}
-.fulfil.show{display:block}
-.fulfil-panel{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:22px 24px}
-.fulfil-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-bottom:18px;flex-wrap:wrap}
-.fulfil-head .ttl{font-size:14px;font-weight:800;color:var(--text-dim);text-transform:uppercase;letter-spacing:2px;display:flex;align-items:center;gap:10px}
-.fulfil-head .ttl .dot{width:8px;height:8px;border-radius:50%;background:var(--brand)}
-.fulfil-head a{color:var(--brand);text-decoration:none;font-size:12px;font-weight:700}
-.fulfil-tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
-@media(max-width:560px){.fulfil-tiles{grid-template-columns:1fr}}
-.ftile{border-radius:14px;padding:16px 18px;border:1px solid var(--border);background:rgba(17,24,39,0.032)}
-.ftile.pack{background:linear-gradient(135deg,rgba(245,158,11,.12),rgba(245,158,11,.03));border-color:rgba(245,158,11,.22)}
-.ftile.pick{background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(99,102,241,.03));border-color:rgba(99,102,241,.22)}
-.ftile .lbl{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px;font-weight:700}
-.ftile .val{font-size:34px;font-weight:900;line-height:1;margin-top:8px;color:#141b26}
-.ftile.pack .val{color:#b45309}.ftile.pick .val{color:#4f46e5}
-.ftile .cap{font-size:12px;color:var(--text-muted);margin-top:5px}
-.fulfil-rowhead,.fulfil-row{display:grid;grid-template-columns:1fr 78px 78px 130px;gap:12px;align-items:center}
-.fulfil-rowhead{padding:0 6px 8px;font-size:10px;font-weight:800;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px}
-.fulfil-rowhead span:not(:first-child),.fulfil-row .n{text-align:center}
-.fulfil-row{padding:12px 6px;border-top:1px solid var(--border);text-decoration:none;color:inherit;transition:background .12s}
-.fulfil-row:hover{background:rgba(17,24,39,0.048)}
-.fulfil-row .nm{font-size:14px;font-weight:700;color:#141b26;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.fulfil-row .n{font-size:17px;font-weight:800}
-.fulfil-row .n.pack{color:#b45309}.fulfil-row .n.pick{color:#4f46e5}
-.fulfil-row .n.zero{color:var(--text-dim);opacity:.5}
-.fulfil-bar{height:8px;border-radius:5px;background:rgba(17,24,39,0.096);overflow:hidden;position:relative}
-.fulfil-bar>i{display:block;height:100%;background:linear-gradient(90deg,#059669,#10b981);border-radius:5px}
-.fulfil-bar .pct{position:absolute;right:0;top:-18px;font-size:10px;color:var(--text-dim);font-weight:700}
-.fulfil-empty{padding:20px;text-align:center;color:var(--text-muted);font-size:14px}
-.fulfil-empty b{color:#059669}
-
-/* News strip on home — newest 2 announcements */
-.news-strip{display:none;flex-direction:column;gap:10px;margin-bottom:32px}
-.news-strip.show{display:flex}
-.news-strip-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
-.news-strip-title{font-size:13px;font-weight:800;color:var(--text-dim);text-transform:uppercase;letter-spacing:2px;display:flex;align-items:center;gap:10px}
-.news-strip-title .dot{width:8px;height:8px;border-radius:50%;background:var(--brand)}
-.news-strip-all{color:var(--brand);text-decoration:none;font-size:12px;font-weight:700;transition:color .15s}
-.news-strip-all:hover{color:var(--brand-strong)}
-.news-card{display:flex;gap:14px;padding:16px 20px;background:var(--surface);border:1px solid var(--border);border-radius:14px;text-decoration:none;color:inherit;transition:all .15s;align-items:flex-start}
-.news-card:hover{border-color:rgba(217,116,143,.18);background:rgba(17,24,39,0.072);transform:translateY(-1px)}
-.news-card.pri-important{border-left:3px solid #b45309}
-.news-card.pri-urgent{border-left:3px solid #e11d48}
-.news-card.pinned{background:linear-gradient(135deg,rgba(217,116,143,.06),rgba(217,116,143,.01))}
-.news-icon{font-size:24px;line-height:1.2;flex-shrink:0}
-.news-body{flex:1;min-width:0}
-.news-title{font-size:15px;font-weight:700;color:#141b26;margin-bottom:3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.news-meta{font-size:12px;color:var(--text-dim)}
-.news-meta b{color:var(--text-muted);font-weight:600}
-.tiny-pill{font-size:9px;padding:2px 7px;border-radius:5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
-.tiny-pill.pri-info{background:rgba(99,102,241,.14);color:#4f46e5}
-.tiny-pill.pri-important{background:rgba(251,191,36,.16);color:#b45309}
-.tiny-pill.pri-urgent{background:rgba(244,63,94,.16);color:#e11d48}
-.tiny-pill.pinned{background:rgba(217,116,143,.16);color:var(--brand)}
-
-/* Section heading */
-.hub-section{margin-bottom:44px}
-.section-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:18px;gap:16px}
-.section-title{font-size:14px;font-weight:800;color:var(--text-dim);text-transform:uppercase;letter-spacing:2px;display:flex;align-items:center;gap:10px}
-.section-title .dot{width:8px;height:8px;border-radius:50%;background:var(--brand)}
-.section-sub{font-size:13px;color:var(--text-dim)}
-
-/* Card grid */
-.card-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-@media(max-width:900px){.card-grid{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:560px){.card-grid{grid-template-columns:1fr}}
-
-.card{position:relative;display:flex;flex-direction:column;padding:24px;background:var(--surface);border:1px solid var(--border);border-radius:18px;text-decoration:none;color:inherit;transition:all .2s;overflow:hidden;min-height:160px}
-.card::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,transparent,rgba(217,116,143,.04));opacity:0;transition:opacity .2s;pointer-events:none}
-.card:hover{transform:translateY(-3px);border-color:rgba(217,116,143,.22);background:rgba(17,24,39,0.072)}
-.card:hover::before{opacity:1}
-.card-icon{font-size:32px;margin-bottom:14px;line-height:1}
-.card-title{font-size:17px;font-weight:800;color:#141b26;margin-bottom:6px}
-.card-desc{font-size:13px;color:var(--text-muted);line-height:1.5;flex:1}
-.card-meta{display:flex;justify-content:space-between;align-items:center;margin-top:14px;font-size:12px;color:var(--brand);font-weight:700}
-.card-meta .arrow{transition:transform .2s}
-.card:hover .card-meta .arrow{transform:translateX(4px)}
-.card.disabled{opacity:.55;cursor:not-allowed;pointer-events:none}
-.card.disabled .badge-soon{background:rgba(148,163,184,.12);color:var(--text-muted);padding:3px 9px;border-radius:6px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
-.card .pill-new{position:absolute;top:14px;right:14px;background:rgba(16,185,129,.16);color:#059669;padding:3px 9px;border-radius:6px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
-.card .pill-alert{position:absolute;top:14px;right:14px;background:rgba(245,158,11,.16);color:#b45309;padding:3px 9px;border-radius:6px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;display:none}
-.card.has-alert{border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.06)}
-.card.has-alert .pill-alert{display:block}
-
-/* Role-based hide */
-body[data-role="worker"] .hub-section-ops{display:none}
-
-/* Worker hero CTA - giant "Start Packing" for workers */
-body[data-role="worker"] .worker-cta{display:flex}
-.worker-cta{display:none;align-items:center;gap:18px;padding:24px 28px;margin-bottom:36px;background:linear-gradient(135deg,var(--brand-glow),rgba(17,24,39,0.032));border:1px solid rgba(217,116,143,.3);border-radius:20px;text-decoration:none;color:inherit;transition:transform .2s}
-.worker-cta:hover{transform:translateY(-2px);border-color:rgba(217,116,143,.45)}
-.worker-cta-icon{font-size:48px}
-.worker-cta-text{flex:1}
-.worker-cta-text .ttl{font-size:22px;font-weight:800;color:#141b26;margin-bottom:4px}
-.worker-cta-text .desc{font-size:14px;color:var(--text-muted)}
-.worker-cta-arrow{font-size:32px;color:var(--brand);font-weight:300}
-</style>
-</head><body data-role="__ROLE__">
+*{box-sizing:border-box}
+body{margin:0;font-family:'DM Sans',-apple-system,sans-serif;background:var(--surface);color:var(--text)}
+.dash{max-width:1100px;margin:0 auto;padding:26px 26px 90px}
+.loading{padding:70px;text-align:center;color:var(--text-dim)}
+.hd{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:4px}
+.hd .eyebrow{font-size:12px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:var(--brand-ink)}
+.hd h1{margin:4px 0 0;font-size:28px;font-weight:900;letter-spacing:-.4px;color:var(--text)}
+.live{display:inline-flex;align-items:center;gap:8px;background:var(--brand-glow);color:var(--brand-ink);border-radius:12px;padding:9px 14px;font-size:13px;font-weight:700}
+.live .dot{width:9px;height:9px;border-radius:50%;background:#e24b4a}
+.live small{color:var(--text-muted);font-weight:600;display:block}
+.sec{font-size:12px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;color:var(--text-dim);margin:22px 2px 10px}
+.sec .adm{color:#c2410c}
+.row{display:grid;gap:14px}.r4{grid-template-columns:repeat(4,1fr)}.r2{grid-template-columns:1fr 1.25fr}
+@media(max-width:760px){.r4{grid-template-columns:repeat(2,1fr)}.r2{grid-template-columns:1fr}}
+.card{background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:16px 18px}
+.card .l{font-size:12px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px}
+.card .v{font-size:32px;font-weight:900;line-height:1;margin-top:8px;color:var(--text)}
+.card .v.on{color:var(--brand-ink)}
+.card .v .u{font-size:17px;color:var(--text-dim);font-weight:700}
+.card .s{font-size:12px;color:var(--text-muted);margin-top:6px}
+.dots{display:flex;gap:4px;margin-top:10px;flex-wrap:wrap}
+.dots i{width:16px;height:16px;border-radius:5px;background:var(--brand);display:block}
+.dots i.off{background:var(--surface-strong)}
+.backlog{background:#fbf3e9;border:1px solid #ecd9bf;border-radius:16px;padding:18px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.backlog .big{font-size:30px;font-weight:900;color:#b4530b;line-height:1}
+.backlog b{font-size:15px;font-weight:800;color:#8a4310}
+.backlog small{display:block;font-size:12.5px;color:#9a6b3a;margin-top:3px}
+.queue{background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:6px 8px;margin-top:12px}
+.qr{display:flex;align-items:center;gap:14px;padding:12px;text-decoration:none;color:var(--text)}.qr+.qr{border-top:1px solid var(--border)}
+.qr:hover{background:var(--surface)}
+.qr .age{font-size:11px;font-weight:800;padding:3px 8px;border-radius:7px;background:var(--surface-strong);color:var(--text-muted);white-space:nowrap}
+.qr .age.old{background:#fae1cf;color:#b4530b}
+.qr .nm{flex:1;min-width:0}.qr .nm b{font-size:14px;font-weight:700;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.qr .nm small{font-size:12px;color:var(--text-muted)}
+.qr .prog{width:120px;flex:none}.qr .prog .bar{height:7px;border-radius:4px;background:var(--surface-strong);overflow:hidden}.qr .prog .bar i{display:block;height:100%;background:var(--brand)}
+.qr .prog small{font-size:11px;color:var(--text-dim);display:block;margin-top:3px;text-align:right}
+.qr .left{font-size:18px;font-weight:900;width:52px;text-align:right}
+.h3{margin:0 0 2px;font-size:15px;font-weight:800}.subt{font-size:12px;color:var(--text-dim);margin-bottom:14px}
+.donutwrap{display:flex;align-items:center;gap:18px}
+.leg{display:flex;flex-direction:column;gap:8px}.leg div{display:flex;align-items:center;gap:8px;font-size:13px}.leg i{width:11px;height:11px;border-radius:3px;display:block}.leg b{margin-left:auto;font-weight:800;padding-left:14px}
+.bars{display:flex;align-items:flex-end;gap:10px;height:140px}.bars .b{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;justify-content:flex-end}.bars .b .bar{width:24px;background:var(--brand);border-radius:6px 6px 0 0;min-height:3px}.bars .b.today .bar{background:var(--brand-glow);border:1px solid var(--brand)}.bars .b small{font-size:11px;color:var(--text-dim)}
+.att{background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:6px 8px}
+.att a{display:flex;align-items:center;gap:12px;padding:12px;text-decoration:none;color:var(--text)}.att a+a{border-top:1px solid var(--border)}.att a:hover{background:var(--surface)}
+.att a .ic{font-size:19px;width:24px;text-align:center}.att a .t{flex:1}.att a .t b{font-size:14px;font-weight:700;display:block}.att a .t small{font-size:12px;color:var(--text-muted)}
+.att a .n{font-weight:900;font-size:18px;color:var(--brand-ink)}.att a .n.warn{color:#c2410c}
+.me-hero{background:var(--bg);border:1px solid var(--border);border-radius:18px;padding:30px;text-align:center}
+.me-hero .big{font-size:66px;font-weight:900;color:var(--brand-ink);line-height:1}
+.me-hero .lab{font-size:13px;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:6px}
+.me-rank{display:inline-block;margin-top:14px;background:var(--brand-glow);color:var(--brand-ink);border-radius:999px;padding:8px 18px;font-weight:800;font-size:14px}
+.short{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:16px}
+.short a{background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:16px;text-decoration:none;color:var(--text)}
+.short a:hover{border-color:var(--brand)}
+.short a .si{font-size:22px}.short a b{display:block;margin-top:8px;font-size:14px}
+</style></head><body>
 __NAVBAR__
-<div class="wrap">
-  <div class="hero">
-    <div>
-      <div class="greet-eyebrow" id="eyebrow">Welcome back</div>
-      <div class="greet-title">Hello, <span class="name" id="name">there</span></div>
-      <div class="greet-sub" id="sub">Loading your day…</div>
-    </div>
-    <div class="quick-stats" id="quickStats"></div>
-  </div>
-
-  <!-- Worker-only: huge Start Packing CTA -->
-  <a href="/" class="worker-cta">
-    <div class="worker-cta-icon">📦</div>
-    <div class="worker-cta-text">
-      <div class="ttl">Start Packing</div>
-      <div class="desc">Open the recording station and log a package</div>
-    </div>
-    <div class="worker-cta-arrow">→</div>
-  </a>
-
-  <!-- Latest news -->
-  <div class="news-strip" id="newsStrip">
-    <div class="news-strip-head">
-      <div class="news-strip-title"><span class="dot"></span>Latest news</div>
-      <a href="/announcements" class="news-strip-all">View all →</a>
-    </div>
-    <div id="newsList"></div>
-  </div>
-
-  <!-- Champions of the Month -->
-  <div class="champs">
-  <a href="/leaderboard" class="potm" id="potm">
-    <div class="potm-icon">👑</div>
-    <div class="potm-text">
-      <div class="potm-lbl">Packer of the Month</div>
-      <div class="potm-name" id="potmName">—</div>
-      <div class="potm-stats"><b id="potmCount">0</b> packages · avg <b id="potmAvg">0s</b></div>
-    </div>
-    <div class="potm-arrow">→</div>
-  </a>
-  <a href="/admin/packer-analytics" class="potm pick" id="pickotm">
-    <div class="potm-icon">🧺</div>
-    <div class="potm-text">
-      <div class="potm-lbl">Picker of the Month</div>
-      <div class="potm-name" id="pickotmName">—</div>
-      <div class="potm-stats"><b id="pickotmCount">0</b> orders · <b id="pickotmDays">0</b> active days</div>
-    </div>
-    <div class="potm-arrow">→</div>
-  </a>
-  <a href="/admin/hosts" class="potm host" id="hostotm">
-    <div class="potm-icon">🎤</div>
-    <div class="potm-text">
-      <div class="potm-lbl">Top Seller of the Month</div>
-      <div class="potm-name" id="hostotmName">—</div>
-      <div class="potm-stats"><b id="hostotmShows">0</b> shows this month</div>
-    </div>
-    <div class="potm-arrow">→</div>
-  </a>
-  </div>
-
-  <!-- Fulfillment widget (admin/cs) — orders still to pick/pack, by show -->
-  <div class="fulfil hub-section-ops" id="fulfil">
-    <div class="fulfil-panel">
-      <div class="fulfil-head">
-        <div class="ttl"><span class="dot"></span>Fulfillment · active + last 30 days</div>
-        <a href="/admin/shows">Open Shows →</a>
-      </div>
-      <div class="fulfil-tiles">
-        <div class="ftile pack"><div class="lbl">Orders to pack</div><div class="val" id="fTotalPack">0</div><div class="cap" id="fShowsCap">across 0 shows</div></div>
-        <div class="ftile pick"><div class="lbl">Orders to pull</div><div class="val" id="fTotalPick">0</div><div class="cap">still need picking</div></div>
-        <div class="ftile"><div class="lbl">Shows in progress</div><div class="val" id="fShowsRemain">0</div><div class="cap">with packing left</div></div>
-      </div>
-      <div id="fulfilList"></div>
-    </div>
-  </div>
-
-  <!-- Workspace section (admin/cs only) — clean shortcuts into the new IA -->
-  <section class="hub-section hub-section-ops">
-    <div class="section-head">
-      <div class="section-title"><span class="dot"></span>Workspace</div>
-      <div class="section-sub">Your daily warehouse shortcuts</div>
-    </div>
-    <div class="card-grid">
-      <a href="/operations" class="card" id="cardOps">
-        <span class="pill-alert" id="opsAlert"></span>
-        <div class="card-icon">📦</div>
-        <div class="card-title">Operations</div>
-        <div class="card-desc">Shows, shipments, picking, recordings and insights — all warehouse tools grouped in one place.</div>
-        <div class="card-meta"><span id="opsMeta">Open operations</span><span class="arrow">→</span></div>
-      </a>
-      <a href="/giveaway" class="card">
-        <div class="card-icon">🎁</div>
-        <div class="card-title">Giveaways</div>
-        <div class="card-desc">Winners, shipping addresses and label printing.</div>
-        <div class="card-meta"><span>Open queue</span><span class="arrow">→</span></div>
-      </a>
-    </div>
-  </section>
-
-  <!-- Personal section (everyone) -->
-  <section class="hub-section">
-    <div class="section-head">
-      <div class="section-title"><span class="dot"></span>Personal</div>
-      <div class="section-sub">Your stats, documents and paperwork</div>
-    </div>
-    <div class="card-grid">
-      <a href="/me" class="card">
-        <div class="card-icon">👤</div>
-        <div class="card-title">My Profile</div>
-        <div class="card-desc">Your packing stats, achievements, and recent activity</div>
-        <div class="card-meta"><span>Open profile</span><span class="arrow">→</span></div>
-      </a>
-      <a href="/leaderboard" class="card">
-        <div class="card-icon">🏆</div>
-        <div class="card-title">Leaderboard</div>
-        <div class="card-desc">See who is leading the team this week and month</div>
-        <div class="card-meta"><span>View ranking</span><span class="arrow">→</span></div>
-      </a>
-      <a href="/documents" class="card">
-        <div class="card-icon">📄</div>
-        <div class="card-title">Documents</div>
-        <div class="card-desc">Policies, pay stubs, contracts and personal records</div>
-        <div class="card-meta"><span>Open files</span><span class="arrow">→</span></div>
-      </a>
-      <a href="/onboarding" class="card">
-        <div class="card-icon">🎓</div>
-        <div class="card-title">Onboarding</div>
-        <div class="card-desc">Checklist to get fully set up — required tasks and training</div>
-        <div class="card-meta"><span>Open checklist</span><span class="arrow">→</span></div>
-      </a>
-    </div>
-  </section>
-</div>
-
+<main class="dash" id="dash"><div class="loading">Loading your floor…</div></main>
 <script>
-// Time-of-day greeting
-(function(){
-  var h=new Date().getHours();
-  var eb=document.getElementById('eyebrow');
-  if(h<5)eb.textContent='Late night shift';
-  else if(h<12)eb.textContent='Good morning';
-  else if(h<17)eb.textContent='Good afternoon';
-  else if(h<22)eb.textContent='Good evening';
-  else eb.textContent='Working late';
-})();
-
-var role=document.body.dataset.role;
-
-// Surface pending table-cleanup work on the Operations card so the manager sees
-// it before opening anything else. If any show is dirty, badge the card.
-if(role==='admin'||role==='cs'){
-  fetch('/api/cleanup/shows').then(function(r){return r.json()}).then(function(shows){
-    if(!Array.isArray(shows))return;
-    var dirty=shows.filter(function(s){return !s.is_clean && s.total_groups>0});
-    var card=document.getElementById('cardOps');
-    var meta=document.getElementById('opsMeta');
-    var alert=document.getElementById('opsAlert');
-    if(card && dirty.length>0){
-      card.classList.add('has-alert');
-      var totalPending=dirty.reduce(function(sum,s){return sum+s.groups_pending},0);
-      if(alert)alert.textContent='⚠ '+totalPending+' to clean';
-      if(meta)meta.innerHTML='<b style="color:#b45309">'+totalPending+'</b> cleanup pending · '+dirty.length+' show'+(dirty.length===1?'':'s');
-    }
-  }).catch(function(){});
-}
-
-// Fulfillment widget: orders still to pick/pack, broken down by show
-function homeEsc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
-if(role==='admin'||role==='cs'){
-  fetch('/api/home/fulfillment').then(function(r){return r.json()}).then(function(d){
-    if(!d||!d.shows)return;
-    document.getElementById('fulfil').classList.add('show');
-    document.getElementById('fTotalPack').textContent=d.total_to_pack;
-    document.getElementById('fTotalPick').textContent=d.total_to_pick;
-    document.getElementById('fShowsRemain').textContent=d.shows_remaining;
-    document.getElementById('fShowsCap').textContent='across '+d.shows_remaining+' show'+(d.shows_remaining===1?'':'s');
-    var list=document.getElementById('fulfilList');
-    if(d.shows.length===0){
-      list.innerHTML='<div class="fulfil-empty">🎉 <b>All caught up</b> — every recent show is fully packed.</div>';
-      return;
-    }
-    var head='<div class="fulfil-rowhead"><span>Show</span><span>To pull</span><span>To pack</span><span>Packed</span></div>';
-    var rows=d.shows.map(function(s){
-      var done=s.packed+s.shipped, denom=(s.total-s.cancelled)||1;
-      var pct=Math.round(done/denom*100);
-      return '<a class="fulfil-row" href="/admin/shows">'+
-        '<div class="nm" title="'+homeEsc(s.name)+'">'+homeEsc(s.name)+'</div>'+
-        '<div class="n pick'+(s.to_pick?'':' zero')+'">'+s.to_pick+'</div>'+
-        '<div class="n pack'+(s.to_pack?'':' zero')+'">'+s.to_pack+'</div>'+
-        '<div class="fulfil-bar"><span class="pct">'+pct+'%</span><i style="width:'+pct+'%"></i></div>'+
-        '</a>';
-    }).join('');
-    list.innerHTML=head+rows;
-  }).catch(function(){});
-}
-
-// Load my stats for the hero
-fetch('/api/me/stats').then(function(r){return r.json()}).then(function(d){
-  document.getElementById('name').textContent=d.name||'there';
-  var sub=document.getElementById('sub');
-  if(d.this_month && d.this_month.count>0){
-    var msg='You have logged <b style="color:var(--text)">'+d.this_month.count+'</b> packages this month';
-    if(d.rank_this_month) msg+=' · currently ranked <b style="color:var(--brand)">#'+d.rank_this_month+'</b>';
-    sub.innerHTML=msg;
-  } else {
-    sub.textContent='No packages yet this month — let\\'s get started';
-  }
-  // Quick stats pills
-  var qs=document.getElementById('quickStats');
-  qs.innerHTML=
-    '<div class="qs"><div class="lbl">Today</div><div class="val">'+(d.today?d.today.count:0)+'</div></div>'+
-    '<div class="qs brand"><div class="lbl">This month</div><div class="val">'+(d.this_month?d.this_month.count:0)+'</div></div>'+
-    '<div class="qs"><div class="lbl">All time</div><div class="val">'+(d.all_time?d.all_time.count:0)+'</div></div>';
-});
-
-// Champions of the Month — packer / picker / host
-fetch('/api/packer-of-month').then(function(r){return r.json()}).then(function(d){
-  if(!d||!d.name)return;
-  document.getElementById('potmName').textContent=d.name;
-  document.getElementById('potmCount').textContent=d.count;
-  document.getElementById('potmAvg').textContent=(d.avg_dur||0)+'s';
-  document.getElementById('potm').classList.add('show');
-});
-fetch('/api/picker-of-month').then(function(r){return r.json()}).then(function(d){
-  if(!d||!d.name)return;
-  document.getElementById('pickotmName').textContent=d.name;
-  document.getElementById('pickotmCount').textContent=(d.count||0).toLocaleString();
-  document.getElementById('pickotmDays').textContent=d.days||0;
-  document.getElementById('pickotm').classList.add('show');
-});
-fetch('/api/host-of-month').then(function(r){return r.ok?r.json():null}).then(function(d){
-  if(!d||!d.name)return;
-  document.getElementById('hostotmName').textContent=d.name;
-  document.getElementById('hostotmShows').textContent=d.shows||0;
-  document.getElementById('hostotm').classList.add('show');
-}).catch(function(){});
-
-// Load latest news (top 2)
-function homeEscapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
-function homeFmtTime(s){
-  if(!s)return '';
-  try{var d=new Date(s);var diff=(new Date()-d)/1000;
-    if(diff<60)return 'just now';if(diff<3600)return Math.floor(diff/60)+'m ago';
-    if(diff<86400)return Math.floor(diff/3600)+'h ago';if(diff<604800)return Math.floor(diff/86400)+'d ago';
-    return d.toLocaleDateString(undefined,{month:'short',day:'numeric'})
-  }catch(e){return ''}
-}
-fetch('/api/announcements?limit=2').then(function(r){return r.json()}).then(function(arr){
-  if(!arr||arr.length===0)return;
-  var icons={info:'📣',important:'⚠️',urgent:'🔴'};
-  document.getElementById('newsList').innerHTML=arr.map(function(a){
-    var pills='<span class="tiny-pill pri-'+a.priority+'">'+a.priority+'</span>';
-    if(a.pinned)pills+='<span class="tiny-pill pinned">📌 Pinned</span>';
-    return '<a href="/announcements" class="news-card pri-'+a.priority+(a.pinned?' pinned':'')+'">'+
-      '<div class="news-icon">'+(icons[a.priority]||'📣')+'</div>'+
-      '<div class="news-body">'+
-        '<div class="news-title">'+homeEscapeHtml(a.title)+pills+'</div>'+
-        '<div class="news-meta">Posted by <b>'+homeEscapeHtml(a.author)+'</b> · '+homeFmtTime(a.created_at)+'</div>'+
-      '</div></a>';
-  }).join('');
-  document.getElementById('newsStrip').classList.add('show');
-});
+function esc(s){return (s==null?'':String(s)).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+function fmtTime(sec){sec=Math.round(sec||0);if(!sec)return '—';var m=Math.floor(sec/60),s=sec%60;return m+':'+(s<10?'0':'')+s;}
+function hi(){var h=new Date().getHours();return h<12?'Good morning':(h<18?'Good afternoon':'Good evening');}
+function cssv(n,f){var v=getComputedStyle(document.documentElement).getPropertyValue(n);return (v&&v.trim())||f;}
+function donut(f){var tot=(f.packed||0)+(f.picked||0)+(f.pending||0)||1;var C=327;var pk=(f.packed||0)/tot*C,pi=(f.picked||0)/tot*C,pe=(f.pending||0)/tot*C;var pct=Math.round((f.packed||0)/tot*100);
+ var brand=cssv('--brand','#0f766e'),ss=cssv('--surface-strong','#e5ded4'),tx=cssv('--text','#2b2a28'),td=cssv('--text-dim','#938d82');
+ return '<svg width="120" height="120" viewBox="0 0 130 130"><circle cx="65" cy="65" r="52" fill="none" stroke="'+ss+'" stroke-width="20"/>'+
+ '<circle cx="65" cy="65" r="52" fill="none" stroke="'+brand+'" stroke-width="20" stroke-dasharray="'+pk+' '+C+'" transform="rotate(-90 65 65)"/>'+
+ '<circle cx="65" cy="65" r="52" fill="none" stroke="#6fb3ac" stroke-width="20" stroke-dasharray="'+pi+' '+C+'" stroke-dashoffset="'+(-pk)+'" transform="rotate(-90 65 65)"/>'+
+ '<circle cx="65" cy="65" r="52" fill="none" stroke="'+ss+'" stroke-width="20" stroke-dasharray="'+pe+' '+C+'" stroke-dashoffset="'+(-(pk+pi))+'" transform="rotate(-90 65 65)"/>'+
+ '<text x="65" y="61" text-anchor="middle" font-size="25" font-weight="900" fill="'+tx+'">'+pct+'%</text><text x="65" y="79" text-anchor="middle" font-size="10" fill="'+td+'">packed</text></svg>';}
+function dotsHtml(on,total){var h='';for(var i=0;i<total;i++)h+='<i class="'+(i<on?'':'off')+'"></i>';return h;}
+function floorBlock(d){var f=d.floor;var ptot=Math.max(f.packers_online,f.packers_today,6),ktot=Math.max(f.pickers_online,f.pickers_today,4);
+ return '<div class="sec">On the floor right now</div><div class="row r4">'+
+  '<div class="card"><div class="l">Packers online</div><div class="v on">'+f.packers_online+'<span class="u"> / '+ptot+'</span></div><div class="dots">'+dotsHtml(f.packers_online,ptot)+'</div></div>'+
+  '<div class="card"><div class="l">Pickers online</div><div class="v on">'+f.pickers_online+'<span class="u"> / '+ktot+'</span></div><div class="dots">'+dotsHtml(f.pickers_online,ktot)+'</div></div>'+
+  '<div class="card"><div class="l">Packed today</div><div class="v">'+f.packed_today+'</div><div class="s">by '+f.packers_today+' packers</div></div>'+
+  '<div class="card"><div class="l">Picked today</div><div class="v">'+f.picked_today+'</div><div class="s">'+f.waiting_to_pack+' waiting to pack</div></div>'+
+  '</div>';}
+function backlogBlock(d){var b=d.backlog;if(!b.lives)return '<div class="sec">Backlog</div><div class="card"><b>All caught up</b><div class="s">No open shows waiting to pack.</div></div>';
+ var h='<div class="sec">How far behind are we</div><div class="backlog"><div class="big">'+b.lives+(b.lives===1?' live':' lives')+'</div><div><b>'+b.orders+' orders still to pack across '+b.lives+' open show'+(b.lives===1?'':'s')+'</b><small>Oldest open show is '+b.oldest_age+' day'+(b.oldest_age===1?'':'s')+' back.'+(d.current_show?(' Current table: '+esc(d.current_show)+'.'):'')+'</small></div></div>';
+ h+='<div class="queue">';b.shows.forEach(function(s){var oldC=s.age_days>=2?' old':'';var ageT=s.age_days===0?'Today':(s.age_days+(s.age_days===1?' day':' days'));
+  h+='<a class="qr" href="/admin/shipments?show='+encodeURIComponent(s.name)+'"><span class="age'+oldC+'">'+ageT+'</span><span class="nm"><b>'+esc(s.name)+'</b><small>'+esc(s.date||'')+'</small></span><span class="prog"><span class="bar"><i style="width:'+s.pct+'%"></i></span><small>'+s.pct+'% packed</small></span><span class="left">'+s.pending+'</span></a>';});
+ h+='</div>';return h;}
+function numbersBlock(d){var m=d.money||{};var f=d.floor;
+ var h='<div class="sec">Today’s numbers <span class="adm">· admin only</span></div><div class="row r4" style="margin-bottom:14px">'+
+  '<div class="card"><div class="l">Sold today</div><div class="v">'+(m.sold_today||0)+'</div><div class="s">orders in live</div></div>'+
+  '<div class="card"><div class="l">Revenue today</div><div class="v on">$'+(m.revenue_today||0).toLocaleString()+'</div><div class="s">gross · pre-fees</div></div>'+
+  '<div class="card"><div class="l">Avg pack time</div><div class="v">'+fmtTime(f.avg_pack_sec)+'</div><div class="s">per order</div></div>'+
+  '<div class="card"><div class="l">Repeat buyers</div><div class="v">'+(m.repeat_buyers||0)+'</div><div class="s">of '+(m.sold_today||0)+' today</div></div>'+
+  '</div>';
+ var fu=d.fulfillment;var seven=d.packed_7day;var mx=Math.max.apply(null,seven.map(function(x){return x.count})) || 1;var ftot=(fu.packed+fu.picked+fu.pending)||1;
+ h+='<div class="row r2"><div class="card"><div class="h3">Today’s fulfillment</div><div class="subt">'+ftot+' orders · '+Math.round(fu.packed/ftot*100)+'% packed</div><div class="donutwrap">'+donut(fu)+
+  '<div class="leg"><div><i style="background:var(--brand)"></i>Packed <b>'+fu.packed+'</b></div><div><i style="background:#6fb3ac"></i>Picked only <b>'+fu.picked+'</b></div><div><i style="background:var(--surface-strong)"></i>Pending <b>'+fu.pending+'</b></div></div></div></div>'+
+  '<div class="card"><div class="h3">Packed — last 7 days</div><div class="subt">Daily throughput</div><div class="bars">';
+ seven.forEach(function(x){h+='<div class="b'+(x.today?' today':'')+'"><div class="bar" style="height:'+Math.round(x.count/mx*100)+'%"></div><small>'+x.day+'</small></div>';});
+ h+='</div></div></div>';return h;}
+function attBlock(d){return '<div class="sec">Needs your attention</div><div class="att">'+
+  '<a href="/admin/issues"><span class="ic">🚧</span><span class="t"><b>Picking / Packing Issues</b><small>Flagged orders waiting on a decision</small></span><span class="n warn">'+(d.issues||0)+'</span></a>'+
+  '<a href="/admin/cleanup"><span class="ic">🧹</span><span class="t"><b>Tables to clean</b><small>Clear between shows to free stock</small></span><span class="n">'+(d.tables_to_clean||0)+'</span></a></div>';}
+function workerBlock(d){var me=d.me||{};
+ var h='<div class="hd"><div><div class="eyebrow">'+hi()+'</div><h1>Hello, '+esc(d.name||'')+'</h1></div></div>';
+ h+='<div class="me-hero"><div class="big">'+(me.packed||0)+'</div><div class="lab">packed today</div>'+(me.rank?'<div class="me-rank">#'+me.rank+' of '+me.total_packers+' today</div>':'')+'</div>';
+ h+='<div class="short"><a href="/"><div class="si">📦</div><b>Back to packing</b></a><a href="/pick"><div class="si">📋</div><b>Picking</b></a><a href="/leaderboard"><div class="si">🏆</div><b>Leaderboard</b></a><a href="/me"><div class="si">👤</div><b>My profile</b></a></div>';
+ return h;}
+function render(d){var el=document.getElementById('dash');
+ if(d.me && !d.is_manager){el.innerHTML=workerBlock(d);return;}
+ var h='<div class="hd"><div><div class="eyebrow">'+hi()+'</div><h1>'+(d.is_admin?('Hello, '+esc(d.name||'')):'Warehouse floor — right now')+'</h1></div>'+
+   (d.current_show?'<span class="live"><span class="dot"></span><span>Now packing<small>'+esc(d.current_show)+'</small></span></span>':'')+'</div>';
+ h+=floorBlock(d)+backlogBlock(d);
+ if(d.is_admin)h+=numbersBlock(d);
+ h+=attBlock(d);
+ el.innerHTML=h;}
+function load(){fetch('/api/today').then(function(r){return r.json();}).then(render).catch(function(){document.getElementById('dash').innerHTML='<div class="loading">Could not load dashboard.</div>';});}
+load();setInterval(load,60000);
 </script>
 </body></html>'''
 
