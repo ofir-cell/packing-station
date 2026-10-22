@@ -5635,7 +5635,7 @@ def api_customer_detail(username):
     tracking_codes = {s["tracking_code"] for s in ships if s["tracking_code"]}
     ships_out = []
     for s in ships:
-        items = c.execute("""SELECT product_name, quantity, item_weight_g, sku
+        items = c.execute("""SELECT product_name, quantity, item_weight_g, sku, revenue
                              FROM shipment_items WHERE shipment_id=?""", (s["shipment_id"],)).fetchall()
         ships_out.append({**dict(s), "items": [dict(i) for i in items]})
     c.close()

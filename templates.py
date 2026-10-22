@@ -4401,7 +4401,11 @@ function loadDetail(username,panel){
     else {
       html+=d.shipments.map(function(s){
         var recs=d.recordings.filter(function(r){return r.tracking===s.shipment_id||r.tracking===s.tracking_code});
-        var itemsHtml=(s.items||[]).map(function(it){return '<span class="item">'+escapeHtml(it.product_name||it.sku||'?')+' ×'+it.quantity+'</span>'}).join('');
+        var itemsHtml=(s.items||[]).map(function(it){
+          var stick=it.sku?('<b style="color:var(--brand-ink);font-weight:800">#'+escapeHtml(it.sku)+'</b> '):'';
+          var price=(it.revenue&&+it.revenue>0)?(' <span style="color:var(--text-dim)">$'+(+it.revenue).toFixed(2)+'</span>'):'';
+          return '<span class="item">'+stick+escapeHtml(it.product_name||'?')+' ×'+it.quantity+price+'</span>';
+        }).join('');
         var trk=s.tracking_code?('<a class="ship-tracking" href="'+trackUrl(s.tracking_code)+'" target="_blank" rel="noopener">'+escapeHtml(s.tracking_code)+' ↗</a>'):'';
         var vids=recs.map(function(r){return r.video_file?'<a href="/media/video/'+encodeURIComponent(r.video_file)+'" target="_blank">🎥 Watch ('+(r.duration||'?')+'s)</a>':''}).filter(Boolean).join(' · ');
         var photo=recs.map(function(r){return r.photo_file?'<a href="/media/photo/'+encodeURIComponent(r.photo_file)+'" target="_blank">📷 Photo</a>':''}).filter(Boolean).join(' · ');
