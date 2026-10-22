@@ -2829,12 +2829,6 @@ __NAVBAR__
         <div class="card-desc">Winners, shipping addresses and label printing.</div>
         <div class="card-meta"><span>Open queue</span><span class="arrow">→</span></div>
       </a>
-      <a href="/shipping-status" class="card">
-        <div class="card-icon">🚚</div>
-        <div class="card-title">Shipping Status</div>
-        <div class="card-desc">Live USPS tracking across every open package.</div>
-        <div class="card-meta"><span>View tracking</span><span class="arrow">→</span></div>
-      </a>
     </div>
   </section>
 
