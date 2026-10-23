@@ -5542,12 +5542,10 @@ def _process_cancel_file(norm_rows, source, label):
 def api_shipments_recent():
     """List most-recently-imported shipments. Optionally filter by show name."""
     show = (request.args.get("show") or "").strip()
-    # A single show can hold 1,000+ orders (big lives), so a per-show view ALWAYS returns
-    # the whole show regardless of the requested limit; the unfiltered 'recent' view stays
-    # capped for speed.
-    if show:
-        limit = 5000
-    else:
+    # A single show can hold many thousands of orders (a big live sells 1,000+ products and
+    # the sticker number even resets past 1000), so a per-show view returns the WHOLE show
+    # with NO cap; only the unfiltered 'recent' view stays capped for speed.
+    if not show:
         limit = min(request.args.get("limit", type=int) or 500, 500)
     c = sdb()
     _stk = ("(SELECT GROUP_CONCAT(DISTINCT i.sku) FROM shipment_items i "
@@ -5558,7 +5556,7 @@ def api_shipments_recent():
                                    status, missing_weights, show_date, imported_at, import_label, platform,
                                    delivery_status, delivery_detail, delivered_at, tracked_at, """+_stk+"""
                             FROM shipments WHERE import_label=?
-                            ORDER BY imported_at DESC LIMIT ?""", (show, limit)).fetchall()
+                            ORDER BY imported_at DESC""", (show,)).fetchall()
     else:
         rows = c.execute("""SELECT shipment_id, tracking_code, buyer_username, buyer_name,
                                    total_items, expected_weight_g, actual_weight_g, weight_status,
