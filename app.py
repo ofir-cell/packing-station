@@ -14174,6 +14174,72 @@ def api_tiktok_pause():
     paused=_tt_set_paused(org, bool(d.get("paused")))
     return jsonify({"ok":True,"paused":paused})
 
+def _tt_materialize_orders(org, orders):
+    """Turn a list of raw TikTok order dicts into the tenant's shows (shipments).
+    Shared by the live Pull, the offline import, and regroup-from-stored. Returns
+    (sorted_show_labels, count_loaded). Two passes, each in chronological order: real
+    listings first (they define each live's first→last window), then store-product
+    passengers (the sample), which read those windows to land in the right live."""
+    shows=set(); shipped=0
+    try:
+        sc=sdb(org)
+        skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
+        _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
+        ovh=_cfg["packaging_overhead_g"] if _cfg else 30
+        def _ck(o):
+            try: return int(o.get("create_time") or 0)
+            except Exception: return 0
+        anchors=[o for o in orders if not _tt_is_store_order(sc, o)]
+        riders =[o for o in orders if _tt_is_store_order(sc, o)]
+        for o in sorted(anchors, key=_ck)+sorted(riders, key=_ck):
+            try:
+                lbl=_tt_apply_order(sc, o, sku_map=skus, overhead=ovh)
+                if lbl: shows.add(lbl); shipped+=1
+            except Exception as e:
+                _tt_log("apply failed %s: %r"%(o.get("id"),e))
+        sc.commit(); sc.close()
+    except Exception as e:
+        _tt_log("materialize batch failed: %r"%e)
+    return sorted(shows), shipped
+
+def _tt_stored_orders(org):
+    """Every raw order dict this org has previously stored (offline data source for
+    export and regroup-from-stored). Reads tiktok_orders.raw, oldest first."""
+    c=pdb()
+    try:
+        rows=c.execute("SELECT raw FROM tiktok_orders WHERE org_id=? ORDER BY create_time ASC",(org,)).fetchall()
+    except Exception:
+        rows=[]
+    c.close()
+    out=[]
+    for r in rows:
+        try:
+            o=json.loads((r["raw"] if not isinstance(r,str) else r) or "")
+            if o: out.append(o)
+        except Exception:
+            pass
+    return out
+
+def _tt_store_raw_order(org, o):
+    """Upsert one raw order dict into tiktok_orders (same shape the live Pull writes)."""
+    oid=str(o.get("id") or "")
+    if not oid: return False
+    agg={}
+    for li in (o.get("line_items") or []):
+        key=(li.get("seller_sku") or "", str(li.get("sku_id") or ""), li.get("product_name") or "")
+        a=agg.setdefault(key, {"seller_sku":key[0],"sku_id":key[1],"name":key[2],"qty":0,"price":""})
+        a["qty"]+=1; a["price"]=li.get("sale_price") or li.get("original_price") or a["price"]
+    items=list(agg.values())
+    c=pdb()
+    c.execute("""INSERT INTO tiktok_orders(order_id,org_id,shop_id,status,line_items,create_time,raw,updated_at)
+        VALUES(?,?,?,?,?,?,?,?)
+        ON CONFLICT(org_id,order_id) DO UPDATE SET status=excluded.status,line_items=excluded.line_items,
+          create_time=excluded.create_time,raw=excluded.raw,updated_at=excluded.updated_at""",
+      (oid,org,str(o.get("shop_id") or ""),str(o.get("order_status") or ""),json.dumps(items),
+       int(o.get("create_time") or 0),json.dumps(o)[:40000],datetime.now().isoformat(timespec='seconds')))
+    c.commit(); c.close()
+    return True
+
 def _tt_pull_core(org, days=30):
     """Pull recent real orders from the connected shop and materialize them into shows.
     Returns a result dict (never raises). Shared by the Sync button and the regroup action."""
@@ -14228,32 +14294,10 @@ def _tt_pull_core(org, days=30):
         c.commit(); c.close(); stored+=1
         if len(preview)<10: preview.append({"order_id":oid,"status":o.get("order_status"),"items":items})
     # Phase 1: materialize every pulled order into the tenant's shows (shipments).
-    shows=set(); shipped=0
-    try:
-        sc=sdb(org)
-        skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
-        _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
-        ovh=_cfg["packaging_overhead_g"] if _cfg else 30
-        # Two passes, each in chronological order: real listings first (they define each
-        # live's first→last time window), then store-product passengers (the sample), which
-        # read those windows to land in the live that was running when they sold.
-        def _ck(o):
-            try: return int(o.get("create_time") or 0)
-            except Exception: return 0
-        anchors=[o for o in orders if not _tt_is_store_order(sc, o)]
-        riders =[o for o in orders if _tt_is_store_order(sc, o)]
-        for o in sorted(anchors, key=_ck)+sorted(riders, key=_ck):
-            try:
-                lbl=_tt_apply_order(sc, o, sku_map=skus, overhead=ovh)
-                if lbl: shows.add(lbl); shipped+=1
-            except Exception as e:
-                _tt_log("pull apply failed %s: %r"%(o.get("id"),e))
-        sc.commit(); sc.close()
-    except Exception as e:
-        _tt_log("pull apply batch failed: %r"%e)
+    shows_list, shipped = _tt_materialize_orders(org, orders)
     return {"ok":True,"shop":row.get("shop_name") or shop_id,"total":total,
             "fetched":len(orders),"stored":stored,"preview":preview,
-            "shows":sorted(shows),"loaded":shipped,"pages":pages}
+            "shows":shows_list,"loaded":shipped,"pages":pages}
 
 @app.route("/api/tiktok/pull", methods=["POST"])
 @req_role("admin")
@@ -14301,6 +14345,82 @@ def api_tiktok_regroup():
     res=_tt_pull_core(org, days)
     res["regrouped"]=True; res["cleared"]=wiped
     return jsonify(res)
+
+@app.route("/api/tiktok/export-orders")
+@req_role("admin")
+def api_tiktok_export_orders():
+    """Download every raw TikTok order this org has pulled, as one JSON file. Use it to
+    carry real order content into the staging/test environment (import there) so the
+    grouping/routing rules can be tested on real data — no live connection needed."""
+    org=current_org() or DEFAULT_ORG
+    orders=_tt_stored_orders(org)
+    body=json.dumps({"org":org,"exported_at":datetime.now().isoformat(timespec='seconds'),
+                     "count":len(orders),"orders":orders}, ensure_ascii=False)
+    fn="tiktok-orders-%s.json"%datetime.now().strftime("%Y%m%d-%H%M")
+    return Response(body, mimetype="application/json",
+                    headers={"Content-Disposition":"attachment; filename="+fn})
+
+@app.route("/api/tiktok/import-orders", methods=["POST"])
+@req_role("admin")
+def api_tiktok_import_orders():
+    """STAGING ONLY. Load a JSON export (from /api/tiktok/export-orders on production)
+    into this environment's store, then materialize the orders into shows so the routing
+    logic can be tested on real content. Never calls TikTok. Blocked outside staging so
+    production data can never be overwritten by an import."""
+    if not IS_STAGING:
+        return jsonify({"ok":False,"error":"Import is only allowed in the staging/test environment."}),403
+    org=current_org() or DEFAULT_ORG
+    payload=None
+    if request.files.get("file"):
+        try: payload=json.loads(request.files["file"].read().decode("utf-8","ignore"))
+        except Exception as e: return jsonify({"ok":False,"error":"Bad JSON file: "+str(e)[:200]}),400
+    else:
+        payload=request.get_json(silent=True)
+    if payload is None:
+        return jsonify({"ok":False,"error":"No JSON provided."}),400
+    orders = payload.get("orders") if isinstance(payload,dict) else payload
+    if not isinstance(orders,list) or not orders:
+        return jsonify({"ok":False,"error":"No orders found in the file."}),400
+    stored=0
+    for o in orders:
+        if isinstance(o,dict) and _tt_store_raw_order(org, o): stored+=1
+    shows_list, shipped = _tt_materialize_orders(org, [o for o in orders if isinstance(o,dict)])
+    try: alog("tiktok.import", "%d orders imported, %d loaded into %d shows" % (stored, shipped, len(shows_list)))
+    except Exception: pass
+    return jsonify({"ok":True,"imported":stored,"loaded":shipped,"shows":shows_list})
+
+@app.route("/api/tiktok/regroup-stored", methods=["POST"])
+@req_role("admin")
+def api_tiktok_regroup_stored():
+    """Re-run grouping on orders ALREADY stored locally (no TikTok call). Clears the
+    current tiktok-api shows and rebuilds them from tiktok_orders.raw — the fast loop
+    for iterating on the routing rules in staging after an import."""
+    org=current_org() or DEFAULT_ORG
+    wiped=0
+    try:
+        sc=sdb(org)
+        labels=[r["import_label"] for r in sc.execute(
+            "SELECT DISTINCT import_label FROM shipments WHERE import_batch='tiktok-api' AND import_label IS NOT NULL").fetchall()]
+        ids=[r["shipment_id"] for r in sc.execute(
+            "SELECT shipment_id FROM shipments WHERE import_batch='tiktok-api'").fetchall()]
+        for sid in ids:
+            sc.execute("DELETE FROM shipment_items WHERE shipment_id=?",(sid,))
+        wiped=sc.execute("DELETE FROM shipments WHERE import_batch='tiktok-api'").rowcount
+        for t in ("tiktok_sessions","tiktok_rooms","tiktok_lives"):
+            try: sc.execute("DELETE FROM "+t)
+            except Exception: pass
+        for lbl in labels:
+            for t in ("show_state","cleanup_state","show_product_map","live_sales","live_reconcile"):
+                try: sc.execute("DELETE FROM "+t+" WHERE import_label=?",(lbl,))
+                except Exception: pass
+        sc.commit(); sc.close()
+    except Exception as e:
+        _tt_log("regroup-stored wipe failed: %r"%e)
+        return jsonify({"ok":False,"error":"Could not clear old shows: "+str(e)[:200]})
+    orders=_tt_stored_orders(org)
+    shows_list, shipped=_tt_materialize_orders(org, orders)
+    return jsonify({"ok":True,"regrouped":True,"cleared":wiped,"fetched":len(orders),
+                    "loaded":shipped,"shows":shows_list})
 
 @app.route("/api/tiktok/store-products", methods=["GET","POST"])
 @req_role("admin")
@@ -14425,8 +14545,29 @@ th{color:#6b7280;font-weight:700;font-size:11px;text-transform:uppercase}
   <div id="pullMsg" class="mut"></div>
   <div id="orders" class="mut">Loading…</div>
 </div>
+
+<div class="card">
+  <h2>🧪 Test data — move real orders to staging</h2>
+  <div class="mut" style="margin-bottom:10px">Export every real order this environment has pulled as one JSON file. Import it into the staging/test environment to work on grouping &amp; routing on real content — no live connection needed there.</div>
+  <div class="row">
+    <a class="btn g" href="/api/tiktok/export-orders">⬇ Export orders (JSON)</a>
+    <span class="mut" id="expHint">Download on production, then import on staging.</span>
+  </div>
+  <div id="impBox" style="display:none;margin-top:14px;border-top:1px solid #f0f1f4;padding-top:14px">
+    <div class="row">
+      <input id="impFile" type="file" accept="application/json,.json" style="font-size:13px">
+      <button id="impBtn" class="btn g">⬆ Import into staging</button>
+    </div>
+    <div class="row" style="margin-top:4px">
+      <button id="regroupStoredBtn" class="btn g" style="background:#ede9fe;color:#5b21b6">↻ Regroup from stored (offline)</button>
+      <span class="mut">Re-run grouping on already-imported orders — the fast loop for tuning the routing rules. No TikTok call.</span>
+    </div>
+    <div id="impMsg" class="mut" style="margin-top:8px"></div>
+  </div>
+</div>
 </div>
 <script>
+var IS_STAGING=false;
 function esc(s){return (s==null?'':String(s)).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
 fetch('/api/tiktok/status').then(function(r){return r.json();}).then(function(d){
   var cfg=document.getElementById('cfg');
@@ -14502,9 +14643,37 @@ rb.onclick=function(){
      pm.innerHTML='<span style="color:#166534">✓ Regrouped — cleared '+(d.cleared||0)+' old shipment(s), re-loaded '+(d.loaded||0)+' into '+((d.shows||[]).length)+' show(s).'+shw+'</span>';
    }).catch(function(e){rb.disabled=false;pb.disabled=false;rb.textContent=old;pm.innerHTML='<span style="color:#b91c1c">Network error</span>';});
 };
+if(IS_STAGING){document.getElementById('impBox').style.display='block';
+  document.getElementById('expHint').textContent='You are on staging — import a file exported from production below.';}
+var ibtn=document.getElementById('impBtn');
+if(ibtn)ibtn.onclick=function(){
+  var f=document.getElementById('impFile').files[0];var im=document.getElementById('impMsg');
+  if(!f){im.innerHTML='<span style="color:#b91c1c">Choose a JSON file first.</span>';return;}
+  ibtn.disabled=true;var old=ibtn.textContent;ibtn.textContent='Importing…';im.textContent='';
+  var fd=new FormData();fd.append('file',f);
+  fetch('/api/tiktok/import-orders',{method:'POST',body:fd})
+   .then(function(r){return r.json();}).then(function(d){
+     ibtn.disabled=false;ibtn.textContent=old;
+     if(!d.ok){im.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
+     var shw=(d.shows&&d.shows.length)?('<br>Shows now: '+d.shows.map(esc).join(', ')):'';
+     im.innerHTML='<span style="color:#166534">✓ Imported '+d.imported+' order(s), loaded '+d.loaded+' into '+((d.shows||[]).length)+' show(s).'+shw+'</span>';
+   }).catch(function(){ibtn.disabled=false;ibtn.textContent=old;im.innerHTML='<span style="color:#b91c1c">Network error</span>';});
+};
+var rsb=document.getElementById('regroupStoredBtn');
+if(rsb)rsb.onclick=function(){
+  rsb.disabled=true;var old=rsb.textContent;rsb.textContent='Regrouping…';var im=document.getElementById('impMsg');im.textContent='';
+  fetch('/api/tiktok/regroup-stored',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+   .then(function(r){return r.json();}).then(function(d){
+     rsb.disabled=false;rsb.textContent=old;
+     if(!d.ok){im.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
+     var shw=(d.shows&&d.shows.length)?('<br>Shows now: '+d.shows.map(esc).join(', ')):'';
+     im.innerHTML='<span style="color:#166534">✓ Regrouped '+(d.fetched||0)+' stored order(s) → '+((d.shows||[]).length)+' show(s), cleared '+(d.cleared||0)+'.'+shw+'</span>';
+   }).catch(function(){rsb.disabled=false;rsb.textContent=old;im.innerHTML='<span style="color:#b91c1c">Network error</span>';});
+};
 </script>
 </body></html>"""
-    return html.replace("__NAVBAR__",nav).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return (html.replace("__NAVBAR__",nav).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+                .replace("var IS_STAGING=false","var IS_STAGING="+("true" if IS_STAGING else "false")))
 
 if __name__=="__main__":
     print("="*50)
