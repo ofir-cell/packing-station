@@ -4430,6 +4430,16 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
  .ra-done{background:rgba(52,211,153,.12);color:#059669;border-color:rgba(52,211,153,.35)}
  .ra-undo{background:rgba(17,24,39,0.08);color:#586274;border-color:rgba(17,24,39,0.16)}
  .ra-del{background:rgba(244,63,94,.1);color:#e11d48;border-color:rgba(244,63,94,.25)}
+ .row-check{flex-shrink:0;width:20px;height:20px;cursor:pointer;accent-color:var(--brand);margin:0}
+ .show-row.sel{background:rgba(217,116,143,.08);border-color:rgba(217,116,143,.45)}
+ .selall{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:700;color:var(--text-muted);cursor:pointer;user-select:none}
+ .selall input{width:16px;height:16px;accent-color:var(--brand);cursor:pointer;margin:0}
+ .bulkbar{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:60;display:none;align-items:center;gap:16px;background:#141b26;color:#fff;border-radius:14px;padding:12px 18px;box-shadow:0 10px 40px rgba(20,27,38,.35)}
+ .bulkbar.show{display:flex}
+ .bulkbar .bb-n{font-size:14px;font-weight:800}
+ .bulkbar button{border:none;border-radius:10px;padding:9px 16px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit}
+ .bulkbar .bb-done{background:#34d399;color:#064e3b}
+ .bulkbar .bb-clear{background:rgba(255,255,255,.14);color:#fff}
  @media(max-width:820px){.row-nums,.row-when{display:none}}
 </style>
 </head><body data-role="__ROLE__">
@@ -4459,10 +4469,17 @@ __NAVBAR__
     <span class="dlabel">From <input id="fFrom" type="date"></span>
     <span class="dlabel">To <input id="fTo" type="date"></span>
     <button class="clr" id="fClear" style="padding:9px 14px;border-radius:10px">Clear</button>
+    <label class="selall"><input type="checkbox" id="selAll">Select all shown</label>
     <span id="fCount" style="font-size:12px;color:var(--text-dim);margin-left:auto"></span>
   </div>
 
   <div id="grid"></div>
+</div>
+
+<div class="bulkbar" id="bulkbar">
+  <span class="bb-n" id="bbN">0 shows selected</span>
+  <button class="bb-done" onclick="bulkDone()">✓ Mark as Done</button>
+  <button class="bb-clear" onclick="clearSel()">Clear</button>
 </div>
 
 <script>
@@ -4470,6 +4487,7 @@ function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')
 function fmtDateShort(s){if(!s)return '';try{return new Date(s).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}catch(e){return s}}
 
 var SHOWS=[];
+var SEL={};
 function loadShows(){fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){SHOWS=shows||[];renderKpis();renderGrid();});}
 function renderKpis(){
   var t=0,p=0,d=0,s=0,x=0;
@@ -4522,7 +4540,8 @@ function renderList(){
     var platName=sh.platform_count>1?'Mixed':(sh.platform||'?');
     var platCls=(sh.platform==='tiktok')?'tiktok':'';
     var en=encodeURIComponent(sh.name);
-    return '<a class="show-row st-'+status+'" data-show="'+en+'" href="/admin/shipments?show='+en+'">'+
+    return '<a class="show-row st-'+status+(SEL[sh.name]?' sel':'')+'" data-show="'+en+'" href="/admin/shipments?show='+en+'">'+
+      '<input type="checkbox" class="row-check" title="Select for bulk action" onclick="toggleSel(event,\\''+en+'\\')"'+(SEL[sh.name]?' checked':'')+'>'+
       '<span class="row-badge st-'+status+'">'+BADGE[status]+'</span>'+
       '<span class="row-name">'+escapeHtml(sh.name)+'</span>'+
       '<span class="row-plat '+platCls+'">'+platName+'</span>'+
@@ -4539,8 +4558,43 @@ function renderList(){
       '</span>'+
     '</a>';
   }).join('')+'</div>';
+  syncBulk();
 }
 function renderGrid(){renderList();}  // back-compat alias
+function toggleSel(ev,name){
+  ev.preventDefault();ev.stopPropagation();
+  var nm=decodeURIComponent(name);
+  if(SEL[nm])delete SEL[nm];else SEL[nm]=true;
+  var cb=ev.target;cb.checked=!!SEL[nm];
+  var row=cb.closest('.show-row');if(row)row.classList.toggle('sel',!!SEL[nm]);
+  syncBulk();
+}
+function syncBulk(){
+  var n=Object.keys(SEL).length;
+  var bar=document.getElementById('bulkbar');
+  document.getElementById('bbN').textContent=n+(n===1?' show selected':' shows selected');
+  bar.classList.toggle('show',n>0);
+  var shown=applyFilters();
+  var sa=document.getElementById('selAll');
+  if(sa)sa.checked=(shown.length>0 && shown.every(function(s){return SEL[s.name]}));
+}
+function clearSel(){SEL={};renderList();}
+function bulkDone(){
+  var names=Object.keys(SEL);
+  if(!names.length)return;
+  var pin=prompt('Enter Manager PIN to mark '+names.length+' show'+(names.length===1?'':'s')+' as DONE:');
+  if(pin===null)return;
+  fetch('/api/shows/done-bulk',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({labels:names,done:true,pin:pin})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(d.ok){SEL={};loadShows();
+       if(d.failed&&d.failed.length){alert('Marked '+d.done_count+' done. '+d.failed.length+' could not be marked.');}
+       return}
+     if(d.need_pin_setup){alert('No Manager PIN set yet. An admin must set it in Team → Permissions.');return}
+     if(d.pin_required){alert(d.error||'Wrong Manager PIN.');return}
+     alert(d.error||'Failed');
+   }).catch(function(){alert('Request failed')});
+}
 ['fSearch','fStatus','fFrom','fTo'].forEach(function(id){
   var el=document.getElementById(id);
   el.addEventListener(id==='fSearch'?'input':'change',renderList);
@@ -4548,6 +4602,11 @@ function renderGrid(){renderList();}  // back-compat alias
 document.getElementById('fClear').addEventListener('click',function(){
   document.getElementById('fSearch').value='';document.getElementById('fStatus').value='';
   document.getElementById('fFrom').value='';document.getElementById('fTo').value='';renderList();
+});
+document.getElementById('selAll').addEventListener('change',function(){
+  var shown=applyFilters(),on=this.checked;
+  shown.forEach(function(s){if(on)SEL[s.name]=true;else delete SEL[s.name];});
+  renderList();
 });
 loadShows();
 function toggleDone(ev,name,done){

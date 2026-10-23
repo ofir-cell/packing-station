@@ -6360,6 +6360,47 @@ def api_show_done():
     c.commit(); c.close()
     return jsonify({"ok": True, "done": bool(done)})
 
+@app.route("/api/shows/done-bulk", methods=["POST"])
+@req_role("admin","cs")
+def api_show_done_bulk():
+    """Mark many shows DONE (or undo) in one request. Same permission + manager-PIN
+    gate as the single endpoint — checked ONCE for the whole batch, then applied to
+    every label. Body: {labels:[...], done:bool, pin}."""
+    d = request.get_json() or {}
+    labels = d.get("labels") or []
+    labels = [str(x).strip() for x in labels if str(x).strip()]
+    if not labels:
+        return jsonify({"ok": False, "error": "no shows selected"}), 400
+    # ---- identical permission gate to /api/shows/done ----
+    perm = _get_perms().get("mark_show_done", {})
+    _allowed = perm.get("roles") or ["admin","cs"]
+    _ur = session_roles()
+    if not (("admin" in _ur) or ("manager" in _ur) or any(r in _allowed for r in _ur)):
+        return jsonify({"ok": False, "error": "Your role is not allowed to mark shows done."}), 403
+    if perm.get("require_pin"):
+        if not _manager_pin_set():
+            return jsonify({"ok": False, "error": "Manager PIN not set yet — set it in Permissions.", "need_pin_setup": True}), 400
+        if not _verify_manager_pin(d.get("pin","")):
+            return jsonify({"ok": False, "error": "Wrong manager PIN.", "pin_required": True}), 401
+    done = 1 if d.get("done", True) else 0
+    now = datetime.now().isoformat(timespec='seconds') if done else None
+    who = session.get("name","")[:60] if done else None
+    c = sdb()
+    done_count = 0; failed = []
+    for label in labels:
+        try:
+            c.execute("""INSERT INTO show_state(import_label,done,done_at,done_by) VALUES(?,?,?,?)
+                         ON CONFLICT(import_label) DO UPDATE SET done=excluded.done,
+                            done_at=excluded.done_at, done_by=excluded.done_by""",
+                      (label, done, now, who))
+            done_count += 1
+        except Exception:
+            failed.append(label)
+    c.commit(); c.close()
+    try: alog("show.done_bulk", "%d shows -> %s" % (done_count, "DONE" if done else "undone"))
+    except Exception: pass
+    return jsonify({"ok": True, "done": bool(done), "done_count": done_count, "failed": failed})
+
 @app.route("/api/shows/delete", methods=["POST"])
 @req_role("admin","cs")
 def api_show_delete():
