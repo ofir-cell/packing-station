@@ -14422,6 +14422,72 @@ def api_tiktok_regroup_stored():
     return jsonify({"ok":True,"regrouped":True,"cleared":wiped,"fetched":len(orders),
                     "loaded":shipped,"shows":shows_list})
 
+def _tt_part_label(name):
+    m=re.search(r'part\s*(\d+)', (name or ''), re.I)
+    return "Part "+m.group(1) if m else ""
+
+@app.route("/api/tiktok/routing")
+@req_role("admin")
+def api_tiktok_routing():
+    """Diagnostic: for every stored order, show which show it routed to and the fields that
+    drove the decision (product, detected base listing, part, time, store-rider?). Grouped
+    by show so you can verify parts merged and samples rode the right live. Read-only."""
+    org=current_org() or DEFAULT_ORG
+    orders=_tt_stored_orders(org)
+    c=sdb(org)
+    kws=_tt_store_keywords(c)
+    groups={}
+    store_riders=0
+    for o in orders:
+        try: ct=int(o.get("create_time") or 0)
+        except Exception: ct=0
+        label=_tt_label_for_order(c, o)
+        is_store=_tt_is_store_order(c, o)
+        if is_store: store_riders+=1
+        # anchor = first non-store product name
+        anchor=""
+        names=[]
+        for li in (o.get("line_items") or []):
+            nm=(li.get("product_name") or "").strip()
+            if nm: names.append(nm)
+            if nm and not anchor and not any(k in nm.lower() for k in kws): anchor=nm
+        base=_tt_base_listing(anchor) if anchor else ""
+        part=_tt_part_label(anchor) or (_tt_part_label(names[0]) if names else "")
+        try: tstr=datetime.fromtimestamp(ct).strftime("%b %d %H:%M") if ct else ""
+        except Exception: tstr=""
+        g=groups.setdefault(label, {"label":label,"orders":[],"start":None,"end":None,
+                                    "products":{},"store_riders":0,"anchor_count":0})
+        g["orders"].append({"order_id":str(o.get("id") or ""),"time":tstr,"ct":ct,
+                            "product":(anchor or (names[0] if names else "(no product)")),
+                            "base":base,"part":part,"store":is_store,
+                            "status":str(o.get("order_status") or "")})
+        if ct:
+            if g["start"] is None or ct<g["start"]: g["start"]=ct
+            if g["end"] is None or ct>g["end"]: g["end"]=ct
+        if is_store: g["store_riders"]+=1
+        else: g["anchor_count"]+=1
+        for nm in names: g["products"][nm]=g["products"].get(nm,0)+1
+    c.close()
+    out=[]
+    for g in groups.values():
+        g["orders"].sort(key=lambda x:x["ct"])
+        def _h(ct):
+            try: return datetime.fromtimestamp(ct).strftime("%b %d %H:%M") if ct else ""
+            except Exception: return ""
+        rng=""
+        if g["start"] and g["end"]:
+            rng=_h(g["start"])+(" – "+datetime.fromtimestamp(g["end"]).strftime("%H:%M") if g["end"]!=g["start"] else "")
+        prod_list=sorted(g["products"].items(), key=lambda kv:-kv[1])
+        out.append({"label":g["label"],"n":len(g["orders"]),"range":rng,"start":g["start"] or 0,
+                    "store_riders":g["store_riders"],"anchor_count":g["anchor_count"],
+                    "store_only":(g["anchor_count"]==0 and g["store_riders"]>0),
+                    "distinct_products":[{"name":n,"n":cnt} for n,cnt in prod_list],
+                    "orders":g["orders"]})
+    out.sort(key=lambda s:s["start"])
+    flagged=sum(1 for s in out if s["store_only"])
+    return jsonify({"ok":True,"org":org,"total_orders":len(orders),"total_shows":len(out),
+                    "store_riders":store_riders,"flagged":flagged,"shows":out})
+
 @app.route("/api/tiktok/store-products", methods=["GET","POST"])
 @req_role("admin")
 def api_tiktok_store_products():
@@ -14551,6 +14617,7 @@ th{color:#6b7280;font-weight:700;font-size:11px;text-transform:uppercase}
   <div class="mut" style="margin-bottom:10px">Export every real order this environment has pulled as one JSON file. Import it into the staging/test environment to work on grouping &amp; routing on real content — no live connection needed there.</div>
   <div class="row">
     <a class="btn g" href="/api/tiktok/export-orders">⬇ Export orders (JSON)</a>
+    <a class="btn g" href="/admin/tiktok/routing" style="background:#dcfce7;color:#166534">🧭 Routing check</a>
     <span class="mut" id="expHint">Download on production, then import on staging.</span>
   </div>
   <div id="impBox" style="display:none;margin-top:14px;border-top:1px solid #f0f1f4;padding-top:14px">
@@ -14674,6 +14741,91 @@ if(rsb)rsb.onclick=function(){
 </body></html>"""
     return (html.replace("__NAVBAR__",nav).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
                 .replace("var IS_STAGING=false","var IS_STAGING="+("true" if IS_STAGING else "false")))
+
+@app.route("/admin/tiktok/routing")
+@req_role("admin")
+def admin_tiktok_routing_page():
+    nav=_navbar("tiktok")
+    html="""<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>TikTok routing check</title>
+__NAVBAR_CSS__
+<style>
+body{margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;background:#f6f7fb;color:#1a2130}
+.wrap{max-width:1000px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:22px;margin:14px 0 4px}.sub{color:#6b7280;font-size:14px;margin-bottom:16px}
+.chips{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}
+.chip{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:10px 16px;min-width:110px}
+.chip .v{font-size:24px;font-weight:900;line-height:1}.chip .l{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-top:4px}
+.chip.bad .v{color:#dc2626}
+.btn{display:inline-block;background:#eef2ff;color:#4338ca;border:none;border-radius:10px;padding:9px 15px;font-size:13px;font-weight:800;cursor:pointer;text-decoration:none}
+.show{background:#fff;border:1px solid #e5e7eb;border-left:4px solid #22c55e;border-radius:14px;padding:16px 18px;margin-bottom:12px}
+.show.flag{border-left-color:#dc2626;background:#fff7f7}
+.show h3{margin:0 0 2px;font-size:16px;font-weight:800}
+.meta{font-size:12px;color:#6b7280;margin-bottom:10px}
+.warn{color:#b91c1c;font-weight:700;font-size:12.5px;margin:6px 0}
+.prods{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.prod{background:#f1f5f9;border:1px solid #e2e8f0;border-radius:999px;padding:4px 10px;font-size:12px}
+.prod b{color:#334155}
+.prod.store{background:#fef9c3;border-color:#fde68a}
+.tgl{background:none;border:none;color:#4338ca;font-weight:700;font-size:12.5px;cursor:pointer;padding:4px 0}
+table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #f0f1f4;vertical-align:top}
+th{color:#6b7280;font-weight:700;font-size:10.5px;text-transform:uppercase}
+.sb{display:inline-block;background:#fef08a;color:#854d0e;border-radius:6px;padding:1px 6px;font-size:10px;font-weight:800}
+.pt{display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:6px;padding:1px 6px;font-size:10px;font-weight:800}
+.mut{color:#9aa1ab}
+</style></head><body>__NAVBAR__
+<div class="wrap">
+<h1>🧭 TikTok routing check</h1>
+<div class="sub">Every stored order and the show it routed to — so you can verify parts merged into one live and samples rode the right show. Read-only; run after an import or regroup.</div>
+<div class="chips" id="chips"></div>
+<div style="margin-bottom:14px"><button class="btn" id="refresh">↻ Refresh</button> <a class="btn" href="/admin/tiktok" style="background:#f1f5f9;color:#475569">← Back to TikTok</a></div>
+<div id="list" class="mut">Loading…</div>
+</div>
+<script>
+function esc(s){return (s==null?'':String(s)).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+function load(){
+  var L=document.getElementById('list');L.textContent='Loading…';
+  fetch('/api/tiktok/routing').then(function(r){return r.json();}).then(function(d){
+    if(!d.ok){L.innerHTML='<span style="color:#b91c1c">'+esc(d.error||'failed')+'</span>';return;}
+    document.getElementById('chips').innerHTML=
+      '<div class="chip"><div class="v">'+d.total_orders+'</div><div class="l">Orders</div></div>'+
+      '<div class="chip"><div class="v">'+d.total_shows+'</div><div class="l">Shows</div></div>'+
+      '<div class="chip"><div class="v">'+d.store_riders+'</div><div class="l">Store riders</div></div>'+
+      '<div class="chip'+(d.flagged?' bad':'')+'"><div class="v">'+d.flagged+'</div><div class="l">Flagged</div></div>';
+    if(!d.shows||!d.shows.length){L.innerHTML='<span class="mut">No stored orders yet. Import a file or pull, then come back.</span>';return;}
+    L.innerHTML=d.shows.map(function(s,idx){
+      var prods=(s.distinct_products||[]).map(function(p){
+        var isStore=/sample|mystery|protection|shipping/i.test(p.name);
+        return '<span class="prod'+(isStore?' store':'')+'">'+esc(p.name)+' <b>×'+p.n+'</b></span>';
+      }).join('');
+      var warn=s.store_only?'<div class="warn">⚠ This show is only store/sample orders — no live matched their time, so the sample opened its own show instead of riding a live.</div>':'';
+      var rows=s.orders.map(function(o){
+        return '<tr><td>'+esc(o.order_id)+'</td><td class="mut">'+esc(o.time)+'</td><td>'+esc(o.product)+
+          (o.part?' <span class="pt">'+esc(o.part)+'</span>':'')+(o.store?' <span class="sb">STORE</span>':'')+
+          '</td><td class="mut">'+esc(o.status)+'</td></tr>';
+      }).join('');
+      return '<div class="show'+(s.store_only?' flag':'')+'">'+
+        '<h3>'+esc(s.label)+'</h3>'+
+        '<div class="meta">'+s.n+' order(s) · '+esc(s.range||'')+' · '+s.anchor_count+' live + '+s.store_riders+' store</div>'+
+        warn+
+        '<div class="prods">'+prods+'</div>'+
+        '<button class="tgl" data-i="'+idx+'">▸ Show '+s.n+' order(s)</button>'+
+        '<div id="o'+idx+'" style="display:none"><table><tr><th>Order</th><th>Time</th><th>Product</th><th>Status</th></tr>'+rows+'</table></div>'+
+      '</div>';
+    }).join('');
+    document.querySelectorAll('.tgl').forEach(function(b){b.onclick=function(){
+      var i=b.getAttribute('data-i');var box=document.getElementById('o'+i);
+      if(box.style.display==='none'){box.style.display='block';b.textContent='▾ Hide orders';}
+      else{box.style.display='none';b.textContent='▸ Show orders';}
+    };});
+  }).catch(function(){L.innerHTML='<span style="color:#b91c1c">Network error</span>';});
+}
+document.getElementById('refresh').onclick=load;
+load();
+</script>
+</body></html>"""
+    return html.replace("__NAVBAR__",nav).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 if __name__=="__main__":
     print("="*50)
