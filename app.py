@@ -5503,8 +5503,11 @@ def _process_cancel_file(norm_rows, source, label):
 @req_role("admin","cs")
 def api_shipments_recent():
     """List most-recently-imported shipments. Optionally filter by show name."""
-    limit = min(request.args.get("limit", type=int) or 200, 500)
     show = (request.args.get("show") or "").strip()
+    # A single show can hold 1,000+ orders (big lives), so a per-show view returns the
+    # whole show; the unfiltered 'recent' view stays capped for speed.
+    _cap = 5000 if show else 500
+    limit = min(request.args.get("limit", type=int) or _cap, _cap)
     c = sdb()
     _stk = ("(SELECT GROUP_CONCAT(DISTINCT i.sku) FROM shipment_items i "
             "WHERE i.shipment_id=shipments.shipment_id AND COALESCE(i.cancelled,0)=0) AS stickers")
@@ -5934,7 +5937,7 @@ def api_pick_queue():
     if show:
         q += " AND s.import_label=?"
         params.append(show)
-    q += " ORDER BY s.imported_at DESC LIMIT 200"
+    q += " ORDER BY s.imported_at DESC LIMIT 5000"   # a big live can have 1,000+ to pick
     rows = c.execute(q, params).fetchall()
     c.close()
     return jsonify([dict(r) for r in rows])
