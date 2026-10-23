@@ -13772,12 +13772,88 @@ def _tt_is_store_order(c, order):
         if not any(k in nm for k in kws): return False
     return True
 
+def _tt_daytime(ct):
+    """Compact 'Oct 20 · 6:11 AM' from an epoch — used in live-show names so that two
+    separate lives on the same day (two room ids) stay distinct shows."""
+    try: return datetime.fromtimestamp(int(ct)).strftime("%b %d · %-I:%M %p")
+    except Exception: return datetime.now().strftime("%b %d · %-I:%M %p")
+
+def _tt_room_id(order):
+    """TikTok's real LIVE room id for an order (carried on every line item). This is the
+    ground truth for 'the same live' — all parts, all products, AND the sample of one live
+    share it. Returns '' only for the rare order with no room (e.g. a plain store sale)."""
+    for li in (order.get("line_items") or []):
+        r=li.get("room_id")
+        if r and str(r) not in ("0",""): return str(r)
+    return ""
+
+def _tt_room_names(c, orders):
+    """Build {room_id: label} for a batch of orders. Label = the room's dominant non-store
+    base listing + the date of the room's earliest order. Grouping by room_id means every
+    order sharing a live — its parts, any different products sold in it, and the sample —
+    lands in ONE show, named by the main listing."""
+    kws=_tt_store_keywords(c)
+    info={}
+    for o in orders:
+        r=_tt_room_id(o)
+        if not r: continue
+        try: ct=int(o.get("create_time") or 0)
+        except Exception: ct=0
+        d=info.setdefault(r, {"names":{}, "start":None})
+        if ct and (d["start"] is None or ct<d["start"]): d["start"]=ct
+        for li in (o.get("line_items") or []):
+            nm=(li.get("product_name") or "").strip()
+            if nm and not any(k in nm.lower() for k in kws):
+                b=_tt_base_listing(nm)
+                d["names"][b]=d["names"].get(b,0)+1
+    out={}
+    for r,d in info.items():
+        base=max(d["names"].items(), key=lambda kv:kv[1])[0] if d["names"] else "Live"
+        out[r]="%s · %s"%(base[:70], _tt_daytime(d["start"]))
+    return out
+
+def _tt_room_label(c, order, room_id):
+    """Canonical show label for a live room, built incrementally (used by the live sweep).
+    The first order of a room sets the name (dominant real listing + date); every later order
+    in that room reuses it. If a room is first seen via a sample-only order, it gets a
+    placeholder name that the first real product order upgrades (renaming the show)."""
+    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_rooms(
+        room_id TEXT PRIMARY KEY, label TEXT, start_ts INTEGER, named INTEGER DEFAULT 0)""")
+    try: ct=int(order.get("create_time") or 0)
+    except Exception: ct=0
+    if not ct: ct=int(time.time())
+    kws=_tt_store_keywords(c)
+    anchor=""
+    for li in (order.get("line_items") or []):
+        nm=(li.get("product_name") or "").strip()
+        if nm and not any(k in nm.lower() for k in kws): anchor=nm; break
+    base=_tt_base_listing(anchor) if anchor else ""
+    row=c.execute("SELECT label,named,start_ts FROM tiktok_rooms WHERE room_id=?",(room_id,)).fetchone()
+    if row and row["label"]:
+        if not row["named"] and base:   # upgrade placeholder once a real listing appears
+            st=row["start_ts"] or ct
+            newlbl="%s · %s"%(base[:70], _tt_daytime(st))
+            if newlbl!=row["label"]:
+                c.execute("UPDATE shipments SET import_label=? WHERE import_label=? AND COALESCE(import_batch,'')='tiktok-api'",(newlbl,row["label"]))
+                for t in ("show_state","cleanup_state","show_product_map","live_sales","live_reconcile"):
+                    try: c.execute("UPDATE %s SET import_label=? WHERE import_label=?"%t,(newlbl,row["label"]))
+                    except Exception: pass
+            c.execute("UPDATE tiktok_rooms SET label=?,named=1 WHERE room_id=?",(newlbl,room_id))
+            return newlbl
+        return row["label"]
+    if base: lbl="%s · %s"%(base[:70], _tt_daytime(ct)); named=1
+    else: lbl="Live · "+_tt_daytime(ct); named=0
+    c.execute("INSERT OR REPLACE INTO tiktok_rooms(room_id,label,start_ts,named) VALUES(?,?,?,?)",(room_id,lbl,ct,named))
+    return lbl
+
 def _tt_label_for_order(c, order):
-    """Pick the show (import_label) for an order by WHAT LISTING it is, not by TikTok's
-    room/PART. One show == one listing on one day, so every PART of a live (sticker resets
-    to 1 each part) stays in ONE show, and a different listing opens a new show. Permanent
-    store products (the sample) don't open a show — they ride into the live running at that
-    time. The show name carries the live date; the time range is shown in the list."""
+    """Pick the show (import_label) for an order. PRIMARY: TikTok's real live room id — every
+    order sharing a room (all parts, all products, and the sample) groups into one show named
+    by the main listing. FALLBACK (no room id): group by listing name + date, with store
+    samples attached to the live running at their time."""
+    room=_tt_room_id(order)
+    if room:
+        return _tt_room_label(c, order, room)
     try: ct=int(order.get("create_time") or 0)
     except Exception: ct=0
     if not ct: ct=int(time.time())
@@ -14316,43 +14392,42 @@ def _tt_materialize_orders(org, orders):
     (sorted_show_labels, count_loaded).
 
     Grouping:
-    • If real LIVE sessions are known for this org (pulled from TikTok's Analytics API),
-      EVERY order — regular and sample alike — is bound to the session whose time window
-      covers its create_time, and the show is named by that live's real title + date. This
-      is the authoritative path: all of a live's orders group together and the sample rides
-      the live automatically, by time.
-    • Otherwise we fall back to the inferred grouping: listing-name + date for real orders,
-      with store-product samples attached to the live running at their time (two passes)."""
+    • PRIMARY — by TikTok's real live room id (carried on every order). All orders of one
+      live — every PART, any different products sold in it, AND the sample — group into one
+      show, named by the live's dominant listing + date. This is the ground truth.
+    • FALLBACK (orders with no room id) — listing-name + date, with store samples attached to
+      the live running at their time."""
     shows=set(); shipped=0
     def _ck(o):
         try: return int(o.get("create_time") or 0)
         except Exception: return 0
-    sessions=_tt_load_sessions(org)
     try:
         sc=sdb(org)
         skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
         _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
         ovh=_cfg["packaging_overhead_g"] if _cfg else 30
-        if sessions:
-            # Authoritative: bind every order to its real live session by time (one pass).
-            for o in sorted(orders, key=_ck):
-                try:
-                    sess=_tt_session_for_order(sessions, _ck(o))
-                    lbl=_tt_label_from_session(sess, _ck(o)) if sess else _tt_label_for_order(sc, o)
-                    lbl=_tt_apply_order(sc, o, label=lbl, sku_map=skus, overhead=ovh)
-                    if lbl: shows.add(lbl); shipped+=1
-                except Exception as e:
-                    _tt_log("apply(session) failed %s: %r"%(o.get("id"),e))
-        else:
-            # Fallback: anchors first (define windows), then sample riders.
-            anchors=[o for o in orders if not _tt_is_store_order(sc, o)]
-            riders =[o for o in orders if _tt_is_store_order(sc, o)]
-            for o in sorted(anchors, key=_ck)+sorted(riders, key=_ck):
-                try:
-                    lbl=_tt_apply_order(sc, o, sku_map=skus, overhead=ovh)
-                    if lbl: shows.add(lbl); shipped+=1
-                except Exception as e:
-                    _tt_log("apply failed %s: %r"%(o.get("id"),e))
+        # Authoritative room→label for the whole batch (dominant listing + the room's date),
+        # and persist it so the live sweep reuses the exact same show names.
+        room_names=_tt_room_names(sc, orders)
+        if room_names:
+            sc.execute("""CREATE TABLE IF NOT EXISTS tiktok_rooms(
+                room_id TEXT PRIMARY KEY, label TEXT, start_ts INTEGER, named INTEGER DEFAULT 0)""")
+            starts={}
+            for o in orders:
+                r=_tt_room_id(o); ct=_ck(o)
+                if r and ct and (r not in starts or ct<starts[r]): starts[r]=ct
+            for r,lbl in room_names.items():
+                sc.execute("INSERT OR REPLACE INTO tiktok_rooms(room_id,label,start_ts,named) VALUES(?,?,?,1)",
+                           (r, lbl, starts.get(r,0)))
+        for o in sorted(orders, key=_ck):
+            try:
+                r=_tt_room_id(o)
+                lbl=room_names.get(r) if r else None
+                if not lbl: lbl=_tt_label_for_order(sc, o)
+                lbl=_tt_apply_order(sc, o, label=lbl, sku_map=skus, overhead=ovh)
+                if lbl: shows.add(lbl); shipped+=1
+            except Exception as e:
+                _tt_log("apply failed %s: %r"%(o.get("id"),e))
         sc.commit(); sc.close()
     except Exception as e:
         _tt_log("materialize batch failed: %r"%e)
