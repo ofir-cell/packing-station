@@ -13913,6 +13913,24 @@ def _fmt_live_range(mn, mx):
         return "%s · %s–%s"%(a.strftime("%b %d"), a.strftime("%-I:%M"), t(b))
     return "%s %s – %s %s"%(a.strftime("%b %d"), t(a), b.strftime("%b %d"), t(b))
 
+def _tt_order_in_nonapi(c, oid, tracking=None, pkg=None):
+    """True if this order already exists in a NON-API shipment (e.g. a CSV import the
+    warehouse is already working) — matched by Order ID, tracking number, or package id.
+    Used so the TikTok API never creates a duplicate of an order already in the system."""
+    if oid:
+        if c.execute("""SELECT 1 FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                        WHERE i.order_id=? AND COALESCE(s.import_batch,'')<>'tiktok-api' LIMIT 1""",(oid,)).fetchone():
+            return True
+    if tracking:
+        if c.execute("""SELECT 1 FROM shipments WHERE tracking_code=? AND COALESCE(import_batch,'')<>'tiktok-api' LIMIT 1""",
+                     (tracking,)).fetchone():
+            return True
+    if pkg:
+        if c.execute("""SELECT 1 FROM shipments WHERE shipment_id=? AND COALESCE(import_batch,'')<>'tiktok-api' LIMIT 1""",
+                     (pkg,)).fetchone():
+            return True
+    return False
+
 def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
     """Create/update a shipment (+items) from a TikTok API order, in the SAME shipments/
     shipment_items tables the CSV importer uses, so every existing screen works unchanged.
@@ -13934,14 +13952,15 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
         for li in (order.get("line_items") or []):
             if li.get("package_id"): pkg=str(li["package_id"]); break
     ship_id = pkg or ("TT-"+oid)
-    # ── SAFETY: never touch a shipment this API path didn't create. ──────────────
+    # ── SAFETY / DEDUPE: never touch a shipment this API path didn't create. ─────
     # Existing CSV shows (and anything the warehouse is working) are OFF LIMITS. The
     # API only ever creates/updates its own shipments (import_batch='tiktok-api').
-    # If this order already lives in a non-API shipment, leave it entirely alone.
-    other=c.execute("""SELECT s.shipment_id FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
-                       WHERE i.order_id=? AND COALESCE(s.import_batch,'')<>'tiktok-api' LIMIT 1""",(oid,)).fetchone()
-    if other:
-        return label   # order already owned by a CSV/other show — do not disturb it
+    # If this order already lives in a non-API shipment — matched by Order ID, by
+    # tracking number, OR by package id — leave it entirely alone so the same order
+    # is never imported twice (once from CSV, once from the API).
+    _trk=(order.get("tracking_number") or "").strip() or None
+    if _tt_order_in_nonapi(c, oid, _trk, pkg):
+        return None   # order already in the system (e.g. CSV) — skip, no duplicate
     # Migration: once a real package id appears, drop OUR earlier synthetic placeholder
     # (API-owned only) so the order isn't counted twice (pending TT-<id> → shipped PKG<id>).
     if pkg and ("TT-"+oid)!=ship_id:
@@ -14395,7 +14414,7 @@ def _tt_materialize_orders(org, orders):
       show, named by the live's dominant listing + date. This is the ground truth.
     • FALLBACK (orders with no room id) — listing-name + date, with store samples attached to
       the live running at their time."""
-    shows=set(); shipped=0
+    shows=set(); shipped=0; skipped=0
     def _ck(o):
         try: return int(o.get("create_time") or 0)
         except Exception: return 0
@@ -14419,6 +14438,12 @@ def _tt_materialize_orders(org, orders):
                            (r, lbl, starts.get(r,0)))
         for o in sorted(orders, key=_ck):
             try:
+                oid=str(o.get("id") or "")
+                trk=(o.get("tracking_number") or "").strip() or None
+                # Dedupe: if this order is already in the system from a non-API source
+                # (a CSV the warehouse is working), never import a second copy.
+                if _tt_order_in_nonapi(sc, oid, trk):
+                    skipped+=1; continue
                 r=_tt_room_id(o)
                 lbl=room_names.get(r) if r else None
                 if not lbl: lbl=_tt_label_for_order(sc, o)
@@ -14429,7 +14454,7 @@ def _tt_materialize_orders(org, orders):
         sc.commit(); sc.close()
     except Exception as e:
         _tt_log("materialize batch failed: %r"%e)
-    return sorted(shows), shipped
+    return sorted(shows), shipped, skipped
 
 def _tt_stored_orders(org):
     """Every raw order dict this org has previously stored (offline data source for
@@ -14523,10 +14548,10 @@ def _tt_pull_core(org, days=30):
         c.commit(); c.close(); stored+=1
         if len(preview)<10: preview.append({"order_id":oid,"status":o.get("order_status"),"items":items})
     # Phase 1: materialize every pulled order into the tenant's shows (shipments).
-    shows_list, shipped = _tt_materialize_orders(org, orders)
+    shows_list, shipped, skipped = _tt_materialize_orders(org, orders)
     return {"ok":True,"shop":row.get("shop_name") or shop_id,"total":total,
             "fetched":len(orders),"stored":stored,"preview":preview,
-            "shows":shows_list,"loaded":shipped,"pages":pages}
+            "shows":shows_list,"loaded":shipped,"skipped":skipped,"pages":pages}
 
 @app.route("/api/tiktok/pull", methods=["POST"])
 @req_role("admin")
@@ -14627,10 +14652,10 @@ def api_tiktok_import_orders():
     stored=0
     for o in orders:
         if isinstance(o,dict) and _tt_store_raw_order(org, o): stored+=1
-    shows_list, shipped = _tt_materialize_orders(org, [o for o in orders if isinstance(o,dict)])
-    try: alog("tiktok.import", "%d orders, %d sessions imported, %d loaded into %d shows" % (stored, sess, shipped, len(shows_list)))
+    shows_list, shipped, skipped = _tt_materialize_orders(org, [o for o in orders if isinstance(o,dict)])
+    try: alog("tiktok.import", "%d orders, %d sessions imported, %d loaded, %d skipped (already in system) into %d shows" % (stored, sess, shipped, skipped, len(shows_list)))
     except Exception: pass
-    return jsonify({"ok":True,"imported":stored,"sessions":sess,"loaded":shipped,"shows":shows_list})
+    return jsonify({"ok":True,"imported":stored,"sessions":sess,"loaded":shipped,"skipped":skipped,"shows":shows_list})
 
 @app.route("/api/tiktok/regroup-stored", methods=["POST"])
 @req_role("admin")
@@ -14661,9 +14686,9 @@ def api_tiktok_regroup_stored():
         _tt_log("regroup-stored wipe failed: %r"%e)
         return jsonify({"ok":False,"error":"Could not clear old shows: "+str(e)[:200]})
     orders=_tt_stored_orders(org)
-    shows_list, shipped=_tt_materialize_orders(org, orders)
+    shows_list, shipped, skipped=_tt_materialize_orders(org, orders)
     return jsonify({"ok":True,"regrouped":True,"cleared":wiped,"fetched":len(orders),
-                    "loaded":shipped,"shows":shows_list})
+                    "loaded":shipped,"skipped":skipped,"shows":shows_list})
 
 @app.route("/api/tiktok/live-sessions", methods=["GET","POST"])
 @req_role("admin")
@@ -14942,7 +14967,7 @@ pb.onclick=function(){
      pb.disabled=false;pb.textContent=old;
      if(!d.ok){pm.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
      var shw=(d.shows&&d.shows.length)?(' → loaded into show(s): '+d.shows.map(esc).join(', ')):'';
-     pm.innerHTML='<span style="color:#166534">✓ Pulled '+d.fetched+' order(s) from '+esc(d.shop||'')+(d.total!=null?(' · '+d.total+' total in shop'):'')+shw+'</span>';
+     pm.innerHTML='<span style="color:#166534">✓ Pulled '+d.fetched+' order(s) from '+esc(d.shop||'')+(d.total!=null?(' · '+d.total+' total in shop'):'')+(d.skipped?(' · skipped '+d.skipped+' already in the system'):'')+shw+'</span>';
      var od=document.getElementById('orders');
      if(!d.preview||!d.preview.length){od.innerHTML='<span class="mut">No recent orders in the last 30 days.</span>';return;}
      var h='<table><tr><th>Order</th><th>Status</th><th>Items (seller SKU × qty)</th></tr>';
@@ -15006,7 +15031,7 @@ if(ibtn)ibtn.onclick=function(){
      ibtn.disabled=false;ibtn.textContent=old;
      if(!d.ok){im.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
      var shw=(d.shows&&d.shows.length)?('<br>Shows now: '+d.shows.map(esc).join(', ')):'';
-     im.innerHTML='<span style="color:#166534">✓ Imported '+d.imported+' order(s), loaded '+d.loaded+' into '+((d.shows||[]).length)+' show(s).'+shw+'</span>';
+     im.innerHTML='<span style="color:#166534">✓ Imported '+d.imported+' order(s), loaded '+d.loaded+(d.skipped?(', skipped '+d.skipped+' already in the system'):'')+' into '+((d.shows||[]).length)+' show(s).'+shw+'</span>';
    }).catch(function(){ibtn.disabled=false;ibtn.textContent=old;im.innerHTML='<span style="color:#b91c1c">Network error</span>';});
 };
 var rsb=document.getElementById('regroupStoredBtn');
