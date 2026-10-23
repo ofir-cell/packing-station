@@ -5,7 +5,20 @@ All page templates are Python triple-quoted strings (no f-strings, to avoid
 escaping nightmares with embedded JS/CSS). Route handlers replace placeholders
 like `__NAME__`, `__NAVBAR__`, `__NAVBAR_CSS__` with `.replace()` at request time.
 """
+import os as _os
 from flask import session
+
+_IS_STAGING = (_os.environ.get("APP_ENV","") or "").strip().lower() in ("staging","stage","test","dev","development")
+def _staging_banner():
+    """A loud, non-dismissable bar marking the test environment, plus the layout shim
+    that drops the sidebar/content below it. Empty string in production."""
+    if not _IS_STAGING: return ""
+    return ('<div class="staging-banner">⚠️ TEST ENVIRONMENT · safe to experiment — '
+            'nothing here reaches customers or the warehouse</div>'
+            "<style>.staging-banner{position:fixed;top:0;left:0;right:0;height:30px;z-index:9999;"
+            "background:#b45309;color:#fff;font-weight:800;font-size:12.5px;display:flex;align-items:center;"
+            "justify-content:center;letter-spacing:.3px;font-family:'DM Sans',sans-serif}"
+            "body{padding-top:30px}.sidebar{top:30px!important}.sb-toggle{top:38px!important}.sb-ov{top:30px}</style>")
 
 
 def _brand():
@@ -151,7 +164,7 @@ def _navbar(active_page=""):
     logo = ('<img src="' + str(_e(brand["logo_url"])) + '" alt="" class="brand-logo">') if brand["logo_url"] else ""
     _home_url = "/admin/organizations" if role == "superadmin" else "/home"
     show_search = (role != "superadmin") and has("admin", "cs")
-    nav_html = _brand_style() + imp_banner
+    nav_html = _staging_banner() + _brand_style() + imp_banner
     nav_html += '<button class="sb-toggle" aria-label="Open menu" onclick="document.body.classList.toggle(\'sb-open\')">☰</button>'
     nav_html += '<div class="sb-ov" onclick="document.body.classList.remove(\'sb-open\')"></div>'
     nav_html += '<nav class="sidebar">'

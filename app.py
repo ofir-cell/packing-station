@@ -34,7 +34,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
     INVENTORY_HTML, PURCHASING_HTML, STOCKTAKE_HTML, AUDIT_HTML, ROSTER_HTML, MYSCHEDULE_HTML, MYAVAIL_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
-    PICKER_HTML, REPEAT_HTML, DATACHECK_HTML,
+    PICKER_HTML, REPEAT_HTML, DATACHECK_HTML, _staging_banner,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML,
@@ -51,6 +51,13 @@ DEFAULT_ORG=os.environ.get("DEFAULT_ORG","5sec")
 PLATFORM_ORG="__platform__"
 DATA_DIR=os.environ.get("DATA_DIR",os.path.join(os.path.expanduser("~"),"PackingStationData"))
 ORGS_DIR=os.path.join(DATA_DIR,"orgs")   # every tenant gets a private folder here
+# ── Staging / test mode ────────────────────────────────────────────────
+# Set APP_ENV=staging on the test environment. In staging we never cause real-world
+# side-effects (no emails to customers, no buying real postage) so a copy of production
+# data is safe to experiment on. Reading TikTok orders (Pull) IS allowed so the full
+# pipeline can be tested. Every screen also shows a banner.
+APP_ENV=(os.environ.get("APP_ENV") or "production").strip().lower()
+IS_STAGING = APP_ENV in ("staging","stage","test","dev","development")
 LOG_FIELDS=["tracking_number","station","date","time","duration_seconds","video_file","photo_file","worker"]
 
 # ══════════════════════════════════════════════════════════════════
@@ -942,6 +949,9 @@ def _send_via_smtp(to_addr, subject, html_body, text_body=None):
 def _send_email(to_addr, subject, html_body, text_body=None):
     """Send one email. Prefers Resend (HTTPS, never blocked); falls back to SMTP.
     Returns (ok, error)."""
+    if IS_STAGING:
+        print("[STAGING] email suppressed → to=%s subj=%s" % (to_addr, subject), flush=True)
+        return True, None   # pretend success so flows continue, but send nothing
     if not EMAIL_ENABLED:
         return False, "Email not configured"
     if not (to_addr or "").strip():
@@ -2014,6 +2024,7 @@ EASYPOST_ENABLED=bool(UPS_ENABLED or SHIPSTATION_ENABLED)   # back-compat alias 
 # more of your own brands; defaults to just the founding tenant.
 _SHIP_LABEL_ORGS=set(x.strip() for x in os.environ.get("SHIPPING_LABEL_ORGS","").split(",") if x.strip()) or {DEFAULT_ORG}
 def _can_buy_labels():
+    if IS_STAGING: return False   # never buy real postage from the test environment
     try: org=current_org() or DEFAULT_ORG
     except Exception: org=DEFAULT_ORG
     return org in _SHIP_LABEL_ORGS
@@ -3841,7 +3852,7 @@ def index():
         return (WORKER_HTML
             .replace("__NAME__", esc(session["name"]))
             .replace("__STATION__", session.get("station_name",""))
-            .replace("__SID__", session.get("station","S1")) + _heartbeat_js("pack"))
+            .replace("__SID__", session.get("station","S1")) + _heartbeat_js("pack") + _staging_banner())
     return redirect("/home")
 
 @app.route("/api/pack/mystats")
@@ -5921,7 +5932,7 @@ def pick_page():
     return (PICK_HTML
         .replace("__ROLE__", session.get("role", ""))
         .replace("__NAME__", esc(session.get("name", "")))
-        .replace("__STATION__", session.get("station_name", "")) + _heartbeat_js("pick"))
+        .replace("__STATION__", session.get("station_name", "")) + _heartbeat_js("pick") + _staging_banner())
 
 @app.route("/api/pick/queue")
 @req_role("picker", "worker", "admin", "cs")
