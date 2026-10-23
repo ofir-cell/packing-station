@@ -3654,7 +3654,7 @@ if(showFilter){
   if(sub)sub.innerHTML='Filtering by show: <b style="color:var(--brand)">'+showFilter.replace(/</g,'&lt;')+'</b> · <a href="/admin/shipments" style="color:var(--text-muted)">Clear filter</a>';
 }
 function loadShipments(){
-  var url='/api/shipments/recent?limit=500';
+  var url='/api/shipments/recent?limit=5000';
   if(showFilter)url+='&show='+encodeURIComponent(showFilter);
   fetch(url).then(function(r){return r.json()}).then(function(rows){
     // Stats

@@ -5504,10 +5504,13 @@ def _process_cancel_file(norm_rows, source, label):
 def api_shipments_recent():
     """List most-recently-imported shipments. Optionally filter by show name."""
     show = (request.args.get("show") or "").strip()
-    # A single show can hold 1,000+ orders (big lives), so a per-show view returns the
-    # whole show; the unfiltered 'recent' view stays capped for speed.
-    _cap = 5000 if show else 500
-    limit = min(request.args.get("limit", type=int) or _cap, _cap)
+    # A single show can hold 1,000+ orders (big lives), so a per-show view ALWAYS returns
+    # the whole show regardless of the requested limit; the unfiltered 'recent' view stays
+    # capped for speed.
+    if show:
+        limit = 5000
+    else:
+        limit = min(request.args.get("limit", type=int) or 500, 500)
     c = sdb()
     _stk = ("(SELECT GROUP_CONCAT(DISTINCT i.sku) FROM shipment_items i "
             "WHERE i.shipment_id=shipments.shipment_id AND COALESCE(i.cancelled,0)=0) AS stickers")
