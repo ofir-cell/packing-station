@@ -106,6 +106,7 @@ def _navbar(active_page=""):
             ("matchlive", "/admin/match-live", "Match Live") if has("admin","cs","worker","picker") else None,
             ("preshow", "/admin/preshow", "Match Products") if has("worker","picker") else None,
             ("pack", "/", "Pack station") if has("worker") else None,
+            ("pick", "/pick", "Picking") if has("worker","picker") else None,
             ("shows", "/admin/shows", "Shows & orders") if has("admin","cs") else None,
             ("tiktok", "/admin/tiktok", "TikTok Shop") if has("admin") else None,
           ])),
@@ -114,23 +115,23 @@ def _navbar(active_page=""):
             ("track", "/admin/track", "Track") if has("admin","cs","worker","picker") else None,
             ("cleanup", "/admin/cleanup", "Table Cleanup") if has("admin","cs","worker") else None,
             ("issues", "/admin/issues", "Picking / Packing Issues") if has("admin","cs") else None,
-            ("giveaway", "/admin/giveaway", "Giveaways") if has("admin","cs") else None,
+            ("giveaway", "/giveaway", "Giveaways") if has("admin","cs") else None,
             ("inbound", "/admin/inbound", "Inbound Labels") if has("admin","cs") else None,
             ("customers", "/customers", "Customers") if has("admin","cs") else None,
             ("dash", "/dashboard", "Packing Videos") if has("admin","cs") else None,
           ])),
           ("Inventory", "📥", _vis([
-            ("inventory", "/inventory", "Inventory") if has("admin","cs") else None,
+            ("inventory", "/admin/inventory", "Inventory") if has("admin","cs") else None,
             ("purchasing", "/admin/purchasing", "Purchasing") if has("admin") else None,
             ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation") if has("admin","cs") else None,
             ("stocktake", "/admin/stocktake", "Stock Take") if has("admin","cs") else None,
           ])),
           ("Analytics", "📊", _vis([
-            ("packer", "/admin/packer-analytics", "Packer Analytics") if has("admin","cs") else None,
+            ("packer", "/admin/packer-analytics", "Warehouse Analytics") if has("admin","cs") else None,
             ("hosts", "/admin/hosts", "Host Analytics") if has("admin") else None,
             ("profit", "/admin/profit", "Profit") if has("admin") else None,
-            ("geo", "/admin/geo", "Geography") if has("admin","cs") else None,
-            ("analytics", "/admin/analytics", "Analytics") if has("admin","cs") else None,
+            ("geo", "/admin/geo-analytics", "Geography") if has("admin","cs") else None,
+            ("analytics", "/analytics", "Analytics") if has("admin","cs") else None,
             ("repeat", "/admin/repeat-customers", "Repeat Customers") if has("admin","cs") else None,
           ])),
           ("Team", "🧑‍💼", _vis([
@@ -2622,6 +2623,9 @@ body{margin:0;font-family:'DM Sans',-apple-system,sans-serif;background:var(--su
 .qr .prog{width:120px;flex:none}.qr .prog .bar{height:7px;border-radius:4px;background:var(--surface-strong);overflow:hidden}.qr .prog .bar i{display:block;height:100%;background:var(--brand)}
 .qr .prog small{font-size:11px;color:var(--text-dim);display:block;margin-top:3px;text-align:right}
 .qr .left{font-size:18px;font-weight:900;width:52px;text-align:right}
+.qr.qr-more{display:none}.queue.show-all .qr.qr-more{display:flex}
+.seemore{margin-top:10px;background:none;border:1px solid var(--border);border-radius:9px;padding:9px 14px;font-size:13px;font-weight:700;color:var(--brand-ink);cursor:pointer;font-family:inherit}
+.seemore:hover{background:var(--surface);border-color:var(--brand)}
 .h3{margin:0 0 2px;font-size:15px;font-weight:800}.subt{font-size:12px;color:var(--text-dim);margin-bottom:14px}
 .donutwrap{display:flex;align-items:center;gap:18px}
 .leg{display:flex;flex-direction:column;gap:8px}.leg div{display:flex;align-items:center;gap:8px;font-size:13px}.leg i{width:11px;height:11px;border-radius:3px;display:block}.leg b{margin-left:auto;font-weight:800;padding-left:14px}
@@ -2663,9 +2667,13 @@ function floorBlock(d){var f=d.floor;var ptot=Math.max(f.packers_online,f.packer
   '</div>';}
 function backlogBlock(d){var b=d.backlog;if(!b.lives)return '<div class="sec">Backlog</div><div class="card"><b>All caught up</b><div class="s">No open shows waiting to pack.</div></div>';
  var h='<div class="sec">How far behind are we</div><div class="backlog"><div class="big">'+b.lives+(b.lives===1?' live':' lives')+'</div><div><b>'+b.orders+' orders still to pack across '+b.lives+' open show'+(b.lives===1?'':'s')+'</b><small>Oldest open show is '+b.oldest_age+' day'+(b.oldest_age===1?'':'s')+' back.'+(d.current_show?(' Current table: '+esc(d.current_show)+'.'):'')+'</small></div></div>';
- h+='<div class="queue">';b.shows.forEach(function(s){var oldC=s.age_days>=2?' old':'';var ageT=s.age_days===0?'Today':(s.age_days+(s.age_days===1?' day':' days'));
-  h+='<a class="qr" href="/admin/shipments?show='+encodeURIComponent(s.name)+'"><span class="age'+oldC+'">'+ageT+'</span><span class="nm"><b>'+esc(s.name)+'</b><small>'+esc(s.date||'')+'</small></span><span class="prog"><span class="bar"><i style="width:'+s.pct+'%"></i></span><small>'+s.pct+'% packed</small></span><span class="left">'+s.pending+'</span></a>';});
- h+='</div>';if(b.stale)h+='<div class="subt" style="margin:8px 2px 0">+ '+b.stale+' older show'+(b.stale===1?'':'s')+' (45+ days) hidden — close them under Shows if already done.</div>';return h;}
+ var LIMIT=2;
+ h+='<div class="queue" id="blq">';b.shows.forEach(function(s,i){var oldC=s.age_days>=2?' old':'';var ageT=s.age_days===0?'Today':(s.age_days+(s.age_days===1?' day':' days'));var moreCls=i>=LIMIT?' qr-more':'';
+  h+='<a class="qr'+moreCls+'" href="/admin/shipments?show='+encodeURIComponent(s.name)+'"><span class="age'+oldC+'">'+ageT+'</span><span class="nm"><b>'+esc(s.name)+'</b><small>'+esc(s.date||'')+'</small></span><span class="prog"><span class="bar"><i style="width:'+s.pct+'%"></i></span><small>'+s.pct+'% packed</small></span><span class="left">'+s.pending+'</span></a>';});
+ h+='</div>';
+ if(b.shows.length>LIMIT)h+='<button class="seemore" data-n="'+(b.shows.length-LIMIT)+'" onclick="toggleBacklog(this)">See '+(b.shows.length-LIMIT)+' more open show'+((b.shows.length-LIMIT)===1?'':'s')+' ▾</button>';
+ if(b.stale)h+='<div class="subt" style="margin:8px 2px 0">+ '+b.stale+' older show'+(b.stale===1?'':'s')+' (45+ days) hidden — close them under Shows if already done.</div>';return h;}
+function toggleBacklog(btn){var q=document.getElementById('blq');if(!q)return;var open=q.classList.toggle('show-all');btn.innerHTML=open?'Show less ▴':('See '+btn.getAttribute('data-n')+' more open show'+(btn.getAttribute('data-n')==='1'?'':'s')+' ▾');}
 function numbersBlock(d){var m=d.money||{};var f=d.floor;
  var h='<div class="sec">Today’s numbers <span class="adm">· admin only</span></div><div class="row r4" style="margin-bottom:14px">'+
   '<div class="card"><div class="l">Sold today</div><div class="v">'+(m.sold_today||0)+'</div><div class="s">orders in live</div></div>'+
