@@ -14692,13 +14692,20 @@ def api_tiktok_routing():
     orders=_tt_stored_orders(org)
     c=sdb(org)
     kws=_tt_store_keywords(c)
+    # Read-only labelling: compute room→label ONCE (no side effects), then look up per order.
+    # (Never call _tt_label_for_order per order here — it writes to tiktok_rooms and would turn
+    # this diagnostic into thousands of writes and a timeout.)
+    room_names=_tt_room_names(c, orders)
     groups={}
     store_riders=0
     for o in orders:
         try: ct=int(o.get("create_time") or 0)
         except Exception: ct=0
-        label=_tt_label_for_order(c, o)
-        is_store=_tt_is_store_order(c, o)
+        r=_tt_room_id(o)
+        label=room_names.get(r) if r else None
+        if not label: label=_tt_label_for_order(c, o)
+        _lis=o.get("line_items") or []
+        is_store=bool(_lis) and all(any(k in (li.get("product_name") or "").lower() for k in kws) for li in _lis)
         if is_store: store_riders+=1
         # anchor = first non-store product name
         anchor=""
