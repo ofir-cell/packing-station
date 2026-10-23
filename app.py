@@ -34,7 +34,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
     INVENTORY_HTML, PURCHASING_HTML, STOCKTAKE_HTML, AUDIT_HTML, ROSTER_HTML, MYSCHEDULE_HTML, MYAVAIL_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
-    PICKER_HTML, REPEAT_HTML, DATACHECK_HTML, _staging_banner,
+    PICKER_HTML, REPEAT_HTML, DATACHECK_HTML, VIDEOS_HTML, _staging_banner,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML,
@@ -4097,6 +4097,14 @@ def api_admin_duplicates():
     out["counts"]={k:len(out[k]) for k in ("dup_orders","dup_tracking","cross_source","fragmented")}
     return jsonify(out)
 
+@app.route("/admin/videos")
+@req_role("admin","cs")
+def videos_page():
+    """Search past packing recordings by tracking number → watch the video / photo."""
+    return (VIDEOS_HTML
+        .replace("__NAVBAR__", _navbar("videos"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
 @app.route("/admin/data-check")
 @req_role("admin")
 def data_check_page():
@@ -4387,15 +4395,22 @@ def api_recent():
 @req_role("admin","cs")
 def api_recordings():
     """Recordings filtered by worker and/or date — powers the click-through from
-    the Shift timeline ('show me the videos this packer packed that day')."""
+    the Shift timeline ('show me the videos this packer packed that day'). Also
+    searchable by tracking number (q=) for the Packing Videos lookup screen."""
     worker=(request.args.get("worker") or "").strip()
     date=(request.args.get("date") or "").strip()[:10]
+    q=(request.args.get("q") or "").strip().lower()
+    q_digits="".join(ch for ch in q if ch.isdigit())
     items=[]
     if os.path.exists(log_file()):
         with open(log_file()) as f:
             for row in csv.DictReader(f):
                 if worker and (row.get("worker") or "")!=worker: continue
                 if date and (row.get("date") or "")[:10]!=date: continue
+                if q:
+                    _trk=(row.get("tracking_number") or "").lower()
+                    _trkd="".join(ch for ch in _trk if ch.isdigit())
+                    if q not in _trk and (not q_digits or q_digits not in _trkd): continue
                 vf=(row.get("video_file") or "").strip()
                 pf=(row.get("photo_file") or "").strip()
                 items.append({

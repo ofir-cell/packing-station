@@ -118,7 +118,7 @@ def _navbar(active_page=""):
             ("giveaway", "/giveaway", "Giveaways") if has("admin","cs") else None,
             ("inbound", "/admin/inbound", "Inbound Labels") if has("admin","cs") else None,
             ("customers", "/customers", "Customers") if has("admin","cs") else None,
-            ("dash", "/dashboard", "Packing Videos") if has("admin","cs") else None,
+            ("videos", "/admin/videos", "Packing Videos") if has("admin","cs") else None,
           ])),
           ("Inventory", "📥", _vis([
             ("inventory", "/admin/inventory", "Inventory") if has("admin","cs") else None,
@@ -12693,5 +12693,64 @@ function render(){document.getElementById('cards').innerHTML=['cross_source','du
 function load(){document.getElementById('cards').innerHTML='<div class="loading">Scanning…</div>';document.getElementById('detail').innerHTML='';
  fetch('/api/admin/duplicates').then(function(r){return r.json();}).then(function(d){DATA=d;render();}).catch(function(){document.getElementById('cards').innerHTML='<div class="empty">Could not scan.</div>';});}
 load();
+</script>
+</body></html>'''
+
+
+VIDEOS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Packing Videos</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:'DM Sans',-apple-system,sans-serif;background:var(--surface);color:var(--text)}
+.wrap{max-width:900px;margin:0 auto;padding:26px 24px 80px}
+h1{font-size:24px;font-weight:900;margin:0 0 4px}
+.sub{color:var(--text-muted);font-size:14px;margin-bottom:18px}
+.search{position:relative;display:flex;align-items:center;gap:10px;background:var(--bg);border:2px solid var(--brand);border-radius:14px;padding:4px 16px;height:58px;box-shadow:0 0 0 4px var(--brand-glow)}
+.search .ic{font-size:20px;opacity:.7}
+.search input{flex:1;border:none;background:none;outline:none;font-size:18px;color:var(--text);font-family:inherit}
+.hint{font-size:12px;color:var(--text-dim);margin:8px 2px 18px}
+.res{display:flex;flex-direction:column;gap:12px}
+.rec{background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:14px 16px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.rec .mn{flex:1;min-width:0}
+.rec .mn .t{font-size:15px;font-weight:800;font-family:'SF Mono',Menlo,monospace;color:var(--text)}
+.rec .mn .m{font-size:12.5px;color:var(--text-muted);margin-top:4px}
+.rec .mn .m b{color:var(--brand-ink);font-weight:700}
+.rec .acts{display:flex;gap:8px;flex-wrap:wrap}
+.rec .acts a{display:inline-flex;align-items:center;gap:6px;text-decoration:none;font-size:13px;font-weight:700;border-radius:9px;padding:9px 14px}
+.rec .acts a.v{background:var(--brand);color:#fff}
+.rec .acts a.p{background:var(--surface-strong);color:var(--text)}
+.rec .acts .none{color:var(--text-dim);font-size:12.5px;align-self:center}
+.empty{padding:40px;text-align:center;color:var(--text-dim)}
+.empty .big{font-size:34px;margin-bottom:8px}
+</style></head><body>
+__NAVBAR__
+<div class="wrap">
+<h1>🎥 Packing Videos</h1>
+<div class="sub">Scan or type a tracking number to pull up that order's packing video and photo.</div>
+<div class="search"><span class="ic">🔍</span><input id="q" type="search" autocomplete="off" spellcheck="false" placeholder="Scan or type a tracking number…" autofocus></div>
+<div class="hint">Tip: scan the shipping label barcode — the matching recording appears instantly.</div>
+<div id="res" class="res"></div>
+</div>
+<script>
+function esc(s){return (s==null?'':String(s)).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+var inp=document.getElementById('q'),res=document.getElementById('res'),t=null;
+function fmtDur(s){s=parseInt(s||'0',10);if(!s)return '';var m=Math.floor(s/60),x=s%60;return m+':'+(x<10?'0':'')+x;}
+function render(items){
+ if(!items||!items.length){res.innerHTML='<div class="empty"><div class="big">🔎</div>No packing video found for that tracking number.</div>';return;}
+ res.innerHTML=items.map(function(r){
+  var dur=fmtDur(r.duration_seconds);
+  var acts='';
+  if(r.video_url)acts+='<a class="v" href="'+esc(r.video_url)+'" target="_blank">🎥 Watch'+(dur?(' ('+dur+')'):'')+'</a>';
+  if(r.photo_url)acts+='<a class="p" href="'+esc(r.photo_url)+'" target="_blank">📷 Photo</a>';
+  if(!acts)acts='<span class="none">No media file saved</span>';
+  return '<div class="rec"><div class="mn"><div class="t">'+esc(r.tracking||'')+'</div><div class="m">Packed by <b>'+esc(r.worker||'?')+'</b> · '+esc(r.date||'')+' '+esc(r.time||'')+(r.station?(' · '+esc(r.station)):'')+'</div></div><div class="acts">'+acts+'</div></div>';
+ }).join('');
+}
+function run(q){fetch('/api/recordings?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){if((inp.value||'').trim()!==q)return;render((d&&d.items)||[]);}).catch(function(){});}
+inp.addEventListener('input',function(){var q=inp.value.trim();clearTimeout(t);if(q.length<3){res.innerHTML='';return;}t=setTimeout(function(){run(q);},250);});
+inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();var q=inp.value.trim();if(q)run(q);}});
 </script>
 </body></html>'''
