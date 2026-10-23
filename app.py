@@ -514,6 +514,18 @@ def pdb_init():
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY(org_id, order_id)
     )""")
+    # Real LIVE sessions from TikTok's Analytics API (name + start/end window). Orders are
+    # bound to a session by time, so every live's orders — regular and sample — group together.
+    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_live_sessions(
+        org_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        name TEXT DEFAULT '',
+        start_ts INTEGER DEFAULT 0,
+        end_ts INTEGER DEFAULT 0,
+        raw TEXT DEFAULT '',
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(org_id, session_id)
+    )""")
     c.commit(); c.close()
 
 pdb_init()
@@ -14174,29 +14186,173 @@ def api_tiktok_pause():
     paused=_tt_set_paused(org, bool(d.get("paused")))
     return jsonify({"ok":True,"paused":paused})
 
+def _tt_epoch(v):
+    """Best-effort convert a TikTok time value to epoch SECONDS. Handles int/str seconds,
+    millisecond epochs, and ISO-8601 strings. Returns 0 when it can't."""
+    if v is None or v=="": return 0
+    try:
+        if isinstance(v,(int,float)):
+            n=int(v)
+        elif isinstance(v,str) and v.strip().isdigit():
+            n=int(v.strip())
+        else:
+            try: return int(datetime.fromisoformat(str(v)[:19]).timestamp())
+            except Exception: return 0
+        if n>10_000_000_000: n//=1000   # milliseconds → seconds
+        return n
+    except Exception:
+        return 0
+
+def _tt_norm_session(raw):
+    """Normalize one raw LIVE-session dict from the Analytics API into {id,name,start,end}.
+    Field names are matched defensively across the likely variants; finalize once we see a
+    real response from the API Testing Tool."""
+    if not isinstance(raw,dict): return None
+    def pick(*keys):
+        for k in keys:
+            if raw.get(k) not in (None,"",0): return raw.get(k)
+        return None
+    sid=pick("id","live_id","room_id","session_id","live_room_id")
+    name=pick("title","live_title","name","room_name","session_title") or ""
+    start=_tt_epoch(pick("start_time","begin_time","live_start_time","start_ts","start","created_time"))
+    end=_tt_epoch(pick("end_time","finish_time","live_end_time","end_ts","end","closed_time"))
+    if not sid and not start: return None
+    if not sid: sid="live-"+str(start)
+    return {"id":str(sid),"name":str(name).strip(),"start":start,"end":end or start}
+
+def _tt_store_session(org, raw):
+    s=_tt_norm_session(raw)
+    if not s: return False
+    c=pdb()
+    c.execute("""INSERT INTO tiktok_live_sessions(org_id,session_id,name,start_ts,end_ts,raw,updated_at)
+        VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(org_id,session_id) DO UPDATE SET name=excluded.name,start_ts=excluded.start_ts,
+          end_ts=excluded.end_ts,raw=excluded.raw,updated_at=excluded.updated_at""",
+      (org,s["id"],s["name"],s["start"],s["end"],json.dumps(raw)[:40000],
+       datetime.now().isoformat(timespec='seconds')))
+    c.commit(); c.close()
+    return True
+
+def _tt_load_sessions(org):
+    """Normalized live sessions for this org, earliest first."""
+    c=pdb()
+    try:
+        rows=c.execute("SELECT session_id,name,start_ts,end_ts FROM tiktok_live_sessions WHERE org_id=? ORDER BY start_ts ASC",(org,)).fetchall()
+    except Exception:
+        rows=[]
+    c.close()
+    return [{"id":r["session_id"],"name":r["name"],"start":r["start_ts"],"end":r["end_ts"]} for r in rows]
+
+def _tt_session_for_order(sessions, ct, grace=1800):
+    """Pick the live session whose [start-grace, end+grace] window covers epoch ct. If several
+    match, choose the tightest window (most specific). Returns the session dict or None."""
+    if not ct: return None
+    best=None; best_span=None
+    for s in sessions:
+        st=s["start"]; en=s["end"] or s["start"]
+        if st and st-grace<=ct<=en+grace:
+            span=max(1,(en-st))
+            if best_span is None or span<best_span: best=s; best_span=span
+    return best
+
+def _tt_label_from_session(sess, ct=0):
+    """Show label from a live session: 'LIVE NAME · Oct 24' (date from the session start, so
+    orders that trickle past midnight still share the live's date). Names repeat across days,
+    so the date keeps each show unique."""
+    base=(sess.get("name") or "").strip() or "Live"
+    d=sess.get("start") or ct
+    try: ds=datetime.fromtimestamp(int(d)).strftime("%b %d")
+    except Exception: ds=datetime.now().strftime("%b %d")
+    return "%s · %s"%(base[:70], ds)
+
+def _tt_pull_live_sessions(org, days=30):
+    """Pull the shop's real LIVE sessions (name + start/end) from TikTok's Analytics API and
+    store them. Returns a result dict (never raises) that also carries the raw response so we
+    can confirm the exact field names. Requires the data.shop_analytics.public.read scope."""
+    c=pdb()
+    row=c.execute("SELECT * FROM tiktok_shops WHERE org_id=? AND active=1 ORDER BY updated_at DESC LIMIT 1",(org,)).fetchone()
+    c.close()
+    if not row: return {"ok":False,"error":"No connected shop. Connect a shop first."}
+    row=dict(row); shop_id=row["shop_id"]
+    tok=_tt_valid_token(org, shop_id)
+    if not tok or not tok.get("access_token"): return {"ok":False,"error":"No valid access token for the shop."}
+    tok=_tt_ensure_cipher(org, shop_id, tok)
+    end=int(time.time()); start=end-days*86400
+    params={"page_size":50}
+    if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
+    # Defensive date params — the exact names are confirmed against a real response.
+    params["start_date_ge"]=datetime.fromtimestamp(start).strftime("%Y-%m-%d")
+    params["end_date_lt"]=datetime.fromtimestamp(end+86400).strftime("%Y-%m-%d")
+    sessions=[]; page_token=""; pages=0; last=None
+    while pages<20:
+        p=dict(params)
+        if page_token: p["page_token"]=page_token
+        try:
+            res=_tt_request("GET", TIKTOK_API_BASE+"/analytics/202509/shop_lives/performance",
+                            params=p, signed=True, access_token=tok["access_token"])
+        except Exception as e:
+            return {"ok":False,"error":"Request failed: "+str(e)[:300],"raw":last}
+        last=res
+        if res.get("code"):
+            return {"ok":False,"error":(res.get("message") or ("code "+str(res.get("code")))),
+                    "code":res.get("code"),"raw":res}
+        data=res.get("data") or {}
+        batch=(data.get("lives") or data.get("shop_lives") or data.get("list")
+               or data.get("live_list") or data.get("sessions") or [])
+        sessions.extend(batch)
+        page_token=data.get("next_page_token") or ""
+        pages+=1
+        if not page_token: break
+    stored=0
+    for s in sessions:
+        if _tt_store_session(org, s): stored+=1
+    return {"ok":True,"fetched":len(sessions),"stored":stored,
+            "normalized":[_tt_norm_session(s) for s in sessions[:20]],
+            "raw_sample":(sessions[0] if sessions else last)}
+
 def _tt_materialize_orders(org, orders):
     """Turn a list of raw TikTok order dicts into the tenant's shows (shipments).
     Shared by the live Pull, the offline import, and regroup-from-stored. Returns
-    (sorted_show_labels, count_loaded). Two passes, each in chronological order: real
-    listings first (they define each live's first→last window), then store-product
-    passengers (the sample), which read those windows to land in the right live."""
+    (sorted_show_labels, count_loaded).
+
+    Grouping:
+    • If real LIVE sessions are known for this org (pulled from TikTok's Analytics API),
+      EVERY order — regular and sample alike — is bound to the session whose time window
+      covers its create_time, and the show is named by that live's real title + date. This
+      is the authoritative path: all of a live's orders group together and the sample rides
+      the live automatically, by time.
+    • Otherwise we fall back to the inferred grouping: listing-name + date for real orders,
+      with store-product samples attached to the live running at their time (two passes)."""
     shows=set(); shipped=0
+    def _ck(o):
+        try: return int(o.get("create_time") or 0)
+        except Exception: return 0
+    sessions=_tt_load_sessions(org)
     try:
         sc=sdb(org)
         skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
         _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
         ovh=_cfg["packaging_overhead_g"] if _cfg else 30
-        def _ck(o):
-            try: return int(o.get("create_time") or 0)
-            except Exception: return 0
-        anchors=[o for o in orders if not _tt_is_store_order(sc, o)]
-        riders =[o for o in orders if _tt_is_store_order(sc, o)]
-        for o in sorted(anchors, key=_ck)+sorted(riders, key=_ck):
-            try:
-                lbl=_tt_apply_order(sc, o, sku_map=skus, overhead=ovh)
-                if lbl: shows.add(lbl); shipped+=1
-            except Exception as e:
-                _tt_log("apply failed %s: %r"%(o.get("id"),e))
+        if sessions:
+            # Authoritative: bind every order to its real live session by time (one pass).
+            for o in sorted(orders, key=_ck):
+                try:
+                    sess=_tt_session_for_order(sessions, _ck(o))
+                    lbl=_tt_label_from_session(sess, _ck(o)) if sess else _tt_label_for_order(sc, o)
+                    lbl=_tt_apply_order(sc, o, label=lbl, sku_map=skus, overhead=ovh)
+                    if lbl: shows.add(lbl); shipped+=1
+                except Exception as e:
+                    _tt_log("apply(session) failed %s: %r"%(o.get("id"),e))
+        else:
+            # Fallback: anchors first (define windows), then sample riders.
+            anchors=[o for o in orders if not _tt_is_store_order(sc, o)]
+            riders =[o for o in orders if _tt_is_store_order(sc, o)]
+            for o in sorted(anchors, key=_ck)+sorted(riders, key=_ck):
+                try:
+                    lbl=_tt_apply_order(sc, o, sku_map=skus, overhead=ovh)
+                    if lbl: shows.add(lbl); shipped+=1
+                except Exception as e:
+                    _tt_log("apply failed %s: %r"%(o.get("id"),e))
         sc.commit(); sc.close()
     except Exception as e:
         _tt_log("materialize batch failed: %r"%e)
@@ -14354,8 +14510,17 @@ def api_tiktok_export_orders():
     grouping/routing rules can be tested on real data — no live connection needed."""
     org=current_org() or DEFAULT_ORG
     orders=_tt_stored_orders(org)
+    # carry the raw live sessions too, so staging can route by the real lives offline
+    c=pdb()
+    try:
+        sess_rows=[json.loads(r["raw"] or "{}") for r in c.execute(
+            "SELECT raw FROM tiktok_live_sessions WHERE org_id=?",(org,)).fetchall()]
+    except Exception:
+        sess_rows=[]
+    c.close()
     body=json.dumps({"org":org,"exported_at":datetime.now().isoformat(timespec='seconds'),
-                     "count":len(orders),"orders":orders}, ensure_ascii=False)
+                     "count":len(orders),"orders":orders,
+                     "live_sessions":[s for s in sess_rows if s]}, ensure_ascii=False)
     fn="tiktok-orders-%s.json"%datetime.now().strftime("%Y%m%d-%H%M")
     return Response(body, mimetype="application/json",
                     headers={"Content-Disposition":"attachment; filename="+fn})
@@ -14381,13 +14546,18 @@ def api_tiktok_import_orders():
     orders = payload.get("orders") if isinstance(payload,dict) else payload
     if not isinstance(orders,list) or not orders:
         return jsonify({"ok":False,"error":"No orders found in the file."}),400
+    # store any live sessions carried in the export first, so routing binds orders to them
+    sess=0
+    if isinstance(payload,dict):
+        for s in (payload.get("live_sessions") or []):
+            if _tt_store_session(org, s): sess+=1
     stored=0
     for o in orders:
         if isinstance(o,dict) and _tt_store_raw_order(org, o): stored+=1
     shows_list, shipped = _tt_materialize_orders(org, [o for o in orders if isinstance(o,dict)])
-    try: alog("tiktok.import", "%d orders imported, %d loaded into %d shows" % (stored, shipped, len(shows_list)))
+    try: alog("tiktok.import", "%d orders, %d sessions imported, %d loaded into %d shows" % (stored, sess, shipped, len(shows_list)))
     except Exception: pass
-    return jsonify({"ok":True,"imported":stored,"loaded":shipped,"shows":shows_list})
+    return jsonify({"ok":True,"imported":stored,"sessions":sess,"loaded":shipped,"shows":shows_list})
 
 @app.route("/api/tiktok/regroup-stored", methods=["POST"])
 @req_role("admin")
@@ -14421,6 +14591,19 @@ def api_tiktok_regroup_stored():
     shows_list, shipped=_tt_materialize_orders(org, orders)
     return jsonify({"ok":True,"regrouped":True,"cleared":wiped,"fetched":len(orders),
                     "loaded":shipped,"shows":shows_list})
+
+@app.route("/api/tiktok/live-sessions", methods=["GET","POST"])
+@req_role("admin")
+def api_tiktok_live_sessions():
+    """GET: list the LIVE sessions we've stored (name + window). POST: pull them fresh from
+    TikTok's Analytics API (requires the analytics scope + re-authorized shop). The POST
+    response includes a raw sample so we can confirm the real field names."""
+    org=current_org() or DEFAULT_ORG
+    if request.method=="POST":
+        try: days=int((request.get_json(silent=True) or {}).get("days") or 30)
+        except Exception: days=30
+        return jsonify(_tt_pull_live_sessions(org, days))
+    return jsonify({"ok":True,"sessions":_tt_load_sessions(org)})
 
 def _tt_part_label(name):
     m=re.search(r'part\s*(\d+)', (name or ''), re.I)
@@ -14608,6 +14791,11 @@ th{color:#6b7280;font-weight:700;font-size:11px;text-transform:uppercase}
     <button id="regroupBtn" class="btn g" style="background:#fef3c7;color:#92400e">↻ Fix show grouping (merge parts into one live)</button>
     <span class="mut">Rebuilds every TikTok show so all parts &amp; items of a live sit in ONE show named by date. Does not touch CSV shows or packing progress.</span>
   </div>
+  <div class="row" style="margin:0 0 12px">
+    <button id="sessBtn" class="btn g" style="background:#ede9fe;color:#5b21b6">🎬 Pull live sessions (names + windows)</button>
+    <span class="mut">Pulls your real LIVE sessions from TikTok (needs the Analytics scope + a re-authorized shop). Orders then group by the real live and its name. Shows a raw sample so we can confirm the fields.</span>
+  </div>
+  <div id="sessMsg" class="mut" style="margin:0 0 10px"></div>
   <div id="pullMsg" class="mut"></div>
   <div id="orders" class="mut">Loading…</div>
 </div>
@@ -14709,6 +14897,21 @@ rb.onclick=function(){
      var shw=(d.shows&&d.shows.length)?('<br>Shows now: '+d.shows.map(esc).join(', ')):'';
      pm.innerHTML='<span style="color:#166534">✓ Regrouped — cleared '+(d.cleared||0)+' old shipment(s), re-loaded '+(d.loaded||0)+' into '+((d.shows||[]).length)+' show(s).'+shw+'</span>';
    }).catch(function(e){rb.disabled=false;pb.disabled=false;rb.textContent=old;pm.innerHTML='<span style="color:#b91c1c">Network error</span>';});
+};
+var sbtn=document.getElementById('sessBtn');
+if(sbtn)sbtn.onclick=function(){
+  sbtn.disabled=true;var old=sbtn.textContent;sbtn.textContent='Pulling…';
+  var sm=document.getElementById('sessMsg');sm.textContent='';
+  fetch('/api/tiktok/live-sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({days:30})})
+   .then(function(r){return r.json();}).then(function(d){
+     sbtn.disabled=false;sbtn.textContent=old;
+     if(!d.ok){sm.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>'+
+        (d.raw?'<pre style="white-space:pre-wrap;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:10px;font-size:11px;max-height:260px;overflow:auto">'+esc(JSON.stringify(d.raw,null,2))+'</pre>':'');return;}
+     var norm=(d.normalized||[]).map(function(s){return '• '+esc(s&&s.name||'(no name)')+'  ['+esc(s&&s.start||'?')+'→'+esc(s&&s.end||'?')+']';}).join('<br>');
+     sm.innerHTML='<span style="color:#166534">✓ Pulled '+d.fetched+' live session(s), stored '+d.stored+'.</span>'+
+       (norm?'<div style="margin-top:6px">'+norm+'</div>':'')+
+       (d.raw_sample?'<details style="margin-top:8px"><summary style="cursor:pointer;color:#4338ca;font-weight:700">Raw sample (confirm fields)</summary><pre style="white-space:pre-wrap;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:10px;font-size:11px;max-height:260px;overflow:auto">'+esc(JSON.stringify(d.raw_sample,null,2))+'</pre></details>':'');
+   }).catch(function(){sbtn.disabled=false;sbtn.textContent=old;sm.innerHTML='<span style="color:#b91c1c">Network error</span>';});
 };
 if(IS_STAGING){document.getElementById('impBox').style.display='block';
   document.getElementById('expHint').textContent='You are on staging — import a file exported from production below.';}
