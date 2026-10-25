@@ -5546,6 +5546,27 @@ def _process_cancel_file(norm_rows, source, label):
     })
 
 
+def _sticker_part(name):
+    m=re.search(r'part\s*(\d+)', name or '', re.I)
+    return m.group(1) if m else None
+
+def _sticker_display(items):
+    """Stickers grouped by the live PART — 'P1: 65, 210 · P2: 131 · GIVEAWAY' — so a sticker
+    number is never ambiguous (the same number repeats across parts, pointing to a different
+    physical item). items: list of (sku, product_name)."""
+    byp={}
+    for sku, nm in items:
+        sku=(str(sku) if sku is not None else "").strip()
+        if not sku: continue
+        byp.setdefault(_sticker_part(nm), set()).add(sku)
+    def _srt(xs): return sorted(xs, key=lambda s:(0,int(s)) if s.isdigit() else (1,s))
+    out=[]
+    for p in sorted([k for k in byp if k is not None], key=lambda x:int(x)):
+        out.append("P%s: %s" % (p, ", ".join(_srt(byp[p]))))
+    if None in byp:
+        out.append(", ".join(_srt(byp[None])))   # giveaway / no-part items
+    return " · ".join(out)
+
 @app.route("/api/shipments/recent")
 @req_role("admin","cs")
 def api_shipments_recent():
@@ -5554,26 +5575,35 @@ def api_shipments_recent():
     # A single show can hold many thousands of orders (a big live sells 1,000+ products and
     # the sticker number even resets past 1000), so a per-show view returns the WHOLE show
     # with NO cap; only the unfiltered 'recent' view stays capped for speed.
-    if not show:
-        limit = min(request.args.get("limit", type=int) or 500, 500)
+    limit = min(request.args.get("limit", type=int) or 500, 500)
     c = sdb()
-    _stk = ("(SELECT GROUP_CONCAT(DISTINCT i.sku) FROM shipment_items i "
-            "WHERE i.shipment_id=shipments.shipment_id AND COALESCE(i.cancelled,0)=0) AS stickers")
+    _cols = ("shipment_id, tracking_code, buyer_username, buyer_name, "
+             "total_items, expected_weight_g, actual_weight_g, weight_status, "
+             "status, missing_weights, show_date, imported_at, import_label, platform, "
+             "delivery_status, delivery_detail, delivered_at, tracked_at")
     if show:
-        rows = c.execute("""SELECT shipment_id, tracking_code, buyer_username, buyer_name,
-                                   total_items, expected_weight_g, actual_weight_g, weight_status,
-                                   status, missing_weights, show_date, imported_at, import_label, platform,
-                                   delivery_status, delivery_detail, delivered_at, tracked_at, """+_stk+"""
-                            FROM shipments WHERE import_label=?
-                            ORDER BY imported_at DESC""", (show,)).fetchall()
+        rows = c.execute("SELECT "+_cols+" FROM shipments WHERE import_label=? ORDER BY imported_at DESC",(show,)).fetchall()
     else:
-        rows = c.execute("""SELECT shipment_id, tracking_code, buyer_username, buyer_name,
-                                   total_items, expected_weight_g, actual_weight_g, weight_status,
-                                   status, missing_weights, show_date, imported_at, import_label, platform,
-                                   delivery_status, delivery_detail, delivered_at, tracked_at, """+_stk+"""
-                            FROM shipments ORDER BY imported_at DESC LIMIT ?""", (limit,)).fetchall()
+        rows = c.execute("SELECT "+_cols+" FROM shipments ORDER BY imported_at DESC LIMIT ?",(limit,)).fetchall()
+    rows=[dict(r) for r in rows]
+    # Build the part-aware sticker list per shipment in one pass.
+    items_by_ship={}
+    if rows:
+        if show:
+            irows=c.execute("""SELECT i.shipment_id sid, i.sku, i.product_name FROM shipment_items i
+                               JOIN shipments s ON s.shipment_id=i.shipment_id
+                               WHERE s.import_label=? AND COALESCE(i.cancelled,0)=0""",(show,)).fetchall()
+        else:
+            ids=[r["shipment_id"] for r in rows]
+            qm=",".join("?"*len(ids))
+            irows=c.execute("SELECT shipment_id sid, sku, product_name FROM shipment_items "
+                            "WHERE shipment_id IN ("+qm+") AND COALESCE(cancelled,0)=0", ids).fetchall()
+        for ir in irows:
+            items_by_ship.setdefault(ir["sid"],[]).append((ir["sku"], ir["product_name"]))
+    for r in rows:
+        r["stickers"]=_sticker_display(items_by_ship.get(r["shipment_id"], []))
     c.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify(rows)
 
 
 def _giveaway_by_tracking(code):
