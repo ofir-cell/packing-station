@@ -14758,6 +14758,46 @@ def api_tiktok_live_sessions():
         return jsonify(_tt_pull_live_sessions(org, days))
     return jsonify({"ok":True,"sessions":_tt_load_sessions(org)})
 
+def _tt_live_room_detail(org, room_id, versions=None):
+    """Call the creator Live-Data endpoint GET /analytics/{version}/live_rooms/{room_id}/core_stats
+    for one live room. Tries a few API versions (the exact one isn't documented to us) and
+    returns the first that answers, with the raw response so we can confirm whether our order
+    room_id works as the live_room_id and whether the live title/name is in there. Read-only."""
+    c=pdb()
+    row=c.execute("SELECT * FROM tiktok_shops WHERE org_id=? AND active=1 ORDER BY updated_at DESC LIMIT 1",(org,)).fetchone()
+    c.close()
+    if not row: return {"ok":False,"error":"No connected shop."}
+    row=dict(row); shop_id=row["shop_id"]
+    tok=_tt_valid_token(org, shop_id)
+    if not tok or not tok.get("access_token"): return {"ok":False,"error":"No valid access token."}
+    tok=_tt_ensure_cipher(org, shop_id, tok)
+    params={}
+    if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
+    versions = versions or ["202509","202506","202505","202412","202409","202406","202405"]
+    attempts=[]
+    for v in versions:
+        path="/analytics/%s/live_rooms/%s/core_stats"%(v, room_id)
+        try:
+            res=_tt_request("GET", TIKTOK_API_BASE+path, params=dict(params), signed=True, access_token=tok["access_token"])
+        except Exception as e:
+            attempts.append({"version":v,"error":str(e)[:150]}); continue
+        code=res.get("code")
+        attempts.append({"version":v,"code":code,"message":(res.get("message") or "")[:120]})
+        if not code:
+            return {"ok":True,"version":v,"path":path,"raw":res,"attempts":attempts}
+    return {"ok":False,"error":"No version answered without an error.","attempts":attempts}
+
+@app.route("/api/tiktok/live-detail")
+@req_role("admin")
+def api_tiktok_live_detail():
+    """Diagnostic: pull one live room's core stats by room_id, to confirm the creator Live-Data
+    mapping (room_id → live detail/title). Usage: /api/tiktok/live-detail?room_id=...&version=..."""
+    org=current_org() or DEFAULT_ORG
+    room_id=(request.args.get("room_id") or "").strip()
+    if not room_id: return jsonify({"ok":False,"error":"room_id required"})
+    v=(request.args.get("version") or "").strip()
+    return jsonify(_tt_live_room_detail(org, room_id, [v] if v else None))
+
 def _tt_part_label(name):
     m=re.search(r'part\s*(\d+)', (name or ''), re.I)
     return "Part "+m.group(1) if m else ""
