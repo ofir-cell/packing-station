@@ -14770,15 +14770,13 @@ def _tt_live_room_detail(org, room_id, versions=None):
     row=dict(row); shop_id=row["shop_id"]
     tok=_tt_valid_token(org, shop_id)
     if not tok or not tok.get("access_token"): return {"ok":False,"error":"No valid access token."}
-    tok=_tt_ensure_cipher(org, shop_id, tok)
-    params={}
-    if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
-    versions = versions or ["202509","202506","202505","202412","202409","202406","202405"]
+    # This creator Live-Data endpoint does NOT take shop_cipher (unlike the shop analytics ones).
+    versions = versions or ["202502"]
     attempts=[]
     for v in versions:
         path="/analytics/%s/live_rooms/%s/core_stats"%(v, room_id)
         try:
-            res=_tt_request("GET", TIKTOK_API_BASE+path, params=dict(params), signed=True, access_token=tok["access_token"])
+            res=_tt_request("GET", TIKTOK_API_BASE+path, params={}, signed=True, access_token=tok["access_token"])
         except Exception as e:
             attempts.append({"version":v,"error":str(e)[:150]}); continue
         code=res.get("code")
