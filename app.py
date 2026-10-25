@@ -3992,6 +3992,14 @@ def api_today():
 
     BACKLOG_DAYS=45   # older open shows are stale leftovers, not current backlog
     shows=[]; stale=0; ful_p=ful_k=ful_e=0
+    # Shows the user has closed (marked DONE) must drop off "how far behind are we",
+    # even if a few stuck orders still read 'pending'. Without this the list never
+    # updates when you close a live.
+    done_labels=set()
+    try:
+        done_labels={r[0] for r in c.execute("SELECT import_label FROM show_state WHERE done=1").fetchall()}
+    except Exception:
+        done_labels=set()
     try:
         rows=c.execute("""SELECT import_label lbl, MIN(show_date) sd, MAX(imported_at) imp, COUNT(*) total,
                             SUM(CASE WHEN status IN ('packed','shipped') THEN 1 ELSE 0 END) packed,
@@ -4003,6 +4011,7 @@ def api_today():
                           GROUP BY import_label HAVING pending>0""").fetchall()
         for r in rows:
             r=dict(r)
+            if r["lbl"] in done_labels: continue   # closed by the user → not backlog
             d=_parse_date_any(r["sd"]) or _parse_date_any((r["imp"] or "")[:10])
             age=(now.date()-d).days if d else 0
             if age>BACKLOG_DAYS: stale+=1; continue   # drop ancient leftovers
@@ -4015,7 +4024,7 @@ def api_today():
     except Exception: pass
     out["backlog"]={"lives":len(shows),"orders":sum(s["pending"] for s in shows),
                     "oldest_age":max([s["age_days"] for s in shows],default=0),
-                    "stale":stale,"shows":shows[:20]}
+                    "stale":stale,"shows":shows[:50]}
     out["fulfillment"]={"packed":ful_p,"picked":ful_k,"pending":ful_e}
 
     cur=None
