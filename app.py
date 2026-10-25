@@ -7917,23 +7917,39 @@ def api_live_match_queue():
     show=(request.args.get("show") or "").strip()
     if not show: return jsonify({"ok":False,"error":"show required"})
     c=sdb()
-    waiting=[dict(r) for r in c.execute("""
-        SELECT i.sku sticker, COUNT(*) qty, MAX(i.revenue) price, MAX(i.product_name) listing
-        FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
-        WHERE s.import_label=? AND COALESCE(i.cancelled,0)=0 AND COALESCE(i.sku,'')<>''
-          AND i.sku NOT LIKE '%GIVEAWAY%'
-          AND NOT EXISTS (SELECT 1 FROM show_product_map m
-                          WHERE m.import_label=s.import_label AND m.sticker_sku=i.sku)
-        GROUP BY i.sku
-        ORDER BY (CASE WHEN i.sku GLOB '[0-9]*' THEN 0 ELSE 1 END), CAST(i.sku AS INTEGER) DESC, i.sku DESC""",(show,)).fetchall()]
+    # Every sold sticker carries a PART (from its product name). The same sticker number
+    # repeats across parts (it resets each part), so the queue is keyed by (sticker, PART),
+    # never the number alone — otherwise PART 1 #940 and PART 2 #940 would collide.
+    items=c.execute("""SELECT i.sku sticker, i.product_name nm, i.revenue price
+                       FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                       WHERE s.import_label=? AND COALESCE(i.cancelled,0)=0 AND COALESCE(i.sku,'')<>''
+                         AND i.sku NOT LIKE '%GIVEAWAY%'""",(show,)).fetchall()
+    matched_keys=set()
+    for m in c.execute("SELECT sticker_sku, part FROM show_product_map WHERE import_label=?",(show,)).fetchall():
+        matched_keys.add((str(m["sticker_sku"]), int(m["part"] or 0)))
+    agg={}
+    for it in items:
+        sku=str(it["sticker"]); part=int(_sticker_part(it["nm"]) or 0)
+        key=(sku,part)
+        if key in matched_keys: continue
+        g=agg.get(key)
+        if not g: g=agg[key]={"sticker":sku,"part":part,"qty":0,"price":it["price"],"listing":it["nm"]}
+        g["qty"]+=1
+        if it["price"] and (not g["price"] or it["price"]>g["price"]): g["price"]=it["price"]
+    def _kn(w):
+        try: n=int(w["sticker"])
+        except Exception: n=-1
+        return (w["part"], n)
+    waiting=sorted(agg.values(), key=_kn, reverse=True)   # newest first: highest part, then number
     matched=[dict(r) for r in c.execute("""
-        SELECT m.sticker_sku sticker, m.product_sku, p.name, p.image_url
+        SELECT m.sticker_sku sticker, m.part, m.product_sku, p.name, p.image_url
         FROM show_product_map m LEFT JOIN products p ON p.sku=m.product_sku
         WHERE m.import_label=? ORDER BY m.mapped_at DESC LIMIT 24""",(show,)).fetchall()]
     mc=c.execute("SELECT COUNT(*) FROM show_product_map WHERE import_label=?",(show,)).fetchone()[0]
+    parts=sorted(set(w["part"] for w in waiting))
     c.close()
     return jsonify({"ok":True,"show":show,"waiting":waiting,"matched":matched,
-                    "waiting_count":len(waiting),"matched_count":mc})
+                    "waiting_count":len(waiting),"matched_count":mc,"parts":parts})
 
 @app.route("/api/live/match", methods=["POST"])
 @req_role("admin","cs","worker","picker","host")
