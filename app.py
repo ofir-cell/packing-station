@@ -12769,14 +12769,15 @@ def _health_where():
     return {
       # A label/tracking exists (so TikTok thinks it's on the way) but we never packed it here.
       "label_not_packed": "COALESCE(tracking_code,'')<>'' AND status IN ('pending','picked')",
-      # TikTok still says AWAITING_COLLECTION and USPS has no scan, days after the live → never went out.
-      "stuck": ("COALESCE(tt_status,'')='AWAITING_COLLECTION' AND COALESCE(delivery_status,'') IN ('','UNKNOWN') "
+      # TikTok STILL says AWAITING_COLLECTION days after the live → label made but the carrier
+      # never collected it, i.e. it never actually went out. (TikTok status, no USPS needed.)
+      "stuck": ("COALESCE(tt_status,'')='AWAITING_COLLECTION' "
                 "AND julianday('now')-julianday(COALESCE(NULLIF(show_date,''),substr(imported_at,1,10))) > %d" % _SHIP_STUCK_DAYS),
-      # Packed here but USPS still has no movement after a few days → maybe it never physically shipped.
-      "packed_no_move": ("status IN ('packed','shipped') AND COALESCE(delivery_status,'') IN ('','UNKNOWN','PRE_SHIPMENT') "
+      # Packed here but TikTok still doesn't show it moving/delivered after a few days → confirm it shipped.
+      "packed_no_move": ("status IN ('packed','shipped') AND COALESCE(tt_status,'') NOT IN ('IN_TRANSIT','DELIVERED','COMPLETED') "
                 "AND COALESCE(packed_at,'')<>'' AND julianday('now')-julianday(substr(packed_at,1,10)) > %d" % _SHIP_NOMOVE_DAYS),
-      # Informational: confirmed delivered by the carrier.
-      "delivered": "COALESCE(delivery_status,'')='DELIVERED'",
+      # Delivered — from TikTok's own status (or USPS, if ever configured).
+      "delivered": "COALESCE(tt_status,'') IN ('DELIVERED','COMPLETED') OR COALESCE(delivery_status,'')='DELIVERED'",
     }
 
 @app.route("/api/shipping/health")
@@ -14160,16 +14161,20 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
     except Exception: ship_fee=0.0
     try: ship_by=int(order.get("shipping_due_time") or 0)   # 'must ship by' deadline (epoch)
     except Exception: ship_by=0
-    # delivery status from TikTok's own signals (status string OR timestamps). USPS tracking
-    # refines this later; we never let TikTok DOWNGRADE a USPS DELIVERED/RETURNED (see UPDATE).
+    # Delivery status straight from TikTok's OWN order status (USPS is not relied on — they
+    # charge per scan). AWAITING_COLLECTION = label made but carrier hasn't collected (NOT in
+    # transit). We never let this DOWNGRADE a terminal DELIVERED/RETURNED (see the UPDATE).
+    _TT_DLV={"IN_TRANSIT":("IN_TRANSIT","In transit · per TikTok"),
+             "AWAITING_COLLECTION":("AWAITING_COLLECTION","Label made · awaiting carrier pickup"),
+             "DELIVERED":("DELIVERED","Delivered · per TikTok"),
+             "COMPLETED":("DELIVERED","Delivered · per TikTok")}
     dvs=dvd=dva=None
-    if order.get("delivery_time") or status_api in ("DELIVERED","COMPLETED"):
+    if order.get("delivery_time"):
         dvs,dvd="DELIVERED","Delivered · per TikTok"
-        if order.get("delivery_time"):
-            try: dva=datetime.fromtimestamp(int(order["delivery_time"])).isoformat(timespec="seconds")
-            except Exception: dva=None
-    elif status_api=="IN_TRANSIT" or order.get("collection_time") or order.get("rts_time"):
-        dvs,dvd=("IN_TRANSIT","Shipped · per TikTok")
+        try: dva=datetime.fromtimestamp(int(order["delivery_time"])).isoformat(timespec="seconds")
+        except Exception: dva=None
+    elif status_api in _TT_DLV:
+        dvs,dvd=_TT_DLV[status_api]
     # all-gift order → giveaway; else cancelled → cancelled; else keep local packed/shipped
     all_gift = rows and all(r["is_gift"] for r in rows)
     ex=c.execute("SELECT shipment_id, status FROM shipments WHERE shipment_id=?",(ship_id,)).fetchone()

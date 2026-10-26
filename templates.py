@@ -7237,7 +7237,7 @@ document.getElementById('fClear').addEventListener('click',function(){
 document.getElementById('refresh').addEventListener('click',function(){load();loadHealth();toast('Reloaded')});
 var HB=[['label_not_packed','Label made — not packed here','#b91c1c'],
         ['stuck','Awaiting collection — never shipped','#b45309'],
-        ['packed_no_move','Packed — USPS not moving','#7c3aed'],
+        ['packed_no_move','Packed — not confirmed shipped','#7c3aed'],
         ['delivered','Delivered ✓','#0d9488']];
 var hbucket='';
 function loadHealth(){
