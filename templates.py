@@ -112,6 +112,7 @@ def _navbar(active_page=""):
           ])),
           ("Fulfillment", "📦", _vis([
             ("shipments", "/admin/shipments", "Shipments") if has("admin","cs") else None,
+            ("shipstatus", "/shipping-status", "Shipment Health") if has("admin","cs") else None,
             ("track", "/admin/track", "Track") if has("admin","cs","worker","picker") else None,
             ("cleanup", "/admin/cleanup", "Table Cleanup") if has("admin","cs","worker") else None,
             ("issues", "/admin/issues", "Picking / Packing Issues") if has("admin","cs") else None,
@@ -7145,6 +7146,12 @@ th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
 .filters .f label{display:block;font-size:11px;font-weight:700;color:#6b7280;margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
 .filters select{background:#ffffff;border:2px solid rgba(17,24,39,0.128);border-radius:10px;padding:9px 12px;font-size:13px;color:#1a2130;font-family:inherit;outline:none;min-width:180px}
 .filters select:focus{border-color:#4f46e5}
+.sec-h{font-size:15px;font-weight:800;color:#1a2130;margin:2px 2px 10px}
+.hcards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.hc{background:#fff;border:2px solid #e5e7eb;border-radius:12px;padding:12px 16px;min-width:155px;cursor:pointer;flex:1}
+.hc.on{box-shadow:0 0 0 3px rgba(79,70,229,.15)}
+.hc .hn{font-size:27px;font-weight:900;line-height:1}
+.hc .hl{font-size:11px;color:#6b7280;font-weight:700;margin-top:5px;line-height:1.3}
 .filters .clr{background:rgba(17,24,39,0.096);color:#1a2130;border:1px solid rgba(17,24,39,0.16);border-radius:10px;padding:9px 16px;font-size:13px;font-weight:700;cursor:pointer}
 .empty{text-align:center;color:#6b7280;font-style:italic;padding:30px}
 .warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);color:#b45309;padding:12px 16px;border-radius:10px;margin-bottom:18px;font-size:13px}
@@ -7156,6 +7163,12 @@ __NAVBAR__
 <button class="btn btn-p" id="refresh">↻ Reload</button></div>
 <div class="wrap">
 <div id="notice"></div>
+<div class="sec-h">🩺 Shipment health — needs attention</div>
+<div class="hcards" id="hcards"></div>
+<div id="hbox" style="display:none;margin-bottom:22px">
+  <table><thead><tr><th>Buyer</th><th>Tracking</th><th>Our status</th><th>TikTok</th><th>USPS</th><th>Show</th></tr></thead>
+  <tbody id="hrows"></tbody></table>
+</div>
 <div class="filters">
 <div class="f"><label>Show</label><select id="fShow"><option value="">All shows</option></select></div>
 <div class="f"><label>Date</label><select id="fDate"><option value="">All dates</option></select></div>
@@ -7221,8 +7234,32 @@ document.getElementById('fDate').addEventListener('change',load);
 document.getElementById('fClear').addEventListener('click',function(){
     filter='';document.getElementById('fShow').value='';document.getElementById('fDate').value='';load();
 });
-document.getElementById('refresh').addEventListener('click',function(){load();toast('Reloaded')});
-load();
+document.getElementById('refresh').addEventListener('click',function(){load();loadHealth();toast('Reloaded')});
+var HB=[['label_not_packed','Label made — not packed here','#b91c1c'],
+        ['stuck','Awaiting collection — never shipped','#b45309'],
+        ['packed_no_move','Packed — USPS not moving','#7c3aed'],
+        ['delivered','Delivered ✓','#0d9488']];
+var hbucket='';
+function loadHealth(){
+  var u='/api/shipping/health'+(hbucket?('?bucket='+encodeURIComponent(hbucket)):'');
+  fetch(u).then(function(r){return r.json()}).then(function(d){
+    var c=d.counts||{};
+    document.getElementById('hcards').innerHTML=HB.map(function(b){
+      var n=c[b[0]]||0;var col=n?b[2]:'#9aa1ab';
+      return '<div class="hc'+(hbucket===b[0]?' on':'')+'" style="border-color:'+(n?b[2]:'#e5e7eb')+'" onclick="pickHealth(\\''+b[0]+'\\')"><div class="hn" style="color:'+col+'">'+n+'</div><div class="hl">'+b[1]+'</div></div>';
+    }).join('');
+    var box=document.getElementById('hbox');
+    if(!hbucket){box.style.display='none';return;}
+    box.style.display='block';
+    var rows=d.rows||[];
+    document.getElementById('hrows').innerHTML=rows.length?rows.map(function(s){
+      var trk=s.tracking_code?'<a href="https://tools.usps.com/go/TrackConfirmAction?tLabels='+encodeURIComponent(s.tracking_code)+'" target="_blank" rel="noopener" style="text-decoration:underline">'+esc(s.tracking_code)+' ↗</a>':'—';
+      return '<tr><td>'+esc(s.buyer_name||s.buyer_username||'—')+'</td><td class="tn">'+trk+'</td><td>'+esc(s.status||'')+'</td><td>'+esc(s.tt_status||'—')+'</td><td>'+esc(s.delivery_status||'—')+'</td><td>'+esc(s.import_label||'')+'</td></tr>';
+    }).join(''):'<tr><td colspan="6" class="empty">None here 🎉</td></tr>';
+  }).catch(function(){});
+}
+function pickHealth(b){hbucket=(hbucket===b?'':b);loadHealth();}
+load();loadHealth();
 </script></body></html>'''
 
 

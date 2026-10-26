@@ -1149,6 +1149,9 @@ def sdb_init(org):
         "ALTER TABLE shipments ADD COLUMN shipping_fee REAL DEFAULT 0",
         # TikTok: the 'ship by' deadline (epoch seconds) for warehouse prioritisation.
         "ALTER TABLE shipments ADD COLUMN ship_by INTEGER DEFAULT 0",
+        # TikTok's own order status (AWAITING_SHIPMENT / AWAITING_COLLECTION / DELIVERED …)
+        # kept alongside our local pack status so health checks can spot mismatches.
+        "ALTER TABLE shipments ADD COLUMN tt_status TEXT",
         "ALTER TABLE shipment_items ADD COLUMN order_id TEXT",
         "ALTER TABLE shipment_items ADD COLUMN cancelled INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN cancel_reason TEXT",
@@ -12760,6 +12763,47 @@ def api_tracking_summary():
         "shows":[{"label":s["import_label"],"date":s["show_date"]} for s in shows],
         "dates":[d["show_date"] for d in dates]})
 
+_SHIP_STUCK_DAYS=2; _SHIP_NOMOVE_DAYS=3
+def _health_where():
+    """Exception buckets: the WHERE clause for each 'shipment health' problem state."""
+    return {
+      # A label/tracking exists (so TikTok thinks it's on the way) but we never packed it here.
+      "label_not_packed": "COALESCE(tracking_code,'')<>'' AND status IN ('pending','picked')",
+      # TikTok still says AWAITING_COLLECTION and USPS has no scan, days after the live → never went out.
+      "stuck": ("COALESCE(tt_status,'')='AWAITING_COLLECTION' AND COALESCE(delivery_status,'') IN ('','UNKNOWN') "
+                "AND julianday('now')-julianday(COALESCE(NULLIF(show_date,''),substr(imported_at,1,10))) > %d" % _SHIP_STUCK_DAYS),
+      # Packed here but USPS still has no movement after a few days → maybe it never physically shipped.
+      "packed_no_move": ("status IN ('packed','shipped') AND COALESCE(delivery_status,'') IN ('','UNKNOWN','PRE_SHIPMENT') "
+                "AND COALESCE(packed_at,'')<>'' AND julianday('now')-julianday(substr(packed_at,1,10)) > %d" % _SHIP_NOMOVE_DAYS),
+      # Informational: confirmed delivered by the carrier.
+      "delivered": "COALESCE(delivery_status,'')='DELIVERED'",
+    }
+
+@app.route("/api/shipping/health")
+@req_role("admin","cs")
+def api_shipping_health():
+    """Shipment-health exceptions — cross-references what TikTok/USPS say against our local
+    pack status to catch orders that look shipped but weren't packed or never went out."""
+    show=(request.args.get("show") or "").strip()
+    c=sdb()
+    base="status NOT IN ('cancelled','giveaway')"
+    bp=[]
+    if show: base+=" AND import_label=?"; bp.append(show)
+    W=_health_where()
+    counts={}
+    for k,w in W.items():
+        counts[k]=c.execute("SELECT COUNT(*) n FROM shipments WHERE %s AND (%s)"%(base,w), bp).fetchone()["n"]
+    bucket=(request.args.get("bucket") or "label_not_packed").strip()
+    w=W.get(bucket) or W["label_not_packed"]
+    rows=c.execute("""SELECT shipment_id,tracking_code,buyer_name,buyer_username,import_label,show_date,
+                        status,tt_status,delivery_status,delivery_detail,delivered_at,packed_at,packed_by,ship_by
+                      FROM shipments WHERE %s AND (%s)
+                      ORDER BY COALESCE(show_date,'') ASC LIMIT 300"""%(base,w), bp).fetchall()
+    c.close()
+    return jsonify({"ok":True,"usps":USPS_ENABLED,"counts":counts,"bucket":bucket,
+                    "stuck_days":_SHIP_STUCK_DAYS,"nomove_days":_SHIP_NOMOVE_DAYS,
+                    "rows":[dict(r) for r in rows]})
+
 @app.route("/shipping-status")
 @req_role("admin","cs")
 def shipping_status_page():
@@ -14134,18 +14178,19 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
                        postal_code=COALESCE(NULLIF(?,''),postal_code), platform='tiktok',
                        import_label=COALESCE(import_label,?), shipping_fee=?, status=?,
                        delivery_status=COALESCE(?,delivery_status), delivery_detail=COALESCE(?,delivery_detail),
-                       delivered_at=COALESCE(?,delivered_at), ship_by=CASE WHEN ?>0 THEN ? ELSE ship_by END
+                       delivered_at=COALESCE(?,delivered_at), ship_by=CASE WHEN ?>0 THEN ? ELSE ship_by END,
+                       tt_status=COALESCE(NULLIF(?,''),tt_status)
                      WHERE shipment_id=?""",
                   (tracking, buyer_nick, buyer_name, addr_full, postal, label, ship_fee, new_status,
-                   dvs, dvd, dva, ship_by, ship_by, ship_id))
+                   dvs, dvd, dva, ship_by, ship_by, status_api, ship_id))
     else:
         c.execute("""INSERT INTO shipments
             (shipment_id, tracking_code, buyer_username, buyer_name, address_full, postal_code,
              show_date, status, platform, import_batch, import_label, shipping_fee,
-             delivery_status, delivery_detail, delivered_at, ship_by)
-            VALUES (?,?,?,?,?,?,?,?, 'tiktok', ?, ?, ?, ?,?,?,?)""",
+             delivery_status, delivery_detail, delivered_at, ship_by, tt_status)
+            VALUES (?,?,?,?,?,?,?,?, 'tiktok', ?, ?, ?, ?,?,?,?,?)""",
           (ship_id, tracking, buyer_nick, buyer_name, addr_full, postal,
-           (created_iso or "")[:10], new_status, "tiktok-api", label, ship_fee, dvs, dvd, dva, ship_by))
+           (created_iso or "")[:10], new_status, "tiktok-api", label, ship_fee, dvs, dvd, dva, ship_by, status_api))
     # Rebuild ONLY THIS ORDER'S items, preserving floor progress (picked) AND inventory
     # markers (depleted_qty/depleted_sku). Scoped by order_id so that when several orders
     # are combined into one shipping package (shared shipment_id), each refreshes just its
