@@ -4002,15 +4002,18 @@ def api_today():
         done_labels={r[0] for r in c.execute("SELECT import_label FROM show_state WHERE done=1").fetchall()}
     except Exception:
         done_labels=set()
+    _now_ts=int(time.time())
     try:
         rows=c.execute("""SELECT import_label lbl, MIN(show_date) sd, MAX(imported_at) imp, COUNT(*) total,
                             SUM(CASE WHEN status IN ('packed','shipped') THEN 1 ELSE 0 END) packed,
                             SUM(CASE WHEN status='picked' THEN 1 ELSE 0 END) picked,
-                            SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending
+                            SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending,
+                            MIN(CASE WHEN status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 THEN ship_by END) due_ts,
+                            SUM(CASE WHEN status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 AND ship_by<? THEN 1 ELSE 0 END) overdue
                           FROM shipments
                           WHERE import_label IS NOT NULL AND import_label!=''
                             AND status NOT IN ('cancelled','giveaway')
-                          GROUP BY import_label HAVING pending>0""").fetchall()
+                          GROUP BY import_label HAVING pending>0""",(_now_ts,)).fetchall()
         for r in rows:
             r=dict(r)
             if r["lbl"] in done_labels: continue   # closed by the user → not backlog
@@ -4021,8 +4024,12 @@ def api_today():
             ful_p+=r["packed"] or 0; ful_k+=r["picked"] or 0; ful_e+=r["pending"] or 0
             shows.append({"name":r["lbl"],"date":(r["sd"] or "")[:10],"age_days":max(0,age),"total":r["total"],
                           "packed":r["packed"] or 0,"pending":r["pending"] or 0,
-                          "pct":round(100*(r["packed"] or 0)/tot)})
-        shows.sort(key=lambda s:(-s["age_days"], s["name"]))
+                          "pct":round(100*(r["packed"] or 0)/tot),
+                          "due_ts":r["due_ts"] or 0,"overdue":r["overdue"] or 0})
+        # WHAT NEXT order: most overdue first, then nearest ship-by deadline, then oldest live.
+        _FAR=9999999999
+        shows.sort(key=lambda s:(0 if s["overdue"] else 1, -s["overdue"],
+                                 s["due_ts"] or _FAR, -s["age_days"], s["name"]))
     except Exception: pass
     out["backlog"]={"lives":len(shows),"orders":sum(s["pending"] for s in shows),
                     "oldest_age":max([s["age_days"] for s in shows],default=0),
@@ -4036,7 +4043,7 @@ def api_today():
                         ORDER BY packed_at DESC LIMIT 1""",(today,)).fetchone()
         if rr: cur=rr["lbl"]
     except Exception: pass
-    if not cur and shows: cur=shows[-1]["name"]   # newest open show (sorted oldest-first)
+    if not cur and shows: cur=max(shows, key=lambda s:s["date"])["name"]   # newest open show by date
     out["current_show"]=cur
 
     alllog=_read_log(); series=[]

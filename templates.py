@@ -2619,6 +2619,9 @@ body{margin:0;font-family:'DM Sans',-apple-system,sans-serif;background:var(--su
 .qr:hover{background:var(--surface)}
 .qr .age{font-size:11px;font-weight:800;padding:3px 8px;border-radius:7px;background:var(--surface-strong);color:var(--text-muted);white-space:nowrap}
 .qr .age.old{background:#fae1cf;color:#b4530b}
+.qr .age.soon{background:#fef3c7;color:#92400e}
+.qr .age.over{background:#fee2e2;color:#b91c1c}
+.qr .rank{font-size:13px;font-weight:900;color:var(--text-dim);min-width:20px;text-align:center}
 .qr .nm{flex:1;min-width:0}.qr .nm b{font-size:14px;font-weight:700;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.qr .nm small{font-size:12px;color:var(--text-muted)}
 .qr .prog{width:120px;flex:none}.qr .prog .bar{height:7px;border-radius:4px;background:var(--surface-strong);overflow:hidden}.qr .prog .bar i{display:block;height:100%;background:var(--brand)}
 .qr .prog small{font-size:11px;color:var(--text-dim);display:block;margin-top:3px;text-align:right}
@@ -2665,11 +2668,19 @@ function floorBlock(d){var f=d.floor;var ptot=Math.max(f.packers_online,f.packer
   '<div class="card"><div class="l">Packed today</div><div class="v">'+f.packed_today+'</div><div class="s">by '+f.packers_today+' packers</div></div>'+
   '<div class="card"><div class="l">Picked today</div><div class="v">'+f.picked_today+'</div><div class="s">'+f.waiting_to_pack+' waiting to pack</div></div>'+
   '</div>';}
-function backlogBlock(d){var b=d.backlog;if(!b.lives)return '<div class="sec">Backlog</div><div class="card"><b>All caught up</b><div class="s">No open shows waiting to pack.</div></div>';
- var h='<div class="sec">How far behind are we</div><div class="backlog"><div class="big">'+b.lives+(b.lives===1?' live':' lives')+'</div><div><b>'+b.orders+' orders still to pack across '+b.lives+' open show'+(b.lives===1?'':'s')+'</b><small>Oldest open show is '+b.oldest_age+' day'+(b.oldest_age===1?'':'s')+' back.'+(d.current_show?(' Current table: '+esc(d.current_show)+'.'):'')+'</small></div></div>';
+function dueBadge(s){
+  if(s.overdue)return '<span class="age over" title="orders past ship-by">⚠ '+s.overdue+' late</span>';
+  if(s.due_ts){var ms=s.due_ts*1000,d=new Date(ms),soon=(ms-Date.now())<24*3600*1000;
+    return '<span class="age'+(soon?' soon':'')+'" title="ship by">⏰ '+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+'</span>';}
+  var a=s.age_days;return '<span class="age'+(a>=2?' old':'')+'">'+(a===0?'Today':(a+(a===1?' day':' days')))+'</span>';
+}
+function backlogBlock(d){var b=d.backlog;if(!b.lives)return '<div class="sec">What’s next</div><div class="card"><b>All caught up 🎉</b><div class="s">No open shows waiting to pack.</div></div>';
+ var od=0;b.shows.forEach(function(s){od+=(s.overdue||0)});
+ var sub=od?('<b style="color:#b91c1c">'+od+' order'+(od===1?'':'s')+' past their ship-by deadline</b> — work these first.'):('Ordered by urgency — nearest ship-by deadline first.');
+ var h='<div class="sec">What’s next — work on these first</div><div class="backlog"><div class="big">'+b.lives+(b.lives===1?' live':' lives')+'</div><div><b>'+b.orders+' orders still to pack</b><small>'+sub+'</small></div></div>';
  var LIMIT=2;
- h+='<div class="queue" id="blq">';b.shows.forEach(function(s,i){var oldC=s.age_days>=2?' old':'';var ageT=s.age_days===0?'Today':(s.age_days+(s.age_days===1?' day':' days'));var moreCls=i>=LIMIT?' qr-more':'';
-  h+='<a class="qr'+moreCls+'" href="/admin/shipments?show='+encodeURIComponent(s.name)+'"><span class="age'+oldC+'">'+ageT+'</span><span class="nm"><b>'+esc(s.name)+'</b><small>'+esc(s.date||'')+'</small></span><span class="prog"><span class="bar"><i style="width:'+s.pct+'%"></i></span><small>'+s.pct+'% packed</small></span><span class="left">'+s.pending+'</span></a>';});
+ h+='<div class="queue" id="blq">';b.shows.forEach(function(s,i){var moreCls=i>=LIMIT?' qr-more':'';
+  h+='<a class="qr'+moreCls+'" href="/admin/shipments?show='+encodeURIComponent(s.name)+'"><span class="rank">'+(i+1)+'</span>'+dueBadge(s)+'<span class="nm"><b>'+esc(s.name)+'</b><small>'+esc(s.date||'')+'</small></span><span class="prog"><span class="bar"><i style="width:'+s.pct+'%"></i></span><small>'+s.pct+'% packed</small></span><span class="left">'+s.pending+'</span></a>';});
  h+='</div>';
  if(b.shows.length>LIMIT)h+='<button class="seemore" data-n="'+(b.shows.length-LIMIT)+'" onclick="toggleBacklog(this)">See '+(b.shows.length-LIMIT)+' more open show'+((b.shows.length-LIMIT)===1?'':'s')+' ▾</button>';
  if(b.stale)h+='<div class="subt" style="margin:8px 2px 0">+ '+b.stale+' older show'+(b.stale===1?'':'s')+' (45+ days) hidden — close them under Shows if already done.</div>';return h;}
