@@ -7189,7 +7189,7 @@ var BUCKETS=[['PENDING','Pending','pending'],['PICKED','Picked','picked'],['PACK
 ['OUT_FOR_DELIVERY','Out for delivery','ofd'],['DELIVERED','Delivered','delivered'],
 ['EXCEPTION','Exception','exc'],['RETURNED','Returned','ret'],['CANCELLED','Cancelled','cancelled'],
 ['GIVEAWAY','Giveaway','giveaway'],['ISSUE','Issue','issue'],['UNKNOWN','Unknown','unk']];
-var filter='';var fillsDone=false;
+var filter=(new URLSearchParams(location.search).get('status')||'').toUpperCase();var fillsDone=false;
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3500)}
 function esc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
 function fmt(ts){if(!ts)return '—';var d=new Date(ts);return isNaN(d)?esc(ts):d.toLocaleDateString()+' '+d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}

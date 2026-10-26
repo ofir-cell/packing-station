@@ -15546,17 +15546,18 @@ if(rsb)rsb.onclick=function(){
      im.innerHTML='<span style="color:#166534">✓ Regrouped '+(d.fetched||0)+' stored order(s) → '+((d.shows||[]).length)+' show(s), cleared '+(d.cleared||0)+'.'+shw+'</span>';
    }).catch(function(){rsb.disabled=false;rsb.textContent=old;im.innerHTML='<span style="color:#b91c1c">Network error</span>';});
 };
-var DV=[['delivered','Delivered','#dcfce7','#166534'],['in_transit','In transit','#dbeafe','#1e40af'],
-  ['awaiting_collection','Awaiting pickup','#fef3c7','#92400e'],['awaiting_shipment','Awaiting shipment','#f3f4f6','#374151'],
-  ['on_hold','On hold','#fee2e2','#991b1b'],['unpaid','Unpaid','#f3f4f6','#6b7280'],['cancelled','Cancelled','#f3f4f6','#6b7280']];
+var DV=[['delivered','Delivered','#dcfce7','#166534','DELIVERED'],['in_transit','In transit','#dbeafe','#1e40af','IN_TRANSIT'],
+  ['awaiting_collection','Awaiting pickup','#fef3c7','#92400e','AWAITING_COLLECTION'],['awaiting_shipment','Awaiting shipment','#f3f4f6','#374151','PENDING'],
+  ['on_hold','On hold','#fee2e2','#991b1b',''],['unpaid','Unpaid','#f3f4f6','#6b7280',''],['cancelled','Cancelled','#f3f4f6','#6b7280','CANCELLED']];
 function dvRender(d){
   var box=document.getElementById('dvCards');var tot=document.getElementById('dvTotal');
   if(!d||d.ok===false){box.innerHTML='<span class="mut">'+esc((d&&d.error)||'Could not load')+'</span>';return;}
   tot.textContent=d.total!=null?('· '+d.total+' TikTok orders'):'';
   box.innerHTML=DV.map(function(x){var n=(d[x[0]]||0);
-    return '<div style="background:'+x[2]+';color:'+x[3]+';border-radius:12px;padding:12px 16px;min-width:110px">'+
+    var inner='<div style="background:'+x[2]+';color:'+x[3]+';border-radius:12px;padding:12px 16px;min-width:110px'+(x[4]?';cursor:pointer;transition:transform .1s" onmouseover="this.style.transform=\\'translateY(-2px)\\'" onmouseout="this.style.transform=\\'\\'':'"')+'>'+
       '<div style="font-size:26px;font-weight:900;line-height:1">'+n+'</div>'+
-      '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;font-weight:700;margin-top:4px">'+x[1]+'</div></div>';}).join('');
+      '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;font-weight:700;margin-top:4px">'+x[1]+(x[4]?' ↗':'')+'</div></div>';
+    return x[4]?('<a href="/shipping-status?status='+x[4]+'" style="text-decoration:none" title="See these in the shipments screen">'+inner+'</a>'):inner;}).join('');
 }
 function dvLoad(){var box=document.getElementById('dvCards');box.innerHTML='<span class="mut">Loading…</span>';
   fetch('/api/tiktok/delivery-overview').then(function(r){return r.json();}).then(dvRender)
