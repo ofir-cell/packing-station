@@ -13708,6 +13708,31 @@ def _tt_set_paused(org, paused):
     c.commit(); c.close()
     return bool(paused)
 
+def _tt_control_ensure(c):
+    c.execute("CREATE TABLE IF NOT EXISTS tiktok_control(org_id TEXT PRIMARY KEY, paused INTEGER DEFAULT 0)")
+    cols={r[1] for r in c.execute("PRAGMA table_info(tiktok_control)").fetchall()}
+    if "start_ts" not in cols:
+        try: c.execute("ALTER TABLE tiktok_control ADD COLUMN start_ts INTEGER DEFAULT 0")
+        except Exception: pass
+
+def _tt_cutover(org):
+    """Epoch 'start from here'. Orders created BEFORE this are never materialized into shows,
+    so turning the API on doesn't rebuild all the old history (CSV already covers it). 0 = off."""
+    try:
+        c=pdb(); _tt_control_ensure(c)
+        r=c.execute("SELECT start_ts FROM tiktok_control WHERE org_id=?",(org,)).fetchone()
+        c.close()
+        return int(r["start_ts"]) if r and r["start_ts"] else 0
+    except Exception:
+        return 0
+
+def _tt_set_cutover(org, ts):
+    c=pdb(); _tt_control_ensure(c)
+    c.execute("""INSERT INTO tiktok_control(org_id,start_ts) VALUES(?,?)
+                 ON CONFLICT(org_id) DO UPDATE SET start_ts=excluded.start_ts""",(org, int(ts or 0)))
+    c.commit(); c.close()
+    return int(ts or 0)
+
 def _tt_ingest_order(org, shop_id, order_id):
     """Fetch an order's detail and park it in tiktok_orders (line items collapsed to qty).
     Does NOT deplete stock yet — that happens when the order is assigned to a live show."""
@@ -13742,6 +13767,10 @@ def _tt_ingest_order(org, shop_id, order_id):
     # the order stays parked in tiktok_orders above and a later Sync/Pull brings it in.
     if _tt_is_paused(org):
         _tt_log("ingest paused — parked %s without materializing for %s"%(order_id,org))
+        return
+    _co=_tt_cutover(org)
+    if _co and int(o.get("create_time") or 0) < _co:
+        _tt_log("ingest before cutover — parked %s without materializing for %s"%(order_id,org))
         return
     try:
         sc=sdb(org); _tt_apply_order(sc, o); sc.commit(); sc.close()
@@ -14203,6 +14232,10 @@ def _tt_sweep_once(window_sec=7200):
                 pages+=1
                 if not page_token: break
             if not orders: continue
+            _co=_tt_cutover(org)
+            if _co:
+                orders=[o for o in orders if int(o.get("create_time") or 0) >= _co]  # honour the start-from cutover
+            if not orders: continue
             sc=sdb(org)
             skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
             _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
@@ -14352,7 +14385,7 @@ def api_tiktok_status():
     return jsonify({"ok":True,"configured":_tiktok_ready(),"has_service_id":bool(TIKTOK_SERVICE_ID),
                     "redirect_url":"https://www.getwhatnot.com/api/tiktok/callback",
                     "webhook_url":"https://www.getwhatnot.com/api/tiktok/webhook",
-                    "paused":_tt_is_paused(org),
+                    "paused":_tt_is_paused(org),"cutover":_tt_cutover(org),
                     "shops":shops,"orders":orders,"event_count":(ev["n"] if ev else 0)})
 
 @app.route("/api/tiktok/pause", methods=["POST"])
@@ -14364,6 +14397,24 @@ def api_tiktok_pause():
     d=request.get_json(silent=True) or {}
     paused=_tt_set_paused(org, bool(d.get("paused")))
     return jsonify({"ok":True,"paused":paused})
+
+@app.route("/api/tiktok/cutover", methods=["POST"])
+@req_role("admin")
+def api_tiktok_cutover():
+    """Set (or clear) the 'start from here' point. From now on the API only builds shows for
+    orders created AFTER this moment — so turning the API on never rebuilds all the old history
+    (which is already handled via CSV). Body: {now:true} to start now, or {clear:true} to remove."""
+    org=current_org() or DEFAULT_ORG
+    d=request.get_json(silent=True) or {}
+    if d.get("clear"):
+        ts=_tt_set_cutover(org, 0)
+    else:
+        try: ts=int(d.get("ts") or 0)
+        except Exception: ts=0
+        if not ts: ts=int(time.time())   # default: now
+        ts=_tt_set_cutover(org, ts)
+    return jsonify({"ok":True,"cutover":ts,
+                    "cutover_human":(datetime.fromtimestamp(ts).strftime("%b %d, %Y %-I:%M %p") if ts else "")})
 
 def _tt_epoch(v):
     """Best-effort convert a TikTok time value to epoch SECONDS. Handles int/str seconds,
@@ -14504,6 +14555,9 @@ def _tt_materialize_orders(org, orders):
     def _ck(o):
         try: return int(o.get("create_time") or 0)
         except Exception: return 0
+    cutover=_tt_cutover(org)
+    if cutover:
+        orders=[o for o in orders if _ck(o) >= cutover]   # ignore pre-cutover history
     try:
         sc=sdb(org)
         skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
@@ -14995,6 +15049,13 @@ th{color:#6b7280;font-weight:700;font-size:11px;text-transform:uppercase}
     <button id="pauseBtn" class="btn g" style="margin-left:4px">…</button>
   </div>
   <div class="mut" id="pauseMsg" style="margin-top:6px">When paused, TikTok keeps broadcasting and orders keep arriving — but nothing is loaded into shows until you resume. Nothing is lost; a Sync after resuming brings them in.</div>
+  <div class="row" style="margin-top:14px;border-top:1px solid #f0f1f4;padding-top:14px">
+    <span class="lbl">Start from</span>
+    <span id="cutState" class="mut">—</span>
+    <button id="cutBtn" class="btn g" style="background:#dcfce7;color:#166534">▶ Start API ingestion from now</button>
+    <button id="cutClear" class="btn g" style="display:none">Clear</button>
+  </div>
+  <div class="mut" id="cutMsg" style="margin-top:6px">Sets a cutover point: the API will ONLY build shows for orders created from that moment on. Use it when you switch from CSV to the API, so it never rebuilds all the old history.</div>
 </div>
 
 <div class="card">
@@ -15062,6 +15123,7 @@ fetch('/api/tiktok/status').then(function(r){return r.json();}).then(function(d)
   document.getElementById('hook').textContent=d.webhook_url||'';
   document.getElementById('evc').textContent=d.event_count?('· '+d.event_count+' webhook events'):'';
   applyPause(!!d.paused);
+  applyCutover(d.cutover||0);
   var sh=document.getElementById('shops');
   if(!d.shops||!d.shops.length){sh.innerHTML='<span class="mut">No shops connected yet. Click “Connect / add a shop”.</span>';}
   else{var h='<table><tr><th>Shop</th><th>Region</th><th>Seller</th><th>Status</th><th>Updated</th></tr>';
@@ -15082,6 +15144,21 @@ function applyPause(p){_paused=p;var st=document.getElementById('ingState');var 
 document.getElementById('pauseBtn').onclick=function(){var b=this;b.disabled=true;
   fetch('/api/tiktok/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:!_paused})})
    .then(function(r){return r.json();}).then(function(d){b.disabled=false;if(d&&d.ok)applyPause(!!d.paused);})
+   .catch(function(){b.disabled=false;});};
+var _cutover=0;
+function applyCutover(ts){_cutover=ts||0;var st=document.getElementById('cutState'),cb=document.getElementById('cutBtn'),cc=document.getElementById('cutClear');
+  if(_cutover){var dt=new Date(_cutover*1000);st.innerHTML='<b style="color:#166534">● from '+dt.toLocaleString()+'</b> — older orders ignored';cb.textContent='↻ Reset start to now';cc.style.display='';}
+  else{st.textContent='not set — the API would build every order it pulls';cb.textContent='▶ Start API ingestion from now';cc.style.display='none';}}
+document.getElementById('cutBtn').onclick=function(){var b=this;b.disabled=true;
+  if(_cutover && !confirm('Move the start point to NOW? Orders created before now will no longer build shows.')){b.disabled=false;return;}
+  fetch('/api/tiktok/cutover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({now:true})})
+   .then(function(r){return r.json();}).then(function(d){b.disabled=false;if(d&&d.ok)applyCutover(d.cutover);
+     document.getElementById('cutMsg').innerHTML='<span style="color:#166534">✓ From now on, only orders created after '+esc(d.cutover_human||'')+' will build shows.</span>';})
+   .catch(function(){b.disabled=false;});};
+document.getElementById('cutClear').onclick=function(){var b=this;b.disabled=true;
+  if(!confirm('Clear the start point? The API will then build every order it pulls, including old history.')){b.disabled=false;return;}
+  fetch('/api/tiktok/cutover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clear:true})})
+   .then(function(r){return r.json();}).then(function(d){b.disabled=false;if(d&&d.ok)applyCutover(0);})
    .catch(function(){b.disabled=false;});};
 document.querySelectorAll('.copy').forEach(function(b){b.onclick=function(){var t=document.getElementById(b.getAttribute('data-c')).textContent;navigator.clipboard.writeText(t);b.textContent='Copied';setTimeout(function(){b.textContent='Copy';},1200);};});
 var pb=document.getElementById('pullBtn');
