@@ -6492,9 +6492,15 @@ def api_show_rename():
     if c.execute("SELECT 1 FROM shipments WHERE import_label=? LIMIT 1", (new,)).fetchone():
         c.close(); return jsonify({"ok": False, "error": "A show with that name already exists."})
     n = c.execute("SELECT COUNT(*) FROM shipments WHERE import_label=?", (old,)).fetchone()[0]
-    for tbl in ("shipments","show_state","cleanup_state","show_product_map","live_sales","live_reconcile","tiktok_rooms"):
+    for tbl in ("shipments","show_state","cleanup_state","show_product_map","live_sales","live_reconcile"):
         try: c.execute("UPDATE %s SET import_label=? WHERE import_label=?" % tbl, (new, old))
         except Exception: pass
+    # TikTok live rooms: save the new name as a STICKY custom name so a later regroup keeps it
+    # (keyed by the room's current label).
+    try:
+        _tt_rooms_ensure(c)
+        c.execute("UPDATE tiktok_rooms SET custom_name=?, label=? WHERE label=?", (new, new, old))
+    except Exception: pass
     c.commit(); c.close()
     try: alog("show.rename", "%s -> %s (%d shipments)" % (old, new, n))
     except Exception: pass
@@ -13840,12 +13846,33 @@ def _tt_room_id(order):
         if r and str(r) not in ("0",""): return str(r)
     return ""
 
+def _tt_rooms_ensure(c):
+    """Make sure the per-org room table exists with all columns (incl. the user's custom_name
+    override that survives regroups)."""
+    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_rooms(
+        room_id TEXT PRIMARY KEY, label TEXT, start_ts INTEGER, named INTEGER DEFAULT 0)""")
+    cols={r[1] for r in c.execute("PRAGMA table_info(tiktok_rooms)").fetchall()}
+    if "custom_name" not in cols:
+        try: c.execute("ALTER TABLE tiktok_rooms ADD COLUMN custom_name TEXT")
+        except Exception: pass
+
+def _tt_room_customs(c):
+    """{room_id: custom_name} — names the user set by hand (sticky across regroup)."""
+    _tt_rooms_ensure(c)
+    out={}
+    try:
+        for r in c.execute("SELECT room_id, custom_name FROM tiktok_rooms WHERE COALESCE(custom_name,'')<>''").fetchall():
+            out[r["room_id"]]=r["custom_name"]
+    except Exception: pass
+    return out
+
 def _tt_room_names(c, orders):
-    """Build {room_id: label} for a batch of orders. Label = the room's dominant non-store
-    base listing + the date of the room's earliest order. Grouping by room_id means every
-    order sharing a live — its parts, any different products sold in it, and the sample —
-    lands in ONE show, named by the main listing."""
+    """Build {room_id: label} for a batch of orders. Label = a hand-set custom name if the user
+    gave the live one; otherwise the room's dominant non-store base listing + the date of the
+    room's earliest order. Grouping by room_id means every order sharing a live — its parts, any
+    different products sold in it, and the sample — lands in ONE show."""
     kws=_tt_store_keywords(c)
+    customs=_tt_room_customs(c)
     info={}
     for o in orders:
         r=_tt_room_id(o)
@@ -13861,6 +13888,9 @@ def _tt_room_names(c, orders):
                 d["names"][b]=d["names"].get(b,0)+1
     out={}
     for r,d in info.items():
+        if customs.get(r):
+            out[r]=customs[r]   # user's name wins
+            continue
         base=max(d["names"].items(), key=lambda kv:kv[1])[0] if d["names"] else "Live"
         out[r]="%s · %s"%(base[:70], _tt_daytime(d["start"]))
     return out
@@ -13870,8 +13900,7 @@ def _tt_room_label(c, order, room_id):
     The first order of a room sets the name (dominant real listing + date); every later order
     in that room reuses it. If a room is first seen via a sample-only order, it gets a
     placeholder name that the first real product order upgrades (renaming the show)."""
-    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_rooms(
-        room_id TEXT PRIMARY KEY, label TEXT, start_ts INTEGER, named INTEGER DEFAULT 0)""")
+    _tt_rooms_ensure(c)
     try: ct=int(order.get("create_time") or 0)
     except Exception: ct=0
     if not ct: ct=int(time.time())
@@ -13881,7 +13910,9 @@ def _tt_room_label(c, order, room_id):
         nm=(li.get("product_name") or "").strip()
         if nm and not any(k in nm.lower() for k in kws): anchor=nm; break
     base=_tt_base_listing(anchor) if anchor else ""
-    row=c.execute("SELECT label,named,start_ts FROM tiktok_rooms WHERE room_id=?",(room_id,)).fetchone()
+    row=c.execute("SELECT label,named,start_ts,custom_name FROM tiktok_rooms WHERE room_id=?",(room_id,)).fetchone()
+    if row and (row["custom_name"] or ""):
+        return row["custom_name"]   # user's hand-set name always wins
     if row and row["label"]:
         if not row["named"] and base:   # upgrade placeholder once a real listing appears
             st=row["start_ts"] or ct
@@ -14482,14 +14513,16 @@ def _tt_materialize_orders(org, orders):
         # and persist it so the live sweep reuses the exact same show names.
         room_names=_tt_room_names(sc, orders)
         if room_names:
-            sc.execute("""CREATE TABLE IF NOT EXISTS tiktok_rooms(
-                room_id TEXT PRIMARY KEY, label TEXT, start_ts INTEGER, named INTEGER DEFAULT 0)""")
+            _tt_rooms_ensure(sc)
             starts={}
             for o in orders:
                 r=_tt_room_id(o); ct=_ck(o)
                 if r and ct and (r not in starts or ct<starts[r]): starts[r]=ct
             for r,lbl in room_names.items():
-                sc.execute("INSERT OR REPLACE INTO tiktok_rooms(room_id,label,start_ts,named) VALUES(?,?,?,1)",
+                # Preserve any hand-set custom_name — only refresh the auto label/date.
+                sc.execute("""INSERT INTO tiktok_rooms(room_id,label,start_ts,named) VALUES(?,?,?,1)
+                              ON CONFLICT(room_id) DO UPDATE SET label=excluded.label,
+                                 start_ts=excluded.start_ts, named=1""",
                            (r, lbl, starts.get(r,0)))
         for o in sorted(orders, key=_ck):
             try:
