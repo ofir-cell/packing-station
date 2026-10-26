@@ -14160,10 +14160,16 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
     except Exception: ship_fee=0.0
     try: ship_by=int(order.get("shipping_due_time") or 0)   # 'must ship by' deadline (epoch)
     except Exception: ship_by=0
-    # delivery status straight from the order timestamps
+    # delivery status from TikTok's own signals (status string OR timestamps). USPS tracking
+    # refines this later; we never let TikTok DOWNGRADE a USPS DELIVERED/RETURNED (see UPDATE).
     dvs=dvd=dva=None
-    if order.get("delivery_time"): dvs,dvd,dva=("DELIVERED","Delivered · per TikTok",datetime.fromtimestamp(int(order["delivery_time"])).isoformat(timespec="seconds"))
-    elif order.get("collection_time") or order.get("rts_time"): dvs,dvd=("IN_TRANSIT","Shipped · per TikTok")
+    if order.get("delivery_time") or status_api in ("DELIVERED","COMPLETED"):
+        dvs,dvd="DELIVERED","Delivered · per TikTok"
+        if order.get("delivery_time"):
+            try: dva=datetime.fromtimestamp(int(order["delivery_time"])).isoformat(timespec="seconds")
+            except Exception: dva=None
+    elif status_api=="IN_TRANSIT" or order.get("collection_time") or order.get("rts_time"):
+        dvs,dvd=("IN_TRANSIT","Shipped · per TikTok")
     # all-gift order → giveaway; else cancelled → cancelled; else keep local packed/shipped
     all_gift = rows and all(r["is_gift"] for r in rows)
     ex=c.execute("SELECT shipment_id, status FROM shipments WHERE shipment_id=?",(ship_id,)).fetchone()
@@ -14177,7 +14183,10 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
                        buyer_username=?, buyer_name=?, address_full=COALESCE(NULLIF(?,''),address_full),
                        postal_code=COALESCE(NULLIF(?,''),postal_code), platform='tiktok',
                        import_label=COALESCE(import_label,?), shipping_fee=?, status=?,
-                       delivery_status=COALESCE(?,delivery_status), delivery_detail=COALESCE(?,delivery_detail),
+                       delivery_status=CASE WHEN COALESCE(delivery_status,'') IN ('DELIVERED','RETURNED')
+                            THEN delivery_status ELSE COALESCE(?,delivery_status) END,
+                       delivery_detail=CASE WHEN COALESCE(delivery_status,'') IN ('DELIVERED','RETURNED')
+                            THEN delivery_detail ELSE COALESCE(?,delivery_detail) END,
                        delivered_at=COALESCE(?,delivered_at), ship_by=CASE WHEN ?>0 THEN ? ELSE ship_by END,
                        tt_status=COALESCE(NULLIF(?,''),tt_status)
                      WHERE shipment_id=?""",
