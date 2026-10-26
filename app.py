@@ -14713,6 +14713,32 @@ def _tt_store_raw_order(org, o):
     c.commit(); c.close()
     return True
 
+def _tt_store_raw_orders_bulk(org, orders):
+    """Upsert MANY raw orders into tiktok_orders in ONE transaction — far faster than the
+    per-order helper (which commits each time) for a big import file."""
+    c=pdb(); now=datetime.now().isoformat(timespec='seconds'); n=0
+    try:
+        for o in orders:
+            if not isinstance(o,dict): continue
+            oid=str(o.get("id") or "")
+            if not oid: continue
+            agg={}
+            for li in (o.get("line_items") or []):
+                key=(li.get("seller_sku") or "", str(li.get("sku_id") or ""), li.get("product_name") or "")
+                a=agg.setdefault(key, {"seller_sku":key[0],"sku_id":key[1],"name":key[2],"qty":0,"price":""})
+                a["qty"]+=1; a["price"]=li.get("sale_price") or li.get("original_price") or a["price"]
+            c.execute("""INSERT INTO tiktok_orders(order_id,org_id,shop_id,status,line_items,create_time,raw,updated_at)
+                VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(org_id,order_id) DO UPDATE SET status=excluded.status,line_items=excluded.line_items,
+                  create_time=excluded.create_time,raw=excluded.raw,updated_at=excluded.updated_at""",
+              (oid,org,str(o.get("shop_id") or ""),str(o.get("order_status") or ""),
+               json.dumps(list(agg.values())),int(o.get("create_time") or 0),json.dumps(o)[:40000],now))
+            n+=1
+        c.commit()
+    finally:
+        c.close()
+    return n
+
 def _tt_pull_core(org, days=30):
     """Pull recent real orders from the connected shop and materialize them into shows.
     Returns a result dict (never raises). Shared by the Sync button and the regroup action."""
@@ -14868,9 +14894,7 @@ def api_tiktok_import_orders():
     if isinstance(payload,dict):
         for s in (payload.get("live_sessions") or []):
             if _tt_store_session(org, s): sess+=1
-    stored=0
-    for o in orders:
-        if isinstance(o,dict) and _tt_store_raw_order(org, o): stored+=1
+    stored=_tt_store_raw_orders_bulk(org, orders)   # one transaction — handles big files fast
     shows_list, shipped, skipped = _tt_materialize_orders(org, [o for o in orders if isinstance(o,dict)])
     try: alog("tiktok.import", "%d orders, %d sessions imported, %d loaded, %d skipped (already in system) into %d shows" % (stored, sess, shipped, skipped, len(shows_list)))
     except Exception: pass
