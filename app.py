@@ -5546,6 +5546,27 @@ def _process_cancel_file(norm_rows, source, label):
     })
 
 
+def _sticker_part(name):
+    m=re.search(r'part\s*(\d+)', name or '', re.I)
+    return m.group(1) if m else None
+
+def _sticker_display(items):
+    """Stickers grouped by the live PART — 'P1: 65, 210 · P2: 131 · GIVEAWAY' — so a sticker
+    number is never ambiguous (the same number repeats across parts, pointing to a different
+    physical item). items: list of (sku, product_name)."""
+    byp={}
+    for sku, nm in items:
+        sku=(str(sku) if sku is not None else "").strip()
+        if not sku: continue
+        byp.setdefault(_sticker_part(nm), set()).add(sku)
+    def _srt(xs): return sorted(xs, key=lambda s:(0,int(s)) if s.isdigit() else (1,s))
+    out=[]
+    for p in sorted([k for k in byp if k is not None], key=lambda x:int(x)):
+        out.append("P%s: %s" % (p, ", ".join(_srt(byp[p]))))
+    if None in byp:
+        out.append(", ".join(_srt(byp[None])))   # giveaway / no-part items
+    return " · ".join(out)
+
 @app.route("/api/shipments/recent")
 @req_role("admin","cs")
 def api_shipments_recent():
@@ -5554,26 +5575,35 @@ def api_shipments_recent():
     # A single show can hold many thousands of orders (a big live sells 1,000+ products and
     # the sticker number even resets past 1000), so a per-show view returns the WHOLE show
     # with NO cap; only the unfiltered 'recent' view stays capped for speed.
-    if not show:
-        limit = min(request.args.get("limit", type=int) or 500, 500)
+    limit = min(request.args.get("limit", type=int) or 500, 500)
     c = sdb()
-    _stk = ("(SELECT GROUP_CONCAT(DISTINCT i.sku) FROM shipment_items i "
-            "WHERE i.shipment_id=shipments.shipment_id AND COALESCE(i.cancelled,0)=0) AS stickers")
+    _cols = ("shipment_id, tracking_code, buyer_username, buyer_name, "
+             "total_items, expected_weight_g, actual_weight_g, weight_status, "
+             "status, missing_weights, show_date, imported_at, import_label, platform, "
+             "delivery_status, delivery_detail, delivered_at, tracked_at")
     if show:
-        rows = c.execute("""SELECT shipment_id, tracking_code, buyer_username, buyer_name,
-                                   total_items, expected_weight_g, actual_weight_g, weight_status,
-                                   status, missing_weights, show_date, imported_at, import_label, platform,
-                                   delivery_status, delivery_detail, delivered_at, tracked_at, """+_stk+"""
-                            FROM shipments WHERE import_label=?
-                            ORDER BY imported_at DESC""", (show,)).fetchall()
+        rows = c.execute("SELECT "+_cols+" FROM shipments WHERE import_label=? ORDER BY imported_at DESC",(show,)).fetchall()
     else:
-        rows = c.execute("""SELECT shipment_id, tracking_code, buyer_username, buyer_name,
-                                   total_items, expected_weight_g, actual_weight_g, weight_status,
-                                   status, missing_weights, show_date, imported_at, import_label, platform,
-                                   delivery_status, delivery_detail, delivered_at, tracked_at, """+_stk+"""
-                            FROM shipments ORDER BY imported_at DESC LIMIT ?""", (limit,)).fetchall()
+        rows = c.execute("SELECT "+_cols+" FROM shipments ORDER BY imported_at DESC LIMIT ?",(limit,)).fetchall()
+    rows=[dict(r) for r in rows]
+    # Build the part-aware sticker list per shipment in one pass.
+    items_by_ship={}
+    if rows:
+        if show:
+            irows=c.execute("""SELECT i.shipment_id sid, i.sku, i.product_name FROM shipment_items i
+                               JOIN shipments s ON s.shipment_id=i.shipment_id
+                               WHERE s.import_label=? AND COALESCE(i.cancelled,0)=0""",(show,)).fetchall()
+        else:
+            ids=[r["shipment_id"] for r in rows]
+            qm=",".join("?"*len(ids))
+            irows=c.execute("SELECT shipment_id sid, sku, product_name FROM shipment_items "
+                            "WHERE shipment_id IN ("+qm+") AND COALESCE(cancelled,0)=0", ids).fetchall()
+        for ir in irows:
+            items_by_ship.setdefault(ir["sid"],[]).append((ir["sku"], ir["product_name"]))
+    for r in rows:
+        r["stickers"]=_sticker_display(items_by_ship.get(r["shipment_id"], []))
     c.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify(rows)
 
 
 def _giveaway_by_tracking(code):
@@ -6462,9 +6492,15 @@ def api_show_rename():
     if c.execute("SELECT 1 FROM shipments WHERE import_label=? LIMIT 1", (new,)).fetchone():
         c.close(); return jsonify({"ok": False, "error": "A show with that name already exists."})
     n = c.execute("SELECT COUNT(*) FROM shipments WHERE import_label=?", (old,)).fetchone()[0]
-    for tbl in ("shipments","show_state","cleanup_state","show_product_map","live_sales","live_reconcile","tiktok_rooms"):
+    for tbl in ("shipments","show_state","cleanup_state","show_product_map","live_sales","live_reconcile"):
         try: c.execute("UPDATE %s SET import_label=? WHERE import_label=?" % tbl, (new, old))
         except Exception: pass
+    # TikTok live rooms: save the new name as a STICKY custom name so a later regroup keeps it
+    # (keyed by the room's current label).
+    try:
+        _tt_rooms_ensure(c)
+        c.execute("UPDATE tiktok_rooms SET custom_name=?, label=? WHERE label=?", (new, new, old))
+    except Exception: pass
     c.commit(); c.close()
     try: alog("show.rename", "%s -> %s (%d shipments)" % (old, new, n))
     except Exception: pass
@@ -7887,23 +7923,39 @@ def api_live_match_queue():
     show=(request.args.get("show") or "").strip()
     if not show: return jsonify({"ok":False,"error":"show required"})
     c=sdb()
-    waiting=[dict(r) for r in c.execute("""
-        SELECT i.sku sticker, COUNT(*) qty, MAX(i.revenue) price, MAX(i.product_name) listing
-        FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
-        WHERE s.import_label=? AND COALESCE(i.cancelled,0)=0 AND COALESCE(i.sku,'')<>''
-          AND i.sku NOT LIKE '%GIVEAWAY%'
-          AND NOT EXISTS (SELECT 1 FROM show_product_map m
-                          WHERE m.import_label=s.import_label AND m.sticker_sku=i.sku)
-        GROUP BY i.sku
-        ORDER BY (CASE WHEN i.sku GLOB '[0-9]*' THEN 0 ELSE 1 END), CAST(i.sku AS INTEGER) DESC, i.sku DESC""",(show,)).fetchall()]
+    # Every sold sticker carries a PART (from its product name). The same sticker number
+    # repeats across parts (it resets each part), so the queue is keyed by (sticker, PART),
+    # never the number alone — otherwise PART 1 #940 and PART 2 #940 would collide.
+    items=c.execute("""SELECT i.sku sticker, i.product_name nm, i.revenue price
+                       FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                       WHERE s.import_label=? AND COALESCE(i.cancelled,0)=0 AND COALESCE(i.sku,'')<>''
+                         AND i.sku NOT LIKE '%GIVEAWAY%'""",(show,)).fetchall()
+    matched_keys=set()
+    for m in c.execute("SELECT sticker_sku, part FROM show_product_map WHERE import_label=?",(show,)).fetchall():
+        matched_keys.add((str(m["sticker_sku"]), int(m["part"] or 0)))
+    agg={}
+    for it in items:
+        sku=str(it["sticker"]); part=int(_sticker_part(it["nm"]) or 0)
+        key=(sku,part)
+        if key in matched_keys: continue
+        g=agg.get(key)
+        if not g: g=agg[key]={"sticker":sku,"part":part,"qty":0,"price":it["price"],"listing":it["nm"]}
+        g["qty"]+=1
+        if it["price"] and (not g["price"] or it["price"]>g["price"]): g["price"]=it["price"]
+    def _kn(w):
+        try: n=int(w["sticker"])
+        except Exception: n=-1
+        return (w["part"], n)
+    waiting=sorted(agg.values(), key=_kn, reverse=True)   # newest first: highest part, then number
     matched=[dict(r) for r in c.execute("""
-        SELECT m.sticker_sku sticker, m.product_sku, p.name, p.image_url
+        SELECT m.sticker_sku sticker, m.part, m.product_sku, p.name, p.image_url
         FROM show_product_map m LEFT JOIN products p ON p.sku=m.product_sku
         WHERE m.import_label=? ORDER BY m.mapped_at DESC LIMIT 24""",(show,)).fetchall()]
     mc=c.execute("SELECT COUNT(*) FROM show_product_map WHERE import_label=?",(show,)).fetchone()[0]
+    parts=sorted(set(w["part"] for w in waiting))
     c.close()
     return jsonify({"ok":True,"show":show,"waiting":waiting,"matched":matched,
-                    "waiting_count":len(waiting),"matched_count":mc})
+                    "waiting_count":len(waiting),"matched_count":mc,"parts":parts})
 
 @app.route("/api/live/match", methods=["POST"])
 @req_role("admin","cs","worker","picker","host")
@@ -13656,6 +13708,31 @@ def _tt_set_paused(org, paused):
     c.commit(); c.close()
     return bool(paused)
 
+def _tt_control_ensure(c):
+    c.execute("CREATE TABLE IF NOT EXISTS tiktok_control(org_id TEXT PRIMARY KEY, paused INTEGER DEFAULT 0)")
+    cols={r[1] for r in c.execute("PRAGMA table_info(tiktok_control)").fetchall()}
+    if "start_ts" not in cols:
+        try: c.execute("ALTER TABLE tiktok_control ADD COLUMN start_ts INTEGER DEFAULT 0")
+        except Exception: pass
+
+def _tt_cutover(org):
+    """Epoch 'start from here'. Orders created BEFORE this are never materialized into shows,
+    so turning the API on doesn't rebuild all the old history (CSV already covers it). 0 = off."""
+    try:
+        c=pdb(); _tt_control_ensure(c)
+        r=c.execute("SELECT start_ts FROM tiktok_control WHERE org_id=?",(org,)).fetchone()
+        c.close()
+        return int(r["start_ts"]) if r and r["start_ts"] else 0
+    except Exception:
+        return 0
+
+def _tt_set_cutover(org, ts):
+    c=pdb(); _tt_control_ensure(c)
+    c.execute("""INSERT INTO tiktok_control(org_id,start_ts) VALUES(?,?)
+                 ON CONFLICT(org_id) DO UPDATE SET start_ts=excluded.start_ts""",(org, int(ts or 0)))
+    c.commit(); c.close()
+    return int(ts or 0)
+
 def _tt_ingest_order(org, shop_id, order_id):
     """Fetch an order's detail and park it in tiktok_orders (line items collapsed to qty).
     Does NOT deplete stock yet — that happens when the order is assigned to a live show."""
@@ -13690,6 +13767,10 @@ def _tt_ingest_order(org, shop_id, order_id):
     # the order stays parked in tiktok_orders above and a later Sync/Pull brings it in.
     if _tt_is_paused(org):
         _tt_log("ingest paused — parked %s without materializing for %s"%(order_id,org))
+        return
+    _co=_tt_cutover(org)
+    if _co and int(o.get("create_time") or 0) < _co:
+        _tt_log("ingest before cutover — parked %s without materializing for %s"%(order_id,org))
         return
     try:
         sc=sdb(org); _tt_apply_order(sc, o); sc.commit(); sc.close()
@@ -13794,12 +13875,33 @@ def _tt_room_id(order):
         if r and str(r) not in ("0",""): return str(r)
     return ""
 
+def _tt_rooms_ensure(c):
+    """Make sure the per-org room table exists with all columns (incl. the user's custom_name
+    override that survives regroups)."""
+    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_rooms(
+        room_id TEXT PRIMARY KEY, label TEXT, start_ts INTEGER, named INTEGER DEFAULT 0)""")
+    cols={r[1] for r in c.execute("PRAGMA table_info(tiktok_rooms)").fetchall()}
+    if "custom_name" not in cols:
+        try: c.execute("ALTER TABLE tiktok_rooms ADD COLUMN custom_name TEXT")
+        except Exception: pass
+
+def _tt_room_customs(c):
+    """{room_id: custom_name} — names the user set by hand (sticky across regroup)."""
+    _tt_rooms_ensure(c)
+    out={}
+    try:
+        for r in c.execute("SELECT room_id, custom_name FROM tiktok_rooms WHERE COALESCE(custom_name,'')<>''").fetchall():
+            out[r["room_id"]]=r["custom_name"]
+    except Exception: pass
+    return out
+
 def _tt_room_names(c, orders):
-    """Build {room_id: label} for a batch of orders. Label = the room's dominant non-store
-    base listing + the date of the room's earliest order. Grouping by room_id means every
-    order sharing a live — its parts, any different products sold in it, and the sample —
-    lands in ONE show, named by the main listing."""
+    """Build {room_id: label} for a batch of orders. Label = a hand-set custom name if the user
+    gave the live one; otherwise the room's dominant non-store base listing + the date of the
+    room's earliest order. Grouping by room_id means every order sharing a live — its parts, any
+    different products sold in it, and the sample — lands in ONE show."""
     kws=_tt_store_keywords(c)
+    customs=_tt_room_customs(c)
     info={}
     for o in orders:
         r=_tt_room_id(o)
@@ -13815,6 +13917,9 @@ def _tt_room_names(c, orders):
                 d["names"][b]=d["names"].get(b,0)+1
     out={}
     for r,d in info.items():
+        if customs.get(r):
+            out[r]=customs[r]   # user's name wins
+            continue
         base=max(d["names"].items(), key=lambda kv:kv[1])[0] if d["names"] else "Live"
         out[r]="%s · %s"%(base[:70], _tt_daytime(d["start"]))
     return out
@@ -13824,8 +13929,7 @@ def _tt_room_label(c, order, room_id):
     The first order of a room sets the name (dominant real listing + date); every later order
     in that room reuses it. If a room is first seen via a sample-only order, it gets a
     placeholder name that the first real product order upgrades (renaming the show)."""
-    c.execute("""CREATE TABLE IF NOT EXISTS tiktok_rooms(
-        room_id TEXT PRIMARY KEY, label TEXT, start_ts INTEGER, named INTEGER DEFAULT 0)""")
+    _tt_rooms_ensure(c)
     try: ct=int(order.get("create_time") or 0)
     except Exception: ct=0
     if not ct: ct=int(time.time())
@@ -13835,7 +13939,9 @@ def _tt_room_label(c, order, room_id):
         nm=(li.get("product_name") or "").strip()
         if nm and not any(k in nm.lower() for k in kws): anchor=nm; break
     base=_tt_base_listing(anchor) if anchor else ""
-    row=c.execute("SELECT label,named,start_ts FROM tiktok_rooms WHERE room_id=?",(room_id,)).fetchone()
+    row=c.execute("SELECT label,named,start_ts,custom_name FROM tiktok_rooms WHERE room_id=?",(room_id,)).fetchone()
+    if row and (row["custom_name"] or ""):
+        return row["custom_name"]   # user's hand-set name always wins
     if row and row["label"]:
         if not row["named"] and base:   # upgrade placeholder once a real listing appears
             st=row["start_ts"] or ct
@@ -14126,6 +14232,10 @@ def _tt_sweep_once(window_sec=7200):
                 pages+=1
                 if not page_token: break
             if not orders: continue
+            _co=_tt_cutover(org)
+            if _co:
+                orders=[o for o in orders if int(o.get("create_time") or 0) >= _co]  # honour the start-from cutover
+            if not orders: continue
             sc=sdb(org)
             skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
             _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
@@ -14275,7 +14385,7 @@ def api_tiktok_status():
     return jsonify({"ok":True,"configured":_tiktok_ready(),"has_service_id":bool(TIKTOK_SERVICE_ID),
                     "redirect_url":"https://www.getwhatnot.com/api/tiktok/callback",
                     "webhook_url":"https://www.getwhatnot.com/api/tiktok/webhook",
-                    "paused":_tt_is_paused(org),
+                    "paused":_tt_is_paused(org),"cutover":_tt_cutover(org),
                     "shops":shops,"orders":orders,"event_count":(ev["n"] if ev else 0)})
 
 @app.route("/api/tiktok/pause", methods=["POST"])
@@ -14287,6 +14397,24 @@ def api_tiktok_pause():
     d=request.get_json(silent=True) or {}
     paused=_tt_set_paused(org, bool(d.get("paused")))
     return jsonify({"ok":True,"paused":paused})
+
+@app.route("/api/tiktok/cutover", methods=["POST"])
+@req_role("admin")
+def api_tiktok_cutover():
+    """Set (or clear) the 'start from here' point. From now on the API only builds shows for
+    orders created AFTER this moment — so turning the API on never rebuilds all the old history
+    (which is already handled via CSV). Body: {now:true} to start now, or {clear:true} to remove."""
+    org=current_org() or DEFAULT_ORG
+    d=request.get_json(silent=True) or {}
+    if d.get("clear"):
+        ts=_tt_set_cutover(org, 0)
+    else:
+        try: ts=int(d.get("ts") or 0)
+        except Exception: ts=0
+        if not ts: ts=int(time.time())   # default: now
+        ts=_tt_set_cutover(org, ts)
+    return jsonify({"ok":True,"cutover":ts,
+                    "cutover_human":(datetime.fromtimestamp(ts).strftime("%b %d, %Y %-I:%M %p") if ts else "")})
 
 def _tt_epoch(v):
     """Best-effort convert a TikTok time value to epoch SECONDS. Handles int/str seconds,
@@ -14427,6 +14555,9 @@ def _tt_materialize_orders(org, orders):
     def _ck(o):
         try: return int(o.get("create_time") or 0)
         except Exception: return 0
+    cutover=_tt_cutover(org)
+    if cutover:
+        orders=[o for o in orders if _ck(o) >= cutover]   # ignore pre-cutover history
     try:
         sc=sdb(org)
         skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
@@ -14436,14 +14567,16 @@ def _tt_materialize_orders(org, orders):
         # and persist it so the live sweep reuses the exact same show names.
         room_names=_tt_room_names(sc, orders)
         if room_names:
-            sc.execute("""CREATE TABLE IF NOT EXISTS tiktok_rooms(
-                room_id TEXT PRIMARY KEY, label TEXT, start_ts INTEGER, named INTEGER DEFAULT 0)""")
+            _tt_rooms_ensure(sc)
             starts={}
             for o in orders:
                 r=_tt_room_id(o); ct=_ck(o)
                 if r and ct and (r not in starts or ct<starts[r]): starts[r]=ct
             for r,lbl in room_names.items():
-                sc.execute("INSERT OR REPLACE INTO tiktok_rooms(room_id,label,start_ts,named) VALUES(?,?,?,1)",
+                # Preserve any hand-set custom_name — only refresh the auto label/date.
+                sc.execute("""INSERT INTO tiktok_rooms(room_id,label,start_ts,named) VALUES(?,?,?,1)
+                              ON CONFLICT(room_id) DO UPDATE SET label=excluded.label,
+                                 start_ts=excluded.start_ts, named=1""",
                            (r, lbl, starts.get(r,0)))
         for o in sorted(orders, key=_ck):
             try:
@@ -14916,6 +15049,13 @@ th{color:#6b7280;font-weight:700;font-size:11px;text-transform:uppercase}
     <button id="pauseBtn" class="btn g" style="margin-left:4px">…</button>
   </div>
   <div class="mut" id="pauseMsg" style="margin-top:6px">When paused, TikTok keeps broadcasting and orders keep arriving — but nothing is loaded into shows until you resume. Nothing is lost; a Sync after resuming brings them in.</div>
+  <div class="row" style="margin-top:14px;border-top:1px solid #f0f1f4;padding-top:14px">
+    <span class="lbl">Start from</span>
+    <span id="cutState" class="mut">—</span>
+    <button id="cutBtn" class="btn g" style="background:#dcfce7;color:#166534">▶ Start API ingestion from now</button>
+    <button id="cutClear" class="btn g" style="display:none">Clear</button>
+  </div>
+  <div class="mut" id="cutMsg" style="margin-top:6px">Sets a cutover point: the API will ONLY build shows for orders created from that moment on. Use it when you switch from CSV to the API, so it never rebuilds all the old history.</div>
 </div>
 
 <div class="card">
@@ -14983,6 +15123,7 @@ fetch('/api/tiktok/status').then(function(r){return r.json();}).then(function(d)
   document.getElementById('hook').textContent=d.webhook_url||'';
   document.getElementById('evc').textContent=d.event_count?('· '+d.event_count+' webhook events'):'';
   applyPause(!!d.paused);
+  applyCutover(d.cutover||0);
   var sh=document.getElementById('shops');
   if(!d.shops||!d.shops.length){sh.innerHTML='<span class="mut">No shops connected yet. Click “Connect / add a shop”.</span>';}
   else{var h='<table><tr><th>Shop</th><th>Region</th><th>Seller</th><th>Status</th><th>Updated</th></tr>';
@@ -15003,6 +15144,21 @@ function applyPause(p){_paused=p;var st=document.getElementById('ingState');var 
 document.getElementById('pauseBtn').onclick=function(){var b=this;b.disabled=true;
   fetch('/api/tiktok/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:!_paused})})
    .then(function(r){return r.json();}).then(function(d){b.disabled=false;if(d&&d.ok)applyPause(!!d.paused);})
+   .catch(function(){b.disabled=false;});};
+var _cutover=0;
+function applyCutover(ts){_cutover=ts||0;var st=document.getElementById('cutState'),cb=document.getElementById('cutBtn'),cc=document.getElementById('cutClear');
+  if(_cutover){var dt=new Date(_cutover*1000);st.innerHTML='<b style="color:#166534">● from '+dt.toLocaleString()+'</b> — older orders ignored';cb.textContent='↻ Reset start to now';cc.style.display='';}
+  else{st.textContent='not set — the API would build every order it pulls';cb.textContent='▶ Start API ingestion from now';cc.style.display='none';}}
+document.getElementById('cutBtn').onclick=function(){var b=this;b.disabled=true;
+  if(_cutover && !confirm('Move the start point to NOW? Orders created before now will no longer build shows.')){b.disabled=false;return;}
+  fetch('/api/tiktok/cutover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({now:true})})
+   .then(function(r){return r.json();}).then(function(d){b.disabled=false;if(d&&d.ok)applyCutover(d.cutover);
+     document.getElementById('cutMsg').innerHTML='<span style="color:#166534">✓ From now on, only orders created after '+esc(d.cutover_human||'')+' will build shows.</span>';})
+   .catch(function(){b.disabled=false;});};
+document.getElementById('cutClear').onclick=function(){var b=this;b.disabled=true;
+  if(!confirm('Clear the start point? The API will then build every order it pulls, including old history.')){b.disabled=false;return;}
+  fetch('/api/tiktok/cutover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clear:true})})
+   .then(function(r){return r.json();}).then(function(d){b.disabled=false;if(d&&d.ok)applyCutover(0);})
    .catch(function(){b.disabled=false;});};
 document.querySelectorAll('.copy').forEach(function(b){b.onclick=function(){var t=document.getElementById(b.getAttribute('data-c')).textContent;navigator.clipboard.writeText(t);b.textContent='Copied';setTimeout(function(){b.textContent='Copy';},1200);};});
 var pb=document.getElementById('pullBtn');

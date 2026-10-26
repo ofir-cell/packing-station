@@ -12531,12 +12531,17 @@ select{padding:10px 12px;border:1.5px solid #e4e7ec;border-radius:10px;font-size
 .foot{display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid #eef0f3;background:#fafbfc}
 .foot span{font-size:12.5px;color:#6b7280}
 .alldone{text-align:center;padding:30px;color:#166534;font-weight:700}
+.partbadge{display:inline-block;margin-left:12px;background:#e0e7ff;color:#3730a3;border-radius:9px;padding:6px 12px;font-size:16px;font-weight:900;vertical-align:middle;letter-spacing:.5px}
+.wrow .pb{display:inline-block;margin-right:6px;background:#e0e7ff;color:#3730a3;border-radius:6px;padding:1px 6px;font-size:11px;font-weight:800}
+#partSel{padding:7px 10px;border:1.5px solid var(--border,#e5e7eb);border-radius:9px;font-size:13px;font-weight:700}
 </style></head><body>
 __NAVBAR__
 <div class="wrap">
   <div class="toprow">
     <label>Live:</label>
     <select id="showSel"></select>
+    <label style="margin-left:10px">Part:</label>
+    <select id="partSel"><option value="">All / newest</option></select>
     <button class="bulk" id="bulkBtn">⇄ Bulk range</button>
   </div>
 
@@ -12550,7 +12555,7 @@ __NAVBAR__
         <div class="lh"><span class="t">Match this number to a product</span><span class="back" id="backBtn">↩ back</span></div>
         <div id="curWrap">
           <div class="curtop">
-            <div class="stk"><span class="l">sticker</span><span class="n" id="curNum">—</span></div>
+            <div class="stk"><span class="l">sticker</span><span class="n" id="curNum">—</span><span class="partbadge" id="curPart" style="display:none"></span></div>
             <div class="curmeta">
               <div class="s">sold in this live</div>
               <div class="big" id="curQty">—</div>
@@ -12578,7 +12583,11 @@ __NAVBAR__
 <script>
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
 function numOf(s){var n=parseInt(s,10);return isNaN(n)?-1:n;}
-var SHOW='',CUR=null,WAIT=[],busy=false,frontier=-1;
+// Order key across parts: a higher PART always wins, then the higher sticker number — so when
+// the live moves to the next part (numbers reset low) the assistant still rides forward.
+function keyOf(w){return (w.part||0)*10000000+Math.max(0,numOf(w.sticker));}
+function partLbl(p){return p?('PART '+p):'No part';}
+var SHOW='',CUR=null,WAIT=[],busy=false,frontier=-1,partFilter=null;
 var scan=document.getElementById('scan');
 function focusScan(){try{scan.focus()}catch(e){}}
 var autoShow=true;  // follow the newest active live automatically until the user picks one
@@ -12607,41 +12616,53 @@ function setCur(st){
   }
   cw.style.display='block';dn.style.display='none';
   document.getElementById('curNum').textContent=st.sticker;
+  var pb=document.getElementById('curPart');
+  if(st.part){pb.textContent=partLbl(st.part);pb.style.display='inline-block';}else{pb.style.display='none';}
   document.getElementById('curQty').textContent=(st.qty||1)+(((st.qty||1)==1)?' unit':' units');
   document.getElementById('curPrice').innerHTML=st.price?('🏷 sold at $'+esc(st.price)):'';
   scan.value='';focusScan();
   document.querySelectorAll('#waiting .wrow').forEach(function(w){w.classList.toggle('cur',w.getAttribute('data-s')===String(st.sticker))});
 }
+function sameEntry(a,b){return a&&b&&String(a.sticker)===String(b.sticker)&&(a.part||0)===(b.part||0);}
 function load(){
   if(!SHOW)return;
   fetch('/api/live/match-queue?show='+encodeURIComponent(SHOW)).then(function(r){return r.json()}).then(function(d){
     if(!d.ok)return;WAIT=d.waiting||[];
     document.getElementById('wc').textContent=WAIT.length?('· '+WAIT.length):'';
-    // Ride the live FORWARD: default to the newest sale (highest number). Never auto-drop
-    // into the older backlog — those gaps are filled later by tapping. WAIT is sorted
-    // newest-first by the server, so WAIT[0] is the newest unmatched sticker.
-    var top=null; for(var k=0;k<WAIT.length;k++){ if(numOf(WAIT[k].sticker)>=0){ top=WAIT[k]; break; } }
-    var keep=CUR&&WAIT.some(function(w){return String(w.sticker)===String(CUR.sticker)});
+    // Part selector: list the parts present, plus an "All / newest" default.
+    var parts=(d.parts||[]).filter(function(p){return p>0;});
+    var psel=document.getElementById('partSel');
+    var want=(partFilter==null?'':String(partFilter));
+    psel.innerHTML='<option value="">All / newest</option>'+parts.map(function(p){
+      return '<option value="'+p+'"'+(want===String(p)?' selected':'')+'>PART '+p+'</option>';}).join('');
+    psel.style.display=parts.length>1?'':'none';
+    var multi=parts.length>1;
+    // Pool = everything, or just the chosen part. Sorted newest-first by (part, number).
+    var pool=(partFilter==null)?WAIT:WAIT.filter(function(w){return (w.part||0)===partFilter;});
+    var top=pool.length?pool[0]:null;
+    var keep=CUR&&pool.some(function(w){return sameEntry(w,CUR);});
     var curSt;
-    if(keep){ curSt=WAIT.filter(function(w){return String(w.sticker)===String(CUR.sticker)})[0]; }
-    else if(top && numOf(top.sticker)>frontier){ curSt=top; frontier=numOf(top.sticker); } // a new sale arrived
-    else { curSt=null; }  // caught up at the frontier — wait for the next sale
-    // right list: the NEXT few (skip the current), max 6
-    var rest=WAIT.filter(function(w){return !curSt||String(w.sticker)!==String(curSt.sticker)}).slice(0,6);
+    if(keep){ curSt=pool.filter(function(w){return sameEntry(w,CUR);})[0]; }
+    else if(top && keyOf(top)>frontier){ curSt=top; frontier=keyOf(top); }  // a new (higher part/number) sale
+    else { curSt=null; }
+    var rest=pool.filter(function(w){return !curSt||!sameEntry(w,curSt);}).slice(0,6);
     var wd=document.getElementById('waiting');
     wd.innerHTML=rest.length?rest.map(function(w){
-      return '<div class="wrow" data-s="'+esc(w.sticker)+'"><span><b>Sticker '+esc(w.sticker)+'</b>'+(w.price?('<span class="p">· $'+esc(w.price)+'</span>'):'')+'</span><span class="cv">›</span></div>';
+      var pb=(multi&&w.part)?('<span class="pb">P'+w.part+'</span>'):'';
+      return '<div class="wrow" data-s="'+esc(w.sticker)+'" data-p="'+(w.part||0)+'"><span>'+pb+'<b>Sticker '+esc(w.sticker)+'</b>'+(w.price?('<span class="p">· $'+esc(w.price)+'</span>'):'')+'</span><span class="cv">›</span></div>';
     }).join(''):'<div class="empty">Nothing else waiting 🎉</div>';
-    if(WAIT.length>rest.length+(curSt?1:0))wd.innerHTML+='<div class="more">+'+(WAIT.length-rest.length-(curSt?1:0))+' more waiting</div>';
+    if(pool.length>rest.length+(curSt?1:0))wd.innerHTML+='<div class="more">+'+(pool.length-rest.length-(curSt?1:0))+' more waiting</div>';
     wd.querySelectorAll('.wrow').forEach(function(el){el.onclick=function(){
-      var s=el.getAttribute('data-s');var w=WAIT.filter(function(x){return String(x.sticker)===s})[0];if(w)setCur(w);
+      var s=el.getAttribute('data-s'),p=parseInt(el.getAttribute('data-p'),10)||0;
+      var w=WAIT.filter(function(x){return String(x.sticker)===s&&(x.part||0)===p;})[0];if(w)setCur(w);
     }});
     var md=document.getElementById('matched');
     md.innerHTML=(d.matched&&d.matched.length)?d.matched.map(function(m){
-      return '<span class="mchip" data-s="'+esc(m.sticker)+'"><b>'+esc(m.sticker)+'</b> → '+esc(m.name||m.product_sku||'?')+' ✎</span>';
+      var pb=(multi&&m.part)?('P'+m.part+'·'):'';
+      return '<span class="mchip" data-s="'+esc(m.sticker)+'" data-p="'+(m.part||0)+'"><b>'+pb+esc(m.sticker)+'</b> → '+esc(m.name||m.product_sku||'?')+' ✎</span>';
     }).join(''):'<div class="empty">—</div>';
     md.querySelectorAll('.mchip').forEach(function(el){el.onclick=function(){
-      setCur({sticker:el.getAttribute('data-s'),qty:1,price:''});
+      setCur({sticker:el.getAttribute('data-s'),part:parseInt(el.getAttribute('data-p'),10)||0,qty:1,price:''});
     }});
     setCur(curSt);
   });
@@ -12650,7 +12671,7 @@ function doMatch(code){
   if(!CUR||!code||busy)return;busy=true;
   var err=document.getElementById('errBox');err.style.display='none';
   fetch('/api/live/match',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({show:SHOW,sticker:CUR.sticker,code:code})})
+    body:JSON.stringify({show:SHOW,sticker:CUR.sticker,part:(CUR.part||0),code:code})})
    .then(function(r){return r.json()}).then(function(d){
      busy=false;
      if(!d.ok){err.textContent='⚠️ '+(d.error||'Not matched');err.style.display='block';scan.value='';focusScan();return;}
@@ -12663,8 +12684,12 @@ function doMatch(code){
 }
 scan.addEventListener('keydown',function(e){if(e.key==='Enter'){var v=scan.value.trim();if(v)doMatch(v);}});
 document.getElementById('backBtn').onclick=function(){
-  if(!CUR||!WAIT.length)return;var i=WAIT.findIndex(function(w){return String(w.sticker)===String(CUR.sticker)});
+  if(!CUR||!WAIT.length)return;var i=WAIT.findIndex(function(w){return sameEntry(w,CUR);});
   if(i>0)setCur(WAIT[i-1]);
+};
+// Manual part override: jump to a specific part (or back to auto/newest).
+document.getElementById('partSel').onchange=function(){
+  var v=this.value; partFilter=(v===''?null:parseInt(v,10)); frontier=-1; CUR=null; load();
 };
 document.getElementById('bulkBtn').onclick=function(){
   if(!SHOW){alert('Pick a live first');return;}
@@ -12674,10 +12699,13 @@ document.getElementById('bulkBtn').onclick=function(){
   from=parseInt(from,10);to=parseInt(to,10);if(isNaN(from)||isNaN(to)||to<from){alert('Invalid range');return;}
   // Only match stickers that ACTUALLY sold (are in the waiting queue) within the range —
   // never blindly fill a 1..N range that includes numbers with no sale.
-  var targets=WAIT.filter(function(w){var x=numOf(w.sticker);return x>=from&&x<=to;}).map(function(w){return w.sticker;});
-  if(!targets.length){alert('No sold stickers between '+from+' and '+to+' are waiting.');return;}
+  // Respect the selected part (if any); each target keeps its own part so a number range
+  // never bleeds across parts.
+  var pool=(partFilter==null)?WAIT:WAIT.filter(function(w){return (w.part||0)===partFilter;});
+  var targets=pool.filter(function(w){var x=numOf(w.sticker);return x>=from&&x<=to;});
+  if(!targets.length){alert('No sold stickers between '+from+' and '+to+' are waiting'+(partFilter!=null?(' in PART '+partFilter):'')+'.');return;}
   var seq=Promise.resolve(),n=0;
-  targets.forEach(function(st){seq=seq.then(function(){return fetch('/api/live/match',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:SHOW,sticker:String(st),code:code})}).then(function(){n++})})});
+  targets.forEach(function(w){seq=seq.then(function(){return fetch('/api/live/match',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:SHOW,sticker:String(w.sticker),part:(w.part||0),code:code})}).then(function(){n++})})});
   seq.then(function(){alert('Matched '+n+' sold sticker(s)');load();});
 };
 document.addEventListener('click',function(e){if(!e.target.closest('button,select,.wrow,.mchip,.back'))focusScan();});
