@@ -7181,7 +7181,8 @@ __NAVBAR__
 <div class="toast" id="t"></div>
 <script>
 var BUCKETS=[['PENDING','Pending','pending'],['PICKED','Picked','picked'],['PACKED','Packed','packed'],
-['SHIPPED','Shipped','shipped'],['PRE_TRANSIT','Pre-transit','pre'],['IN_TRANSIT','In transit','transit'],
+['SHIPPED','Shipped','shipped'],['AWAITING_COLLECTION','Awaiting collection','pre'],
+['PRE_TRANSIT','Pre-transit','pre'],['IN_TRANSIT','In transit','transit'],
 ['OUT_FOR_DELIVERY','Out for delivery','ofd'],['DELIVERED','Delivered','delivered'],
 ['EXCEPTION','Exception','exc'],['RETURNED','Returned','ret'],['CANCELLED','Cancelled','cancelled'],
 ['GIVEAWAY','Giveaway','giveaway'],['ISSUE','Issue','issue'],['UNKNOWN','Unknown','unk']];
