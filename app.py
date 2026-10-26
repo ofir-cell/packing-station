@@ -1147,6 +1147,11 @@ def sdb_init(org):
         "ALTER TABLE shipments ADD COLUMN stock_depleted INTEGER DEFAULT 0",
         # TikTok: shipping fee the buyer paid (collected, then paid out to carrier).
         "ALTER TABLE shipments ADD COLUMN shipping_fee REAL DEFAULT 0",
+        # TikTok: the 'ship by' deadline (epoch seconds) for warehouse prioritisation.
+        "ALTER TABLE shipments ADD COLUMN ship_by INTEGER DEFAULT 0",
+        # TikTok's own order status (AWAITING_SHIPMENT / AWAITING_COLLECTION / DELIVERED …)
+        # kept alongside our local pack status so health checks can spot mismatches.
+        "ALTER TABLE shipments ADD COLUMN tt_status TEXT",
         "ALTER TABLE shipment_items ADD COLUMN order_id TEXT",
         "ALTER TABLE shipment_items ADD COLUMN cancelled INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN cancel_reason TEXT",
@@ -4000,15 +4005,18 @@ def api_today():
         done_labels={r[0] for r in c.execute("SELECT import_label FROM show_state WHERE done=1").fetchall()}
     except Exception:
         done_labels=set()
+    _now_ts=int(time.time())
     try:
         rows=c.execute("""SELECT import_label lbl, MIN(show_date) sd, MAX(imported_at) imp, COUNT(*) total,
                             SUM(CASE WHEN status IN ('packed','shipped') THEN 1 ELSE 0 END) packed,
                             SUM(CASE WHEN status='picked' THEN 1 ELSE 0 END) picked,
-                            SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending
+                            SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending,
+                            MIN(CASE WHEN status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 THEN ship_by END) due_ts,
+                            SUM(CASE WHEN status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 AND ship_by<? THEN 1 ELSE 0 END) overdue
                           FROM shipments
                           WHERE import_label IS NOT NULL AND import_label!=''
                             AND status NOT IN ('cancelled','giveaway')
-                          GROUP BY import_label HAVING pending>0""").fetchall()
+                          GROUP BY import_label HAVING pending>0""",(_now_ts,)).fetchall()
         for r in rows:
             r=dict(r)
             if r["lbl"] in done_labels: continue   # closed by the user → not backlog
@@ -4019,8 +4027,12 @@ def api_today():
             ful_p+=r["packed"] or 0; ful_k+=r["picked"] or 0; ful_e+=r["pending"] or 0
             shows.append({"name":r["lbl"],"date":(r["sd"] or "")[:10],"age_days":max(0,age),"total":r["total"],
                           "packed":r["packed"] or 0,"pending":r["pending"] or 0,
-                          "pct":round(100*(r["packed"] or 0)/tot)})
-        shows.sort(key=lambda s:(-s["age_days"], s["name"]))
+                          "pct":round(100*(r["packed"] or 0)/tot),
+                          "due_ts":r["due_ts"] or 0,"overdue":r["overdue"] or 0})
+        # WHAT NEXT order: most overdue first, then nearest ship-by deadline, then oldest live.
+        _FAR=9999999999
+        shows.sort(key=lambda s:(0 if s["overdue"] else 1, -s["overdue"],
+                                 s["due_ts"] or _FAR, -s["age_days"], s["name"]))
     except Exception: pass
     out["backlog"]={"lives":len(shows),"orders":sum(s["pending"] for s in shows),
                     "oldest_age":max([s["age_days"] for s in shows],default=0),
@@ -4034,7 +4046,7 @@ def api_today():
                         ORDER BY packed_at DESC LIMIT 1""",(today,)).fetchone()
         if rr: cur=rr["lbl"]
     except Exception: pass
-    if not cur and shows: cur=shows[-1]["name"]   # newest open show (sorted oldest-first)
+    if not cur and shows: cur=max(shows, key=lambda s:s["date"])["name"]   # newest open show by date
     out["current_show"]=cur
 
     alllog=_read_log(); series=[]
@@ -4046,6 +4058,16 @@ def api_today():
 
     try: out["issues"]=c.execute("SELECT COUNT(*) n FROM shipments WHERE status='issue'").fetchone()["n"]
     except Exception: out["issues"]=0
+
+    # ALERT: packed here but TikTok still doesn't show it moving/delivered a couple of days on —
+    # these are the dangerous ones (lost / stolen / label made but parcel never scanned).
+    try:
+        out["packed_not_moving"]=c.execute(
+            """SELECT COUNT(*) n FROM shipments
+               WHERE status IN ('packed','shipped') AND COALESCE(tt_status,'') NOT IN ('IN_TRANSIT','DELIVERED','COMPLETED')
+                 AND COALESCE(packed_at,'')<>'' AND julianday('now')-julianday(substr(packed_at,1,10)) > ?""",
+            (_SHIP_NOMOVE_DAYS,)).fetchone()["n"]
+    except Exception: out["packed_not_moving"]=0
 
     if is_admin:
         money={"sold_today":0,"revenue_today":0,"repeat_buyers":0}
@@ -5580,7 +5602,7 @@ def api_shipments_recent():
     _cols = ("shipment_id, tracking_code, buyer_username, buyer_name, "
              "total_items, expected_weight_g, actual_weight_g, weight_status, "
              "status, missing_weights, show_date, imported_at, import_label, platform, "
-             "delivery_status, delivery_detail, delivered_at, tracked_at")
+             "delivery_status, delivery_detail, delivered_at, tracked_at, ship_by")
     if show:
         rows = c.execute("SELECT "+_cols+" FROM shipments WHERE import_label=? ORDER BY imported_at DESC",(show,)).fetchall()
     else:
@@ -6250,6 +6272,7 @@ def api_shows():
     cutoff_dt = (datetime.now() - timedelta(days=SHOW_WINDOW_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     cap_dt = (datetime.now() - timedelta(days=SHOW_HARD_CAP_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     c = sdb()
+    _now_ts = int(time.time())
     rows = c.execute("""
         SELECT import_label AS name,
                COUNT(*) AS shipments,
@@ -6260,13 +6283,15 @@ def api_shows():
                COUNT(DISTINCT platform) AS platform_count,
                MAX(platform) AS platform,
                MIN(imported_at) AS first_import,
-               MAX(imported_at) AS last_import
+               MAX(imported_at) AS last_import,
+               MIN(CASE WHEN status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 THEN ship_by END) AS due_ts,
+               SUM(CASE WHEN status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 AND ship_by < ? THEN 1 ELSE 0 END) AS overdue
         FROM shipments
         WHERE import_label IS NOT NULL AND import_label != ''
           AND imported_at >= ?
         GROUP BY import_label
         ORDER BY last_import DESC
-    """, (cap_dt,)).fetchall()
+    """, (_now_ts, cap_dt)).fetchall()
     # Auto-close any show whose last order is packed (retroactive + live).
     for _r in rows:
         if (_r["pending"] or 0)==0:
@@ -12748,6 +12773,127 @@ def api_tracking_summary():
         "shows":[{"label":s["import_label"],"date":s["show_date"]} for s in shows],
         "dates":[d["show_date"] for d in dates]})
 
+_TT_DLV_MAP={"IN_TRANSIT":("IN_TRANSIT","In transit · per TikTok"),
+             "AWAITING_COLLECTION":("AWAITING_COLLECTION","Label made · awaiting carrier pickup"),
+             "DELIVERED":("DELIVERED","Delivered · per TikTok"),
+             "COMPLETED":("DELIVERED","Delivered · per TikTok")}
+def _tt_delivery_fields(order):
+    """(status, delivery_status, delivery_detail, delivered_at) from a raw TikTok order."""
+    status_api=(order.get("status") or "").upper()
+    dvs=dvd=dva=None
+    if order.get("delivery_time"):
+        dvs,dvd="DELIVERED","Delivered · per TikTok"
+        try: dva=datetime.fromtimestamp(int(order["delivery_time"])).isoformat(timespec="seconds")
+        except Exception: dva=None
+    elif status_api in _TT_DLV_MAP:
+        dvs,dvd=_TT_DLV_MAP[status_api]
+    return status_api,dvs,dvd,dva
+
+def _tt_backfill_delivery(org, limit=1500):
+    """Refresh ONLY the delivery status of shipments we ALREADY have, by matching them to
+    TikTok by Order ID (CSV and API share the same Order ID). Never creates a shipment or a
+    show and never changes grouping/packing — it only writes delivery_status / tt_status /
+    delivered_at on existing rows. Lets old, already-shipped orders catch up to Delivered."""
+    sc=sdb(org)
+    try:
+        oids=[r["oid"] for r in sc.execute("""SELECT DISTINCT i.order_id oid
+              FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+              WHERE COALESCE(i.order_id,'')<>'' AND COALESCE(s.status,'') NOT IN ('cancelled','giveaway')
+                AND COALESCE(s.delivery_status,'') NOT IN ('DELIVERED','RETURNED')
+              LIMIT ?""",(limit,)).fetchall()]
+    except Exception: oids=[]
+    sc.close()
+    if not oids: return {"ok":True,"checked":0,"updated":0,"note":"nothing to refresh"}
+    c=pdb()
+    row=c.execute("SELECT * FROM tiktok_shops WHERE org_id=? AND active=1 ORDER BY updated_at DESC LIMIT 1",(org,)).fetchone()
+    c.close()
+    if not row: return {"ok":False,"error":"No connected shop. Connect TikTok first."}
+    row=dict(row); shop_id=row["shop_id"]
+    tok=_tt_valid_token(org, shop_id)
+    if not tok or not tok.get("access_token"): return {"ok":False,"error":"No valid access token for the shop."}
+    tok=_tt_ensure_cipher(org, shop_id, tok)
+    checked=0; updated=0
+    sc=sdb(org)
+    try:
+        for i in range(0,len(oids),50):
+            chunk=oids[i:i+50]
+            params={"ids":",".join(chunk)}
+            if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
+            try:
+                res=_tt_request("GET", TIKTOK_API_BASE+"/order/%s/orders"%TIKTOK_API_VERSION,
+                                params=params, signed=True, access_token=tok["access_token"])
+            except Exception as e:
+                _tt_log("backfill request failed: %r"%e); continue
+            if res.get("code"): continue
+            for o in ((res.get("data") or {}).get("orders") or []):
+                checked+=1
+                oid=str(o.get("id") or "")
+                if not oid: continue
+                status_api,dvs,dvd,dva=_tt_delivery_fields(o)
+                if not (dvs or status_api): continue
+                for sr in sc.execute("SELECT DISTINCT s.shipment_id sid FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id WHERE i.order_id=?",(oid,)).fetchall():
+                    sc.execute("""UPDATE shipments SET
+                        delivery_status=CASE WHEN COALESCE(delivery_status,'') IN ('DELIVERED','RETURNED') THEN delivery_status ELSE COALESCE(?,delivery_status) END,
+                        delivery_detail=CASE WHEN COALESCE(delivery_status,'') IN ('DELIVERED','RETURNED') THEN delivery_detail ELSE COALESCE(?,delivery_detail) END,
+                        delivered_at=COALESCE(?,delivered_at),
+                        tt_status=COALESCE(NULLIF(?,''),tt_status)
+                        WHERE shipment_id=?""",(dvs,dvd,dva,status_api,sr["sid"]))
+                    updated+=1
+        sc.commit()
+    finally:
+        sc.close()
+    try: alog("shipping.backfill","checked %d orders, updated %d shipments"%(checked,updated))
+    except Exception: pass
+    return {"ok":True,"checked":checked,"updated":updated,"scanned":len(oids)}
+
+@app.route("/api/shipping/backfill", methods=["POST"])
+@req_role("admin","cs")
+def api_shipping_backfill():
+    org=current_org() or DEFAULT_ORG
+    return jsonify(_tt_backfill_delivery(org))
+
+_SHIP_STUCK_DAYS=2; _SHIP_NOMOVE_DAYS=3
+def _health_where():
+    """Exception buckets: the WHERE clause for each 'shipment health' problem state."""
+    return {
+      # A label/tracking exists (so TikTok thinks it's on the way) but we never packed it here.
+      "label_not_packed": "COALESCE(tracking_code,'')<>'' AND status IN ('pending','picked')",
+      # TikTok STILL says AWAITING_COLLECTION days after the live → label made but the carrier
+      # never collected it, i.e. it never actually went out. (TikTok status, no USPS needed.)
+      "stuck": ("COALESCE(tt_status,'')='AWAITING_COLLECTION' "
+                "AND julianday('now')-julianday(COALESCE(NULLIF(show_date,''),substr(imported_at,1,10))) > %d" % _SHIP_STUCK_DAYS),
+      # Packed here but TikTok still doesn't show it moving/delivered after a few days → confirm it shipped.
+      "packed_no_move": ("status IN ('packed','shipped') AND COALESCE(tt_status,'') NOT IN ('IN_TRANSIT','DELIVERED','COMPLETED') "
+                "AND COALESCE(packed_at,'')<>'' AND julianday('now')-julianday(substr(packed_at,1,10)) > %d" % _SHIP_NOMOVE_DAYS),
+      # Delivered — from TikTok's own status (or USPS, if ever configured).
+      "delivered": "COALESCE(tt_status,'') IN ('DELIVERED','COMPLETED') OR COALESCE(delivery_status,'')='DELIVERED'",
+    }
+
+@app.route("/api/shipping/health")
+@req_role("admin","cs")
+def api_shipping_health():
+    """Shipment-health exceptions — cross-references what TikTok/USPS say against our local
+    pack status to catch orders that look shipped but weren't packed or never went out."""
+    show=(request.args.get("show") or "").strip()
+    c=sdb()
+    base="status NOT IN ('cancelled','giveaway')"
+    bp=[]
+    if show: base+=" AND import_label=?"; bp.append(show)
+    W=_health_where()
+    counts={}
+    for k,w in W.items():
+        counts[k]=c.execute("SELECT COUNT(*) n FROM shipments WHERE %s AND (%s)"%(base,w), bp).fetchone()["n"]
+    bucket=(request.args.get("bucket") or "label_not_packed").strip()
+    w=W.get(bucket) or W["label_not_packed"]
+    rows=c.execute("""SELECT shipment_id,tracking_code,buyer_name,buyer_username,import_label,show_date,
+                        status,tt_status,delivery_status,delivery_detail,delivered_at,packed_at,packed_by,ship_by
+                      FROM shipments WHERE %s AND (%s)
+                      ORDER BY COALESCE(show_date,'') ASC LIMIT 300"""%(base,w), bp).fetchall()
+    c.close()
+    return jsonify({"ok":True,"usps":USPS_ENABLED,"counts":counts,"bucket":bucket,
+                    "stuck_days":_SHIP_STUCK_DAYS,"nomove_days":_SHIP_NOMOVE_DAYS,
+                    "rows":[dict(r) for r in rows]})
+
 @app.route("/shipping-status")
 @req_role("admin","cs")
 def shipping_status_page():
@@ -14059,6 +14205,10 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
         _cfg=c.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
         overhead=_cfg["packaging_overhead_g"] if _cfg else 30
     status_api=(order.get("status") or "").upper()
+    # UNPAID orders aren't real sales yet — don't build a shipment (it would clutter the pack
+    # queue). When the buyer pays, the status changes and the next sync brings the order in.
+    if status_api=="UNPAID":
+        return None
     is_cancelled = status_api=="CANCELLED"
     pkg=""
     for p in (order.get("packages") or []):
@@ -14102,10 +14252,22 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
     pay=order.get("payment") or {}
     try: ship_fee=round(float(str(pay.get("shipping_fee") or "0").replace(",","").replace("$","") or 0),2)
     except Exception: ship_fee=0.0
-    # delivery status straight from the order timestamps
+    try: ship_by=int(order.get("shipping_due_time") or 0)   # 'must ship by' deadline (epoch)
+    except Exception: ship_by=0
+    # Delivery status straight from TikTok's OWN order status (USPS is not relied on — they
+    # charge per scan). AWAITING_COLLECTION = label made but carrier hasn't collected (NOT in
+    # transit). We never let this DOWNGRADE a terminal DELIVERED/RETURNED (see the UPDATE).
+    _TT_DLV={"IN_TRANSIT":("IN_TRANSIT","In transit · per TikTok"),
+             "AWAITING_COLLECTION":("AWAITING_COLLECTION","Label made · awaiting carrier pickup"),
+             "DELIVERED":("DELIVERED","Delivered · per TikTok"),
+             "COMPLETED":("DELIVERED","Delivered · per TikTok")}
     dvs=dvd=dva=None
-    if order.get("delivery_time"): dvs,dvd,dva=("DELIVERED","Delivered · per TikTok",datetime.fromtimestamp(int(order["delivery_time"])).isoformat(timespec="seconds"))
-    elif order.get("collection_time") or order.get("rts_time"): dvs,dvd=("IN_TRANSIT","Shipped · per TikTok")
+    if order.get("delivery_time"):
+        dvs,dvd="DELIVERED","Delivered · per TikTok"
+        try: dva=datetime.fromtimestamp(int(order["delivery_time"])).isoformat(timespec="seconds")
+        except Exception: dva=None
+    elif status_api in _TT_DLV:
+        dvs,dvd=_TT_DLV[status_api]
     # all-gift order → giveaway; else cancelled → cancelled; else keep local packed/shipped
     all_gift = rows and all(r["is_gift"] for r in rows)
     ex=c.execute("SELECT shipment_id, status FROM shipments WHERE shipment_id=?",(ship_id,)).fetchone()
@@ -14119,19 +14281,23 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
                        buyer_username=?, buyer_name=?, address_full=COALESCE(NULLIF(?,''),address_full),
                        postal_code=COALESCE(NULLIF(?,''),postal_code), platform='tiktok',
                        import_label=COALESCE(import_label,?), shipping_fee=?, status=?,
-                       delivery_status=COALESCE(?,delivery_status), delivery_detail=COALESCE(?,delivery_detail),
-                       delivered_at=COALESCE(?,delivered_at)
+                       delivery_status=CASE WHEN COALESCE(delivery_status,'') IN ('DELIVERED','RETURNED')
+                            THEN delivery_status ELSE COALESCE(?,delivery_status) END,
+                       delivery_detail=CASE WHEN COALESCE(delivery_status,'') IN ('DELIVERED','RETURNED')
+                            THEN delivery_detail ELSE COALESCE(?,delivery_detail) END,
+                       delivered_at=COALESCE(?,delivered_at), ship_by=CASE WHEN ?>0 THEN ? ELSE ship_by END,
+                       tt_status=COALESCE(NULLIF(?,''),tt_status)
                      WHERE shipment_id=?""",
                   (tracking, buyer_nick, buyer_name, addr_full, postal, label, ship_fee, new_status,
-                   dvs, dvd, dva, ship_id))
+                   dvs, dvd, dva, ship_by, ship_by, status_api, ship_id))
     else:
         c.execute("""INSERT INTO shipments
             (shipment_id, tracking_code, buyer_username, buyer_name, address_full, postal_code,
              show_date, status, platform, import_batch, import_label, shipping_fee,
-             delivery_status, delivery_detail, delivered_at)
-            VALUES (?,?,?,?,?,?,?,?, 'tiktok', ?, ?, ?, ?,?,?)""",
+             delivery_status, delivery_detail, delivered_at, ship_by, tt_status)
+            VALUES (?,?,?,?,?,?,?,?, 'tiktok', ?, ?, ?, ?,?,?,?,?)""",
           (ship_id, tracking, buyer_nick, buyer_name, addr_full, postal,
-           (created_iso or "")[:10], new_status, "tiktok-api", label, ship_fee, dvs, dvd, dva))
+           (created_iso or "")[:10], new_status, "tiktok-api", label, ship_fee, dvs, dvd, dva, ship_by, status_api))
     # Rebuild ONLY THIS ORDER'S items, preserving floor progress (picked) AND inventory
     # markers (depleted_qty/depleted_sku). Scoped by order_id so that when several orders
     # are combined into one shipping package (shared shipment_id), each refreshes just its
@@ -14636,6 +14802,32 @@ def _tt_store_raw_order(org, o):
     c.commit(); c.close()
     return True
 
+def _tt_store_raw_orders_bulk(org, orders):
+    """Upsert MANY raw orders into tiktok_orders in ONE transaction — far faster than the
+    per-order helper (which commits each time) for a big import file."""
+    c=pdb(); now=datetime.now().isoformat(timespec='seconds'); n=0
+    try:
+        for o in orders:
+            if not isinstance(o,dict): continue
+            oid=str(o.get("id") or "")
+            if not oid: continue
+            agg={}
+            for li in (o.get("line_items") or []):
+                key=(li.get("seller_sku") or "", str(li.get("sku_id") or ""), li.get("product_name") or "")
+                a=agg.setdefault(key, {"seller_sku":key[0],"sku_id":key[1],"name":key[2],"qty":0,"price":""})
+                a["qty"]+=1; a["price"]=li.get("sale_price") or li.get("original_price") or a["price"]
+            c.execute("""INSERT INTO tiktok_orders(order_id,org_id,shop_id,status,line_items,create_time,raw,updated_at)
+                VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(org_id,order_id) DO UPDATE SET status=excluded.status,line_items=excluded.line_items,
+                  create_time=excluded.create_time,raw=excluded.raw,updated_at=excluded.updated_at""",
+              (oid,org,str(o.get("shop_id") or ""),str(o.get("order_status") or ""),
+               json.dumps(list(agg.values())),int(o.get("create_time") or 0),json.dumps(o)[:40000],now))
+            n+=1
+        c.commit()
+    finally:
+        c.close()
+    return n
+
 def _tt_pull_core(org, days=30):
     """Pull recent real orders from the connected shop and materialize them into shows.
     Returns a result dict (never raises). Shared by the Sync button and the regroup action."""
@@ -14791,9 +14983,7 @@ def api_tiktok_import_orders():
     if isinstance(payload,dict):
         for s in (payload.get("live_sessions") or []):
             if _tt_store_session(org, s): sess+=1
-    stored=0
-    for o in orders:
-        if isinstance(o,dict) and _tt_store_raw_order(org, o): stored+=1
+    stored=_tt_store_raw_orders_bulk(org, orders)   # one transaction — handles big files fast
     shows_list, shipped, skipped = _tt_materialize_orders(org, [o for o in orders if isinstance(o,dict)])
     try: alog("tiktok.import", "%d orders, %d sessions imported, %d loaded, %d skipped (already in system) into %d shows" % (stored, sess, shipped, skipped, len(shows_list)))
     except Exception: pass

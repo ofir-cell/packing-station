@@ -112,6 +112,7 @@ def _navbar(active_page=""):
           ])),
           ("Fulfillment", "📦", _vis([
             ("shipments", "/admin/shipments", "Shipments") if has("admin","cs") else None,
+            ("shipstatus", "/shipping-status", "Shipment Health") if has("admin","cs") else None,
             ("track", "/admin/track", "Track") if has("admin","cs","worker","picker") else None,
             ("cleanup", "/admin/cleanup", "Table Cleanup") if has("admin","cs","worker") else None,
             ("issues", "/admin/issues", "Picking / Packing Issues") if has("admin","cs") else None,
@@ -2619,6 +2620,9 @@ body{margin:0;font-family:'DM Sans',-apple-system,sans-serif;background:var(--su
 .qr:hover{background:var(--surface)}
 .qr .age{font-size:11px;font-weight:800;padding:3px 8px;border-radius:7px;background:var(--surface-strong);color:var(--text-muted);white-space:nowrap}
 .qr .age.old{background:#fae1cf;color:#b4530b}
+.qr .age.soon{background:#fef3c7;color:#92400e}
+.qr .age.over{background:#fee2e2;color:#b91c1c}
+.qr .rank{font-size:13px;font-weight:900;color:var(--text-dim);min-width:20px;text-align:center}
 .qr .nm{flex:1;min-width:0}.qr .nm b{font-size:14px;font-weight:700;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.qr .nm small{font-size:12px;color:var(--text-muted)}
 .qr .prog{width:120px;flex:none}.qr .prog .bar{height:7px;border-radius:4px;background:var(--surface-strong);overflow:hidden}.qr .prog .bar i{display:block;height:100%;background:var(--brand)}
 .qr .prog small{font-size:11px;color:var(--text-dim);display:block;margin-top:3px;text-align:right}
@@ -2665,11 +2669,19 @@ function floorBlock(d){var f=d.floor;var ptot=Math.max(f.packers_online,f.packer
   '<div class="card"><div class="l">Packed today</div><div class="v">'+f.packed_today+'</div><div class="s">by '+f.packers_today+' packers</div></div>'+
   '<div class="card"><div class="l">Picked today</div><div class="v">'+f.picked_today+'</div><div class="s">'+f.waiting_to_pack+' waiting to pack</div></div>'+
   '</div>';}
-function backlogBlock(d){var b=d.backlog;if(!b.lives)return '<div class="sec">Backlog</div><div class="card"><b>All caught up</b><div class="s">No open shows waiting to pack.</div></div>';
- var h='<div class="sec">How far behind are we</div><div class="backlog"><div class="big">'+b.lives+(b.lives===1?' live':' lives')+'</div><div><b>'+b.orders+' orders still to pack across '+b.lives+' open show'+(b.lives===1?'':'s')+'</b><small>Oldest open show is '+b.oldest_age+' day'+(b.oldest_age===1?'':'s')+' back.'+(d.current_show?(' Current table: '+esc(d.current_show)+'.'):'')+'</small></div></div>';
+function dueBadge(s){
+  if(s.overdue)return '<span class="age over" title="orders past ship-by">⚠ '+s.overdue+' late</span>';
+  if(s.due_ts){var ms=s.due_ts*1000,d=new Date(ms),soon=(ms-Date.now())<24*3600*1000;
+    return '<span class="age'+(soon?' soon':'')+'" title="ship by">⏰ '+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+'</span>';}
+  var a=s.age_days;return '<span class="age'+(a>=2?' old':'')+'">'+(a===0?'Today':(a+(a===1?' day':' days')))+'</span>';
+}
+function backlogBlock(d){var b=d.backlog;if(!b.lives)return '<div class="sec">What’s next</div><div class="card"><b>All caught up 🎉</b><div class="s">No open shows waiting to pack.</div></div>';
+ var od=0;b.shows.forEach(function(s){od+=(s.overdue||0)});
+ var sub=od?('<b style="color:#b91c1c">'+od+' order'+(od===1?'':'s')+' past their ship-by deadline</b> — work these first.'):('Ordered by urgency — nearest ship-by deadline first.');
+ var h='<div class="sec">What’s next — work on these first</div><div class="backlog"><div class="big">'+b.lives+(b.lives===1?' live':' lives')+'</div><div><b>'+b.orders+' orders still to pack</b><small>'+sub+'</small></div></div>';
  var LIMIT=2;
- h+='<div class="queue" id="blq">';b.shows.forEach(function(s,i){var oldC=s.age_days>=2?' old':'';var ageT=s.age_days===0?'Today':(s.age_days+(s.age_days===1?' day':' days'));var moreCls=i>=LIMIT?' qr-more':'';
-  h+='<a class="qr'+moreCls+'" href="/admin/shipments?show='+encodeURIComponent(s.name)+'"><span class="age'+oldC+'">'+ageT+'</span><span class="nm"><b>'+esc(s.name)+'</b><small>'+esc(s.date||'')+'</small></span><span class="prog"><span class="bar"><i style="width:'+s.pct+'%"></i></span><small>'+s.pct+'% packed</small></span><span class="left">'+s.pending+'</span></a>';});
+ h+='<div class="queue" id="blq">';b.shows.forEach(function(s,i){var moreCls=i>=LIMIT?' qr-more':'';
+  h+='<a class="qr'+moreCls+'" href="/admin/shipments?show='+encodeURIComponent(s.name)+'"><span class="rank">'+(i+1)+'</span>'+dueBadge(s)+'<span class="nm"><b>'+esc(s.name)+'</b><small>'+esc(s.date||'')+'</small></span><span class="prog"><span class="bar"><i style="width:'+s.pct+'%"></i></span><small>'+s.pct+'% packed</small></span><span class="left">'+s.pending+'</span></a>';});
  h+='</div>';
  if(b.shows.length>LIMIT)h+='<button class="seemore" data-n="'+(b.shows.length-LIMIT)+'" onclick="toggleBacklog(this)">See '+(b.shows.length-LIMIT)+' more open show'+((b.shows.length-LIMIT)===1?'':'s')+' ▾</button>';
  if(b.stale)h+='<div class="subt" style="margin:8px 2px 0">+ '+b.stale+' older show'+(b.stale===1?'':'s')+' (45+ days) hidden — close them under Shows if already done.</div>';return h;}
@@ -2687,7 +2699,8 @@ function numbersBlock(d){var m=d.money||{};var f=d.floor;
   '<div class="card"><div class="h3">Packed — last 7 days</div><div class="subt">Daily throughput</div><div class="bars">';
  seven.forEach(function(x){h+='<div class="b'+(x.today?' today':'')+'"><div class="bar" style="height:'+Math.round(x.count/mx*100)+'%"></div><small>'+x.day+'</small></div>';});
  h+='</div></div></div>';return h;}
-function attBlock(d){return '<div class="sec">Needs your attention</div><div class="att">'+
+function attBlock(d){var pnm=d.packed_not_moving||0;return '<div class="sec">Needs your attention</div><div class="att">'+
+  (pnm?('<a href="/shipping-status"><span class="ic">🚨</span><span class="t"><b>Packed but not shipped</b><small>Packed here but TikTok shows no movement — check for lost/stolen parcels</small></span><span class="n warn" style="color:#b91c1c">'+pnm+'</span></a>'):'')+
   '<a href="/admin/issues"><span class="ic">🚧</span><span class="t"><b>Picking / Packing Issues</b><small>Flagged orders waiting on a decision</small></span><span class="n warn">'+(d.issues||0)+'</span></a>'+
   '<a href="/admin/cleanup"><span class="ic">🧹</span><span class="t"><b>Tables to clean</b><small>Clear between shows to free stock</small></span><span class="n">'+(d.tables_to_clean||0)+'</span></a></div>';}
 function workerBlock(d){var me=d.me||{};
@@ -3674,6 +3687,13 @@ if(showFilter){
   var sub=document.querySelector('.page-sub');
   if(sub)sub.innerHTML='Filtering by show: <b style="color:var(--brand)">'+showFilter.replace(/</g,'&lt;')+'</b> · <a href="/admin/shipments" style="color:var(--text-muted)">Clear filter</a>';
 }
+function shipByCell(s){
+  if(!s.ship_by)return '<span style="opacity:.4">—</span>';
+  var ms=s.ship_by*1000,d=new Date(ms),done=(s.status==='packed'||s.status==='shipped');
+  var over=(!done&&ms<Date.now()),soon=(!done&&!over&&(ms-Date.now())<24*3600*1000);
+  var col=done?'opacity:.4':(over?'color:#b91c1c;font-weight:800':(soon?'color:#92400e;font-weight:800':'color:#4338ca'));
+  return '<span style="white-space:nowrap;'+col+'">'+(over?'⚠ ':'')+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})+'</span>';
+}
 function loadShipments(){
   var url='/api/shipments/recent?limit=5000';
   if(showFilter)url+='&show='+encodeURIComponent(showFilter);
@@ -3722,7 +3742,7 @@ function renderTable(){
     return s.status===_statusFilter;
   });
   var DEL={DELIVERED:['#059669','✅ Delivered'],IN_TRANSIT:['#2563eb','✈️ In transit'],OUT_FOR_DELIVERY:['#0891b2','📬 Out for delivery'],PRE_TRANSIT:['#b45309','🚚 Shipped'],EXCEPTION:['#f43f5e','⚠️ Exception'],RETURNED:['#c2410c','↩️ Returned'],UNKNOWN:['#64748b','—']};
-  var html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Shipment</th><th>Buyer</th><th>SKU</th><th>Tracking</th><th>Status</th><th>USPS</th><th>Show date</th></tr></thead><tbody>';
+  var html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Shipment</th><th>Buyer</th><th>SKU</th><th>Tracking</th><th>Status</th><th>Ship by</th><th>USPS</th><th>Show date</th></tr></thead><tbody>';
   view.forEach(function(s,i){
     var trk=s.tracking_code?'<a href="https://tools.usps.com/go/TrackConfirmAction?tLabels='+encodeURIComponent(s.tracking_code)+'" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="col-tracking" style="text-decoration:underline" title="Track on USPS.com">'+escapeHtml(s.tracking_code)+' ↗</a>':'<span class="col-id" style="opacity:.5">—</span>';
     var dv=s.delivery_status?(DEL[s.delivery_status]||['#64748b',s.delivery_status]):null;
@@ -3733,10 +3753,11 @@ function renderTable(){
       '<td style="font-weight:700">'+escapeHtml(s.stickers||s.total_items||'')+'</td>'+
       '<td>'+trk+'</td>'+
       '<td><span class="status-pill st-'+s.status+'">'+s.status.replace('_',' ')+'</span></td>'+
+      '<td>'+shipByCell(s)+'</td>'+
       '<td>'+delCell+'</td>'+
       '<td style="color:var(--text-dim)">'+fmtDate(s.show_date||s.imported_at)+'</td>'+
     '</tr>'+
-    '<tr class="detail" data-detail="'+i+'" style="display:none"><td colspan="7"><div class="detail-inner" id="detail-'+i+'">Loading…</div></td></tr>';
+    '<tr class="detail" data-detail="'+i+'" style="display:none"><td colspan="8"><div class="detail-inner" id="detail-'+i+'">Loading…</div></td></tr>';
   });
   html+='</tbody></table></div>';
   lw.innerHTML=bar+html;
@@ -4424,6 +4445,10 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
  .row-nums .n b{display:block;font-size:16px;font-weight:900;line-height:1}
  .row-nums .n span{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.4px;font-weight:700}
  .row-nums .n.pend b{color:#b45309}.row-nums .n.pack b{color:#059669}
+ .row-due{flex-shrink:0;min-width:120px;text-align:right}
+ .due{font-size:11px;font-weight:800;padding:3px 8px;border-radius:7px;background:#eef2ff;color:#4338ca;white-space:nowrap}
+ .due.soon{background:#fef3c7;color:#92400e}
+ .due.over{background:#fee2e2;color:#b91c1c}
  .row-when{font-size:11px;color:var(--text-dim);white-space:nowrap;flex-shrink:0;min-width:110px;text-align:right}
  .row-acts{display:flex;gap:6px;flex-shrink:0}
  .row-acts button{border-radius:8px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;border:1px solid}
@@ -4440,7 +4465,7 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
  .bulkbar button{border:none;border-radius:10px;padding:9px 16px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit}
  .bulkbar .bb-done{background:#34d399;color:#064e3b}
  .bulkbar .bb-clear{background:rgba(255,255,255,.14);color:#fff}
- @media(max-width:820px){.row-nums,.row-when{display:none}}
+ @media(max-width:820px){.row-nums,.row-when,.row-due{display:none}}
 </style>
 </head><body data-role="__ROLE__">
 __NAVBAR__
@@ -4485,6 +4510,12 @@ __NAVBAR__
 <script>
 function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function fmtDateShort(s){if(!s)return '';try{return new Date(s).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}catch(e){return s}}
+function dueHtml(sh){
+  if(sh.overdue){return '<span class="due over" title="Orders past their ship-by deadline">⚠ '+sh.overdue+' overdue</span>';}
+  if(sh.due_ts){var ms=sh.due_ts*1000,d=new Date(ms),soon=(ms-Date.now())<24*3600*1000;
+    return '<span class="due'+(soon?' soon':'')+'" title="Earliest ship-by deadline">⏰ '+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})+'</span>';}
+  return '';
+}
 
 var SHOWS=[];
 var SEL={};
@@ -4550,6 +4581,7 @@ function renderList(){
         '<span class="n pend"><b>'+(sh.pending||0)+'</b><span>pending</span></span>'+
         '<span class="n pack"><b>'+packed+'</b><span>packed</span></span>'+
       '</span>'+
+      '<span class="row-due">'+dueHtml(sh)+'</span>'+
       '<span class="row-when">'+(sh.time_range?('🔴 '+escapeHtml(sh.time_range)):fmtDateShort(sh.last_import))+(sh.done&&sh.done_by?'<br>✓ '+escapeHtml(sh.done_by):'')+'</span>'+
       '<span class="row-acts">'+
         '<button class="'+(sh.done?'ra-undo':'ra-done')+'" onclick="toggleDone(event,\\''+en+'\\','+(sh.done?'false':'true')+')">'+(sh.done?'↩︎ Undo':'✓ Done')+'</button>'+
@@ -7115,6 +7147,12 @@ th{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
 .filters .f label{display:block;font-size:11px;font-weight:700;color:#6b7280;margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
 .filters select{background:#ffffff;border:2px solid rgba(17,24,39,0.128);border-radius:10px;padding:9px 12px;font-size:13px;color:#1a2130;font-family:inherit;outline:none;min-width:180px}
 .filters select:focus{border-color:#4f46e5}
+.sec-h{font-size:15px;font-weight:800;color:#1a2130;margin:2px 2px 10px}
+.hcards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.hc{background:#fff;border:2px solid #e5e7eb;border-radius:12px;padding:12px 16px;min-width:155px;cursor:pointer;flex:1}
+.hc.on{box-shadow:0 0 0 3px rgba(79,70,229,.15)}
+.hc .hn{font-size:27px;font-weight:900;line-height:1}
+.hc .hl{font-size:11px;color:#6b7280;font-weight:700;margin-top:5px;line-height:1.3}
 .filters .clr{background:rgba(17,24,39,0.096);color:#1a2130;border:1px solid rgba(17,24,39,0.16);border-radius:10px;padding:9px 16px;font-size:13px;font-weight:700;cursor:pointer}
 .empty{text-align:center;color:#6b7280;font-style:italic;padding:30px}
 .warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);color:#b45309;padding:12px 16px;border-radius:10px;margin-bottom:18px;font-size:13px}
@@ -7126,6 +7164,14 @@ __NAVBAR__
 <button class="btn btn-p" id="refresh">↻ Reload</button></div>
 <div class="wrap">
 <div id="notice"></div>
+<div class="sec-h" style="display:flex;align-items:center;gap:12px;justify-content:space-between">🩺 Shipment health — needs attention
+  <button class="btn btn-p" id="backfill" style="font-size:12px;padding:7px 12px">↻ Refresh delivery from TikTok</button></div>
+<div id="bfMsg" class="mut" style="margin:-4px 2px 10px;font-size:12px;color:#6b7280"></div>
+<div class="hcards" id="hcards"></div>
+<div id="hbox" style="display:none;margin-bottom:22px">
+  <table><thead><tr><th>Buyer</th><th>Tracking</th><th>Our status</th><th>TikTok</th><th>USPS</th><th>Show</th></tr></thead>
+  <tbody id="hrows"></tbody></table>
+</div>
 <div class="filters">
 <div class="f"><label>Show</label><select id="fShow"><option value="">All shows</option></select></div>
 <div class="f"><label>Date</label><select id="fDate"><option value="">All dates</option></select></div>
@@ -7138,7 +7184,8 @@ __NAVBAR__
 <div class="toast" id="t"></div>
 <script>
 var BUCKETS=[['PENDING','Pending','pending'],['PICKED','Picked','picked'],['PACKED','Packed','packed'],
-['SHIPPED','Shipped','shipped'],['PRE_TRANSIT','Pre-transit','pre'],['IN_TRANSIT','In transit','transit'],
+['SHIPPED','Shipped','shipped'],['AWAITING_COLLECTION','Awaiting collection','pre'],
+['PRE_TRANSIT','Pre-transit','pre'],['IN_TRANSIT','In transit','transit'],
 ['OUT_FOR_DELIVERY','Out for delivery','ofd'],['DELIVERED','Delivered','delivered'],
 ['EXCEPTION','Exception','exc'],['RETURNED','Returned','ret'],['CANCELLED','Cancelled','cancelled'],
 ['GIVEAWAY','Giveaway','giveaway'],['ISSUE','Issue','issue'],['UNKNOWN','Unknown','unk']];
@@ -7191,8 +7238,43 @@ document.getElementById('fDate').addEventListener('change',load);
 document.getElementById('fClear').addEventListener('click',function(){
     filter='';document.getElementById('fShow').value='';document.getElementById('fDate').value='';load();
 });
-document.getElementById('refresh').addEventListener('click',function(){load();toast('Reloaded')});
-load();
+document.getElementById('refresh').addEventListener('click',function(){load();loadHealth();toast('Reloaded')});
+var HB=[['label_not_packed','Label made — not packed here','#b91c1c'],
+        ['stuck','Awaiting collection — never shipped','#b45309'],
+        ['packed_no_move','Packed — not confirmed shipped','#7c3aed'],
+        ['delivered','Delivered ✓','#0d9488']];
+var hbucket='';
+function loadHealth(){
+  var u='/api/shipping/health'+(hbucket?('?bucket='+encodeURIComponent(hbucket)):'');
+  fetch(u).then(function(r){return r.json()}).then(function(d){
+    var c=d.counts||{};
+    document.getElementById('hcards').innerHTML=HB.map(function(b){
+      var n=c[b[0]]||0;var col=n?b[2]:'#9aa1ab';
+      return '<div class="hc'+(hbucket===b[0]?' on':'')+'" style="border-color:'+(n?b[2]:'#e5e7eb')+'" onclick="pickHealth(\\''+b[0]+'\\')"><div class="hn" style="color:'+col+'">'+n+'</div><div class="hl">'+b[1]+'</div></div>';
+    }).join('');
+    var box=document.getElementById('hbox');
+    if(!hbucket){box.style.display='none';return;}
+    box.style.display='block';
+    var rows=d.rows||[];
+    document.getElementById('hrows').innerHTML=rows.length?rows.map(function(s){
+      var trk=s.tracking_code?'<a href="https://tools.usps.com/go/TrackConfirmAction?tLabels='+encodeURIComponent(s.tracking_code)+'" target="_blank" rel="noopener" style="text-decoration:underline">'+esc(s.tracking_code)+' ↗</a>':'—';
+      return '<tr><td>'+esc(s.buyer_name||s.buyer_username||'—')+'</td><td class="tn">'+trk+'</td><td>'+esc(s.status||'')+'</td><td>'+esc(s.tt_status||'—')+'</td><td>'+esc(s.delivery_status||'—')+'</td><td>'+esc(s.import_label||'')+'</td></tr>';
+    }).join(''):'<tr><td colspan="6" class="empty">None here 🎉</td></tr>';
+  }).catch(function(){});
+}
+function pickHealth(b){hbucket=(hbucket===b?'':b);loadHealth();}
+var bf=document.getElementById('backfill');
+if(bf)bf.onclick=function(){bf.disabled=true;var old=bf.textContent;bf.textContent='Refreshing…';
+  var m=document.getElementById('bfMsg');m.textContent='Checking existing orders against TikTok (delivery status only — nothing new is created)…';
+  fetch('/api/shipping/backfill',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+   .then(function(r){return r.json();}).then(function(d){
+     bf.disabled=false;bf.textContent=old;
+     if(!d.ok){m.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
+     m.innerHTML='<span style="color:#166534">✓ Checked '+(d.checked||0)+' order(s), updated '+(d.updated||0)+' shipment(s)'+((d.scanned&&d.scanned>=1500)?' · a lot pending — click again to continue':'')+'.</span>';
+     load();loadHealth();
+   }).catch(function(){bf.disabled=false;bf.textContent=old;document.getElementById('bfMsg').innerHTML='<span style="color:#b91c1c">Network error</span>';});
+};
+load();loadHealth();
 </script></body></html>'''
 
 
