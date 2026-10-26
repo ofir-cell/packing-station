@@ -12796,14 +12796,20 @@ def _tt_backfill_delivery(org, limit=1500):
     delivered_at on existing rows. Lets old, already-shipped orders catch up to Delivered."""
     sc=sdb(org)
     try:
-        oids=[r["oid"] for r in sc.execute("""SELECT DISTINCT i.order_id oid
+        raw_oids=[r["oid"] for r in sc.execute("""SELECT DISTINCT i.order_id oid
               FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
               WHERE COALESCE(i.order_id,'')<>'' AND COALESCE(s.status,'') NOT IN ('cancelled','giveaway')
                 AND COALESCE(s.delivery_status,'') NOT IN ('DELIVERED','RETURNED')
               LIMIT ?""",(limit,)).fetchall()]
-    except Exception: oids=[]
+    except Exception: raw_oids=[]
     sc.close()
-    if not oids: return {"ok":True,"checked":0,"updated":0,"note":"nothing to refresh"}
+    # Only real TikTok order ids (long all-digit). A malformed id poisons the whole batch with
+    # 'invalid parameters', so we drop non-conforming ones (e.g. Whatnot/legacy CSV ids).
+    oids=[str(x).strip() for x in raw_oids if str(x).strip().isdigit() and len(str(x).strip())>=15]
+    if not oids:
+        return {"ok":True,"checked":0,"updated":0,
+                "note":"No TikTok-format order ids to refresh (%d candidate id(s), none look like a TikTok order id)."%len(raw_oids),
+                "sample_ids":raw_oids[:5]}
     c=pdb()
     row=c.execute("SELECT * FROM tiktok_shops WHERE org_id=? AND active=1 ORDER BY updated_at DESC LIMIT 1",(org,)).fetchone()
     c.close()
