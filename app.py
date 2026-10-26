@@ -12865,6 +12865,67 @@ def api_shipping_backfill():
     org=current_org() or DEFAULT_ORG
     return jsonify(_tt_backfill_delivery(org))
 
+def _tt_refresh_stored_statuses(org, limit=1500):
+    """Send TikTok a LIVE request for the current status of the TikTok orders we already have
+    stored, and update them in place (status + raw). Updates tiktok_orders ONLY — never creates
+    a shipment or show — so the delivery overview reflects fresh data (e.g. newly delivered)."""
+    c=pdb()
+    try:
+        rows=c.execute("SELECT order_id FROM tiktok_orders WHERE org_id=? ORDER BY updated_at ASC LIMIT ?",(org,limit)).fetchall()
+    except Exception: rows=[]
+    c.close()
+    oids=[str(r["order_id"]).strip() for r in rows if str(r["order_id"]).strip().isdigit() and len(str(r["order_id"]).strip())>=15]
+    if not oids: return {"ok":True,"checked":0,"updated":0,"note":"No stored TikTok orders to refresh."}
+    c=pdb()
+    row=c.execute("SELECT * FROM tiktok_shops WHERE org_id=? AND active=1 ORDER BY updated_at DESC LIMIT 1",(org,)).fetchone()
+    c.close()
+    if not row: return {"ok":False,"error":"No connected shop."}
+    row=dict(row); shop_id=row["shop_id"]
+    tok=_tt_valid_token(org, shop_id)
+    if not tok or not tok.get("access_token"): return {"ok":False,"error":"No valid access token."}
+    tok=_tt_ensure_cipher(org, shop_id, tok)
+    checked=0; updated=0; last_err=None; now=datetime.now().isoformat(timespec='seconds')
+    c=pdb()
+    try:
+        for i in range(0,len(oids),50):
+            chunk=oids[i:i+50]
+            params={"ids":",".join(chunk)}
+            if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
+            try:
+                res=_tt_request("GET", TIKTOK_API_BASE+"/order/%s/orders"%TIKTOK_API_VERSION,
+                                params=params, signed=True, access_token=tok["access_token"])
+            except Exception as e:
+                last_err=str(e)[:160]; continue
+            if res.get("code"):
+                last_err="code %s: %s"%(res.get("code"),(res.get("message") or "")[:140]); continue
+            for o in ((res.get("data") or {}).get("orders") or []):
+                checked+=1; oid=str(o.get("id") or "")
+                if not oid: continue
+                c.execute("UPDATE tiktok_orders SET status=?, raw=?, updated_at=? WHERE org_id=? AND order_id=?",
+                          ((o.get("status") or o.get("order_status") or "").upper(), json.dumps(o)[:40000], now, org, oid))
+                updated+=1
+        c.commit()
+    finally:
+        c.close()
+    out={"ok":True,"checked":checked,"updated":updated,"scanned":len(oids)}
+    if checked==0: out["last_error"]=last_err
+    return out
+
+@app.route("/api/tiktok/delivery-refresh", methods=["POST"])
+@req_role("admin","cs")
+def api_tiktok_delivery_refresh():
+    org=current_org() or DEFAULT_ORG
+    r=_tt_refresh_stored_statuses(org)
+    # return the fresh overview too
+    orders=_tt_stored_orders(org); cnt={}
+    for o in orders:
+        s=(o.get("status") or "UNKNOWN").upper(); cnt[s]=cnt.get(s,0)+1
+    g=lambda *ks: sum(cnt.get(k,0) for k in ks)
+    r["overview"]={"total":len(orders),"delivered":g("DELIVERED","COMPLETED"),"in_transit":g("IN_TRANSIT"),
+                   "awaiting_collection":g("AWAITING_COLLECTION"),"awaiting_shipment":g("AWAITING_SHIPMENT"),
+                   "on_hold":g("ON_HOLD"),"unpaid":g("UNPAID"),"cancelled":g("CANCELLED")}
+    return jsonify(r)
+
 _SHIP_STUCK_DAYS=2; _SHIP_NOMOVE_DAYS=3
 def _health_where():
     """Exception buckets: the WHERE clause for each 'shipment health' problem state."""
@@ -15092,6 +15153,28 @@ def _tt_part_label(name):
     m=re.search(r'part\s*(\d+)', (name or ''), re.I)
     return "Part "+m.group(1) if m else ""
 
+@app.route("/api/tiktok/delivery-overview")
+@req_role("admin","cs")
+def api_tiktok_delivery_overview():
+    """Delivery status of ALL your TikTok orders, read straight from the stored TikTok data —
+    independent of the warehouse pipeline (so it shows even for orders not materialized into
+    shows because of the cutover). Pure read; creates nothing."""
+    org=current_org() or DEFAULT_ORG
+    orders=_tt_stored_orders(org)
+    cnt={}
+    for o in orders:
+        s=(o.get("status") or "UNKNOWN").upper()
+        cnt[s]=cnt.get(s,0)+1
+    g=lambda *ks: sum(cnt.get(k,0) for k in ks)
+    buckets={"delivered":g("DELIVERED","COMPLETED"),
+             "in_transit":g("IN_TRANSIT"),
+             "awaiting_collection":g("AWAITING_COLLECTION"),
+             "awaiting_shipment":g("AWAITING_SHIPMENT"),
+             "on_hold":g("ON_HOLD"),"unpaid":g("UNPAID"),"cancelled":g("CANCELLED")}
+    out={"ok":True,"total":len(orders),"buckets":buckets,"raw_counts":cnt}
+    out.update(buckets)  # also flat, so the UI can read d.delivered etc.
+    return jsonify(out)
+
 @app.route("/api/tiktok/routing")
 @req_role("admin")
 def api_tiktok_routing():
@@ -15298,6 +15381,16 @@ th{color:#6b7280;font-weight:700;font-size:11px;text-transform:uppercase}
 </div>
 
 <div class="card">
+  <h2>📦 TikTok delivery status <span class="mut" id="dvTotal"></span></h2>
+  <div class="mut" style="margin-bottom:10px">Live delivery status of your TikTok orders, straight from TikTok — independent of the warehouse. Reads/updates the stored TikTok orders only; never creates a show.</div>
+  <div class="row" style="margin:0 0 12px">
+    <button id="dvRefresh" class="btn g" style="background:#dcfce7;color:#166534">↻ Refresh delivery from TikTok</button>
+    <span class="mut" id="dvMsg"></span>
+  </div>
+  <div id="dvCards" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+</div>
+
+<div class="card">
   <h2>🧪 Test data — move real orders to staging</h2>
   <div class="mut" style="margin-bottom:10px">Export every real order this environment has pulled as one JSON file. Import it into the staging/test environment to work on grouping &amp; routing on real content — no live connection needed there.</div>
   <div class="row">
@@ -15453,6 +15546,31 @@ if(rsb)rsb.onclick=function(){
      im.innerHTML='<span style="color:#166534">✓ Regrouped '+(d.fetched||0)+' stored order(s) → '+((d.shows||[]).length)+' show(s), cleared '+(d.cleared||0)+'.'+shw+'</span>';
    }).catch(function(){rsb.disabled=false;rsb.textContent=old;im.innerHTML='<span style="color:#b91c1c">Network error</span>';});
 };
+var DV=[['delivered','Delivered','#dcfce7','#166534'],['in_transit','In transit','#dbeafe','#1e40af'],
+  ['awaiting_collection','Awaiting pickup','#fef3c7','#92400e'],['awaiting_shipment','Awaiting shipment','#f3f4f6','#374151'],
+  ['on_hold','On hold','#fee2e2','#991b1b'],['unpaid','Unpaid','#f3f4f6','#6b7280'],['cancelled','Cancelled','#f3f4f6','#6b7280']];
+function dvRender(d){
+  var box=document.getElementById('dvCards');var tot=document.getElementById('dvTotal');
+  if(!d||d.ok===false){box.innerHTML='<span class="mut">'+esc((d&&d.error)||'Could not load')+'</span>';return;}
+  tot.textContent=d.total!=null?('· '+d.total+' TikTok orders'):'';
+  box.innerHTML=DV.map(function(x){var n=(d[x[0]]||0);
+    return '<div style="background:'+x[2]+';color:'+x[3]+';border-radius:12px;padding:12px 16px;min-width:110px">'+
+      '<div style="font-size:26px;font-weight:900;line-height:1">'+n+'</div>'+
+      '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;font-weight:700;margin-top:4px">'+x[1]+'</div></div>';}).join('');
+}
+function dvLoad(){var box=document.getElementById('dvCards');box.innerHTML='<span class="mut">Loading…</span>';
+  fetch('/api/tiktok/delivery-overview').then(function(r){return r.json();}).then(dvRender)
+   .catch(function(){document.getElementById('dvCards').innerHTML='<span class="mut">Network error</span>';});}
+dvLoad();
+document.getElementById('dvRefresh').onclick=function(){var b=this;b.disabled=true;var old=b.textContent;b.textContent='Asking TikTok…';
+  var m=document.getElementById('dvMsg');m.textContent='';
+  fetch('/api/tiktok/delivery-refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+   .then(function(r){return r.json();}).then(function(d){
+     b.disabled=false;b.textContent=old;
+     if(!d||d.ok===false){m.innerHTML='<span style="color:#b91c1c">⚠️ '+esc((d&&d.error)||'failed')+'</span>';return;}
+     m.innerHTML='<span style="color:#166534">✓ Refreshed '+(d.checked||0)+' order(s) from TikTok'+(d.updated!=null?(', '+d.updated+' status change(s)'):'')+'.</span>';
+     dvRender(d.overview||d);
+   }).catch(function(){b.disabled=false;b.textContent=old;m.innerHTML='<span style="color:#b91c1c">Network error</span>';});};
 </script>
 </body></html>"""
     return (html.replace("__NAVBAR__",nav).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
