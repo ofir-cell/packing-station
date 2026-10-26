@@ -14116,6 +14116,10 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
         _cfg=c.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
         overhead=_cfg["packaging_overhead_g"] if _cfg else 30
     status_api=(order.get("status") or "").upper()
+    # UNPAID orders aren't real sales yet — don't build a shipment (it would clutter the pack
+    # queue). When the buyer pays, the status changes and the next sync brings the order in.
+    if status_api=="UNPAID":
+        return None
     is_cancelled = status_api=="CANCELLED"
     pkg=""
     for p in (order.get("packages") or []):
