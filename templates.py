@@ -3674,6 +3674,13 @@ if(showFilter){
   var sub=document.querySelector('.page-sub');
   if(sub)sub.innerHTML='Filtering by show: <b style="color:var(--brand)">'+showFilter.replace(/</g,'&lt;')+'</b> · <a href="/admin/shipments" style="color:var(--text-muted)">Clear filter</a>';
 }
+function shipByCell(s){
+  if(!s.ship_by)return '<span style="opacity:.4">—</span>';
+  var ms=s.ship_by*1000,d=new Date(ms),done=(s.status==='packed'||s.status==='shipped');
+  var over=(!done&&ms<Date.now()),soon=(!done&&!over&&(ms-Date.now())<24*3600*1000);
+  var col=done?'opacity:.4':(over?'color:#b91c1c;font-weight:800':(soon?'color:#92400e;font-weight:800':'color:#4338ca'));
+  return '<span style="white-space:nowrap;'+col+'">'+(over?'⚠ ':'')+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})+'</span>';
+}
 function loadShipments(){
   var url='/api/shipments/recent?limit=5000';
   if(showFilter)url+='&show='+encodeURIComponent(showFilter);
@@ -3722,7 +3729,7 @@ function renderTable(){
     return s.status===_statusFilter;
   });
   var DEL={DELIVERED:['#059669','✅ Delivered'],IN_TRANSIT:['#2563eb','✈️ In transit'],OUT_FOR_DELIVERY:['#0891b2','📬 Out for delivery'],PRE_TRANSIT:['#b45309','🚚 Shipped'],EXCEPTION:['#f43f5e','⚠️ Exception'],RETURNED:['#c2410c','↩️ Returned'],UNKNOWN:['#64748b','—']};
-  var html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Shipment</th><th>Buyer</th><th>SKU</th><th>Tracking</th><th>Status</th><th>USPS</th><th>Show date</th></tr></thead><tbody>';
+  var html='<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Shipment</th><th>Buyer</th><th>SKU</th><th>Tracking</th><th>Status</th><th>Ship by</th><th>USPS</th><th>Show date</th></tr></thead><tbody>';
   view.forEach(function(s,i){
     var trk=s.tracking_code?'<a href="https://tools.usps.com/go/TrackConfirmAction?tLabels='+encodeURIComponent(s.tracking_code)+'" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="col-tracking" style="text-decoration:underline" title="Track on USPS.com">'+escapeHtml(s.tracking_code)+' ↗</a>':'<span class="col-id" style="opacity:.5">—</span>';
     var dv=s.delivery_status?(DEL[s.delivery_status]||['#64748b',s.delivery_status]):null;
@@ -3733,10 +3740,11 @@ function renderTable(){
       '<td style="font-weight:700">'+escapeHtml(s.stickers||s.total_items||'')+'</td>'+
       '<td>'+trk+'</td>'+
       '<td><span class="status-pill st-'+s.status+'">'+s.status.replace('_',' ')+'</span></td>'+
+      '<td>'+shipByCell(s)+'</td>'+
       '<td>'+delCell+'</td>'+
       '<td style="color:var(--text-dim)">'+fmtDate(s.show_date||s.imported_at)+'</td>'+
     '</tr>'+
-    '<tr class="detail" data-detail="'+i+'" style="display:none"><td colspan="7"><div class="detail-inner" id="detail-'+i+'">Loading…</div></td></tr>';
+    '<tr class="detail" data-detail="'+i+'" style="display:none"><td colspan="8"><div class="detail-inner" id="detail-'+i+'">Loading…</div></td></tr>';
   });
   html+='</tbody></table></div>';
   lw.innerHTML=bar+html;
@@ -4424,6 +4432,10 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
  .row-nums .n b{display:block;font-size:16px;font-weight:900;line-height:1}
  .row-nums .n span{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.4px;font-weight:700}
  .row-nums .n.pend b{color:#b45309}.row-nums .n.pack b{color:#059669}
+ .row-due{flex-shrink:0;min-width:120px;text-align:right}
+ .due{font-size:11px;font-weight:800;padding:3px 8px;border-radius:7px;background:#eef2ff;color:#4338ca;white-space:nowrap}
+ .due.soon{background:#fef3c7;color:#92400e}
+ .due.over{background:#fee2e2;color:#b91c1c}
  .row-when{font-size:11px;color:var(--text-dim);white-space:nowrap;flex-shrink:0;min-width:110px;text-align:right}
  .row-acts{display:flex;gap:6px;flex-shrink:0}
  .row-acts button{border-radius:8px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;border:1px solid}
@@ -4440,7 +4452,7 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
  .bulkbar button{border:none;border-radius:10px;padding:9px 16px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit}
  .bulkbar .bb-done{background:#34d399;color:#064e3b}
  .bulkbar .bb-clear{background:rgba(255,255,255,.14);color:#fff}
- @media(max-width:820px){.row-nums,.row-when{display:none}}
+ @media(max-width:820px){.row-nums,.row-when,.row-due{display:none}}
 </style>
 </head><body data-role="__ROLE__">
 __NAVBAR__
@@ -4485,6 +4497,12 @@ __NAVBAR__
 <script>
 function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function fmtDateShort(s){if(!s)return '';try{return new Date(s).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}catch(e){return s}}
+function dueHtml(sh){
+  if(sh.overdue){return '<span class="due over" title="Orders past their ship-by deadline">⚠ '+sh.overdue+' overdue</span>';}
+  if(sh.due_ts){var ms=sh.due_ts*1000,d=new Date(ms),soon=(ms-Date.now())<24*3600*1000;
+    return '<span class="due'+(soon?' soon':'')+'" title="Earliest ship-by deadline">⏰ '+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})+'</span>';}
+  return '';
+}
 
 var SHOWS=[];
 var SEL={};
@@ -4550,6 +4568,7 @@ function renderList(){
         '<span class="n pend"><b>'+(sh.pending||0)+'</b><span>pending</span></span>'+
         '<span class="n pack"><b>'+packed+'</b><span>packed</span></span>'+
       '</span>'+
+      '<span class="row-due">'+dueHtml(sh)+'</span>'+
       '<span class="row-when">'+(sh.time_range?('🔴 '+escapeHtml(sh.time_range)):fmtDateShort(sh.last_import))+(sh.done&&sh.done_by?'<br>✓ '+escapeHtml(sh.done_by):'')+'</span>'+
       '<span class="row-acts">'+
         '<button class="'+(sh.done?'ra-undo':'ra-done')+'" onclick="toggleDone(event,\\''+en+'\\','+(sh.done?'false':'true')+')">'+(sh.done?'↩︎ Undo':'✓ Done')+'</button>'+

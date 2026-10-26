@@ -1147,6 +1147,8 @@ def sdb_init(org):
         "ALTER TABLE shipments ADD COLUMN stock_depleted INTEGER DEFAULT 0",
         # TikTok: shipping fee the buyer paid (collected, then paid out to carrier).
         "ALTER TABLE shipments ADD COLUMN shipping_fee REAL DEFAULT 0",
+        # TikTok: the 'ship by' deadline (epoch seconds) for warehouse prioritisation.
+        "ALTER TABLE shipments ADD COLUMN ship_by INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN order_id TEXT",
         "ALTER TABLE shipment_items ADD COLUMN cancelled INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN cancel_reason TEXT",
@@ -5580,7 +5582,7 @@ def api_shipments_recent():
     _cols = ("shipment_id, tracking_code, buyer_username, buyer_name, "
              "total_items, expected_weight_g, actual_weight_g, weight_status, "
              "status, missing_weights, show_date, imported_at, import_label, platform, "
-             "delivery_status, delivery_detail, delivered_at, tracked_at")
+             "delivery_status, delivery_detail, delivered_at, tracked_at, ship_by")
     if show:
         rows = c.execute("SELECT "+_cols+" FROM shipments WHERE import_label=? ORDER BY imported_at DESC",(show,)).fetchall()
     else:
@@ -6250,6 +6252,7 @@ def api_shows():
     cutoff_dt = (datetime.now() - timedelta(days=SHOW_WINDOW_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     cap_dt = (datetime.now() - timedelta(days=SHOW_HARD_CAP_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     c = sdb()
+    _now_ts = int(time.time())
     rows = c.execute("""
         SELECT import_label AS name,
                COUNT(*) AS shipments,
@@ -6260,13 +6263,15 @@ def api_shows():
                COUNT(DISTINCT platform) AS platform_count,
                MAX(platform) AS platform,
                MIN(imported_at) AS first_import,
-               MAX(imported_at) AS last_import
+               MAX(imported_at) AS last_import,
+               MIN(CASE WHEN status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 THEN ship_by END) AS due_ts,
+               SUM(CASE WHEN status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 AND ship_by < ? THEN 1 ELSE 0 END) AS overdue
         FROM shipments
         WHERE import_label IS NOT NULL AND import_label != ''
           AND imported_at >= ?
         GROUP BY import_label
         ORDER BY last_import DESC
-    """, (cap_dt,)).fetchall()
+    """, (_now_ts, cap_dt)).fetchall()
     # Auto-close any show whose last order is packed (retroactive + live).
     for _r in rows:
         if (_r["pending"] or 0)==0:
@@ -14102,6 +14107,8 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
     pay=order.get("payment") or {}
     try: ship_fee=round(float(str(pay.get("shipping_fee") or "0").replace(",","").replace("$","") or 0),2)
     except Exception: ship_fee=0.0
+    try: ship_by=int(order.get("shipping_due_time") or 0)   # 'must ship by' deadline (epoch)
+    except Exception: ship_by=0
     # delivery status straight from the order timestamps
     dvs=dvd=dva=None
     if order.get("delivery_time"): dvs,dvd,dva=("DELIVERED","Delivered · per TikTok",datetime.fromtimestamp(int(order["delivery_time"])).isoformat(timespec="seconds"))
@@ -14120,18 +14127,18 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
                        postal_code=COALESCE(NULLIF(?,''),postal_code), platform='tiktok',
                        import_label=COALESCE(import_label,?), shipping_fee=?, status=?,
                        delivery_status=COALESCE(?,delivery_status), delivery_detail=COALESCE(?,delivery_detail),
-                       delivered_at=COALESCE(?,delivered_at)
+                       delivered_at=COALESCE(?,delivered_at), ship_by=CASE WHEN ?>0 THEN ? ELSE ship_by END
                      WHERE shipment_id=?""",
                   (tracking, buyer_nick, buyer_name, addr_full, postal, label, ship_fee, new_status,
-                   dvs, dvd, dva, ship_id))
+                   dvs, dvd, dva, ship_by, ship_by, ship_id))
     else:
         c.execute("""INSERT INTO shipments
             (shipment_id, tracking_code, buyer_username, buyer_name, address_full, postal_code,
              show_date, status, platform, import_batch, import_label, shipping_fee,
-             delivery_status, delivery_detail, delivered_at)
-            VALUES (?,?,?,?,?,?,?,?, 'tiktok', ?, ?, ?, ?,?,?)""",
+             delivery_status, delivery_detail, delivered_at, ship_by)
+            VALUES (?,?,?,?,?,?,?,?, 'tiktok', ?, ?, ?, ?,?,?,?)""",
           (ship_id, tracking, buyer_nick, buyer_name, addr_full, postal,
-           (created_iso or "")[:10], new_status, "tiktok-api", label, ship_fee, dvs, dvd, dva))
+           (created_iso or "")[:10], new_status, "tiktok-api", label, ship_fee, dvs, dvd, dva, ship_by))
     # Rebuild ONLY THIS ORDER'S items, preserving floor progress (picked) AND inventory
     # markers (depleted_qty/depleted_sku). Scoped by order_id so that when several orders
     # are combined into one shipping package (shared shipment_id), each refreshes just its
