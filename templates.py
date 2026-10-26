@@ -7270,7 +7270,7 @@ if(bf)bf.onclick=function(){bf.disabled=true;var old=bf.textContent;bf.textConte
    .then(function(r){return r.json();}).then(function(d){
      bf.disabled=false;bf.textContent=old;
      if(!d.ok){m.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
-     var diag=(d.checked===0 && (d.last_error||d.sample_ids))?(' <span style="color:#b91c1c">— '+esc(d.last_error||('no orders returned; sample ids: '+(d.sample_ids||[]).join(', ')))+'</span>'):'';
+     var diag=(d.note)?(' <span style="color:#b45309">— '+esc(d.note)+(d.sample_ids?(' e.g. '+(d.sample_ids||[]).join(', ')):'')+'</span>'):((d.checked===0 && (d.last_error||d.sample_ids))?(' <span style="color:#b91c1c">— '+esc(d.last_error||('no orders returned; sample ids: '+(d.sample_ids||[]).join(', ')))+'</span>'):'');
      m.innerHTML='<span style="color:#166534">✓ Checked '+(d.checked||0)+' order(s), updated '+(d.updated||0)+' shipment(s)'+((d.scanned&&d.scanned>=1500)?' · a lot pending — click again to continue':'')+'.</span>'+diag;
      load();loadHealth();
    }).catch(function(){bf.disabled=false;bf.textContent=old;document.getElementById('bfMsg').innerHTML='<span style="color:#b91c1c">Network error</span>';});
