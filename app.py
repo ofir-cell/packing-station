@@ -4064,7 +4064,7 @@ def api_today():
     try:
         out["packed_not_moving"]=c.execute(
             """SELECT COUNT(*) n FROM shipments
-               WHERE status IN ('packed','shipped') AND COALESCE(tt_status,'') NOT IN ('IN_TRANSIT','DELIVERED','COMPLETED')
+               WHERE status IN ('packed','shipped') AND COALESCE(tt_status,'') IN ('AWAITING_SHIPMENT','AWAITING_COLLECTION')
                  AND COALESCE(packed_at,'')<>'' AND julianday('now')-julianday(substr(packed_at,1,10)) > ?""",
             (_SHIP_NOMOVE_DAYS,)).fetchone()["n"]
     except Exception: out["packed_not_moving"]=0
@@ -12812,7 +12812,7 @@ def _tt_backfill_delivery(org, limit=1500):
     tok=_tt_valid_token(org, shop_id)
     if not tok or not tok.get("access_token"): return {"ok":False,"error":"No valid access token for the shop."}
     tok=_tt_ensure_cipher(org, shop_id, tok)
-    checked=0; updated=0
+    checked=0; updated=0; last=None; last_err=None
     sc=sdb(org)
     try:
         for i in range(0,len(oids),50):
@@ -12823,8 +12823,10 @@ def _tt_backfill_delivery(org, limit=1500):
                 res=_tt_request("GET", TIKTOK_API_BASE+"/order/%s/orders"%TIKTOK_API_VERSION,
                                 params=params, signed=True, access_token=tok["access_token"])
             except Exception as e:
-                _tt_log("backfill request failed: %r"%e); continue
-            if res.get("code"): continue
+                last_err=str(e)[:200]; _tt_log("backfill request failed: %r"%e); continue
+            last=res
+            if res.get("code"):
+                last_err="code %s: %s"%(res.get("code"), (res.get("message") or "")[:160]); continue
             for o in ((res.get("data") or {}).get("orders") or []):
                 checked+=1
                 oid=str(o.get("id") or "")
@@ -12844,7 +12846,12 @@ def _tt_backfill_delivery(org, limit=1500):
         sc.close()
     try: alog("shipping.backfill","checked %d orders, updated %d shipments"%(checked,updated))
     except Exception: pass
-    return {"ok":True,"checked":checked,"updated":updated,"scanned":len(oids)}
+    out={"ok":True,"checked":checked,"updated":updated,"scanned":len(oids)}
+    if checked==0:   # help diagnose an empty result
+        out["sample_ids"]=oids[:5]; out["last_error"]=last_err
+        out["raw_keys"]=list((last or {}).keys()) if isinstance(last,dict) else None
+        out["data_keys"]=list(((last or {}).get("data") or {}).keys()) if isinstance(last,dict) else None
+    return out
 
 @app.route("/api/shipping/backfill", methods=["POST"])
 @req_role("admin","cs")
@@ -12862,8 +12869,10 @@ def _health_where():
       # never collected it, i.e. it never actually went out. (TikTok status, no USPS needed.)
       "stuck": ("COALESCE(tt_status,'')='AWAITING_COLLECTION' "
                 "AND julianday('now')-julianday(COALESCE(NULLIF(show_date,''),substr(imported_at,1,10))) > %d" % _SHIP_STUCK_DAYS),
-      # Packed here but TikTok still doesn't show it moving/delivered after a few days → confirm it shipped.
-      "packed_no_move": ("status IN ('packed','shipped') AND COALESCE(tt_status,'') NOT IN ('IN_TRANSIT','DELIVERED','COMPLETED') "
+      # Packed here but TikTok ACTIVELY still says it's awaiting shipment/collection after a few
+      # days → confirm it shipped. (Only when TikTok tells us so — an empty tt_status, e.g. an old
+      # CSV order we never synced, is 'unknown', NOT flagged, so history doesn't raise false alarms.)
+      "packed_no_move": ("status IN ('packed','shipped') AND COALESCE(tt_status,'') IN ('AWAITING_SHIPMENT','AWAITING_COLLECTION') "
                 "AND COALESCE(packed_at,'')<>'' AND julianday('now')-julianday(substr(packed_at,1,10)) > %d" % _SHIP_NOMOVE_DAYS),
       # Delivered — from TikTok's own status (or USPS, if ever configured).
       "delivered": "COALESCE(tt_status,'') IN ('DELIVERED','COMPLETED') OR COALESCE(delivery_status,'')='DELIVERED'",
