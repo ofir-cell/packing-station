@@ -2699,7 +2699,8 @@ function numbersBlock(d){var m=d.money||{};var f=d.floor;
   '<div class="card"><div class="h3">Packed — last 7 days</div><div class="subt">Daily throughput</div><div class="bars">';
  seven.forEach(function(x){h+='<div class="b'+(x.today?' today':'')+'"><div class="bar" style="height:'+Math.round(x.count/mx*100)+'%"></div><small>'+x.day+'</small></div>';});
  h+='</div></div></div>';return h;}
-function attBlock(d){return '<div class="sec">Needs your attention</div><div class="att">'+
+function attBlock(d){var pnm=d.packed_not_moving||0;return '<div class="sec">Needs your attention</div><div class="att">'+
+  (pnm?('<a href="/shipping-status"><span class="ic">🚨</span><span class="t"><b>Packed but not shipped</b><small>Packed here but TikTok shows no movement — check for lost/stolen parcels</small></span><span class="n warn" style="color:#b91c1c">'+pnm+'</span></a>'):'')+
   '<a href="/admin/issues"><span class="ic">🚧</span><span class="t"><b>Picking / Packing Issues</b><small>Flagged orders waiting on a decision</small></span><span class="n warn">'+(d.issues||0)+'</span></a>'+
   '<a href="/admin/cleanup"><span class="ic">🧹</span><span class="t"><b>Tables to clean</b><small>Clear between shows to free stock</small></span><span class="n">'+(d.tables_to_clean||0)+'</span></a></div>';}
 function workerBlock(d){var me=d.me||{};

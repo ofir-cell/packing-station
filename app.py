@@ -4059,6 +4059,16 @@ def api_today():
     try: out["issues"]=c.execute("SELECT COUNT(*) n FROM shipments WHERE status='issue'").fetchone()["n"]
     except Exception: out["issues"]=0
 
+    # ALERT: packed here but TikTok still doesn't show it moving/delivered a couple of days on —
+    # these are the dangerous ones (lost / stolen / label made but parcel never scanned).
+    try:
+        out["packed_not_moving"]=c.execute(
+            """SELECT COUNT(*) n FROM shipments
+               WHERE status IN ('packed','shipped') AND COALESCE(tt_status,'') NOT IN ('IN_TRANSIT','DELIVERED','COMPLETED')
+                 AND COALESCE(packed_at,'')<>'' AND julianday('now')-julianday(substr(packed_at,1,10)) > ?""",
+            (_SHIP_NOMOVE_DAYS,)).fetchone()["n"]
+    except Exception: out["packed_not_moving"]=0
+
     if is_admin:
         money={"sold_today":0,"revenue_today":0,"repeat_buyers":0}
         try:
