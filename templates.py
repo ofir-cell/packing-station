@@ -7164,7 +7164,9 @@ __NAVBAR__
 <button class="btn btn-p" id="refresh">↻ Reload</button></div>
 <div class="wrap">
 <div id="notice"></div>
-<div class="sec-h">🩺 Shipment health — needs attention</div>
+<div class="sec-h" style="display:flex;align-items:center;gap:12px;justify-content:space-between">🩺 Shipment health — needs attention
+  <button class="btn btn-p" id="backfill" style="font-size:12px;padding:7px 12px">↻ Refresh delivery from TikTok</button></div>
+<div id="bfMsg" class="mut" style="margin:-4px 2px 10px;font-size:12px;color:#6b7280"></div>
 <div class="hcards" id="hcards"></div>
 <div id="hbox" style="display:none;margin-bottom:22px">
   <table><thead><tr><th>Buyer</th><th>Tracking</th><th>Our status</th><th>TikTok</th><th>USPS</th><th>Show</th></tr></thead>
@@ -7261,6 +7263,17 @@ function loadHealth(){
   }).catch(function(){});
 }
 function pickHealth(b){hbucket=(hbucket===b?'':b);loadHealth();}
+var bf=document.getElementById('backfill');
+if(bf)bf.onclick=function(){bf.disabled=true;var old=bf.textContent;bf.textContent='Refreshing…';
+  var m=document.getElementById('bfMsg');m.textContent='Checking existing orders against TikTok (delivery status only — nothing new is created)…';
+  fetch('/api/shipping/backfill',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+   .then(function(r){return r.json();}).then(function(d){
+     bf.disabled=false;bf.textContent=old;
+     if(!d.ok){m.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
+     m.innerHTML='<span style="color:#166534">✓ Checked '+(d.checked||0)+' order(s), updated '+(d.updated||0)+' shipment(s)'+((d.scanned&&d.scanned>=1500)?' · a lot pending — click again to continue':'')+'.</span>';
+     load();loadHealth();
+   }).catch(function(){bf.disabled=false;bf.textContent=old;document.getElementById('bfMsg').innerHTML='<span style="color:#b91c1c">Network error</span>';});
+};
 load();loadHealth();
 </script></body></html>'''
 

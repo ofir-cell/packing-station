@@ -12773,6 +12773,85 @@ def api_tracking_summary():
         "shows":[{"label":s["import_label"],"date":s["show_date"]} for s in shows],
         "dates":[d["show_date"] for d in dates]})
 
+_TT_DLV_MAP={"IN_TRANSIT":("IN_TRANSIT","In transit · per TikTok"),
+             "AWAITING_COLLECTION":("AWAITING_COLLECTION","Label made · awaiting carrier pickup"),
+             "DELIVERED":("DELIVERED","Delivered · per TikTok"),
+             "COMPLETED":("DELIVERED","Delivered · per TikTok")}
+def _tt_delivery_fields(order):
+    """(status, delivery_status, delivery_detail, delivered_at) from a raw TikTok order."""
+    status_api=(order.get("status") or "").upper()
+    dvs=dvd=dva=None
+    if order.get("delivery_time"):
+        dvs,dvd="DELIVERED","Delivered · per TikTok"
+        try: dva=datetime.fromtimestamp(int(order["delivery_time"])).isoformat(timespec="seconds")
+        except Exception: dva=None
+    elif status_api in _TT_DLV_MAP:
+        dvs,dvd=_TT_DLV_MAP[status_api]
+    return status_api,dvs,dvd,dva
+
+def _tt_backfill_delivery(org, limit=1500):
+    """Refresh ONLY the delivery status of shipments we ALREADY have, by matching them to
+    TikTok by Order ID (CSV and API share the same Order ID). Never creates a shipment or a
+    show and never changes grouping/packing — it only writes delivery_status / tt_status /
+    delivered_at on existing rows. Lets old, already-shipped orders catch up to Delivered."""
+    sc=sdb(org)
+    try:
+        oids=[r["oid"] for r in sc.execute("""SELECT DISTINCT i.order_id oid
+              FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+              WHERE COALESCE(i.order_id,'')<>'' AND COALESCE(s.status,'') NOT IN ('cancelled','giveaway')
+                AND COALESCE(s.delivery_status,'') NOT IN ('DELIVERED','RETURNED')
+              LIMIT ?""",(limit,)).fetchall()]
+    except Exception: oids=[]
+    sc.close()
+    if not oids: return {"ok":True,"checked":0,"updated":0,"note":"nothing to refresh"}
+    c=pdb()
+    row=c.execute("SELECT * FROM tiktok_shops WHERE org_id=? AND active=1 ORDER BY updated_at DESC LIMIT 1",(org,)).fetchone()
+    c.close()
+    if not row: return {"ok":False,"error":"No connected shop. Connect TikTok first."}
+    row=dict(row); shop_id=row["shop_id"]
+    tok=_tt_valid_token(org, shop_id)
+    if not tok or not tok.get("access_token"): return {"ok":False,"error":"No valid access token for the shop."}
+    tok=_tt_ensure_cipher(org, shop_id, tok)
+    checked=0; updated=0
+    sc=sdb(org)
+    try:
+        for i in range(0,len(oids),50):
+            chunk=oids[i:i+50]
+            params={"ids":",".join(chunk)}
+            if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
+            try:
+                res=_tt_request("GET", TIKTOK_API_BASE+"/order/%s/orders"%TIKTOK_API_VERSION,
+                                params=params, signed=True, access_token=tok["access_token"])
+            except Exception as e:
+                _tt_log("backfill request failed: %r"%e); continue
+            if res.get("code"): continue
+            for o in ((res.get("data") or {}).get("orders") or []):
+                checked+=1
+                oid=str(o.get("id") or "")
+                if not oid: continue
+                status_api,dvs,dvd,dva=_tt_delivery_fields(o)
+                if not (dvs or status_api): continue
+                for sr in sc.execute("SELECT DISTINCT s.shipment_id sid FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id WHERE i.order_id=?",(oid,)).fetchall():
+                    sc.execute("""UPDATE shipments SET
+                        delivery_status=CASE WHEN COALESCE(delivery_status,'') IN ('DELIVERED','RETURNED') THEN delivery_status ELSE COALESCE(?,delivery_status) END,
+                        delivery_detail=CASE WHEN COALESCE(delivery_status,'') IN ('DELIVERED','RETURNED') THEN delivery_detail ELSE COALESCE(?,delivery_detail) END,
+                        delivered_at=COALESCE(?,delivered_at),
+                        tt_status=COALESCE(NULLIF(?,''),tt_status)
+                        WHERE shipment_id=?""",(dvs,dvd,dva,status_api,sr["sid"]))
+                    updated+=1
+        sc.commit()
+    finally:
+        sc.close()
+    try: alog("shipping.backfill","checked %d orders, updated %d shipments"%(checked,updated))
+    except Exception: pass
+    return {"ok":True,"checked":checked,"updated":updated,"scanned":len(oids)}
+
+@app.route("/api/shipping/backfill", methods=["POST"])
+@req_role("admin","cs")
+def api_shipping_backfill():
+    org=current_org() or DEFAULT_ORG
+    return jsonify(_tt_backfill_delivery(org))
+
 _SHIP_STUCK_DAYS=2; _SHIP_NOMOVE_DAYS=3
 def _health_where():
     """Exception buckets: the WHERE clause for each 'shipment health' problem state."""
