@@ -253,7 +253,7 @@ _NAVBAR_CSS='''<style>
   --border:#e4e7ec;
   --text:#1a2130;
   --text-muted:#586274;
-  --text-dim:#7b8494;
+  --text-dim:#5f6b7d;
 }
 /* ── Site colour themes (switchable). A [data-theme] on <html> recolours the
    whole UI because every screen reads these tokens. Higher specificity than the
@@ -261,17 +261,17 @@ _NAVBAR_CSS='''<style>
 :root[data-theme="taupe"]{
   --brand:#0f766e;--brand-strong:#0c5e58;--brand-ink:#0a4d48;--brand-glow:rgba(15,118,110,.16);
   --bg:#ffffff;--surface:#f4f1ec;--surface-strong:#eae4db;--border:#e0dad0;
-  --text:#2b2a28;--text-muted:#6e6a63;--text-dim:#938d82;
+  --text:#2b2a28;--text-muted:#6e6a63;--text-dim:#6f6a60;
 }
 :root[data-theme="sage"]{
   --brand:#5b7355;--brand-strong:#4a5f45;--brand-ink:#3f5a3a;--brand-glow:rgba(91,115,85,.16);
   --bg:#ffffff;--surface:#eef0ea;--surface-strong:#e2e6da;--border:#d6dbcf;
-  --text:#2e3a2b;--text-muted:#5e655a;--text-dim:#868d7e;
+  --text:#2e3a2b;--text-muted:#5e655a;--text-dim:#636b5c;
 }
 :root[data-theme="slate"]{
   --brand:#c2607d;--brand-strong:#a84e68;--brand-ink:#8f3f56;--brand-glow:rgba(194,96,125,.16);
   --bg:#ffffff;--surface:#f1f2f4;--surface-strong:#e6e8ec;--border:#d9dce1;
-  --text:#26303b;--text-muted:#5a6572;--text-dim:#828c98;
+  --text:#26303b;--text-muted:#5a6572;--text-dim:#5e6775;
 }
 .theme-row{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px 8px 8px}
 .theme-swatch{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:var(--text-muted);background:none;border:1px solid var(--border);border-radius:8px;padding:5px 7px;cursor:pointer;font-family:inherit;text-align:left}
@@ -357,7 +357,7 @@ _NAVBAR_CSS='''<style>
 .user-menu{position:absolute;width:auto}
 }
 /* ══ Sidebar navigation (replaces the old top bar) ══ */
-.sb-toggle{display:none;position:fixed;top:12px;left:12px;z-index:140;width:42px;height:42px;border-radius:11px;border:1px solid var(--border);background:#fff;color:var(--text);font-size:18px;cursor:pointer;align-items:center;justify-content:center}
+.sb-toggle{display:none;position:fixed;top:12px;left:12px;z-index:140;width:44px;height:44px;border-radius:11px;border:1px solid var(--border);background:#fff;color:var(--text);font-size:18px;cursor:pointer;align-items:center;justify-content:center}
 .sb-mbar{display:none}
 .sb-nav2{display:none;position:fixed;top:12px;left:62px;z-index:140;gap:8px}
 .sb-nav2 .sb-back,.sb-nav2 .sb-home{height:42px;min-width:44px;padding:0 15px;border-radius:11px;border:1px solid var(--border);background:#fff;color:var(--text);font-size:15px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;text-decoration:none;font-family:inherit;-webkit-tap-highlight-color:transparent}
@@ -408,6 +408,7 @@ _NAVBAR_CSS='''<style>
   .sb-mbar{display:block;position:fixed;top:0;left:0;right:0;height:62px;background:#fff;border-bottom:1px solid var(--border);z-index:125}
   body:has(.sidebar){padding-top:62px}
 }
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,.sb-toggle:focus-visible,.sb-nav2 .sb-back:focus-visible,.sb-nav2 .sb-home:focus-visible,.sidebar a:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
 </style><script>(function(){try{var t=localStorage.getItem('siteTheme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
 window.setSiteTheme=function(t){try{if(t){localStorage.setItem('siteTheme',t);document.documentElement.setAttribute('data-theme',t);}else{localStorage.removeItem('siteTheme');document.documentElement.removeAttribute('data-theme');}}catch(e){}document.querySelectorAll('.theme-swatch').forEach(function(s){s.classList.toggle('on',(s.getAttribute('data-theme')||'')===(t||''));});};</script>'''
 
@@ -827,9 +828,9 @@ function loadChecklist(tracking){
     hideReminder();
     var ov=document.getElementById('countOverlay');
     var side=document.getElementById('reminderSide');
-    document.getElementById('countBuyer').textContent='Looking up order…';
+    document.getElementById('countBuyer').textContent=t('lookingup');
     document.getElementById('countBig').textContent='—';
-    document.getElementById('countLabel').textContent='items in package';
+    document.getElementById('countLabel').textContent=t('itemsinpkg');
     document.getElementById('countLabel').className='count-label';
     document.getElementById('countItems').innerHTML='';
     document.getElementById('countFoot').textContent='If an item is missing — set the package aside';
@@ -4740,7 +4741,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     --border-strong:rgba(255,255,255,.24);
     --text:#f6f7f9;
     --text-muted:#aab2c0;
-    --text-dim:#8691a0;
+    --text-dim:#5f6b7d;
     --input-bg:#1b2030;
 }
 
@@ -5286,7 +5287,7 @@ function openDetail(sid){
             sndError();
             var who=d.picked_by||s.picked_by||'someone';
             var when=(d.picked_at||s.picked_at||'').replace('T',' ').slice(0,16);
-            showToast(t('alreadypicked')+' '+who+(when?(' · '+when):''),true);
+            showToast(t('alreadypicked')+' '+who+(when?(' · '+when):''),false);
             return;
         }
         // The scanned tracking number uniquely identifies this exact order in the
@@ -7043,7 +7044,7 @@ HIRE_FILE_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
   --bg:#fff;
   --text:#141b26;
   --text-muted:#5b6474;
-  --text-dim:#8a90a0;
+  --text-dim:#636b74;
   --border:#dadae3;
   --surface:#f7f7f9;
 }
