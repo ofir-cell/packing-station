@@ -14366,33 +14366,54 @@ def _tt_sign(path, query_params, body_str="", content_type="application/json"):
     wrapped=secret+base+secret
     return _h.new(secret.encode("utf-8"), wrapped.encode("utf-8"), _hs.sha256).hexdigest()
 
+_TT_MAX_RETRIES=3
+_TT_RETRY_STATUS={429,500,502,503,504}
 def _tt_request(method, url, params=None, headers=None, body=None, signed=False, access_token=None, timeout=30):
-    """Low-level TikTok HTTP call via urllib. Returns parsed JSON dict (raises on transport error)."""
+    """Low-level TikTok HTTP call via urllib. Returns parsed JSON dict (raises on transport error).
+
+    Retries on 429 / 5xx and transient network errors with bounded exponential backoff,
+    honouring the Retry-After header when present (TikTok's documented guidance). The signed
+    params (timestamp + sign) are RE-COMPUTED on every attempt so a retry is never rejected
+    for a stale timestamp. All TikTok calls we make are reads (orders/search, get shops) or
+    idempotent token refreshes, so retrying is safe; label/ship writes are not issued here."""
     if STAGING_SAFE: return {"code":"SAFE_MODE","message":"TikTok API disabled in staging safe mode"}
     import urllib.request as _ur, urllib.parse as _up, urllib.error as _ue
-    params=dict(params or {})
+    base_params=dict(params or {})
     hdrs={k.lower():v for k,v in (headers or {}).items()}
     parsed=_up.urlparse(url); path=parsed.path
     body_str=""
     if body is not None:
         body_str=json.dumps(body, separators=(',',':'))
         hdrs.setdefault("content-type","application/json")
-    if signed:
-        params["app_key"]=TIKTOK_APP_KEY
-        params["timestamp"]=str(int(time.time()))
-        if access_token: hdrs["x-tts-access-token"]=access_token
-        ct=hdrs.get("content-type","application/json")
-        params["sign"]=_tt_sign(path, params, body_str, ct)
-    qs=_up.urlencode(params)
-    full=url+("?"+qs if qs else "")
     data=body_str.encode("utf-8") if body_str else None
-    req=_ur.Request(full, data=data, method=method, headers=hdrs)
-    try:
-        with _ur.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8") or "{}")
-    except _ue.HTTPError as e:
-        try: return json.loads(e.read().decode("utf-8") or "{}")
-        except Exception: raise
+    attempt=0
+    while True:
+        params=dict(base_params)
+        if signed:
+            params["app_key"]=TIKTOK_APP_KEY
+            params["timestamp"]=str(int(time.time()))   # fresh each attempt
+            if access_token: hdrs["x-tts-access-token"]=access_token
+            ct=hdrs.get("content-type","application/json")
+            params["sign"]=_tt_sign(path, params, body_str, ct)
+        qs=_up.urlencode(params)
+        full=url+("?"+qs if qs else "")
+        req=_ur.Request(full, data=data, method=method, headers=hdrs)
+        try:
+            with _ur.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8") or "{}")
+        except _ue.HTTPError as e:
+            if e.code in _TT_RETRY_STATUS and attempt < _TT_MAX_RETRIES:
+                ra=e.headers.get("Retry-After") if getattr(e,"headers",None) else None
+                try: delay=float(ra) if ra else min(2**attempt, 8)
+                except Exception: delay=min(2**attempt, 8)
+                _tt_log("TikTok %s %s -> HTTP %d, retry %d/%d in %.1fs"%(method,path,e.code,attempt+1,_TT_MAX_RETRIES,delay))
+                time.sleep(delay); attempt+=1; continue
+            try: return json.loads(e.read().decode("utf-8") or "{}")
+            except Exception: raise
+        except _ue.URLError:
+            if attempt < _TT_MAX_RETRIES:
+                time.sleep(min(2**attempt, 8)); attempt+=1; continue
+            raise
 
 def _tt_token_exchange(auth_code):
     return _tt_request("GET", TIKTOK_AUTH_BASE+"/api/v2/token/get",
