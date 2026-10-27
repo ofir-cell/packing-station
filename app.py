@@ -3519,6 +3519,43 @@ def _billing_gate():
                         "message":_BILLING_MSG.get(state,"Your subscription is not active.")}),402
     return redirect("/billing")
 
+# ── Session revocation: a deleted or demoted user must lose access immediately ──
+# Sessions carry role/roles captured at login. Without this check a user who was
+# removed (or had their role downgraded) in users.json keeps their old powers until
+# the cookie expires. On every authenticated request we re-validate the session user
+# against the live control plane and either drop the session (user gone) or re-sync
+# the role set (demotion/promotion takes effect at once). Best-effort: a transient
+# read error never locks anyone out -- the route decorators remain the hard gate.
+_SESSREV_OPEN={"/login","/logout","/healthz","/favicon.ico"}
+@app.before_request
+def _session_revocation():
+    try:
+        u=session.get("user")
+        if not u:
+            return
+        p=request.path or "/"
+        if p in _SESSREV_OPEN or p.startswith(("/static/","/guide-asset/")):
+            return
+        if is_super() or session.get("impersonator"):
+            return
+        users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+        rec=users.get(u)
+        if rec is None:
+            # account deleted/disabled since login -> revoke
+            session.clear()
+            if p.startswith("/api/"):
+                return jsonify({"ok":False,"error":"session_revoked",
+                                "message":"Your account is no longer active. Please sign in again."}),401
+            return redirect("/")
+        # re-sync role set so a demotion (or promotion) applies on the very next request
+        live=_effective_roles(rec)
+        if sorted(live)!=sorted(session.get("roles") or []):
+            session["role"]=rec.get("role")
+            session["roles"]=live
+    except Exception as _e:
+        print("session revocation check skipped:",_e,flush=True)
+        return
+
 _BILLING_MSG={
     "trial_expired":"Your 7-day trial has ended. Choose a plan and we'll send you an invoice to keep going.",
     "period_ended":"Your paid period has ended. Once we receive your renewal payment, access is restored immediately.",
@@ -4376,6 +4413,26 @@ def _clean_webm(data):
         return data, 0
     return data[i:], i
 
+def _resolve_shipment_by_code(c, code):
+    """Resolve ONE shipment row from a scanned/typed code the SAME way the scan
+    lookup does: exact (tracking_code OR shipment_id), then USPS-prefix substring
+    (stored tracking is a substring of the scan), then the rare truncation case
+    (scan is a substring of stored). Returns the sqlite row or None.
+    Shared by api_shipment_lookup and api_upload so packing and scanning never
+    disagree about which shipment a barcode belongs to."""
+    row = c.execute("SELECT * FROM shipments WHERE tracking_code=? OR shipment_id=? LIMIT 1",
+                    (code, code)).fetchone()
+    if not row and len(code) > 10:
+        row = c.execute("""SELECT * FROM shipments
+                           WHERE tracking_code IS NOT NULL AND length(tracking_code) >= 10
+                             AND ? LIKE '%' || tracking_code || '%' LIMIT 1""", (code,)).fetchone()
+    if not row and len(code) >= 10:
+        row = c.execute("""SELECT * FROM shipments
+                           WHERE tracking_code IS NOT NULL
+                             AND tracking_code LIKE '%' || ? || '%' LIMIT 1""", (code,)).fetchone()
+    return row
+
+
 @app.route("/api/upload",methods=["POST"])
 @req_login
 def api_upload():
@@ -4436,13 +4493,16 @@ def api_upload():
     # Skip if no matching shipment, if it's already shipped, or if it's cancelled.
     try:
         c = sdb()
-        row = c.execute("SELECT shipment_id, status, import_label FROM shipments WHERE tracking_code=?", (trk,)).fetchone()
+        # Resolve the SAME way the scan lookup does (exact + substring fallbacks) and
+        # then act by shipment_id. Keying the pack update on an exact tracking match
+        # left USPS-prefixed scans stuck 'pending' with their stock never depleted.
+        row = _resolve_shipment_by_code(c, trk)
         # Skip shipped/cancelled, and never silently clear a flagged 'issue' -- an issue
         # must be resolved explicitly, not wiped by a routine pack scan.
         if row and row["status"] not in ("shipped", "cancelled", "issue"):
             c.execute("""UPDATE shipments
                          SET status='packed', packed_at=CURRENT_TIMESTAMP, packed_by=?
-                         WHERE tracking_code=?""", (wrk, trk))
+                         WHERE shipment_id=?""", (wrk, row["shipment_id"]))
             # Deplete inventory for the items in this shipment (once per shipment).
             try: _deplete_stock_for(c, row["shipment_id"])
             except Exception as e: print("stock deplete failed for", trk, ":", e, flush=True)
@@ -5673,6 +5733,7 @@ def _apply_cancel_rows(c, norm_rows, source, label, import_batch):
             matched_existing += 1
             for r in existing: affected_ships.add(r["shipment_id"])
             continue
+
         # Path B: never seen — insert a synthetic shipment so cleanup can find it
         synthetic_id = "cancel_" + oid
         _tot = sum(int(n.get("quantity") or 1) for n in group)
@@ -5693,8 +5754,36 @@ def _apply_cancel_rows(c, norm_rows, source, label, import_batch):
                        n.get("weight_g") or None, reason))
         inserted_new += 1
     for sid in affected_ships:
+        # A cancellation must (a) put any already-depleted stock back on the shelf for the
+        # now-cancelled lines, and (b) flip the shipment to 'cancelled' once nothing is left
+        # to ship. Previously the items were flagged but the shipment stayed 'pending' and
+        # the stock stayed deducted.
+        _restore_cancelled_item_stock(c, sid)
+        remaining = c.execute("""SELECT COUNT(*) FROM shipment_items
+                                 WHERE shipment_id=? AND COALESCE(cancelled,0)=0""", (sid,)).fetchone()[0]
+        if remaining == 0:
+            c.execute("""UPDATE shipments SET status='cancelled', stock_depleted=0
+                         WHERE shipment_id=? AND status NOT IN ('shipped','cancelled')""", (sid,))
         _recompute_shipment_weight(c, sid)
     return matched_existing, inserted_new, affected_ships
+
+
+def _restore_cancelled_item_stock(c, shipment_id):
+    """Return to stock exactly what was depleted for the CANCELLED lines of a shipment,
+    then clear those lines' depletion markers. Safe to call repeatedly (markers are
+    zeroed), and only touches cancelled+depleted rows -- partial cancels leave the rest."""
+    now=datetime.now().isoformat(timespec='seconds')
+    try: who=(session.get("name","") or "cancel")[:60]
+    except Exception: who="cancel"
+    rows=c.execute("""SELECT id, COALESCE(depleted_qty,0) dq, depleted_sku FROM shipment_items
+                      WHERE shipment_id=? AND COALESCE(cancelled,0)=1 AND COALESCE(depleted_qty,0)>0""",
+                   (shipment_id,)).fetchall()
+    for it in rows:
+        if not it["depleted_sku"]: continue
+        c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?", (it["dq"], it["depleted_sku"]))
+        c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
+                  (it["depleted_sku"], it["dq"], "cancelled — stock restored", now, who))
+        c.execute("UPDATE shipment_items SET depleted_qty=0, depleted_sku=NULL WHERE id=?", (it["id"],))
 
 def _process_cancel_file(norm_rows, source, label):
     """A pure cancellation file from TikTok lists orders that were canceled BEFORE the
@@ -5812,22 +5901,7 @@ def api_shipment_lookup(code):
     if not re.match(r'^[A-Za-z0-9_\-]{1,64}$', code):
         return jsonify({"ok": False, "error": "Invalid code"})
     c = sdb()
-    # 1) Exact match
-    row = c.execute("""SELECT * FROM shipments
-                       WHERE tracking_code=? OR shipment_id=? LIMIT 1""", (code, code)).fetchone()
-    # 2) Stored tracking is a SUBSTRING of the scanned code (USPS prefix case)
-    if not row and len(code) > 10:
-        row = c.execute("""SELECT * FROM shipments
-                           WHERE tracking_code IS NOT NULL
-                             AND length(tracking_code) >= 10
-                             AND ? LIKE '%' || tracking_code || '%'
-                           LIMIT 1""", (code,)).fetchone()
-    # 3) Scanned is a substring of stored — handles rare truncation
-    if not row and len(code) >= 10:
-        row = c.execute("""SELECT * FROM shipments
-                           WHERE tracking_code IS NOT NULL
-                             AND tracking_code LIKE '%' || ? || '%'
-                           LIMIT 1""", (code,)).fetchone()
+    row = _resolve_shipment_by_code(c, code)
     if not row:
         c.close()
         # Standalone giveaway with its own label? Make it packable/filmable by tracking.
@@ -6416,6 +6490,9 @@ def api_pick_complete(sid):
     if s["status"] == "cancelled":
         c.close()
         return jsonify({"ok": False, "error": "This order is cancelled — do not pick"})
+    if s["status"] == "issue":
+        c.close()
+        return jsonify({"ok": False, "error": "This order is flagged with an issue — resolve it before picking"})
     # Already picked (or already packed/shipped) — don't re-attribute or double-count.
     st = (s["status"] or "").lower()
     if st in ("picked", "packed", "shipped") or s["picked_at"]:
@@ -6799,20 +6876,25 @@ def _receive_stock(c, sku, qty, cost, po_id=None, note=None, name=None, barcode=
     """Add qty of sku to stock at unit `cost`; recompute weighted-average cost.
     Returns (new_on_hand, new_avg_cost)."""
     now=datetime.now().isoformat(timespec='seconds')
-    p=c.execute("SELECT on_hand,avg_cost FROM products WHERE sku=?",(sku,)).fetchone()
-    if not p:
-        c.execute("INSERT INTO products(sku,name,barcode,updated_at) VALUES(?,?,?,?)",
-                  (sku,(name or sku),(barcode or None),now))
-        oh,ac=0,0.0
-    else:
-        oh,ac=p["on_hand"] or 0, p["avg_cost"] or 0.0
-    new_oh=oh+qty
-    new_avg=((oh*ac)+(qty*cost))/new_oh if new_oh>0 else cost
-    c.execute("UPDATE products SET on_hand=?,avg_cost=?,updated_at=? WHERE sku=?",
-              (new_oh,round(new_avg,4),now,sku))
+    # Ensure the row exists without clobbering a concurrent create.
+    c.execute("INSERT OR IGNORE INTO products(sku,name,barcode,updated_at,on_hand,avg_cost) VALUES(?,?,?,?,0,0)",
+              (sku,(name or sku),(barcode or None),now))
+    # Atomic read-modify-write: the increment is RELATIVE and the new weighted-average
+    # cost is computed from the row's pre-update values WITHIN this single UPDATE, so two
+    # concurrent receives can't lose each other's quantity (the old SELECT-then-absolute-
+    # write did). Guard divide-by-zero for the degenerate on_hand+qty<=0 case.
+    c.execute("""UPDATE products
+                 SET avg_cost = CASE WHEN (COALESCE(on_hand,0)+?) > 0
+                        THEN ((COALESCE(on_hand,0)*COALESCE(avg_cost,0.0))+(?*?))/(COALESCE(on_hand,0)+?)
+                        ELSE ? END,
+                     on_hand = COALESCE(on_hand,0)+?,
+                     updated_at = ?
+                 WHERE sku=?""",
+              (qty, qty, cost, qty, cost, qty, now, sku))
     c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,po_id,note,moved_by) VALUES(?,?,?,?,?,?)",
               (sku,qty,cost,po_id,note,session.get("name","")[:60]))
-    return new_oh, round(new_avg,4)
+    p=c.execute("SELECT on_hand,avg_cost FROM products WHERE sku=?",(sku,)).fetchone()
+    return (p["on_hand"] or 0), round(p["avg_cost"] or 0.0,4)
 
 @app.route("/api/shipments/fix-giveaway-status",methods=["POST"])
 @req_role("admin")
@@ -9864,6 +9946,19 @@ def api_hire_send_invite(hire_id):
 def api_hire_delete(hire_id):
     """Hard-delete a hire and their progress (admin only). Use with care."""
     c = sdb()
+    # Revoke any login that was provisioned for this hire FIRST -- otherwise deleting the
+    # hire row leaves an orphaned, still-valid account in the control plane (users.json).
+    try:
+        hrow = c.execute("SELECT provisioned_username FROM new_hires WHERE id=?", (hire_id,)).fetchone()
+        uname = ((hrow["provisioned_username"] if hrow else "") or "").strip().lower()
+        if uname:
+            with update_json(USERS_FILE) as _users:
+                u = _users.get(uname)
+                # only remove the account if it actually belongs to this hire
+                if u and str(u.get("from_hire_id")) == str(hire_id):
+                    _users.pop(uname, None)
+    except Exception as _e:
+        print("hire delete: login revoke failed for", hire_id, ":", _e, flush=True)
     c.execute("DELETE FROM onboarding_progress WHERE hire_id=?", (hire_id,))
     c.execute("DELETE FROM onboarding_signatures WHERE hire_id=?", (hire_id,))
     c.execute("DELETE FROM onboarding_uploads WHERE hire_id=?", (hire_id,))
@@ -13667,6 +13762,46 @@ def api_label_uncertain():
     rows=[dict(r) for r in c.execute("SELECT rate_id,shipment_id,status,error,updated_at FROM label_purchases WHERE status='uncertain' ORDER BY updated_at DESC LIMIT 200").fetchall()]
     c.close()
     return jsonify({"ok":True,"count":len(rows),"uncertain":rows})
+
+@app.route("/api/label/resolve",methods=["POST"])
+@req_true_admin
+def api_label_resolve():
+    """Admin-authoritative resolution for an 'uncertain' label (true-admin only).
+
+    _carrier_label_lookup is a stub, so uncertain rows can otherwise wedge forever.
+    An admin who has CONFIRMED the real outcome in the carrier dashboard records it
+    here. This is authoritative human confirmation -- it NEVER calls the carrier and
+    NEVER re-buys, so it cannot double-charge:
+      outcome='bought'  -> record the existing label (tracking/label_url/cost/...)
+      outcome='failed'  -> mark 'error' (safe to retry a fresh purchase)
+    """
+    org=current_org() or DEFAULT_ORG
+    d=request.get_json(silent=True) or {}
+    rid=(d.get("rate_id") or "").strip()
+    outcome=(d.get("outcome") or "").strip().lower()
+    if not rid: return jsonify({"ok":False,"error":"rate_id required"})
+    if outcome not in ("bought","failed"):
+        return jsonify({"ok":False,"error":"outcome must be 'bought' or 'failed'"})
+    now=datetime.now().isoformat(timespec="seconds")
+    c=sdb(org); _label_claim_ensure(c)
+    row=c.execute("SELECT status FROM label_purchases WHERE rate_id=?",(rid,)).fetchone()
+    if not row: c.close(); return jsonify({"ok":False,"error":"No such purchase"})
+    if (row["status"] or "")!="uncertain":
+        st=row["status"]; c.close()
+        return jsonify({"ok":False,"error":"Only an 'uncertain' purchase can be resolved (is '%s')"%st})
+    if outcome=="failed":
+        c.execute("UPDATE label_purchases SET status='error', error='admin-resolved: no label at carrier — safe to retry', updated_at=? WHERE rate_id=? AND status='uncertain'",
+                  (now,rid))
+        c.commit(); c.close()
+        return jsonify({"ok":True,"status":"error","retryable":True,"resolved_by":session.get("name","")})
+    who=(session.get("name","") or "admin")[:60]
+    c.execute("""UPDATE label_purchases SET status='bought', tracking=?, label_url=?, cost=?, carrier=?, service=?,
+                 error=?, updated_at=? WHERE rate_id=? AND status='uncertain'""",
+              ((d.get("tracking") or "").strip() or None, (d.get("label_url") or "").strip() or None,
+               d.get("cost"), (d.get("carrier") or "").strip() or None, (d.get("service") or "").strip() or None,
+               "admin-resolved as bought by "+who, now, rid))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"status":"bought","resolved":True,"resolved_by":who})
 
 @app.route("/api/label/buy",methods=["POST"])
 @req_role("admin","cs")

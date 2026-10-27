@@ -3,9 +3,11 @@ import uuid
 
 
 def _login(client, appmod, role):
+    uname = role[:4] + uuid.uuid4().hex[:3]
+    with appmod.update_json(appmod.USERS_FILE) as _u:
+        _u[uname] = {"password": "x", "role": role, "name": role, "org": appmod.DEFAULT_ORG}
     with client.session_transaction() as s:
-        s.update(user=role[:4] + uuid.uuid4().hex[:3], username=role + uuid.uuid4().hex[:3],
-                 role=role, roles=[role], org=appmod.DEFAULT_ORG)
+        s.update(user=uname, username=uname, role=role, roles=[role], org=appmod.DEFAULT_ORG)
     client.set_cookie("csrf_token", "tok")
     return {"X-CSRF-Token": "tok"}
 
