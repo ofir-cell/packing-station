@@ -3236,8 +3236,107 @@ def _backup_loop():
             open(marker,"w").close()
             _backup_all()
         except Exception as e: print("backup loop error:",e,flush=True)
-if not STAGING_SAFE:
-    threading.Thread(target=_backup_loop,daemon=True).start()
+# ── Backup scheduler selection (legacy vs BACKUP_V2) ──────────────────────────
+# BACKUP_V2 (default OFF) switches to ps_backup: consistent snapshots -> dedicated
+# bucket, manifest+checksums+revision, verification, tiered retention, status+alerts.
+# Exactly ONE scheduler ever runs: when BACKUP_V2 is on, the legacy loop is NOT started
+# (no duplicate schedulers). Both respect STAGING_SAFE (no external writes in safe mode).
+BACKUP_V2_ENABLED = os.environ.get("BACKUP_V2","").strip().lower() in ("1","true","yes")
+BACKUP_PRUNE_IN_APP = os.environ.get("BACKUP_PRUNE_IN_APP","1").strip().lower() in ("1","true","yes")
+R2_BACKUP_BUCKET = os.environ.get("R2_BACKUP_BUCKET") or R2_BUCKET
+_APP_REVISION = (os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_SHA") or "unknown")[:12]
+# last-run status for monitoring (no secrets); exposed via /api/ops/backup-status
+_backup_status = {"last_run_id":None,"last_ok":None,"last_error":None,"last_finished_utc":None,"files":0}
+
+def _backup_targets():
+    t=[("platform.db",PLATFORM_DB),("users.json",USERS_FILE),("stations.json",STATIONS_FILE)]
+    for org in list_org_ids():
+        t.append((org+"/shipments.db",shipments_db_path(org)))
+        t.append((org+"/giveaways.db",giveaway_db_path(org)))
+    return t
+
+class _R2BackupStore:
+    """Dedicated R2-backed store for ps_backup. Uses a SEPARATE client/bucket (and, if
+    provided, SEPARATE least-privilege creds R2_BACKUP_*). Never the _SafeR2 wrapper."""
+    def __init__(self):
+        import boto3
+        from botocore.client import Config as _BC
+        self.bucket=R2_BACKUP_BUCKET
+        self.c=boto3.client('s3',
+            endpoint_url=os.environ.get("R2_BACKUP_ENDPOINT") or R2_ENDPOINT,
+            aws_access_key_id=os.environ.get("R2_BACKUP_ACCESS_KEY_ID") or R2_ACCESS_KEY_ID,
+            aws_secret_access_key=os.environ.get("R2_BACKUP_SECRET_ACCESS_KEY") or R2_SECRET_ACCESS_KEY,
+            config=_BC(signature_version='s3v4',connect_timeout=5,read_timeout=120,
+                       retries={'max_attempts':3,'mode':'standard'}), region_name='auto')
+    def put_fileobj(self,key,fh): self.c.upload_fileobj(fh,self.bucket,key)
+    def put_bytes(self,key,data): self.c.put_object(Bucket=self.bucket,Key=key,Body=data)
+    def get_bytes(self,key): return self.c.get_object(Bucket=self.bucket,Key=key)["Body"].read()
+    def size(self,key): return self.c.head_object(Bucket=self.bucket,Key=key)["ContentLength"]
+    def delete(self,key): self.c.delete_object(Bucket=self.bucket,Key=key)
+    def list_keys(self,prefix):
+        out,tok=[],None
+        while True:
+            kw={"Bucket":self.bucket,"Prefix":prefix,"MaxKeys":1000}
+            if tok: kw["ContinuationToken"]=tok
+            r=self.c.list_objects_v2(**kw); out+=[o["Key"] for o in r.get("Contents",[])]
+            if not r.get("IsTruncated"): break
+            tok=r.get("NextContinuationToken")
+        return out
+
+def _backup_v2_run_once():
+    """One snapshot cycle. Temp snapshots go to TMPDIR (NOT /data). Records status and
+    alerts on failure. Returns the manifest or None."""
+    import ps_backup
+    tmp=os.environ.get("TMPDIR") or tempfile.gettempdir()
+    if os.path.abspath(tmp).startswith(os.path.abspath(DATA_DIR)):
+        tmp=tempfile.gettempdir()   # never stage snapshots on the data volume
+    store=_R2BackupStore()
+    try:
+        man=ps_backup.run_backup(_backup_targets(), store, app_revision=_APP_REVISION, tmp_dir=tmp)
+        if BACKUP_PRUNE_IN_APP:
+            try: ps_backup.retention_prune(store, keep_6h=8, keep_daily=7, keep_weekly=6)
+            except Exception as pe: print("[backup-v2] prune skipped:",pe,flush=True)
+        _backup_status.update(last_run_id=man["run_id"],last_ok=True,last_error=None,
+                              last_finished_utc=datetime.utcnow().isoformat()+"Z",files=man["file_count"])
+        print("[backup-v2] ok run=%s files=%d rev=%s"%(man["run_id"],man["file_count"],_APP_REVISION),flush=True)
+        return man
+    except Exception as e:
+        _backup_status.update(last_ok=False,last_error=str(e)[:300],
+                              last_finished_utc=datetime.utcnow().isoformat()+"Z")
+        print("[backup-v2] FAILED:",repr(e),flush=True)
+        try:
+            if BACKUP_ALERT_EMAIL:
+                _send_email(BACKUP_ALERT_EMAIL,"[WMS] Backup FAILED",
+                            "<p>Backup run failed at %s</p><pre>%s</pre>"%(datetime.utcnow().isoformat(),str(e)[:500]))
+        except Exception: pass
+        return None
+
+BACKUP_ALERT_EMAIL=(os.environ.get("BACKUP_ALERT_EMAIL") or "").strip()
+BACKUP_MAX_AGE_SEC=int(os.environ.get("BACKUP_MAX_AGE_SEC","25200"))  # 7h default
+
+def _backup_v2_loop():
+    guard=open(os.path.join(DATA_DIR,".backupv2.guard"),"a+")
+    try: fcntl.flock(guard.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except OSError: return  # another worker owns backups (no duplicate scheduler)
+    while True:
+        try:
+            marker=os.path.join(DATA_DIR,".backupv2_last")
+            last=os.path.getmtime(marker) if os.path.exists(marker) else 0
+            if time.time()-last >= 6*3600:            # every 6 hours
+                open(marker,"w").close()
+                _backup_v2_run_once()
+            # age alert: if the newest successful backup is too old, warn once per loop
+            if BACKUP_ALERT_EMAIL and _backup_status.get("last_finished_utc"):
+                pass  # external monitor uses /api/ops/backup-status; in-loop alert on failure above
+        except Exception as e:
+            print("[backup-v2] loop error:",e,flush=True)
+        time.sleep(600)   # re-check every 10 min; 6h gate above controls cadence
+
+if BACKUP_V2_ENABLED and not STAGING_SAFE:
+    threading.Thread(target=_backup_v2_loop,daemon=True).start()
+    print("[backup-v2] scheduler started (6h; bucket=%s; rev=%s)"%(R2_BACKUP_BUCKET,_APP_REVISION),flush=True)
+elif not STAGING_SAFE:
+    threading.Thread(target=_backup_loop,daemon=True).start()   # legacy (unchanged)
 else:
     print("[STAGING-SAFE] R2 backup thread not started",flush=True)
 
@@ -15156,6 +15255,26 @@ def _tt_sweep_loop():
                 if idle_tick % 6 == 0:                           # idle: ~every 30s
                     _tt_sweep_once(window_sec=420)
         except Exception as e: _tt_log("sweep loop error: %r"%e)
+
+@app.route("/api/ops/backup-status")
+@req_role("admin")
+def api_ops_backup_status():
+    """Admin-only, read-only. Backup health for monitoring. No secrets/paths/creds —
+    only run id, ok flag, counts, last error text, and age in seconds."""
+    st=dict(_backup_status)
+    age=None
+    try:
+        rid=st.get("last_run_id")
+        if rid:
+            dt=datetime.strptime(rid,"%Y%m%dT%H%M%SZ")
+            age=int((datetime.utcnow()-dt).total_seconds())
+    except Exception: age=None
+    stale = (age is None) or (age > BACKUP_MAX_AGE_SEC)
+    return jsonify({"ok":True,"enabled":bool(BACKUP_V2_ENABLED),"bucket_configured":bool(R2_BACKUP_BUCKET),
+                    "last_run_id":st.get("last_run_id"),"last_ok":st.get("last_ok"),
+                    "last_error":st.get("last_error"),"last_finished_utc":st.get("last_finished_utc"),
+                    "files":st.get("files"),"age_seconds":age,"max_age_seconds":BACKUP_MAX_AGE_SEC,
+                    "stale":bool(stale)})
 
 @app.route("/api/ops/safe-mode")
 @req_role("admin")
