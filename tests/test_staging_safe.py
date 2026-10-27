@@ -39,8 +39,10 @@ def test_r2_wrapper_blocks_writes_allows_reads(appmod):
     class _Inner:
         def put_object(self, **k): return {"real": True}
         def head_object(self, **k): return {"read": "ok"}
+    import pytest as _pt
     w = appmod._SafeR2(_Inner())
-    assert w.put_object(Bucket="b", Key="k", Body=b"x") == {"SafeMode": True}   # write blocked
+    with _pt.raises(RuntimeError):            # blocked write RAISES — never fake-success
+        w.put_object(Bucket="b", Key="k", Body=b"x")
     assert w.head_object(Bucket="b", Key="k") == {"read": "ok"}                 # read passes through
 
 
@@ -67,3 +69,36 @@ def test_r1_enforced_under_safe_mode(appmod, client, monkeypatch):
     body = json.dumps({"type": 6, "shop_id": sid}).encode()
     r2 = client.post("/api/tiktok/webhook", data=body, headers={"Authorization": _sign(appmod, body)})
     assert r2.status_code == 200                 # signed deauth still works in safe mode
+
+
+# ── (6) a blocked TikTok call must NOT read as a successful sync ──────────────
+def test_blocked_tiktok_pull_is_not_success(appmod, monkeypatch):
+    monkeypatch.setattr(appmod, "STAGING_SAFE", True)
+    sid = "SH-" + uuid.uuid4().hex[:6]
+    c = appmod.pdb(); c.execute("INSERT OR REPLACE INTO tiktok_shops(org_id,shop_id,active) VALUES(?,?,1)",
+                                (appmod.DEFAULT_ORG, sid)); c.commit(); c.close()
+    monkeypatch.setattr(appmod, "_tt_valid_token", lambda *a, **k: {"access_token": "x", "shop_cipher": "c"})
+    monkeypatch.setattr(appmod, "_tt_ensure_cipher", lambda org, shop, tok: tok)
+    res = appmod._tt_pull_core(appmod.DEFAULT_ORG, days=1)
+    assert res.get("ok") is False        # blocked sync is a failure, never a success
+
+
+# ── admin-only read-only status endpoint, no secrets leaked ──────────────────
+def test_safe_mode_status_admin_only(client, appmod):
+    # unauthenticated → not allowed (redirect to login), never a 200 payload
+    assert client.get("/api/ops/safe-mode").status_code != 200
+    # authenticated non-admin (worker) → forbidden
+    with client.session_transaction() as sess:
+        sess.update(user="w", role="worker", roles=["worker"], org=appmod.DEFAULT_ORG)
+    assert client.get("/api/ops/safe-mode").status_code == 403
+
+
+def test_safe_mode_status_payload_has_no_secrets(appmod, admin, monkeypatch):
+    monkeypatch.setattr(appmod, "STAGING_SAFE", True); monkeypatch.setattr(appmod, "IS_STAGING", True)
+    r = admin.get("/api/ops/safe-mode")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["safe_mode"] is True and j["blocked"]["tiktok_polling"] is True and j["blocked"]["r2_writes"] is True
+    blob = json.dumps(j).lower()
+    for leak in ("secret", "token", "apikey", "api_key", "password", "endpoint", "bucket", "app_env"):
+        assert leak not in blob, f"status must not expose {leak}"

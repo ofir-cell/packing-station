@@ -63,7 +63,13 @@ IS_STAGING = APP_ENV in ("staging","stage","test","dev","development")
 # effects (TikTok polling/ingest, USPS tracking, R2 writes/backups, label buys, email,
 # carrier calls) even when PRODUCTION API credentials are shared with staging. This is a
 # safety default, not a feature: set STAGING_ALLOW_EXTERNAL=1 to deliberately opt out.
-STAGING_SAFE = IS_STAGING and os.environ.get("STAGING_ALLOW_EXTERNAL","").strip().lower() not in ("1","true","yes")
+# Safe mode can ONLY be disabled by a deliberate, non-trivial phrase (not "1"/"true"), so a
+# casual env toggle cannot accidentally expose production. Treat setting this as a separately
+# approved change.
+_STAGING_UNSAFE_PHRASE = "enable-production-side-effects"
+STAGING_SAFE = IS_STAGING and os.environ.get("STAGING_ALLOW_EXTERNAL","").strip() != _STAGING_UNSAFE_PHRASE
+if IS_STAGING and not STAGING_SAFE:
+    print("[WARNING] STAGING SAFE MODE DISABLED — real external calls ENABLED on a staging box",flush=True)
 
 class _SafeR2:
     """Wrap the R2/S3 client in safe mode: reads pass through, writes/deletes are no-ops.
@@ -74,7 +80,7 @@ class _SafeR2:
     def __getattr__(self,name):
         if name in self._BLOCKED:
             def _blocked(*a,**k):
-                print("[STAGING-SAFE] R2 write blocked: %s"%name,flush=True); return {"SafeMode":True}
+                raise RuntimeError("R2 write '%s' blocked in staging safe mode"%name)
             return _blocked
         return getattr(self._inner,name)
 LOG_FIELDS=["tracking_number","station","date","time","duration_seconds","video_file","photo_file","worker"]
@@ -14676,6 +14682,18 @@ def _tt_sweep_loop():
                 if idle_tick % 6 == 0:                           # idle: ~every 30s
                     _tt_sweep_once(window_sec=420)
         except Exception as e: _tt_log("sweep loop error: %r"%e)
+
+@app.route("/api/ops/safe-mode")
+@req_role("admin")
+def api_ops_safe_mode():
+    """Admin-only, read-only. Returns booleans describing staging safe mode. Exposes NO
+    secrets, credentials, env values or config — only on/off flags."""
+    on=bool(STAGING_SAFE)
+    return jsonify({"ok":True,"staging":bool(IS_STAGING),"safe_mode":on,
+        "external_calls_blocked":on,
+        "blocked":{"tiktok_api":on,"tiktok_polling":on,"usps_tracking":on,"shipstation":on,
+                   "ups":on,"r2_writes":on,"r2_backups":on,
+                   "email":bool(IS_STAGING),"label_purchase":bool(IS_STAGING)}})
 
 if not STAGING_SAFE:
     threading.Thread(target=_tt_sweep_loop,daemon=True).start()
