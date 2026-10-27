@@ -58,6 +58,25 @@ ORGS_DIR=os.path.join(DATA_DIR,"orgs")   # every tenant gets a private folder he
 # pipeline can be tested. Every screen also shows a banner.
 APP_ENV=(os.environ.get("APP_ENV") or "production").strip().lower()
 IS_STAGING = APP_ENV in ("staging","stage","test","dev","development")
+# ── STAGING SAFE MODE ──────────────────────────────────────────────────────────
+# Default-ON whenever APP_ENV marks a non-production box. Blocks ALL real external side
+# effects (TikTok polling/ingest, USPS tracking, R2 writes/backups, label buys, email,
+# carrier calls) even when PRODUCTION API credentials are shared with staging. This is a
+# safety default, not a feature: set STAGING_ALLOW_EXTERNAL=1 to deliberately opt out.
+STAGING_SAFE = IS_STAGING and os.environ.get("STAGING_ALLOW_EXTERNAL","").strip().lower() not in ("1","true","yes")
+
+class _SafeR2:
+    """Wrap the R2/S3 client in safe mode: reads pass through, writes/deletes are no-ops.
+    Prevents staging from writing into the shared production bucket."""
+    _BLOCKED={"put_object","upload_fileobj","upload_file","delete_object","delete_objects",
+              "copy_object","create_multipart_upload","put_bucket_cors"}
+    def __init__(self,inner): self._inner=inner
+    def __getattr__(self,name):
+        if name in self._BLOCKED:
+            def _blocked(*a,**k):
+                print("[STAGING-SAFE] R2 write blocked: %s"%name,flush=True); return {"SafeMode":True}
+            return _blocked
+        return getattr(self._inner,name)
 LOG_FIELDS=["tracking_number","station","date","time","duration_seconds","video_file","photo_file","worker"]
 
 # ══════════════════════════════════════════════════════════════════
@@ -204,6 +223,8 @@ if any(_r2_vars):
             region_name='auto'
         )
         print("R2 storage enabled: bucket="+R2_BUCKET,flush=True)
+        if STAGING_SAFE:
+            r2=_SafeR2(r2); print("[STAGING-SAFE] R2 writes/backups disabled",flush=True)
     except Exception as e:
         print("FATAL: R2 client init failed:",e,file=sys.stderr)
         sys.exit(1)
@@ -1836,6 +1857,7 @@ _usps_lock=threading.Lock()
 
 def _usps_token():
     """Valid OAuth bearer token, refreshing if needed (USPS tokens last ~8h)."""
+    if STAGING_SAFE: raise RuntimeError("USPS: disabled in staging safe mode")
     with _usps_lock:
         if _usps_tok["token"] and time.time()<_usps_tok["exp"]-120:
             return _usps_tok["token"]
@@ -1995,7 +2017,7 @@ def _tracking_loop():
         except Exception as e:
             print("tracking loop error:",e,flush=True)
 
-if USPS_ENABLED:
+if USPS_ENABLED and not STAGING_SAFE:
     threading.Thread(target=_tracking_loop,daemon=True).start()
     print("USPS tracking enabled (base="+USPS_BASE+")",flush=True)
 else:
@@ -2075,6 +2097,7 @@ def _tiktok_ready():
 
 def _ss(method, path, payload=None):
     """Call the ShipStation V2 API. Raises RuntimeError('ShipStation: <msg>') on error."""
+    if STAGING_SAFE: raise RuntimeError("ShipStation: disabled in staging safe mode")
     data=json.dumps(payload).encode() if payload is not None else None
     req=_urlreq.Request(SHIPSTATION_BASE+path, data=data, method=method,
         headers={"API-Key":SHIPSTATION_API_KEY or "","Content-Type":"application/json","Accept":"application/json"})
@@ -2187,6 +2210,7 @@ UPS_SERVICE_NAMES={"01":"UPS Next Day Air","02":"UPS 2nd Day Air","03":"UPS Grou
 _ups_tok={"tok":None,"exp":0}
 def _ups_token():
     """Cached OAuth bearer token (client-credentials). Refreshes 5 min before expiry."""
+    if STAGING_SAFE: raise RuntimeError("UPS: disabled in staging safe mode")
     if _ups_tok["tok"] and time.time()<_ups_tok["exp"]-300:
         return _ups_tok["tok"]
     auth=_b64.b64encode((UPS_CLIENT_ID+":"+UPS_CLIENT_SECRET).encode()).decode()
@@ -2207,6 +2231,7 @@ def _ups_token():
 
 def _ups(method, path, payload=None):
     """Call a UPS REST API with a bearer token. Raises RuntimeError('UPS: <msg>')."""
+    if STAGING_SAFE: raise RuntimeError("UPS: disabled in staging safe mode")
     data=json.dumps(payload).encode() if payload is not None else None
     req=_urlreq.Request(UPS_BASE+path, data=data, method=method,
         headers={"Authorization":"Bearer "+_ups_token(),"Content-Type":"application/json",
@@ -3137,7 +3162,10 @@ def _backup_loop():
             open(marker,"w").close()
             _backup_all()
         except Exception as e: print("backup loop error:",e,flush=True)
-threading.Thread(target=_backup_loop,daemon=True).start()
+if not STAGING_SAFE:
+    threading.Thread(target=_backup_loop,daemon=True).start()
+else:
+    print("[STAGING-SAFE] R2 backup thread not started",flush=True)
 
 # ── Bootstrap the platform super-admin (you) from env ──────────────
 # The platform owner is a DEDICATED account, separate from every tenant (5sec
@@ -13881,6 +13909,7 @@ def _tt_sign(path, query_params, body_str="", content_type="application/json"):
 
 def _tt_request(method, url, params=None, headers=None, body=None, signed=False, access_token=None, timeout=30):
     """Low-level TikTok HTTP call via urllib. Returns parsed JSON dict (raises on transport error)."""
+    if STAGING_SAFE: return {"code":"SAFE_MODE","message":"TikTok API disabled in staging safe mode"}
     import urllib.request as _ur, urllib.parse as _up, urllib.error as _ue
     params=dict(params or {})
     hdrs={k.lower():v for k,v in (headers or {}).items()}
@@ -14648,7 +14677,10 @@ def _tt_sweep_loop():
                     _tt_sweep_once(window_sec=420)
         except Exception as e: _tt_log("sweep loop error: %r"%e)
 
-threading.Thread(target=_tt_sweep_loop,daemon=True).start()
+if not STAGING_SAFE:
+    threading.Thread(target=_tt_sweep_loop,daemon=True).start()
+else:
+    print("[STAGING-SAFE] TikTok sweep/polling thread not started",flush=True)
 
 @app.route("/api/tiktok/connect")
 @req_role("admin")
