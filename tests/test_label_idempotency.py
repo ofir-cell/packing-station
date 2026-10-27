@@ -33,12 +33,12 @@ def test_in_progress_blocks_second(appmod, monkeypatch):
     assert len(calls) == 0, "must not call carrier while a purchase is in progress"
 
 
-def test_error_then_retry_succeeds(appmod, monkeypatch):
+def test_clean_rejection_then_retry_succeeds(appmod, monkeypatch):
     state = {"n": 0}; seen = []
     def flaky(rate_id, idem_key=None):
         seen.append(idem_key); state["n"] += 1
         if state["n"] == 1:
-            raise RuntimeError("carrier 503")
+            raise appmod.CarrierRejected("ShipStation: invalid address")   # definite reject, never charged
         return {"postage_label": {"label_url": "L"}, "tracking_code": "T2",
                 "selected_rate": {"rate": 3.0, "carrier": "usps", "service": "ground"}}
     monkeypatch.setattr(appmod, "_ship_buy", flaky)
@@ -78,3 +78,53 @@ def test_concurrent_buys_single_charge(appmod, monkeypatch):
     ts = [threading.Thread(target=worker) for _ in range(8)]
     [t.start() for t in ts]; [t.join() for t in ts]
     assert len(calls) == 1, f"8 concurrent buys of one rate must charge once, got {len(calls)}"
+
+
+# ── R4 uncertain-outcome safety ──────────────────────────────────────────────
+def test_uncertain_outcome_blocks_retry(appmod, monkeypatch):
+    calls = []
+    def timeout(rate_id, idem_key=None):
+        calls.append(1); raise appmod.CarrierUncertain("ShipStation: network error, outcome unknown")
+    monkeypatch.setattr(appmod, "_ship_buy", timeout)
+    rid = "rate-" + uuid.uuid4().hex[:6]; sid = "S-" + uuid.uuid4().hex[:6]
+    r1 = appmod._buy_label_idempotent(appmod.DEFAULT_ORG, sid, rid)
+    assert r1["ok"] is False and r1.get("uncertain") is True
+    # a retry MUST NOT call the carrier again — the first purchase may have gone through
+    r2 = appmod._buy_label_idempotent(appmod.DEFAULT_ORG, sid, rid)
+    assert r2["ok"] is False and r2.get("uncertain") is True
+    assert len(calls) == 1, f"uncertain outcome must block retry, carrier called {len(calls)}x"
+    c = appmod.sdb(appmod.DEFAULT_ORG)
+    st = c.execute("SELECT status FROM label_purchases WHERE rate_id=?", (rid,)).fetchone()[0]; c.close()
+    assert st == "uncertain"
+
+
+def test_unknown_error_defaults_to_uncertain(appmod, monkeypatch):
+    calls = []
+    def boom(rate_id, idem_key=None):
+        calls.append(1); raise RuntimeError("something weird")   # unclassified → conservative
+    monkeypatch.setattr(appmod, "_ship_buy", boom)
+    rid = "rate-" + uuid.uuid4().hex[:6]; sid = "S-" + uuid.uuid4().hex[:6]
+    r1 = appmod._buy_label_idempotent(appmod.DEFAULT_ORG, sid, rid)
+    r2 = appmod._buy_label_idempotent(appmod.DEFAULT_ORG, sid, rid)
+    assert r1.get("uncertain") and r2.get("uncertain") and len(calls) == 1
+
+
+def test_ss_classifies_transport_and_http(appmod, monkeypatch):
+    import io, urllib.error as ue
+    monkeypatch.setattr(appmod, "STAGING_SAFE", False)
+    monkeypatch.setattr(appmod, "SHIPSTATION_API_KEY", "k")
+    # transport error (dropped connection) → uncertain
+    monkeypatch.setattr(appmod._urlreq, "urlopen", lambda *a, **k: (_ for _ in ()).throw(ue.URLError("conn reset")))
+    try:
+        appmod._ss("POST", "/v2/labels/rates/1", {}); assert False
+    except appmod.CarrierUncertain: pass
+    # HTTP 400 → clean rejection
+    monkeypatch.setattr(appmod._urlreq, "urlopen", lambda *a, **k: (_ for _ in ()).throw(ue.HTTPError("u", 400, "bad", {}, io.BytesIO(b"{}"))))
+    try:
+        appmod._ss("POST", "/v2/labels/rates/1", {}); assert False
+    except appmod.CarrierRejected: pass
+    # HTTP 500 → uncertain
+    monkeypatch.setattr(appmod._urlreq, "urlopen", lambda *a, **k: (_ for _ in ()).throw(ue.HTTPError("u", 500, "err", {}, io.BytesIO(b"{}"))))
+    try:
+        appmod._ss("POST", "/v2/labels/rates/1", {}); assert False
+    except appmod.CarrierUncertain: pass

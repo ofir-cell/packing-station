@@ -2104,6 +2104,13 @@ TIKTOK_AUTH_PORTAL=os.environ.get("TIKTOK_AUTH_PORTAL","https://services.us.tikt
 def _tiktok_ready():
     return bool(TIKTOK_APP_KEY and TIKTOK_APP_SECRET)
 
+class CarrierError(RuntimeError): pass
+class CarrierRejected(CarrierError):
+    """Definite client-side rejection (4xx): the carrier never created a label — safe to retry."""
+class CarrierUncertain(CarrierError):
+    """Timeout / dropped connection / 5xx / unparseable response: a label MAY have been created
+    and charged. NOT safe to auto-retry; block until reconciled with the carrier."""
+
 def _ss(method, path, payload=None, idem_key=None):
     """Call the ShipStation V2 API. Raises RuntimeError('ShipStation: <msg>') on error."""
     if STAGING_SAFE: raise RuntimeError("ShipStation: disabled in staging safe mode")
@@ -2118,7 +2125,10 @@ def _ss(method, path, payload=None, idem_key=None):
             b=json.loads(e.read().decode())
             msg=(b.get("errors") or [{}])[0].get("message") or b.get("message") or ("HTTP "+str(e.code))
         except Exception: msg="HTTP "+str(e.code)
-        raise RuntimeError("ShipStation: "+str(msg))
+        if 400 <= e.code < 500: raise CarrierRejected("ShipStation: "+str(msg))
+        raise CarrierUncertain("ShipStation: "+str(msg))
+    except (_urlerr.URLError, OSError) as e:
+        raise CarrierUncertain("ShipStation: network error, outcome unknown: "+str(e)[:160])
 
 _ss_carriers={"list":None,"ts":0}
 def _ship_carriers_full(force=False):
@@ -2255,7 +2265,10 @@ def _ups(method, path, payload=None):
             msg=errs[0].get("message") or ("HTTP "+str(e.code))
             if errs[0].get("code"): msg=str(errs[0]["code"])+": "+msg
         except Exception: msg="HTTP "+str(e.code)
-        raise RuntimeError("UPS: "+str(msg))
+        if 400 <= e.code < 500: raise CarrierRejected("UPS: "+str(msg))
+        raise CarrierUncertain("UPS: "+str(msg))
+    except (_urlerr.URLError, OSError) as e:
+        raise CarrierUncertain("UPS: network error, outcome unknown: "+str(e)[:160])
 
 def _ups_addr(a):
     """Map an internal address dict to a UPS Address block."""
@@ -6878,6 +6891,12 @@ def _resolve_item_product(exact, by_sticker, sticker, product_name):
         if cand and len(cand)==1: psku=next(iter(cand))
     return psku
 
+def _record_stock_move(c, sku, qty, unit_cost, note, moved_at, moved_by):
+    """Single stock-move insert, isolated so it can be fault-injected in tests and so the
+    deplete step can roll back marker+decrement+move together."""
+    c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
+              (sku,qty,unit_cost,note,moved_at,moved_by))
+
 def _deplete_stock_for(c, shipment_id):
     """Take a packed shipment's items off stock — PER ITEM, exactly once per unit.
     Fires only when the box is packed/shipped AND the item's sticker is matched to a real
@@ -6907,13 +6926,19 @@ def _deplete_stock_for(c, shipment_id):
         if psku and dq==0:
             # Atomic claim: only ONE concurrent worker whose conditional UPDATE matches (rowcount=1)
             # may decrement stock — prevents a race from double-deducting the same unit.
-            claimed=c.execute("UPDATE shipment_items SET depleted_qty=?, depleted_sku=? WHERE id=? AND COALESCE(depleted_qty,0)=0",(qty,psku,it["id"])).rowcount
-            if claimed:
-                c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(qty,psku))
-                _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(psku,)).fetchone()
-                c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
-                          (psku,-qty,(_ac["avg_cost"] if _ac else 0) or 0,"sale packed ("+label+")",now,who))
-                any_dep=True
+            # Marker + inventory decrement + stock-move are ONE atomic unit: a failure between
+            # them rolls back all three (no decrement without a marker, no marker without a move).
+            c.execute("SAVEPOINT dep_item")
+            try:
+                claimed=c.execute("UPDATE shipment_items SET depleted_qty=?, depleted_sku=? WHERE id=? AND COALESCE(depleted_qty,0)=0",(qty,psku,it["id"])).rowcount
+                if claimed:
+                    c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(qty,psku))
+                    _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(psku,)).fetchone()
+                    _record_stock_move(c, psku, -qty, (_ac["avg_cost"] if _ac else 0) or 0, "sale packed ("+label+")", now, who)
+                    any_dep=True
+                c.execute("RELEASE dep_item")
+            except Exception:
+                c.execute("ROLLBACK TO dep_item"); c.execute("RELEASE dep_item"); raise
     c.execute("UPDATE shipments SET stock_depleted=? WHERE shipment_id=?",(1 if any_dep else 0,shipment_id))
 
 def _undeplete_stock_for(c, shipment_id):
@@ -13468,8 +13493,10 @@ def _buy_label_idempotent(org, sid, rid, supplier=None, po_id=None, who="", batc
             c.close()
             return {"ok":True,"idempotent":True,"label_url":row["label_url"],"tracking":row["tracking"],
                     "cost":row["cost"],"carrier":row["carrier"],"service":row["service"]}
-        if st=="purchasing":
+        if st in ("purchasing","uncertain"):
             c.close()
+            if st=="uncertain":
+                return {"ok":False,"uncertain":True,"error":"Label purchase blocked — a previous attempt's outcome is uncertain; reconcile with the carrier before retrying"}
             return {"ok":False,"in_progress":True,"error":"A label purchase for this rate is already in progress"}
         idem=row["idem_key"] or idem
         c.execute("UPDATE label_purchases SET status='purchasing', error=NULL, updated_at=? WHERE rate_id=? AND status='error'",(now,rid))
@@ -13477,12 +13504,21 @@ def _buy_label_idempotent(org, sid, rid, supplier=None, po_id=None, who="", batc
     c.close()   # release the write lock BEFORE the network call — never hold a lock across I/O
     try:
         sh=_ship_buy(rid, idem_key=idem)
-    except Exception as e:
+    except CarrierRejected as e:
+        # Definite rejection — no label created, safe to retry later.
         c=sdb(org); _label_claim_ensure(c)
         c.execute("UPDATE label_purchases SET status='error', error=?, updated_at=? WHERE rate_id=?",
                   (str(e)[:300], datetime.now().isoformat(timespec="seconds"), rid))
         c.commit(); c.close()
         return {"ok":False,"error":str(e)[:300]}
+    except Exception as e:
+        # Uncertain outcome (timeout/drop/5xx/unknown, OR any unclassified error): the purchase
+        # MAY have succeeded and charged. Do NOT allow auto-retry — block until reconciliation.
+        c=sdb(org); _label_claim_ensure(c)
+        c.execute("UPDATE label_purchases SET status='uncertain', error=?, updated_at=? WHERE rate_id=?",
+                  (str(e)[:300], datetime.now().isoformat(timespec="seconds"), rid))
+        c.commit(); c.close()
+        return {"ok":False,"uncertain":True,"error":"Carrier outcome uncertain — blocked pending reconciliation: "+str(e)[:200]}
     label=(sh.get("postage_label") or {}).get("label_url"); tracking=sh.get("tracking_code")
     sr=sh.get("selected_rate") or {}; cost=float(sr.get("rate") or 0)
     c=sdb(org); _label_claim_ensure(c)
