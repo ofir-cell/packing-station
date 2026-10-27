@@ -14801,30 +14801,43 @@ def _tt_materialize_orders(org, orders):
     def _ck(o):
         try: return int(o.get("create_time") or 0)
         except Exception: return 0
+    n_in=len(orders)
     cutover=_tt_cutover(org)
     if cutover:
         orders=[o for o in orders if _ck(o) >= cutover]   # ignore pre-cutover history
+    n_after=len(orders)
+    # Diagnostics so a failed/empty materialize can explain itself in the UI (not just the log).
+    diag={"in":n_in,"after_cutover":n_after,"cutover":cutover,"applied":0,"skipped":0,
+          "errors":0,"last_error":None,"batch_error":None,"zero_create_time":0}
+    sc=None
     try:
         sc=sdb(org)
+        try: sc.execute("PRAGMA busy_timeout=60000")   # wait, don't crash, if the live sweep is mid-write
+        except Exception: pass
         skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
         _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
         ovh=_cfg["packaging_overhead_g"] if _cfg else 30
-        # Authoritative room→label for the whole batch (dominant listing + the room's date),
-        # and persist it so the live sweep reuses the exact same show names.
-        room_names=_tt_room_names(sc, orders)
-        if room_names:
-            _tt_rooms_ensure(sc)
-            starts={}
-            for o in orders:
-                r=_tt_room_id(o); ct=_ck(o)
-                if r and ct and (r not in starts or ct<starts[r]): starts[r]=ct
-            for r,lbl in room_names.items():
-                # Preserve any hand-set custom_name — only refresh the auto label/date.
-                sc.execute("""INSERT INTO tiktok_rooms(room_id,label,start_ts,named) VALUES(?,?,?,1)
-                              ON CONFLICT(room_id) DO UPDATE SET label=excluded.label,
-                                 start_ts=excluded.start_ts, named=1""",
-                           (r, lbl, starts.get(r,0)))
+        # Authoritative room→label for the whole batch — isolated so one bad order can't abort
+        # the entire build (that would silently load 0 shows).
+        room_names={}
+        try:
+            room_names=_tt_room_names(sc, orders) or {}
+            if room_names:
+                _tt_rooms_ensure(sc)
+                starts={}
+                for o in orders:
+                    r=_tt_room_id(o); ct=_ck(o)
+                    if r and ct and (r not in starts or ct<starts[r]): starts[r]=ct
+                for r,lbl in room_names.items():
+                    # Preserve any hand-set custom_name — only refresh the auto label/date.
+                    sc.execute("""INSERT INTO tiktok_rooms(room_id,label,start_ts,named) VALUES(?,?,?,1)
+                                  ON CONFLICT(room_id) DO UPDATE SET label=excluded.label,
+                                     start_ts=excluded.start_ts, named=1""",
+                               (r, lbl, starts.get(r,0)))
+        except Exception as e:
+            diag["batch_error"]="room-names: "+repr(e)[:160]; _tt_log("room-names failed: %r"%e)
         for o in sorted(orders, key=_ck):
+            if not _ck(o): diag["zero_create_time"]+=1
             try:
                 oid=str(o.get("id") or "")
                 trk=(o.get("tracking_number") or "").strip() or None
@@ -14838,11 +14851,22 @@ def _tt_materialize_orders(org, orders):
                 lbl=_tt_apply_order(sc, o, label=lbl, sku_map=skus, overhead=ovh)
                 if lbl: shows.add(lbl); shipped+=1
             except Exception as e:
+                diag["errors"]+=1; diag["last_error"]=repr(e)[:160]
                 _tt_log("apply failed %s: %r"%(o.get("id"),e))
-        sc.commit(); sc.close()
+        sc.commit()
     except Exception as e:
+        diag["batch_error"]=repr(e)[:200]
         _tt_log("materialize batch failed: %r"%e)
+    finally:
+        if sc:
+            try: sc.close()
+            except Exception: pass
+    diag["applied"]=shipped; diag["skipped"]=skipped
+    global _TT_LAST_MATERIALIZE
+    _TT_LAST_MATERIALIZE=diag
     return sorted(shows), shipped, skipped
+
+_TT_LAST_MATERIALIZE={}
 
 def _tt_stored_orders(org):
     """Every raw order dict this org has previously stored (offline data source for
@@ -14965,7 +14989,8 @@ def _tt_pull_core(org, days=30):
     shows_list, shipped, skipped = _tt_materialize_orders(org, orders)
     return {"ok":True,"shop":row.get("shop_name") or shop_id,"total":total,
             "fetched":len(orders),"stored":stored,"preview":preview,
-            "shows":shows_list,"loaded":shipped,"skipped":skipped,"pages":pages}
+            "shows":shows_list,"loaded":shipped,"skipped":skipped,"pages":pages,
+            "diag":dict(_TT_LAST_MATERIALIZE)}
 
 @app.route("/api/tiktok/pull", methods=["POST"])
 @req_role("admin")
@@ -15472,7 +15497,17 @@ pb.onclick=function(){
      pb.disabled=false;pb.textContent=old;
      if(!d.ok){pm.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
      var shw=(d.shows&&d.shows.length)?(' → loaded into show(s): '+d.shows.map(esc).join(', ')):'';
-     pm.innerHTML='<span style="color:#166534">✓ Pulled '+d.fetched+' order(s) from '+esc(d.shop||'')+(d.total!=null?(' · '+d.total+' total in shop'):'')+(d.skipped?(' · skipped '+d.skipped+' already in the system'):'')+shw+'</span>';
+     var dg=d.diag||{};
+     var diagHtml='';
+     if((d.loaded||0)===0){
+       diagHtml='<br><span style="color:#b45309">Nothing loaded into a show. '+
+         esc(dg.in||0)+' pulled · '+esc(dg.after_cutover||0)+' after the start-point · applied '+esc(dg.applied||0)+
+         ' · skipped '+esc(dg.skipped||0)+' · errors '+esc(dg.errors||0)+
+         (dg.zero_create_time?(' · '+esc(dg.zero_create_time)+' had no create_time'):'')+
+         (dg.batch_error?('<br>⚠️ '+esc(dg.batch_error)):'')+
+         (dg.last_error?('<br>⚠️ '+esc(dg.last_error)):'')+'</span>';
+     }
+     pm.innerHTML='<span style="color:#166534">✓ Pulled '+d.fetched+' order(s) from '+esc(d.shop||'')+(d.total!=null?(' · '+d.total+' total in shop'):'')+(d.skipped?(' · skipped '+d.skipped+' already in the system'):'')+shw+'</span>'+diagHtml;
      var od=document.getElementById('orders');
      if(!d.preview||!d.preview.length){od.innerHTML='<span class="mut">No recent orders in the last 30 days.</span>';return;}
      var h='<table><tr><th>Order</th><th>Status</th><th>Items (seller SKU × qty)</th></tr>';
