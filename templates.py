@@ -853,7 +853,8 @@ function loadChecklist(tracking){
         var safeBuyer=buyer.replace(/&/g,'&amp;').replace(/</g,'&lt;');
 
         // ── Stage 1: big overlay ─────────────────────────────
-        document.getElementById('countBuyer').innerHTML='Buyer: <b>'+safeBuyer+'</b>';
+        var combN=(d.combined_from&&d.combined_from.length)?d.combined_from.length:0;
+        document.getElementById('countBuyer').innerHTML='Buyer: <b>'+safeBuyer+'</b>'+(combN?(' <span style="background:#fde68a;color:#92400e;border-radius:8px;padding:2px 8px;font-weight:800;font-size:13px">📦 COMBINED BOX · '+(combN+1)+' orders — pack all</span>'):'');
         document.getElementById('countBig').textContent=totalQty;
         document.getElementById('countLabel').textContent=(totalQty===1?t('iteminpkg'):t('itemsinpkg'));
         document.getElementById('countLabel').className='count-label';

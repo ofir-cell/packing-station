@@ -5696,14 +5696,39 @@ def api_shipment_lookup(code):
         return jsonify({"ok": False, "error": "Shipment not found"})
     items = c.execute("""SELECT sku, product_name, quantity, item_weight_g
                          FROM shipment_items WHERE shipment_id=?""", (row["shipment_id"],)).fetchall()
+    items=[dict(i) for i in items]
+    gvs=_pending_giveaways_for(row["shipment_id"], row["tracking_code"])
+    # ── Combined package: when TikTok merges two orders of the same buyer into ONE package
+    # with ONE shared label (e.g. a live giveaway order + the buyer's purchase), they can land
+    # in separate shipments that share the same tracking_code. Scanning that single label must
+    # show EVERYTHING in the box — not just the first shipment — or the packer misses an item
+    # (e.g. sees only the giveaway). Merge every sibling shipment on the same tracking_code.
+    combined=[]
+    trk=(row["tracking_code"] or "").strip()
+    if trk:
+        sibs=c.execute("""SELECT shipment_id FROM shipments
+                          WHERE tracking_code=? AND shipment_id<>?
+                            AND COALESCE(status,'') NOT IN ('cancelled')""",
+                       (trk, row["shipment_id"])).fetchall()
+        for sib in sibs:
+            sid2=sib["shipment_id"]
+            sib_items=c.execute("""SELECT sku, product_name, quantity, item_weight_g
+                                   FROM shipment_items WHERE shipment_id=?""",(sid2,)).fetchall()
+            si=[dict(i) for i in sib_items]
+            if si:
+                items.extend(si)
+                combined.append(sid2)
+            for g in _pending_giveaways_for(sid2, trk):
+                if g not in gvs: gvs.append(g)
     cfg = c.execute("SELECT * FROM weight_config WHERE id=1").fetchone()
     c.close()
     return jsonify({
         "ok": True,
         "shipment": dict(row),
-        "items": [dict(i) for i in items],
+        "items": items,
         "config": dict(cfg) if cfg else {},
-        "giveaways": _pending_giveaways_for(row["shipment_id"], row["tracking_code"]),
+        "giveaways": gvs,
+        "combined_from": combined,   # other shipments merged into this box (same shared label)
     })
 
 
