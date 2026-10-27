@@ -6420,10 +6420,20 @@ function renderAccount(h){
     if(!h.provisioned_username){card.style.display='none';return;}
     card.style.display='';
     var rows='<div>Username: <b>'+esc(h.provisioned_username)+'</b></div>';
-    if(h.provisioned_password)rows+='<div>Temporary password: <b style="font-family:monospace;background:#f1f5f9;padding:2px 8px;border-radius:6px">'+esc(h.provisioned_password)+'</b></div>';
+    // The temporary password is never stored. An admin issues one on demand; it shows once here.
+    rows+='<div id="tpwRow" style="margin-top:8px"><button id="issueTpw" class="acts-btn" style="font-size:13px;font-weight:700;color:#4f46e5;background:#eef2ff;border:1px solid #ddd6fe;border-radius:10px;padding:8px 14px;cursor:pointer">Issue temporary password</button> <span style="font-size:12px;color:var(--text-muted)">(shown once — hand it to the hire)</span></div>';
     if(h.role_target==='worker')rows+='<div style="color:#059669;font-weight:700">📇 Badge login enabled — this worker can scan their badge on the login screen.</div>';
     if(h.provisioned_at)rows+='<div style="font-size:12px;color:var(--text-muted)">Account created '+(h.provisioned_at||'').slice(0,16)+'</div>';
     document.getElementById('acctBody').innerHTML=rows;
+    var _ib=document.getElementById('issueTpw');
+    if(_ib)_ib.addEventListener('click',function(){
+        _ib.disabled=true;_ib.textContent='Issuing…';
+        fetch('/api/hires/__HIRE_ID__/issue-temp-password',{method:'POST',headers:{'X-CSRF-Token':(document.cookie.match(/csrf_token=([^;]+)/)||[])[1]||''}})
+          .then(function(r){return r.json()}).then(function(d){
+            if(d.ok){document.getElementById('tpwRow').innerHTML='Temporary password: <b style="font-family:monospace;background:#f1f5f9;padding:2px 8px;border-radius:6px">'+esc(d.temp_password)+'</b> <span style="font-size:12px;color:var(--text-muted)">— copy it now; it will not be shown again</span>';}
+            else{_ib.disabled=false;_ib.textContent='Issue temporary password';alert(d.error||'Could not issue password');}
+          }).catch(function(){_ib.disabled=false;_ib.textContent='Issue temporary password';});
+    });
 }
 function load(){
     fetch('/api/workflows').then(function(r){return r.json()}).then(function(ws){WORKFLOWS=ws||[];

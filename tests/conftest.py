@@ -40,8 +40,8 @@ def admin(client, appmod):
 def sdb(appmod):
     """Shipments DB of the default org (outside a request)."""
     def _open():
-        with appmod.app.test_request_context():
-            from flask import session
-            session["org"] = appmod.DEFAULT_ORG
-            return appmod.sdb(appmod.DEFAULT_ORG)
+        # opened OUTSIDE a request context on purpose: the explicit org makes the
+        # request context unnecessary, and it keeps the connection from being swept
+        # by the request-teardown cleanup (C4-2).
+        return appmod.sdb(appmod.DEFAULT_ORG)
     return _open
