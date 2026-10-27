@@ -5301,7 +5301,10 @@ def api_shipments_import():
         cancel_count = sum(1 for n in norm if n["status"].lower().startswith("cancel"))
         explicit_cancel = (request.form.get("kind") == "tiktok_cancel")
         ratio = cancel_count / len(norm)
-        is_cancel_file = (ratio > 0.8) or (explicit_cancel and ratio > 0.4)
+        # Trust the user's explicit choice (they picked the Cancellations upload) even if our
+        # status parsing under-counts — otherwise a real cancel file falls through to the normal
+        # path and its cancellations are dropped, forcing a confusing second upload.
+        is_cancel_file = explicit_cancel or (ratio > 0.8)
         if is_cancel_file:
             return _process_cancel_file(norm, "tiktok", label)
         platform = "tiktok"
@@ -5378,6 +5381,7 @@ def api_shipments_import():
     revenue_parsed = any((n.get("revenue") or 0) > 0 for n in norm)
 
     inserted = 0; updated = 0; items_inserted = 0
+    _cx_matched = 0; _cx_inserted = 0
     unique_skus = set()
     _bn = 0   # commit in batches so a big file persists incrementally (no 120s mega-txn)
     try:
@@ -5485,6 +5489,12 @@ def api_shipments_import():
             _bn += 1
             if _bn % 400 == 0:
                 c.commit()   # flush this batch so progress survives a slow/huge file
+        # Apply any cancelled rows that rode along in this file (mixed To-Ship + cancels, or a
+        # cancel file our ratio check didn't flag). Previously these were only counted and then
+        # dropped, so cancellations silently vanished until a second, cleaner upload.
+        _cx_matched = _cx_inserted = 0
+        if cancelled_inline:
+            _cx_matched, _cx_inserted, _cx_aff = _apply_cancel_rows(c, cancelled_inline, platform, label, import_batch)
         c.commit()
     finally:
         c.close()
@@ -5546,12 +5556,60 @@ def api_shipments_import():
         "items": items_inserted,
         "skipped_rows": skipped,
         "cancelled_inline": len(cancelled_inline),
+        "cancellations_matched": _cx_matched,
+        "cancellations_added": _cx_inserted,
         "unique_skus": len(unique_skus),
         "skus_missing_weight": len(sku_missing),
         "missing_sku_list": sku_missing[:50],
         "live_reconciled": live_reconciled,
     })
 
+
+def _apply_cancel_rows(c, norm_rows, source, label, import_batch):
+    """Apply cancelled rows on an OPEN connection. (a) mark matching existing shipment
+    items cancelled, (b) insert synthetic cancelled shipments for orders we've never seen,
+    so the cleanup / reconciliation screens find them. Idempotent. Returns
+    (matched_existing, inserted_new, affected_ship_ids)."""
+    matched_existing = 0
+    inserted_new = 0
+    affected_ships = set()
+    by_order = {}
+    for n in norm_rows:
+        if not n.get("order_id"): continue
+        by_order.setdefault(n["order_id"], []).append(n)
+    for oid, group in by_order.items():
+        first = group[0]
+        reason = first.get("cancel_reason") or "cancelled"
+        # Path A: already in our shipments (was in a previous To-Ship / the same upload)
+        existing = c.execute("SELECT DISTINCT shipment_id FROM shipment_items WHERE order_id=?", (oid,)).fetchall()
+        if existing:
+            c.execute("""UPDATE shipment_items SET cancelled=1, cancel_reason=?
+                         WHERE order_id=? AND COALESCE(cancelled,0)=0""", (reason, oid))
+            matched_existing += 1
+            for r in existing: affected_ships.add(r["shipment_id"])
+            continue
+        # Path B: never seen — insert a synthetic shipment so cleanup can find it
+        synthetic_id = "cancel_" + oid
+        _tot = sum(int(n.get("quantity") or 1) for n in group)
+        c.execute("""INSERT OR REPLACE INTO shipments
+            (shipment_id, tracking_code, buyer_username, buyer_name, address_full,
+             postal_code, show_date, status, platform, import_batch, import_label,
+             total_items, expected_weight_g, missing_weights, flag_reason)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, 'cancelled', ?, ?, ?, ?, 0, 0, ?)""",
+            (synthetic_id, first.get("buyer_username"), first.get("buyer_name"), first.get("address"),
+             first.get("postal"), first.get("created_at"), source, import_batch, label, _tot, reason))
+        c.execute("DELETE FROM shipment_items WHERE shipment_id=?", (synthetic_id,))
+        for n in group:
+            c.execute("""INSERT INTO shipment_items
+                         (shipment_id, order_id, sku, product_name, quantity, item_weight_g,
+                          cancelled, cancel_reason)
+                         VALUES (?,?,?,?,?,?, 1, ?)""",
+                      (synthetic_id, oid, n.get("sku"), n.get("product_name"), n.get("quantity"),
+                       n.get("weight_g") or None, reason))
+        inserted_new += 1
+    for sid in affected_ships:
+        _recompute_shipment_weight(c, sid)
+    return matched_existing, inserted_new, affected_ships
 
 def _process_cancel_file(norm_rows, source, label):
     """A pure cancellation file from TikTok lists orders that were canceled BEFORE the
@@ -5560,48 +5618,7 @@ def _process_cancel_file(norm_rows, source, label):
     reconciliation screen can find them. Both code paths are idempotent."""
     c = sdb()
     import_batch = "cancel_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-    matched_existing = 0
-    inserted_new = 0
-    affected_ships = set()
-    # Group by order_id to combine multiple SKUs per cancelled order
-    by_order = {}
-    for n in norm_rows:
-        if not n["order_id"]: continue
-        by_order.setdefault(n["order_id"], []).append(n)
-
-    for oid, group in by_order.items():
-        first = group[0]
-        reason = first["cancel_reason"] or "cancelled"
-        # Path A: this order is already in our shipments (was in a previous To-Ship)
-        existing = c.execute("SELECT DISTINCT shipment_id FROM shipment_items WHERE order_id=?", (oid,)).fetchall()
-        if existing:
-            c.execute("""UPDATE shipment_items SET cancelled=1, cancel_reason=?
-                         WHERE order_id=? AND COALESCE(cancelled,0)=0""", (reason, oid))
-            matched_existing += 1
-            for r in existing: affected_ships.add(r["shipment_id"])
-            continue
-        # Path B: never seen — insert a synthetic shipment so reconciliation can find it
-        synthetic_id = "cancel_" + oid
-        _tot = sum(int(n.get("quantity") or 1) for n in group)   # real item count (was hard-coded 0)
-        c.execute("""INSERT OR REPLACE INTO shipments
-            (shipment_id, tracking_code, buyer_username, buyer_name, address_full,
-             postal_code, show_date, status, platform, import_batch, import_label,
-             total_items, expected_weight_g, missing_weights, flag_reason)
-            VALUES (?, NULL, ?, ?, ?, ?, ?, 'cancelled', ?, ?, ?, ?, 0, 0, ?)""",
-            (synthetic_id, first["buyer_username"], first["buyer_name"], first["address"],
-             first["postal"], first["created_at"], source, import_batch, label, _tot, reason))
-        c.execute("DELETE FROM shipment_items WHERE shipment_id=?", (synthetic_id,))
-        for n in group:
-            c.execute("""INSERT INTO shipment_items
-                         (shipment_id, order_id, sku, product_name, quantity, item_weight_g,
-                          cancelled, cancel_reason)
-                         VALUES (?,?,?,?,?,?, 1, ?)""",
-                      (synthetic_id, oid, n["sku"], n["product_name"], n["quantity"],
-                       n["weight_g"] or None, reason))
-        inserted_new += 1
-
-    for sid in affected_ships:
-        _recompute_shipment_weight(c, sid)
+    matched_existing, inserted_new, affected_ships = _apply_cancel_rows(c, norm_rows, source, label, import_batch)
     c.commit(); c.close()
     return jsonify({
         "ok": True,
