@@ -3638,7 +3638,7 @@ def _touch_last_login(username):
 # short list of sensitive areas (billing, company setup/branding, and the platform
 # org console which is super-admin territory anyway).
 _MANAGER_BLOCK_PREFIXES = ("/billing", "/api/billing", "/setup", "/api/setup",
-                           "/api/org/branding", "/api/orgs")
+                           "/api/org/branding", "/api/orgs", "/api/users", "/api/permissions")
 def _manager_blocked(path):
     p = path or ""
     return any(p == bp or p.startswith(bp + "/") or p == bp for bp in _MANAGER_BLOCK_PREFIXES) \
@@ -3659,6 +3659,17 @@ def req_role(*roles):
             return "Access denied",403
         return d
     return w
+def req_true_admin(f):
+    """Strict server-side admin gate for user-, role-, permission- and credential-management.
+    Requires the caller's ACTUAL roles to include 'admin' — the manager->admin elevation in
+    req_role does NOT apply here. Independent of any route-prefix blocklist (defense in depth)."""
+    @wraps(f)
+    def d(*a,**k):
+        if "user" not in session: return redirect("/")
+        if "admin" not in session_roles(): return "Access denied",403
+        return f(*a,**k)
+    return d
+
 def req_super(f):
     """Platform-owner only (cross-tenant control plane: org management)."""
     @wraps(f)
@@ -6713,7 +6724,7 @@ def api_permissions_get():
                     "roles":["admin","manager","cs","host","worker"]})
 
 @app.route("/api/permissions",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_permissions_save():
     d=request.get_json() or {}
     perms=d.get("permissions")
@@ -6729,7 +6740,7 @@ def api_permissions_save():
     return jsonify({"ok":True})
 
 @app.route("/api/permissions/pin",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_permissions_pin():
     d=request.get_json() or {}
     pin=(d.get("pin") or "").strip()
@@ -9491,6 +9502,8 @@ def api_hires_list():
     out = []
     for r in rows:
         d = dict(r)
+        d["has_temp_password"] = bool(d.get("provisioned_password"))
+        d.pop("provisioned_password", None)   # never return the plaintext temp password in bulk
         if d["workflow_id"]:
             done, total, pct = _hire_completion_pct(d["id"], d["workflow_id"])
             d["progress_done"] = done
@@ -9656,6 +9669,16 @@ def api_email_test():
     return jsonify({"ok":ok,"error":err,"sent_to":(to if ok else None),
                     "via":_via,"from":_eff_from,"reply_to":EMAIL_REPLY_TO})
 
+_HIRE_PRIVILEGED_ROLES = {"admin", "manager", "cs"}
+def _hire_role_assignable(role):
+    """Server-side guard (AUDIT #6): privileged roles (admin/manager/cs) may be assigned via the
+    hire flow ONLY by a true admin. CS/others may assign non-privileged roles only — this prevents
+    a CS user from provisioning themselves an admin account."""
+    r=(role or "").strip().lower()
+    if r in _HIRE_PRIVILEGED_ROLES:
+        return "admin" in session_roles()
+    return True
+
 @app.route("/api/hires", methods=["POST"])
 @req_role("admin", "cs")
 def api_hires_create():
@@ -9667,6 +9690,8 @@ def api_hires_create():
     email = (d.get("email") or "").strip() or None
     phone = (d.get("phone") or "").strip() or None
     role_target = (d.get("role_target") or "worker").strip()
+    if not _hire_role_assignable(role_target):
+        return jsonify({"ok": False, "error": "Only an admin can assign that role"}), 403
     preferred_language = (d.get("preferred_language") or "en").lower()
     if preferred_language not in ("en", "es"):
         preferred_language = "en"
@@ -9714,6 +9739,8 @@ def api_hire_get(hire_id):
         c.close()
         return jsonify({"ok": False, "error": "Not found"}), 404
     h = dict(h)
+    h["has_temp_password"] = bool(h.get("provisioned_password"))
+    h.pop("provisioned_password", None)   # not returned via API; shown once at provision time
     steps = _hire_steps_with_progress(h["id"], h["workflow_id"]) if h["workflow_id"] else []
     sigs = [dict(r) for r in c.execute("SELECT * FROM onboarding_signatures WHERE hire_id=? ORDER BY signed_at DESC",
                                        (hire_id,)).fetchall()]
@@ -9749,6 +9776,8 @@ def api_hire_update(hire_id):
         role = (d.get("role_target") or "").strip().lower()
         if role and role not in ("admin", "cs", "worker", "picker", "host", "assistant"):
             c.close(); return jsonify({"ok": False, "error": "Invalid role"})
+        if role and not _hire_role_assignable(role):
+            c.close(); return jsonify({"ok": False, "error": "Only an admin can assign that role"}), 403
         sets.append("role_target=?"); vals.append(role or None)
     if "preferred_language" in d:
         lang = (d.get("preferred_language") or "en").strip().lower()
@@ -10337,7 +10366,7 @@ def api_documents_delete(doc_id):
 
 
 @app.route("/api/users")
-@req_role("admin")
+@req_true_admin
 def api_users():
     u=ldj(USERS_FILE)
     myorg=session.get("org",DEFAULT_ORG)
@@ -10689,7 +10718,7 @@ def my_availability_page():
         "__NAVBAR__",_navbar("myavail")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/users/add",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_add():
     d=request.get_json();u=d.get("username","").strip().lower();p=d.get("password","")
     n=_clean_name(d.get("name") or u);role=d.get("role","worker")
@@ -10725,7 +10754,7 @@ def api_add():
     return jsonify({"ok":True,"badge_token":badge})
 
 @app.route("/api/users/roles",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_user_roles():
     """Update an existing user's primary role + extra roles."""
     d=request.get_json() or {}
@@ -10750,7 +10779,7 @@ def api_user_roles():
     return jsonify({"ok":True})
 
 @app.route("/api/users/name",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_user_name():
     """Update a user's display name."""
     d=request.get_json() or {}
@@ -10765,7 +10794,7 @@ def api_user_name():
     return jsonify({"ok":True,"name":name})
 
 @app.route("/api/users/delete",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_del():
     d=request.get_json();u=d.get("username","")
     if u=="admin": return jsonify({"ok":False,"error":"Cannot delete admin"})
@@ -10775,7 +10804,7 @@ def api_del():
     return jsonify({"ok":True})
 
 @app.route("/api/users/pw",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_pw():
     d=request.get_json();u=d.get("username","");p=d.get("password","")
     if not p: return jsonify({"ok":False})
@@ -10786,7 +10815,7 @@ def api_pw():
     return jsonify({"ok":True})
 
 @app.route("/api/users/badge",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_badge_regen():
     """Regenerate (or generate first time) a badge token for a worker.
     Use cases: lost badge, leaked token, switching from password to badge auth."""
@@ -10800,7 +10829,7 @@ def api_badge_regen():
     return jsonify({"ok":True,"badge_token":tok})
 
 @app.route("/api/users/badge/revoke",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_badge_revoke():
     """Remove a worker's badge token (e.g. employee left). They'll need a password to log in."""
     d=request.get_json();u=d.get("username","")
@@ -13536,6 +13565,67 @@ def _buy_label_idempotent(org, sid, rid, supplier=None, po_id=None, who="", batc
         print("inbound record failed (label already bought+recorded):",repr(e),flush=True)
     c.close()
     return {"ok":True,"label_url":label,"tracking":tracking,"cost":cost,"carrier":sr.get("carrier"),"service":sr.get("service")}
+
+def _carrier_label_lookup(rate_id, idem_key=None):
+    """AUTHORITATIVE check with the carrier: was a label actually created for this purchase?
+    Returns {"found":True, ...label fields} / {"found":False} / {"found":None} (unknown).
+    A real impl queries the carrier by idempotency key / label list. Blocked in staging safe mode
+    (returns unknown) so reconciliation never fabricates an outcome."""
+    if STAGING_SAFE:
+        return {"found":None,"blocked":True}
+    try:
+        # TODO(live): query ShipStation/UPS by idempotency key or tracking. Until wired, be
+        # conservative and report unknown rather than guess.
+        return {"found":None}
+    except Exception:
+        return {"found":None}
+
+def _reconcile_label_purchase(org, rate_id):
+    """Resolve an 'uncertain' label purchase using ONLY an authoritative carrier lookup.
+    NEVER re-purchases. found True -> record as bought; found False -> mark 'error' (safe retry);
+    unknown -> leave 'uncertain'."""
+    now=datetime.now().isoformat(timespec="seconds")
+    c=sdb(org); _label_claim_ensure(c)
+    row=c.execute("SELECT * FROM label_purchases WHERE rate_id=?",(rate_id,)).fetchone()
+    if not row: c.close(); return {"ok":False,"error":"No such purchase"}
+    if (row["status"] or "")!="uncertain":
+        st=row["status"]; c.close(); return {"ok":True,"status":st,"noop":True}
+    idem=row["idem_key"]; c.close()
+    look=_carrier_label_lookup(rate_id, idem)   # no DB lock held during the carrier call
+    c=sdb(org); _label_claim_ensure(c)
+    if look.get("found") is True:
+        c.execute("UPDATE label_purchases SET status='bought', tracking=?, label_url=?, cost=?, carrier=?, service=?, error=NULL, updated_at=? WHERE rate_id=?",
+                  (look.get("tracking"),look.get("label_url"),look.get("cost"),look.get("carrier"),look.get("service"),now,rate_id))
+        c.commit()
+        try:
+            c.execute("INSERT INTO inbound_shipments(carrier,service,tracking,cost,label_url,created_by) VALUES(?,?,?,?,?, 'reconcile')",
+                      (look.get("carrier"),look.get("service"),look.get("tracking"),look.get("cost"),look.get("label_url")))
+            c.commit()
+        except Exception as e: print("reconcile inbound record failed:",repr(e),flush=True)
+        c.close(); return {"ok":True,"status":"bought","resolved":True}
+    if look.get("found") is False:
+        c.execute("UPDATE label_purchases SET status='error', error='reconcile: carrier has no label — safe to retry', updated_at=? WHERE rate_id=?",(now,rate_id))
+        c.commit(); c.close(); return {"ok":True,"status":"error","retryable":True}
+    c.close(); return {"ok":True,"status":"uncertain","unresolved":True,"blocked":bool(look.get("blocked"))}
+
+@app.route("/api/label/reconcile",methods=["POST"])
+@req_role("admin")
+def api_label_reconcile():
+    """Admin-only: reconcile ONE uncertain label purchase with the carrier (no auto re-buy)."""
+    org=current_org() or DEFAULT_ORG
+    rid=((request.get_json(silent=True) or {}).get("rate_id") or "").strip()
+    if not rid: return jsonify({"ok":False,"error":"rate_id required"})
+    return jsonify(_reconcile_label_purchase(org, rid))
+
+@app.route("/api/label/uncertain")
+@req_role("admin")
+def api_label_uncertain():
+    """Admin-only: list label purchases stuck 'uncertain' pending reconciliation."""
+    org=current_org() or DEFAULT_ORG
+    c=sdb(org); _label_claim_ensure(c)
+    rows=[dict(r) for r in c.execute("SELECT rate_id,shipment_id,status,error,updated_at FROM label_purchases WHERE status='uncertain' ORDER BY updated_at DESC LIMIT 200").fetchall()]
+    c.close()
+    return jsonify({"ok":True,"count":len(rows),"uncertain":rows})
 
 @app.route("/api/label/buy",methods=["POST"])
 @req_role("admin","cs")
