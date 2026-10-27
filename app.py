@@ -13537,6 +13537,67 @@ def _buy_label_idempotent(org, sid, rid, supplier=None, po_id=None, who="", batc
     c.close()
     return {"ok":True,"label_url":label,"tracking":tracking,"cost":cost,"carrier":sr.get("carrier"),"service":sr.get("service")}
 
+def _carrier_label_lookup(rate_id, idem_key=None):
+    """AUTHORITATIVE check with the carrier: was a label actually created for this purchase?
+    Returns {"found":True, ...label fields} / {"found":False} / {"found":None} (unknown).
+    A real impl queries the carrier by idempotency key / label list. Blocked in staging safe mode
+    (returns unknown) so reconciliation never fabricates an outcome."""
+    if STAGING_SAFE:
+        return {"found":None,"blocked":True}
+    try:
+        # TODO(live): query ShipStation/UPS by idempotency key or tracking. Until wired, be
+        # conservative and report unknown rather than guess.
+        return {"found":None}
+    except Exception:
+        return {"found":None}
+
+def _reconcile_label_purchase(org, rate_id):
+    """Resolve an 'uncertain' label purchase using ONLY an authoritative carrier lookup.
+    NEVER re-purchases. found True -> record as bought; found False -> mark 'error' (safe retry);
+    unknown -> leave 'uncertain'."""
+    now=datetime.now().isoformat(timespec="seconds")
+    c=sdb(org); _label_claim_ensure(c)
+    row=c.execute("SELECT * FROM label_purchases WHERE rate_id=?",(rate_id,)).fetchone()
+    if not row: c.close(); return {"ok":False,"error":"No such purchase"}
+    if (row["status"] or "")!="uncertain":
+        st=row["status"]; c.close(); return {"ok":True,"status":st,"noop":True}
+    idem=row["idem_key"]; c.close()
+    look=_carrier_label_lookup(rate_id, idem)   # no DB lock held during the carrier call
+    c=sdb(org); _label_claim_ensure(c)
+    if look.get("found") is True:
+        c.execute("UPDATE label_purchases SET status='bought', tracking=?, label_url=?, cost=?, carrier=?, service=?, error=NULL, updated_at=? WHERE rate_id=?",
+                  (look.get("tracking"),look.get("label_url"),look.get("cost"),look.get("carrier"),look.get("service"),now,rate_id))
+        c.commit()
+        try:
+            c.execute("INSERT INTO inbound_shipments(carrier,service,tracking,cost,label_url,created_by) VALUES(?,?,?,?,?, 'reconcile')",
+                      (look.get("carrier"),look.get("service"),look.get("tracking"),look.get("cost"),look.get("label_url")))
+            c.commit()
+        except Exception as e: print("reconcile inbound record failed:",repr(e),flush=True)
+        c.close(); return {"ok":True,"status":"bought","resolved":True}
+    if look.get("found") is False:
+        c.execute("UPDATE label_purchases SET status='error', error='reconcile: carrier has no label — safe to retry', updated_at=? WHERE rate_id=?",(now,rate_id))
+        c.commit(); c.close(); return {"ok":True,"status":"error","retryable":True}
+    c.close(); return {"ok":True,"status":"uncertain","unresolved":True,"blocked":bool(look.get("blocked"))}
+
+@app.route("/api/label/reconcile",methods=["POST"])
+@req_role("admin")
+def api_label_reconcile():
+    """Admin-only: reconcile ONE uncertain label purchase with the carrier (no auto re-buy)."""
+    org=current_org() or DEFAULT_ORG
+    rid=((request.get_json(silent=True) or {}).get("rate_id") or "").strip()
+    if not rid: return jsonify({"ok":False,"error":"rate_id required"})
+    return jsonify(_reconcile_label_purchase(org, rid))
+
+@app.route("/api/label/uncertain")
+@req_role("admin")
+def api_label_uncertain():
+    """Admin-only: list label purchases stuck 'uncertain' pending reconciliation."""
+    org=current_org() or DEFAULT_ORG
+    c=sdb(org); _label_claim_ensure(c)
+    rows=[dict(r) for r in c.execute("SELECT rate_id,shipment_id,status,error,updated_at FROM label_purchases WHERE status='uncertain' ORDER BY updated_at DESC LIMIT 200").fetchall()]
+    c.close()
+    return jsonify({"ok":True,"count":len(rows),"uncertain":rows})
+
 @app.route("/api/label/buy",methods=["POST"])
 @req_role("admin","cs")
 def api_label_buy():
