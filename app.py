@@ -14479,6 +14479,8 @@ def _tt_sweep_once(window_sec=7200):
                 orders=[o for o in orders if int(o.get("create_time") or 0) >= _co]  # honour the start-from cutover
             if not orders: continue
             sc=sdb(org)
+            try: sc.execute("PRAGMA busy_timeout=60000")   # wait, don't abort, under concurrent writes
+            except Exception: pass
             skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
             _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
             ovh=_cfg["packaging_overhead_g"] if _cfg else 30
