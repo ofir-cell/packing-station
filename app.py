@@ -225,7 +225,9 @@ if any(_r2_vars):
             endpoint_url=R2_ENDPOINT,
             aws_access_key_id=R2_ACCESS_KEY_ID,
             aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-            config=BotoConfig(signature_version='s3v4'),
+            config=BotoConfig(signature_version='s3v4',
+                connect_timeout=5, read_timeout=30,
+                retries={'max_attempts':3,'mode':'standard'}),
             region_name='auto'
         )
         print("R2 storage enabled: bucket="+R2_BUCKET,flush=True)
@@ -3638,7 +3640,12 @@ def _touch_last_login(username):
 # short list of sensitive areas (billing, company setup/branding, and the platform
 # org console which is super-admin territory anyway).
 _MANAGER_BLOCK_PREFIXES = ("/billing", "/api/billing", "/setup", "/api/setup",
-                           "/api/org/branding", "/api/orgs", "/api/users", "/api/permissions")
+                           "/api/org/branding", "/api/orgs", "/api/users", "/api/permissions",
+                           # sensitive admin + financial surfaces -- managers must not reach these
+                           "/api/audit-log", "/admin/audit", "/api/profit", "/admin/profit",
+                           "/admin/settings", "/admin/data-check", "/admin/hosts",
+                           "/api/commission-config", "/api/host-override", "/api/weight-config",
+                           "/api/equipment", "/api/admin")
 def _manager_blocked(path):
     p = path or ""
     return any(p == bp or p.startswith(bp + "/") or p == bp for bp in _MANAGER_BLOCK_PREFIXES) \
@@ -4430,7 +4437,9 @@ def api_upload():
     try:
         c = sdb()
         row = c.execute("SELECT shipment_id, status, import_label FROM shipments WHERE tracking_code=?", (trk,)).fetchone()
-        if row and row["status"] not in ("shipped", "cancelled"):
+        # Skip shipped/cancelled, and never silently clear a flagged 'issue' -- an issue
+        # must be resolved explicitly, not wiped by a routine pack scan.
+        if row and row["status"] not in ("shipped", "cancelled", "issue"):
             c.execute("""UPDATE shipments
                          SET status='packed', packed_at=CURRENT_TIMESTAMP, packed_by=?
                          WHERE tracking_code=?""", (wrk, trk))
@@ -5529,9 +5538,19 @@ def api_shipments_import():
             # which lines were already picked, then restore those flags after the
             # rebuild (matched on sku + product name).
             prev_picked = {}
-            for pr in c.execute("""SELECT sku, product_name, picked_at FROM shipment_items
-                                   WHERE shipment_id=? AND COALESCE(picked,0)=1""", (pkg_id,)).fetchall():
-                prev_picked[((pr["sku"] or "").strip(), (pr["product_name"] or "").strip())] = pr["picked_at"]
+            prev_depleted = {}
+            for pr in c.execute("""SELECT sku, product_name, picked_at,
+                                          COALESCE(depleted_qty,0) AS dq, depleted_sku
+                                   FROM shipment_items WHERE shipment_id=?""", (pkg_id,)).fetchall():
+                _k = ((pr["sku"] or "").strip(), (pr["product_name"] or "").strip())
+                # Preserve picking progress (only rows actually picked).
+                if pr["picked_at"]:
+                    prev_picked[_k] = pr["picked_at"]
+                # CRITICAL: snapshot stock-depletion markers too. Re-import DELETEs items
+                # and the rebuild defaults depleted_qty=0 -- losing this would let a later
+                # pack double-deduct inventory (or break un-depletion). Carry it forward.
+                if (pr["dq"] or 0) > 0 or pr["depleted_sku"]:
+                    prev_depleted[_k] = (pr["dq"] or 0, pr["depleted_sku"])
             c.execute("DELETE FROM shipment_items WHERE shipment_id=?", (pkg_id,))
             for n in group:
                 sku = n["sku"]
@@ -5539,13 +5558,16 @@ def api_shipments_import():
                 w = (n["weight_g"] / max(len(group), 1)) if n["weight_g"] > 0 else sku_map.get(sku)
                 _key = ((sku or "").strip(), (n["product_name"] or "").strip())
                 _wasp = _key in prev_picked
+                _dep = prev_depleted.get(_key)
                 c.execute("""INSERT INTO shipment_items
                              (shipment_id, order_id, sku, product_name, quantity, item_weight_g, revenue,
-                              created_time, buyer_state, buyer_city, picked, picked_at)
-                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                              created_time, buyer_state, buyer_city, picked, picked_at,
+                              depleted_qty, depleted_sku)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                           (pkg_id, n["order_id"], sku, n["product_name"], n["quantity"], w, n.get("revenue", 0) or 0,
                            n.get("created_time") or None, n.get("state") or None, n.get("city") or None,
-                           1 if _wasp else 0, prev_picked.get(_key) if _wasp else None))
+                           1 if _wasp else 0, prev_picked.get(_key) if _wasp else None,
+                           _dep[0] if _dep else 0, _dep[1] if _dep else None))
                 items_inserted += 1
                 if sku: unique_skus.add(sku)
             _recompute_shipment_weight(c, pkg_id, overhead=_overhead)
@@ -6257,10 +6279,15 @@ def api_pick_get(sid):
 @req_role("picker", "worker", "admin", "cs")
 def api_pick_item_toggle(item_id):
     c = sdb()
-    row = c.execute("SELECT id, COALESCE(picked,0) AS picked FROM shipment_items WHERE id=?", (item_id,)).fetchone()
+    row = c.execute("""SELECT i.id, COALESCE(i.picked,0) AS picked, s.status AS ship_status
+                       FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                       WHERE i.id=?""", (item_id,)).fetchone()
     if not row:
         c.close()
         return jsonify({"ok": False, "error": "Item not found"})
+    if (row["ship_status"] or "") == "cancelled":
+        c.close()
+        return jsonify({"ok": False, "error": "This order was cancelled -- its items can't be picked"})
     new_state = 0 if row["picked"] else 1
     if new_state:
         c.execute("UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
@@ -12307,9 +12334,11 @@ def api_repair_videos():
     except Exception: page_size=40
     cursor=_p("cursor",None)
     scanned=0;corrupt=0;repaired=0;errors=0;no_header=0;samples=[]
-    # Scan every tenant's videos (keys are now '<org>/videos/…'; legacy ones are 'videos/…').
-    # The .webm filter below skips anything that isn't a recording.
-    kw={"Bucket":R2_BUCKET,"Prefix":_p("prefix",""),"MaxKeys":page_size}
+    # SECURITY: scope the scan to the caller's own tenant. A caller-supplied prefix is
+    # IGNORED -- otherwise an org admin could list/rewrite another tenant's R2 objects.
+    org_prefix=(_org_or_current() or "").strip()
+    scan_prefix=(org_prefix+"/videos/") if org_prefix else "videos/"
+    kw={"Bucket":R2_BUCKET,"Prefix":scan_prefix,"MaxKeys":page_size}
     if cursor: kw["ContinuationToken"]=cursor
     try:
         resp=r2.list_objects_v2(**kw)
@@ -13528,8 +13557,20 @@ def _buy_label_idempotent(org, sid, rid, supplier=None, po_id=None, who="", batc
                 return {"ok":False,"uncertain":True,"error":"Label purchase blocked — a previous attempt's outcome is uncertain; reconcile with the carrier before retrying"}
             return {"ok":False,"in_progress":True,"error":"A label purchase for this rate is already in progress"}
         idem=row["idem_key"] or idem
-        c.execute("UPDATE label_purchases SET status='purchasing', error=NULL, updated_at=? WHERE rate_id=? AND status='error'",(now,rid))
+        reclaimed=c.execute("UPDATE label_purchases SET status='purchasing', error=NULL, updated_at=? WHERE rate_id=? AND status='error'",(now,rid)).rowcount
         c.commit()
+        if not reclaimed:
+            # Another request won the re-claim between our SELECT and UPDATE. Re-read and
+            # defer to its outcome -- never fall through to a second carrier purchase.
+            row=c.execute("SELECT * FROM label_purchases WHERE rate_id=?",(rid,)).fetchone()
+            st=(row["status"] or "") if row else ""
+            c.close()
+            if st=="bought":
+                return {"ok":True,"idempotent":True,"label_url":row["label_url"],"tracking":row["tracking"],
+                        "cost":row["cost"],"carrier":row["carrier"],"service":row["service"]}
+            if st=="uncertain":
+                return {"ok":False,"uncertain":True,"error":"Label purchase blocked -- a previous attempt's outcome is uncertain; reconcile with the carrier before retrying"}
+            return {"ok":False,"in_progress":True,"error":"A label purchase for this rate is already in progress"}
     c.close()   # release the write lock BEFORE the network call — never hold a lock across I/O
     try:
         sh=_ship_buy(rid, idem_key=idem)
