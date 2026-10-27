@@ -2056,6 +2056,8 @@ _NO_LABEL_MSG=("Buying shipping labels is turned off for this workspace, because
 # TikTok moves them.
 TIKTOK_APP_KEY=os.environ.get("TIKTOK_APP_KEY","").strip()
 TIKTOK_APP_SECRET=os.environ.get("TIKTOK_APP_SECRET","").strip()
+# Emergency only — see api_tiktok_webhook. Default: unsigned webhooks are rejected (401).
+TIKTOK_WEBHOOK_ALLOW_UNSIGNED=os.environ.get("TIKTOK_WEBHOOK_ALLOW_UNSIGNED","").strip().lower() in ("1","true","yes")
 TIKTOK_SERVICE_ID=os.environ.get("TIKTOK_SERVICE_ID","").strip()
 TIKTOK_AUTH_BASE=os.environ.get("TIKTOK_AUTH_BASE","https://auth.tiktok-shops.com").rstrip("/")
 TIKTOK_API_BASE=os.environ.get("TIKTOK_API_BASE","https://open-api.tiktokglobalshop.com").rstrip("/")
@@ -13955,7 +13957,20 @@ def _tt_store_shop(org, token_data, shop, who=""):
        scopes, who))
     c.commit(); c.close()
 
+def _tt_org_for_shop_exact(shop_id):
+    """Read-only lookup: the org that already owns this shop_id, or None. No self-heal."""
+    if not shop_id: return None
+    c=pdb()
+    try:
+        r=c.execute("SELECT org_id FROM tiktok_shops WHERE shop_id=? AND active=1 ORDER BY updated_at DESC LIMIT 1",
+                    (str(shop_id),)).fetchone()
+    finally:
+        c.close()
+    return r["org_id"] if r else None
+
 def _tt_org_for_shop(shop_id):
+    """Resolve a VERIFIED webhook's shop_id to an org (may self-heal a wrong stored id by
+    checking TikTok's own shop list). Never call this for unsigned input."""
     if not shop_id: return None
     shop_id=str(shop_id)
     c=pdb()
@@ -13987,16 +14002,10 @@ def _tt_org_for_shop(shop_id):
                     return org
         except Exception as e:
             _tt_log("org self-heal failed for %s: %r"%(org,e))
-    # Last resort: exactly one shop is connected → attribute to it and adopt the shop_id,
-    # so a single-shop setup never drops orders even if the shop-list refetch failed.
-    if len(stored)==1:
-        org=stored[0]["org_id"]
-        c=pdb()
-        c.execute("UPDATE tiktok_shops SET shop_id=?, updated_at=CURRENT_TIMESTAMP WHERE org_id=? AND shop_id=?",
-                  (shop_id, org, stored[0]["shop_id"]))
-        c.commit(); c.close()
-        _tt_log("adopted shop_id %s for sole org %s"%(shop_id, org))
-        return org
+    # No blind "adopt this shop_id" fallback: a shop_id is only re-mapped when TikTok's own
+    # shop list (above) confirms it. Unknown shop → ignore; the background sweep still pulls
+    # every connected shop's orders, so nothing is dropped.
+    _tt_log("webhook for unknown shop_id %s — ignored"%shop_id)
     return None
 
 def _tt_valid_token(org, shop_id):
@@ -14384,6 +14393,8 @@ def _tt_order_in_nonapi(c, oid, tracking=None, pkg=None):
             return True
     return False
 
+_TT_KEEP_LOCAL_STATUS=("picked","issue","packed","shipped","cancelled")
+
 def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
     """Create/update a shipment (+items) from a TikTok API order, in the SAME shipments/
     shipment_items tables the CSV importer uses, so every existing screen works unchanged.
@@ -14466,8 +14477,11 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
     if is_cancelled: new_status="cancelled"
     elif all_gift: new_status="giveaway"
     else: new_status="pending"
-    if ex and ex["status"] in ("packed","shipped") and not is_cancelled:
-        new_status=ex["status"]   # don't undo warehouse progress
+    # Never undo warehouse progress or a human decision. Only a real TikTok cancellation may
+    # override a local status; picked / issue / packed / shipped / cancelled are kept as-is
+    # (previously picked + issue were reset to pending on every sweep, ~every 5 min).
+    if ex and ex["status"] in _TT_KEEP_LOCAL_STATUS and not is_cancelled:
+        new_status=ex["status"]
     if ex:
         c.execute("""UPDATE shipments SET tracking_code=COALESCE(?,tracking_code),
                        buyer_username=?, buyer_name=?, address_full=COALESCE(NULLIF(?,''),address_full),
@@ -14690,6 +14704,7 @@ def api_tiktok_callback():
 
 @app.route("/api/tiktok/webhook", methods=["POST","GET"])
 def api_tiktok_webhook():
+    global _tt_last_event
     # Some verification flows do a GET with a challenge/echo param.
     if request.method=="GET":
         ch=request.args.get("challenge") or request.args.get("verify_token") or ""
@@ -14697,6 +14712,15 @@ def api_tiktok_webhook():
     body=request.get_data() or b""
     sig=request.headers.get("Authorization","") or request.headers.get("authorization","")
     verified=_tt_webhook_verify(body, sig)
+    # SECURITY: an unsigned request must never change state. Only a verified TikTok push may
+    # log events, deactivate a shop (type 6) or re-map shop_ids. Emergency escape hatch
+    # TIKTOK_WEBHOOK_ALLOW_UNSIGNED=1 (if TikTok's signature format ever changes): unsigned
+    # pushes are then treated ONLY as a "go fetch this order" hint for an already-known shop —
+    # the order itself is fetched from TikTok with our own token, so a forged payload can't
+    # inject data, and nothing destructive runs.
+    if not verified and not TIKTOK_WEBHOOK_ALLOW_UNSIGNED:
+        _tt_log("webhook rejected: missing/invalid signature (%d bytes)"%len(body))
+        return jsonify({"code":401,"message":"invalid signature"}),401
     try: payload=json.loads(body.decode("utf-8") or "{}")
     except Exception: payload={}
     ttype=payload.get("type")
@@ -14706,6 +14730,13 @@ def api_tiktok_webhook():
     d=payload.get("data") or {}
     order_id=str(d.get("order_id") or "")
     status=str(d.get("order_status") or d.get("status") or "")
+    if not verified:
+        org=_tt_org_for_shop_exact(shop_id)
+        if ttype==1 and order_id and org:
+            _tt_last_event=time.time()
+            try: _tt_ingest_order(org, shop_id, order_id)
+            except Exception as e: _tt_log("ingest (unsigned hint) failed %s: %r"%(order_id,e))
+        return jsonify({"code":0,"message":"success"})
     org=_tt_org_for_shop(shop_id)
     try:
         c=pdb()
@@ -14722,7 +14753,6 @@ def api_tiktok_webhook():
     # Order status change (topic 1): signal live activity so the background poller switches
     # to ~5s fast polling, and best-effort fetch this one order now. Never block the 200 ack.
     if ttype==1:
-        global _tt_last_event
         _tt_last_event=time.time()
         if order_id and org:
             try: _tt_ingest_order(org, shop_id, order_id)
@@ -15119,6 +15149,43 @@ def api_tiktok_pull():
     except Exception: days=30
     return jsonify(_tt_pull_core(org, days))
 
+def _tt_regroup_begin(org):
+    """Non-destructive regroup, step 1. Instead of DELETING every API shipment (which reset
+    packed/shipped orders to pending and dropped stock-depletion markers → double deduction),
+    only CLEAR their show label so the next ingest assigns a fresh one (apply uses
+    COALESCE(import_label, new)). Status, items, picked and depleted_* are untouched.
+    Session memory is cleared so grouping starts clean; per-show side tables (live sales,
+    sticker map, show state) are KEPT — they hold real ledger data.
+    Returns {shipment_id: old_label} so step 2 can restore anything the re-pull didn't reach."""
+    sc=sdb(org)
+    try:
+        snap={r["shipment_id"]:r["import_label"] for r in sc.execute(
+            "SELECT shipment_id, import_label FROM shipments WHERE import_batch='tiktok-api'").fetchall()}
+        sc.execute("UPDATE shipments SET import_label=NULL WHERE import_batch='tiktok-api'")
+        for t in ("tiktok_sessions","tiktok_rooms","tiktok_lives"):   # same as before
+            try: sc.execute("DELETE FROM "+t)
+            except Exception: pass
+        sc.commit()
+    finally:
+        sc.close()
+    return snap
+
+def _tt_regroup_finish(org, snap):
+    """Non-destructive regroup, step 2: any shipment the re-pull did not re-label (older than
+    the pull window, page cap, API error) gets its previous label back, so no order ever
+    falls out of the show lists. Returns how many were restored."""
+    if not snap: return 0
+    sc=sdb(org); n=0
+    try:
+        for sid, lbl in snap.items():
+            if lbl is None: continue
+            n+=sc.execute("UPDATE shipments SET import_label=? WHERE shipment_id=? AND import_label IS NULL",
+                          (lbl, sid)).rowcount
+        sc.commit()
+    finally:
+        sc.close()
+    return n
+
 @app.route("/api/tiktok/regroup", methods=["POST"])
 @req_role("admin")
 def api_tiktok_regroup():
@@ -15129,32 +15196,15 @@ def api_tiktok_regroup():
     org=current_org() or DEFAULT_ORG
     try: days=int((request.get_json(silent=True) or {}).get("days") or 45)
     except Exception: days=45
-    wiped=0
-    try:
-        sc=sdb(org)
-        # labels currently owned by the API path (so we can clean their side-tables too)
-        labels=[r["import_label"] for r in sc.execute(
-            "SELECT DISTINCT import_label FROM shipments WHERE import_batch='tiktok-api' AND import_label IS NOT NULL").fetchall()]
-        ids=[r["shipment_id"] for r in sc.execute(
-            "SELECT shipment_id FROM shipments WHERE import_batch='tiktok-api'").fetchall()]
-        for sid in ids:
-            sc.execute("DELETE FROM shipment_items WHERE shipment_id=?",(sid,))
-        wiped=sc.execute("DELETE FROM shipments WHERE import_batch='tiktok-api'").rowcount
-        # forget session windows so re-grouping starts clean
-        for t in ("tiktok_sessions","tiktok_rooms","tiktok_lives"):
-            try: sc.execute("DELETE FROM "+t)
-            except Exception: pass
-        # drop orphaned per-show state for the labels we just removed
-        for lbl in labels:
-            for t in ("show_state","cleanup_state","show_product_map","live_sales","live_reconcile"):
-                try: sc.execute("DELETE FROM "+t+" WHERE import_label=?",(lbl,))
-                except Exception: pass
-        sc.commit(); sc.close()
+    try: snap=_tt_regroup_begin(org)
     except Exception as e:
-        _tt_log("regroup wipe failed: %r"%e)
-        return jsonify({"ok":False,"error":"Could not clear old shows: "+str(e)[:200]})
-    res=_tt_pull_core(org, days)
-    res["regrouped"]=True; res["cleared"]=wiped
+        _tt_log("regroup prepare failed: %r"%e)
+        return jsonify({"ok":False,"error":"Could not prepare regroup: "+str(e)[:200]})
+    try:
+        res=_tt_pull_core(org, days)
+    finally:
+        restored=_tt_regroup_finish(org, snap)
+    res["regrouped"]=True; res["relabeled"]=len(snap)-restored; res["kept_old_label"]=restored
     return jsonify(res)
 
 @app.route("/api/tiktok/export-orders")
@@ -15219,31 +15269,17 @@ def api_tiktok_regroup_stored():
     current tiktok-api shows and rebuilds them from tiktok_orders.raw — the fast loop
     for iterating on the routing rules in staging after an import."""
     org=current_org() or DEFAULT_ORG
-    wiped=0
-    try:
-        sc=sdb(org)
-        labels=[r["import_label"] for r in sc.execute(
-            "SELECT DISTINCT import_label FROM shipments WHERE import_batch='tiktok-api' AND import_label IS NOT NULL").fetchall()]
-        ids=[r["shipment_id"] for r in sc.execute(
-            "SELECT shipment_id FROM shipments WHERE import_batch='tiktok-api'").fetchall()]
-        for sid in ids:
-            sc.execute("DELETE FROM shipment_items WHERE shipment_id=?",(sid,))
-        wiped=sc.execute("DELETE FROM shipments WHERE import_batch='tiktok-api'").rowcount
-        for t in ("tiktok_sessions","tiktok_rooms","tiktok_lives"):
-            try: sc.execute("DELETE FROM "+t)
-            except Exception: pass
-        for lbl in labels:
-            for t in ("show_state","cleanup_state","show_product_map","live_sales","live_reconcile"):
-                try: sc.execute("DELETE FROM "+t+" WHERE import_label=?",(lbl,))
-                except Exception: pass
-        sc.commit(); sc.close()
+    try: snap=_tt_regroup_begin(org)
     except Exception as e:
-        _tt_log("regroup-stored wipe failed: %r"%e)
-        return jsonify({"ok":False,"error":"Could not clear old shows: "+str(e)[:200]})
-    orders=_tt_stored_orders(org)
-    shows_list, shipped, skipped=_tt_materialize_orders(org, orders)
-    return jsonify({"ok":True,"regrouped":True,"cleared":wiped,"fetched":len(orders),
-                    "loaded":shipped,"skipped":skipped,"shows":shows_list})
+        _tt_log("regroup-stored prepare failed: %r"%e)
+        return jsonify({"ok":False,"error":"Could not prepare regroup: "+str(e)[:200]})
+    try:
+        orders=_tt_stored_orders(org)
+        shows_list, shipped, skipped=_tt_materialize_orders(org, orders)
+    finally:
+        restored=_tt_regroup_finish(org, snap)
+    return jsonify({"ok":True,"regrouped":True,"relabeled":len(snap)-restored,"kept_old_label":restored,
+                    "fetched":len(orders),"loaded":shipped,"skipped":skipped,"shows":shows_list})
 
 @app.route("/api/tiktok/live-sessions", methods=["GET","POST"])
 @req_role("admin")
@@ -15658,7 +15694,7 @@ rb.onclick=function(){
      rb.disabled=false;pb.disabled=false;rb.textContent=old;
      if(!d.ok){pm.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
      var shw=(d.shows&&d.shows.length)?('<br>Shows now: '+d.shows.map(esc).join(', ')):'';
-     pm.innerHTML='<span style="color:#166534">✓ Regrouped — cleared '+(d.cleared||0)+' old shipment(s), re-loaded '+(d.loaded||0)+' into '+((d.shows||[]).length)+' show(s).'+shw+'</span>';
+     pm.innerHTML='<span style="color:#166534">✓ Regrouped — '+(d.relabeled||0)+' shipment(s) re-labeled, '+(d.kept_old_label||0)+' kept their old show, '+((d.shows||[]).length)+' show(s). Packing progress and stock kept.'+shw+'</span>';
    }).catch(function(e){rb.disabled=false;pb.disabled=false;rb.textContent=old;pm.innerHTML='<span style="color:#b91c1c">Network error</span>';});
 };
 var sbtn=document.getElementById('sessBtn');
@@ -15700,7 +15736,7 @@ if(rsb)rsb.onclick=function(){
      rsb.disabled=false;rsb.textContent=old;
      if(!d.ok){im.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
      var shw=(d.shows&&d.shows.length)?('<br>Shows now: '+d.shows.map(esc).join(', ')):'';
-     im.innerHTML='<span style="color:#166534">✓ Regrouped '+(d.fetched||0)+' stored order(s) → '+((d.shows||[]).length)+' show(s), cleared '+(d.cleared||0)+'.'+shw+'</span>';
+     im.innerHTML='<span style="color:#166534">✓ Regrouped '+(d.fetched||0)+' stored order(s) → '+((d.shows||[]).length)+' show(s), '+(d.relabeled||0)+' re-labeled.'+shw+'</span>';
    }).catch(function(){rsb.disabled=false;rsb.textContent=old;im.innerHTML='<span style="color:#b91c1c">Network error</span>';});
 };
 var DV=[['delivered','Delivered','#dcfce7','#166534','DELIVERED'],['in_transit','In transit','#dbeafe','#1e40af','IN_TRANSIT'],
