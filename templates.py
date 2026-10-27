@@ -18,7 +18,7 @@ def _staging_banner():
             "<style>.staging-banner{position:fixed;top:0;left:0;right:0;height:30px;z-index:9999;"
             "background:#b45309;color:#fff;font-weight:800;font-size:12.5px;display:flex;align-items:center;"
             "justify-content:center;letter-spacing:.3px;font-family:'DM Sans',sans-serif}"
-            "body{padding-top:30px}.sidebar{top:30px!important}.sb-toggle{top:38px!important}.sb-ov{top:30px}</style>")
+            "body{padding-top:30px}.sidebar{top:30px!important}.sb-toggle{top:38px!important}.sb-nav2{top:38px!important}.sb-ov{top:30px}</style>")
 
 
 def _brand():
@@ -167,7 +167,15 @@ def _navbar(active_page=""):
     _home_url = "/admin/organizations" if role == "superadmin" else "/home"
     show_search = (role != "superadmin") and has("admin", "cs")
     nav_html = _staging_banner() + _brand_style() + imp_banner
+    nav_html += '<div class="sb-mbar"></div>'   # mobile top-bar backdrop so the nav buttons never cover page content
     nav_html += '<button class="sb-toggle" aria-label="Open menu" onclick="document.body.classList.toggle(\'sb-open\')">☰</button>'
+    # Always-visible Back + Home on small screens (iPad), so a worker is never trapped on a
+    # screen with the menu hidden behind the hamburger.
+    nav_html += ('<div class="sb-nav2">'
+                 '<button class="sb-back" aria-label="Back" title="Back" '
+                 'onclick="(function(){try{if(history.length>1){history.back();}else{location.href=\'' + _home_url + '\';}}catch(e){location.href=\'' + _home_url + '\';}})()">← Back</button>'
+                 '<a class="sb-home" href="' + _home_url + '" aria-label="Home" title="Home menu">\U0001F3E0</a>'
+                 '</div>')
     nav_html += '<div class="sb-ov" onclick="document.body.classList.remove(\'sb-open\')"></div>'
     nav_html += '<nav class="sidebar">'
     nav_html += ('<a class="sb-brand" href="' + _home_url + '">' + logo +
@@ -350,6 +358,11 @@ _NAVBAR_CSS='''<style>
 }
 /* ══ Sidebar navigation (replaces the old top bar) ══ */
 .sb-toggle{display:none;position:fixed;top:12px;left:12px;z-index:140;width:42px;height:42px;border-radius:11px;border:1px solid var(--border);background:#fff;color:var(--text);font-size:18px;cursor:pointer;align-items:center;justify-content:center}
+.sb-mbar{display:none}
+.sb-nav2{display:none;position:fixed;top:12px;left:62px;z-index:140;gap:8px}
+.sb-nav2 .sb-back,.sb-nav2 .sb-home{height:42px;min-width:44px;padding:0 15px;border-radius:11px;border:1px solid var(--border);background:#fff;color:var(--text);font-size:15px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;text-decoration:none;font-family:inherit;-webkit-tap-highlight-color:transparent}
+.sb-nav2 .sb-back:active,.sb-nav2 .sb-home:active{transform:scale(.96)}
+.sb-nav2 .sb-home{font-size:19px}
 .sb-ov{display:none;position:fixed;inset:0;background:rgba(20,20,20,.38);z-index:120}
 .sidebar{position:fixed;left:0;top:0;bottom:0;width:256px;background:var(--bg);border-right:1px solid var(--border);overflow-y:auto;z-index:130;padding:14px 12px 16px;font-family:'DM Sans',sans-serif;display:flex;flex-direction:column;gap:2px}
 .sb-brand{display:flex;align-items:center;gap:10px;padding:6px 8px 12px;text-decoration:none}
@@ -391,6 +404,9 @@ _NAVBAR_CSS='''<style>
   body.sb-open .sidebar{transform:none}
   body.sb-open .sb-ov{display:block}
   .sb-toggle{display:flex}
+  .sb-nav2{display:flex}
+  .sb-mbar{display:block;position:fixed;top:0;left:0;right:0;height:62px;background:#fff;border-bottom:1px solid var(--border);z-index:125}
+  body:has(.sidebar){padding-top:62px}
 }
 </style><script>(function(){try{var t=localStorage.getItem('siteTheme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
 window.setSiteTheme=function(t){try{if(t){localStorage.setItem('siteTheme',t);document.documentElement.setAttribute('data-theme',t);}else{localStorage.removeItem('siteTheme');document.documentElement.removeAttribute('data-theme');}}catch(e){}document.querySelectorAll('.theme-swatch').forEach(function(s){s.classList.toggle('on',(s.getAttribute('data-theme')||'')===(t||''));});};</script>'''
@@ -4741,6 +4757,10 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .top-show b{color:var(--brand);font-weight:800}
 .top-show .change-link{color:var(--text-dim);font-size:11px;text-decoration:underline;margin-left:8px;text-decoration-color:rgba(17,24,39,0.16)}
 .top-logout{background:rgba(244,63,94,.1);border:1px solid rgba(244,63,94,.22);color:#e11d48;text-decoration:none;font-size:13px;font-weight:700;padding:8px 14px;border-radius:10px}
+/* Big, always-present navigation so a worker is never trapped on a screen (iPad-first). */
+.navbtn{display:flex;align-items:center;justify-content:center;gap:6px;min-height:44px;min-width:44px;padding:0 16px;background:var(--surface);border:1.5px solid var(--border);color:var(--text);border-radius:12px;font-family:inherit;font-size:15px;font-weight:800;cursor:pointer;text-decoration:none;flex-shrink:0;-webkit-tap-highlight-color:transparent}
+.navbtn:active{transform:scale(.96);background:rgba(217,116,143,.1)}
+.navbtn.home{font-size:20px;padding:0 14px}
 
 .page{position:absolute;top:60px;left:0;right:0;bottom:0;overflow-y:auto;-webkit-overflow-scrolling:touch}
 
@@ -4882,6 +4902,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 </style>
 </head><body data-role="__ROLE__">
 <div class="top">
+  <button class="navbtn" id="backBtn" onclick="goBack()" title="Back">← Back</button>
+  <a class="navbtn home" href="/home" title="Home menu">🏠</a>
   <div class="top-brand">
     <div class="brand-mark">__BRANDMARK__</div>
     <div class="brand-sub">Picking</div>
@@ -5098,6 +5120,15 @@ function switchState(s){
     }
 }
 
+// Context-aware Back so the worker is never stuck: order → scan → show list → home.
+function goBack(){
+    if(document.getElementById('listView').classList.contains('on')){switchState('scan');return;}
+    if(document.getElementById('scanView').classList.contains('on')){
+        currentShow='';try{localStorage.removeItem('pickShow');}catch(e){}
+        renderTopShow();loadShows();return;
+    }
+    location.href='/home';
+}
 function renderTopShow(){
     var el=document.getElementById('topShow');
     if(!currentShow){el.innerHTML='';return}
