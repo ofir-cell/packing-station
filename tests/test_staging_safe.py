@@ -88,6 +88,8 @@ def test_safe_mode_status_admin_only(client, appmod):
     # unauthenticated → not allowed (redirect to login), never a 200 payload
     assert client.get("/api/ops/safe-mode").status_code != 200
     # authenticated non-admin (worker) → forbidden
+    with appmod.update_json(appmod.USERS_FILE) as _u:
+        _u["w"] = {"password": "x", "role": "worker", "name": "w", "org": appmod.DEFAULT_ORG}
     with client.session_transaction() as sess:
         sess.update(user="w", role="worker", roles=["worker"], org=appmod.DEFAULT_ORG)
     assert client.get("/api/ops/safe-mode").status_code == 403

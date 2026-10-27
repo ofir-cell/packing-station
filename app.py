@@ -3536,7 +3536,7 @@ def _session_revocation():
         p=request.path or "/"
         if p in _SESSREV_OPEN or p.startswith(("/static/","/guide-asset/")):
             return
-        if is_super():
+        if is_super() or session.get("impersonator"):
             return
         users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
         rec=users.get(u)
