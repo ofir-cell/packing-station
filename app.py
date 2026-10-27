@@ -3638,7 +3638,7 @@ def _touch_last_login(username):
 # short list of sensitive areas (billing, company setup/branding, and the platform
 # org console which is super-admin territory anyway).
 _MANAGER_BLOCK_PREFIXES = ("/billing", "/api/billing", "/setup", "/api/setup",
-                           "/api/org/branding", "/api/orgs")
+                           "/api/org/branding", "/api/orgs", "/api/users", "/api/permissions")
 def _manager_blocked(path):
     p = path or ""
     return any(p == bp or p.startswith(bp + "/") or p == bp for bp in _MANAGER_BLOCK_PREFIXES) \
@@ -3659,6 +3659,17 @@ def req_role(*roles):
             return "Access denied",403
         return d
     return w
+def req_true_admin(f):
+    """Strict server-side admin gate for user-, role-, permission- and credential-management.
+    Requires the caller's ACTUAL roles to include 'admin' — the manager->admin elevation in
+    req_role does NOT apply here. Independent of any route-prefix blocklist (defense in depth)."""
+    @wraps(f)
+    def d(*a,**k):
+        if "user" not in session: return redirect("/")
+        if "admin" not in session_roles(): return "Access denied",403
+        return f(*a,**k)
+    return d
+
 def req_super(f):
     """Platform-owner only (cross-tenant control plane: org management)."""
     @wraps(f)
@@ -6713,7 +6724,7 @@ def api_permissions_get():
                     "roles":["admin","manager","cs","host","worker"]})
 
 @app.route("/api/permissions",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_permissions_save():
     d=request.get_json() or {}
     perms=d.get("permissions")
@@ -6729,7 +6740,7 @@ def api_permissions_save():
     return jsonify({"ok":True})
 
 @app.route("/api/permissions/pin",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_permissions_pin():
     d=request.get_json() or {}
     pin=(d.get("pin") or "").strip()
@@ -10337,7 +10348,7 @@ def api_documents_delete(doc_id):
 
 
 @app.route("/api/users")
-@req_role("admin")
+@req_true_admin
 def api_users():
     u=ldj(USERS_FILE)
     myorg=session.get("org",DEFAULT_ORG)
@@ -10689,7 +10700,7 @@ def my_availability_page():
         "__NAVBAR__",_navbar("myavail")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/users/add",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_add():
     d=request.get_json();u=d.get("username","").strip().lower();p=d.get("password","")
     n=_clean_name(d.get("name") or u);role=d.get("role","worker")
@@ -10725,7 +10736,7 @@ def api_add():
     return jsonify({"ok":True,"badge_token":badge})
 
 @app.route("/api/users/roles",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_user_roles():
     """Update an existing user's primary role + extra roles."""
     d=request.get_json() or {}
@@ -10750,7 +10761,7 @@ def api_user_roles():
     return jsonify({"ok":True})
 
 @app.route("/api/users/name",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_user_name():
     """Update a user's display name."""
     d=request.get_json() or {}
@@ -10765,7 +10776,7 @@ def api_user_name():
     return jsonify({"ok":True,"name":name})
 
 @app.route("/api/users/delete",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_del():
     d=request.get_json();u=d.get("username","")
     if u=="admin": return jsonify({"ok":False,"error":"Cannot delete admin"})
@@ -10775,7 +10786,7 @@ def api_del():
     return jsonify({"ok":True})
 
 @app.route("/api/users/pw",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_pw():
     d=request.get_json();u=d.get("username","");p=d.get("password","")
     if not p: return jsonify({"ok":False})
@@ -10786,7 +10797,7 @@ def api_pw():
     return jsonify({"ok":True})
 
 @app.route("/api/users/badge",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_badge_regen():
     """Regenerate (or generate first time) a badge token for a worker.
     Use cases: lost badge, leaked token, switching from password to badge auth."""
@@ -10800,7 +10811,7 @@ def api_badge_regen():
     return jsonify({"ok":True,"badge_token":tok})
 
 @app.route("/api/users/badge/revoke",methods=["POST"])
-@req_role("admin")
+@req_true_admin
 def api_badge_revoke():
     """Remove a worker's badge token (e.g. employee left). They'll need a password to log in."""
     d=request.get_json();u=d.get("username","")
