@@ -5020,7 +5020,12 @@ function applyLang(){
  var lb=document.getElementById('langBtn');if(lb)lb.textContent=(LANG==='en'?'ES':'EN');
 }
 applyLang();
-var currentShow=localStorage.getItem('pickShow')||'';
+// Deep-link: /pick?show=NAME lands straight on the scan screen for that show
+// (used after the table clean-out screen hands off to picking).
+var _urlShow=new URLSearchParams(location.search).get('show')||'';
+var currentShow=_urlShow||localStorage.getItem('pickShow')||'';
+if(_urlShow){try{localStorage.setItem('pickShow',_urlShow);}catch(e){}
+  try{history.replaceState(null,'',location.pathname);}catch(e){}}
 var currentDetail=null,currentItems=[],currentGiveaways=[],sessionCount=0;
 var availableShows=[];
 
@@ -5162,13 +5167,9 @@ function loadShows(){
                     switchState('scan');
                 };
                 if(b.dataset.needsclean==='1'){
-                    // New show — require a table clean-out before picking can start.
-                    if(!confirm('🧼 New show — clean out the table first.\\n\\nClear every item from the previous show off the packing table, THEN confirm.\\n\\nHas the table been cleaned out for "'+b.dataset.name+'"?'))return;
-                    fetch('/api/show/cleanout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:b.dataset.name})})
-                      .then(function(r){return r.json()}).then(function(d){
-                        if(d&&d.ok){b.dataset.needsclean='0';proceed();}
-                        else alert('Could not record the clean-out. Try again.');
-                      }).catch(function(){alert('Network error recording the clean-out.');});
+                    // New show — send them to the table clean-out screen first; it hands
+                    // back to picking (scan) for this show once the table is cleared.
+                    location.href='/admin/cleanup?show='+encodeURIComponent(b.dataset.name)+'&prepick=1';
                     return;
                 }
                 proceed();
@@ -5236,16 +5237,12 @@ function openDetail(sid){
             setTimeout(function(){location.href='/admin/cleanup?show='+encodeURIComponent(lbl)},900);
             return;
         }
-        // New-show table clean-out gate — the table must be cleared before picking starts.
+        // New-show table clean-out gate — send to the table clean-out screen first.
         if(d.cleanout_required){
             sndError();
             var clbl=s.import_label||'';
-            if(!confirm('🧼 New show — clean out the table first.\\n\\nClear every item from the previous show off the packing table, THEN confirm.\\n\\nHas the table been cleaned out for "'+clbl+'"?'))return;
-            fetch('/api/show/cleanout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:clbl})})
-              .then(function(r){return r.json()}).then(function(res){
-                if(res&&res.ok){openDetail(sid);}  // re-open now that it's cleared
-                else showToast('Could not record the clean-out. Try again.',true);
-              }).catch(function(){showToast('Network error recording the clean-out.',true);});
+            showToast('🧼 Clean out the table first',true);
+            setTimeout(function(){location.href='/admin/cleanup?show='+encodeURIComponent(clbl)+'&prepick=1'},900);
             return;
         }
         if(s.status==='cancelled'){
@@ -5822,6 +5819,15 @@ __NAVBAR__
       <div class="txt">Table is clean. <b>Pickers can start picking this show.</b></div>
     </div>
 
+    <div id="prepickBar" style="display:none;margin:4px 0 18px">
+      <div style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:14px;padding:16px 18px">
+        <div style="font-weight:800;color:#065f46;font-size:16px;margin-bottom:4px">🧼 Clean out the table for this new show</div>
+        <div style="color:#047857;font-size:13px;margin-bottom:12px">Clear every item from the previous show off the packing table. When the table is empty, start picking.</div>
+        <button id="startPickBtn" style="width:100%;padding:16px;border:0;border-radius:12px;background:#10b981;color:#fff;font-weight:800;font-size:17px;cursor:pointer">✅ Table cleared — start picking</button>
+        <div id="startPickHint" style="text-align:center;color:#b45309;font-size:12px;margin-top:8px;display:none">Clear the cancelled items above first.</div>
+      </div>
+    </div>
+
     <div id="groupsList" class="groups"></div>
   </div>
 
@@ -5832,6 +5838,8 @@ __NAVBAR__
 var currentLabel=null;
 var role='__ROLE__';
 var preLabel=new URLSearchParams(location.search).get('show');
+var prePick=new URLSearchParams(location.search).get('prepick')==='1';  // came from /pick for a new show
+var lastClean=false;
 
 function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function fmtPart(name){var safe=esc(name||'');var m=safe.match(/(Part\\s*\\d+)/i);if(!m)return safe;var stripped=safe.replace(/[\\s·,—–-]*Part\\s*\\d+[\\s·,—–-]*/i,' ').replace(/\\s{2,}/g,' ').trim();return '<span class="part-tag">'+m[1].toUpperCase()+'</span>'+stripped}
@@ -5877,7 +5885,9 @@ function loadShows(){
             el.addEventListener('click',function(){openShow(el.dataset.label)});
         });
         // Deep-link via ?show=NAME — pickers get redirected here from /pick.
-        if(preLabel){var match=shows.find(function(x){return x.label===preLabel});if(match){openShow(preLabel);preLabel=null}}
+        // In pre-pick mode always open the show (even if it has no cancellations) so the
+        // worker lands on the clean-out screen with the "start picking" hand-off.
+        if(preLabel){var match=shows.find(function(x){return x.label===preLabel});if(match||prePick){openShow(preLabel);preLabel=null}}
     });
 }
 
@@ -5909,6 +5919,16 @@ function renderDetail(d){
     st.textContent=d.is_clean?'✓ Clean':'Not clean';
     st.className='big-prog-status '+(d.is_clean?'clean':'dirty');
     document.getElementById('cleanBanner').classList.toggle('on',d.is_clean && d.total_groups>0);
+    // Pre-pick clean-out flow: show the "start picking" bar; enable only once clean.
+    lastClean=!!d.is_clean;
+    if(prePick){
+        document.getElementById('prepickBar').style.display='block';
+        var sb=document.getElementById('startPickBtn');
+        sb.disabled=!lastClean;
+        sb.style.opacity=lastClean?'1':'.5';
+        sb.style.cursor=lastClean?'pointer':'not-allowed';
+        document.getElementById('startPickHint').style.display=lastClean?'none':'block';
+    }
     var list=document.getElementById('groupsList');
     if(groups.length===0){
         list.innerHTML='<div class="empty"><div class="icn">🎉</div><div class="ttl">No cancelled items for this show</div><div>Nothing to remove. Pickers can start whenever.</div></div>';
@@ -5968,6 +5988,17 @@ document.getElementById('backLink').addEventListener('click',function(e){
     document.getElementById('detailView').classList.remove('on');
     document.getElementById('listView').style.display='block';
     loadShows();  // refresh tile progress
+});
+
+// Pre-pick: table cleared → record the clean-out and hand straight off to picking.
+document.getElementById('startPickBtn').addEventListener('click',function(){
+    if(!lastClean)return;
+    var b=this;b.disabled=true;b.textContent='Starting…';
+    fetch('/api/show/cleanout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:currentLabel})})
+      .then(function(r){return r.json()}).then(function(d){
+        if(d&&d.ok){location.href='/pick?show='+encodeURIComponent(currentLabel);}
+        else{b.disabled=false;b.textContent='✅ Table cleared — start picking';toast('Could not start — try again',true);}
+      }).catch(function(){b.disabled=false;b.textContent='✅ Table cleared — start picking';toast('Network error',true);});
 });
 
 loadShows();
