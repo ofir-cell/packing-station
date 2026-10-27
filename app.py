@@ -14648,6 +14648,7 @@ def api_tiktok_cutover():
     (which is already handled via CSV). Body: {now:true} to start now, or {clear:true} to remove."""
     org=current_org() or DEFAULT_ORG
     d=request.get_json(silent=True) or {}
+    paused=_tt_is_paused(org)
     if d.get("clear"):
         ts=_tt_set_cutover(org, 0)
     else:
@@ -14655,7 +14656,10 @@ def api_tiktok_cutover():
         except Exception: ts=0
         if not ts: ts=int(time.time())   # default: now
         ts=_tt_set_cutover(org, ts)
-    return jsonify({"ok":True,"cutover":ts,
+        # "Start from now" means turn ingestion ON. If it was paused, resume it — otherwise
+        # setting the cutover does nothing and the live keeps getting skipped by the sweep.
+        if paused: paused=_tt_set_paused(org, False)
+    return jsonify({"ok":True,"cutover":ts,"paused":bool(paused),
                     "cutover_human":(datetime.fromtimestamp(ts).strftime("%b %d, %Y %-I:%M %p") if ts else "")})
 
 def _tt_epoch(v):
@@ -15450,8 +15454,8 @@ function applyCutover(ts){_cutover=ts||0;var st=document.getElementById('cutStat
 document.getElementById('cutBtn').onclick=function(){var b=this;b.disabled=true;
   if(_cutover && !confirm('Move the start point to NOW? Orders created before now will no longer build shows.')){b.disabled=false;return;}
   fetch('/api/tiktok/cutover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({now:true})})
-   .then(function(r){return r.json();}).then(function(d){b.disabled=false;if(d&&d.ok)applyCutover(d.cutover);
-     document.getElementById('cutMsg').innerHTML='<span style="color:#166534">✓ From now on, only orders created after '+esc(d.cutover_human||'')+' will build shows.</span>';})
+   .then(function(r){return r.json();}).then(function(d){b.disabled=false;if(d&&d.ok){applyCutover(d.cutover);if(d.paused===false)applyPause(false);}
+     document.getElementById('cutMsg').innerHTML='<span style="color:#166534">✓ Ingestion is ON. From now on, only orders created after '+esc(d.cutover_human||'')+' will build shows.</span>';})
    .catch(function(){b.disabled=false;});};
 document.getElementById('cutClear').onclick=function(){var b=this;b.disabled=true;
   if(!confirm('Clear the start point? The API will then build every order it pulls, including old history.')){b.disabled=false;return;}
