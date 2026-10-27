@@ -310,12 +310,29 @@ MAX_DOC_SIZE = 50*1024*1024  # 50MB per document
 # Holds the organizations directory. This is the ONLY DB that is
 # allowed to span tenants; all operational data is per-org.
 # ══════════════════════════════════════════════════════════
+def _track_conn(c):
+    """Register a DB connection with the current request so it is guaranteed to be
+    rolled back and closed at request teardown. This is the safety net for C4-2: a
+    handler that raises mid-transaction no longer leaves an uncommitted write holding
+    the SQLite write lock until GC (which could stall other workers up to busy_timeout).
+    Handlers still commit/close normally on the happy path; teardown just cleans up
+    anything left open (double close/rollback is swallowed)."""
+    try:
+        if has_request_context():
+            lst=getattr(g,"_cx_conns",None)
+            if lst is None:
+                lst=[]; g._cx_conns=lst
+            lst.append(c)
+    except Exception:
+        pass
+    return c
+
 def pdb():
     c=sqlite3.connect(PLATFORM_DB,timeout=10.0)
     c.row_factory=sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA busy_timeout=60000")
-    return c
+    return _track_conn(c)
 
 def pdb_init():
     c=pdb()
@@ -736,14 +753,32 @@ def _rate_key(ip,user): return (ip or "?")+"|"+(user or "?")
 # Generic in-process sliding-window limiter (used by the public lead form).
 _hits={}
 def _rate_ok(key, limit=5, window=3600):
-    """True if this key is still under `limit` hits inside `window` seconds."""
+    """True if this key is still under `limit` hits inside `window` seconds.
+    Shared across ALL gunicorn workers via platform.db (the old in-memory dict only
+    counted hits seen by one worker, so a 4-worker box allowed 4x the intended limit
+    on these unauthenticated public endpoints). Records the hit only when allowed.
+    Falls back to the in-memory counter if the DB is briefly unavailable."""
     now=time.time()
-    arr=[t for t in _hits.get(key,[]) if now-t < window]
-    if len(arr)>=limit:
-        _hits[key]=arr
-        return False
-    arr.append(now); _hits[key]=arr
-    return True
+    try:
+        c=pdb()
+        c.execute("""CREATE TABLE IF NOT EXISTS rate_hits(
+            rk TEXT NOT NULL, ts REAL NOT NULL)""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_rate_hits ON rate_hits(rk, ts)")
+        with _flock("rate_hits"):
+            c.execute("DELETE FROM rate_hits WHERE ts < ?", (now - window,))
+            n=c.execute("SELECT COUNT(*) FROM rate_hits WHERE rk=? AND ts >= ?", (key, now-window)).fetchone()[0]
+            if n >= limit:
+                c.commit(); c.close()
+                return False
+            c.execute("INSERT INTO rate_hits(rk, ts) VALUES(?, ?)", (key, now))
+            c.commit(); c.close()
+        return True
+    except Exception as e:
+        print("rate limiter DB fallback:", e, flush=True)
+        arr=[t for t in _hits.get(key,[]) if now-t < window]
+        if len(arr)>=limit:
+            _hits[key]=arr; return False
+        arr.append(now); _hits[key]=arr; return True
 
 def _login_rate_check(ip,user):
     """Return (ok, limited). limited=True means block this attempt."""
@@ -1048,7 +1083,7 @@ def gdb(org=None):
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA busy_timeout=60000")
     c.execute("PRAGMA foreign_keys=ON")
-    return c
+    return _track_conn(c)
 
 def gdb_init(org):
     """Create the giveaway table for a tenant if it doesn't exist."""
@@ -1120,7 +1155,7 @@ def sdb(org=None):
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA busy_timeout=60000")
     c.execute("PRAGMA foreign_keys=ON")
-    return c
+    return _track_conn(c)
 
 def sdb_init(org):
     """Create the shipments / items / sku_weights / weight_config tables for a tenant."""
@@ -1293,6 +1328,10 @@ def sdb_init(org):
     ):
         try: c.execute(_stmt)
         except sqlite3.OperationalError: pass
+    # SECURITY (S2): we no longer persist the plaintext temp password anywhere. Purge any
+    # legacy values left at rest by older builds so they stop riding along in R2 backups.
+    try: c.execute("UPDATE new_hires SET provisioned_password=NULL WHERE provisioned_password IS NOT NULL")
+    except sqlite3.OperationalError: pass
     c.execute("""CREATE TABLE IF NOT EXISTS onboarding_workflows(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -2019,9 +2058,16 @@ def _tracking_loop():
         if not USPS_ENABLED: continue
         try:
             marker=os.path.join(DATA_DIR,".tracking_last")
-            last=os.path.getmtime(marker) if os.path.exists(marker) else 0
-            if time.time()-last < 5*3600: continue
-            open(marker,"w").close()
+            # Claim leadership atomically: check mtime and touch the marker inside the
+            # SAME cross-process lock, so two workers can't both pass the staleness check
+            # and double-run the batch (TOCTOU).
+            claimed=False
+            with _flock("tracking_leader"):
+                last=os.path.getmtime(marker) if os.path.exists(marker) else 0
+                if time.time()-last >= 5*3600:
+                    open(marker,"w").close()
+                    claimed=True
+            if not claimed: continue
             for _org in list_org_ids():
                 try: refresh_tracking_batch(org=_org, limit=600)
                 except Exception as e: print("tracking error for",_org,":",e,flush=True)
@@ -2358,8 +2404,12 @@ def _ups_buy(rate_id, idem_key=None):
               "PaymentInformation":{"ShipmentCharge":[{"Type":"01","BillShipper":{"AccountNumber":UPS_ACCOUNT_NUMBER}}]},
               "Service":{"Code":code or "03","Description":UPS_SERVICE_NAMES.get(code,"UPS")},
               "Package":[_ups_package(ctx.get("weight_oz"), ctx.get("dims") or {}, for_ship=True)]}
+    # UPS has no native idempotency key; the authoritative no-double-buy guarantee is the
+    # DB claim in _buy_label_idempotent. We still stamp the idem key into CustomerContext
+    # so retries are correlated in UPS's logs / our reconciliation.
+    _ctx=("ship:"+idem_key) if idem_key else "ship"
     body={"ShipmentRequest":{"Request":{"SubVersion":UPS_SHIP_VERSION.lstrip("v"),
-              "RequestOption":"nonvalidate","TransactionReference":{"CustomerContext":"ship"}},
+              "RequestOption":"nonvalidate","TransactionReference":{"CustomerContext":_ctx[:50]}},
           "Shipment":shipment,
           "LabelSpecification":{"LabelImageFormat":{"Code":"GIF"},"LabelStockSize":{"Height":"6","Width":"4"}}}}
     resp=_ups("POST","/api/shipments/"+UPS_SHIP_VERSION+"/ship",body)
@@ -3404,8 +3454,10 @@ def _provision_user_from_hire(hire_id):
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     c = sdb(org)
-    c.execute("""UPDATE new_hires SET provisioned_username=?, provisioned_password=?, provisioned_at=?
-                 WHERE id=?""", (uname, temp_pw, now, hire_id))
+    # Do NOT persist the plaintext temp password. users.json holds only the bcrypt hash;
+    # an admin reveals a shareable password on demand via /api/hires/<id>/issue-temp-password.
+    c.execute("""UPDATE new_hires SET provisioned_username=?, provisioned_password=NULL, provisioned_at=?
+                 WHERE id=?""", (uname, now, hire_id))
     c.commit(); c.close()
     try:
         alog("hire.provision", "%s -> user %s (role=%s)" % (full_name, uname, role))
@@ -3577,6 +3629,22 @@ _CSRF_SHIM=("<script>(function(){function t(){var m=document.cookie.match(/(?:^|
     "XMLHttpRequest.prototype.open=function(m,u){this.__m=(m||'GET').toUpperCase();this.__s=same(u);return oo.apply(this,arguments);};"
     "XMLHttpRequest.prototype.send=function(){if(M.indexOf(this.__m)>=0&&this.__s){try{this.setRequestHeader('"
     +CSRF_HEADER+"',t());}catch(e){}}return os.apply(this,arguments);};})();</script>")
+
+@app.teardown_request
+def _close_tracked_conns(exc):
+    """Roll back + close any request-scoped DB connection still open at teardown.
+    On the happy path handlers already closed them (these calls then no-op); on an
+    error path this releases the write lock immediately instead of at GC time."""
+    lst=getattr(g,"_cx_conns",None)
+    if not lst:
+        return
+    for c in lst:
+        try: c.rollback()
+        except Exception: pass
+        try: c.close()
+        except Exception: pass
+    try: g._cx_conns=[]
+    except Exception: pass
 
 @app.after_request
 def _security_headers(resp):
@@ -9623,8 +9691,8 @@ def api_hires_list():
     out = []
     for r in rows:
         d = dict(r)
-        d["has_temp_password"] = bool(d.get("provisioned_password"))
-        d.pop("provisioned_password", None)   # never return the plaintext temp password in bulk
+        d["has_account"] = bool(d.get("provisioned_username"))
+        d.pop("provisioned_password", None)   # plaintext is never stored or returned
         if d["workflow_id"]:
             done, total, pct = _hire_completion_pct(d["id"], d["workflow_id"])
             d["progress_done"] = done
@@ -9850,6 +9918,30 @@ def api_hires_create():
                     "emailed": emailed, "email_error": email_error,
                     "email_configured": EMAIL_ENABLED, "has_email": bool(email)})
 
+@app.route("/api/hires/<int:hire_id>/issue-temp-password", methods=["POST"])
+@req_true_admin
+def api_hire_issue_temp_password(hire_id):
+    """Issue a NEW temporary password for a provisioned hire and return it exactly ONCE.
+    True-admin only. The plaintext is shown in this response and never stored (users.json
+    keeps only the bcrypt hash). Use this for the credential handoff; click again if lost."""
+    c = sdb()
+    row = c.execute("SELECT provisioned_username FROM new_hires WHERE id=?", (hire_id,)).fetchone()
+    c.close()
+    uname = ((row["provisioned_username"] if row else "") or "").strip().lower()
+    if not uname:
+        return jsonify({"ok": False, "error": "This hire has no provisioned account yet."}), 400
+    temp_pw = _gen_temp_password()
+    updated = False
+    with update_json(USERS_FILE) as users:
+        if uname in users:
+            users[uname]["password"] = _h(temp_pw)
+            updated = True
+    if not updated:
+        return jsonify({"ok": False, "error": "Account not found in the control plane."}), 404
+    try: alog("hire.issue_temp_password", "%s issued a temp password for %s" % (session.get("name",""), uname))
+    except Exception: pass
+    return jsonify({"ok": True, "username": uname, "temp_password": temp_pw})
+
 @app.route("/api/hires/<int:hire_id>", methods=["GET"])
 @req_role("admin", "cs")
 def api_hire_get(hire_id):
@@ -9860,8 +9952,8 @@ def api_hire_get(hire_id):
         c.close()
         return jsonify({"ok": False, "error": "Not found"}), 404
     h = dict(h)
-    h["has_temp_password"] = bool(h.get("provisioned_password"))
-    h.pop("provisioned_password", None)   # not returned via API; shown once at provision time
+    h["has_account"] = bool(h.get("provisioned_username"))
+    h.pop("provisioned_password", None)   # plaintext is never stored or returned
     steps = _hire_steps_with_progress(h["id"], h["workflow_id"]) if h["workflow_id"] else []
     sigs = [dict(r) for r in c.execute("SELECT * FROM onboarding_signatures WHERE hire_id=? ORDER BY signed_at DESC",
                                        (hire_id,)).fetchall()]
