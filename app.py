@@ -6501,10 +6501,22 @@ def api_pick_complete(sid):
         return jsonify({"ok": False, "already_picked": True,
                         "picked_by": s["picked_by"], "picked_at": s["picked_at"],
                         "error": "Already picked by " + who})
+    # Claim the shipment atomically: only the request whose conditional UPDATE actually
+    # flips pending->picked (rowcount==1) is the winner. Concurrent callers all read
+    # 'pending' above, so without this they would ALL return success and all think they
+    # picked it -- here the losers get 'already_picked' with the real picker's name.
+    won = c.execute("""UPDATE shipments SET status='picked', picked_at=CURRENT_TIMESTAMP, picked_by=?
+                       WHERE shipment_id=? AND status='pending'""", (user, sid)).rowcount
+    if not won:
+        row = c.execute("SELECT picked_by, picked_at FROM shipments WHERE shipment_id=?", (sid,)).fetchone()
+        c.commit(); c.close()
+        who = (row["picked_by"] if row else None) or "someone"
+        return jsonify({"ok": False, "already_picked": True,
+                        "picked_by": row["picked_by"] if row else None,
+                        "picked_at": row["picked_at"] if row else None,
+                        "error": "Already picked by " + who})
     c.execute("""UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP
                  WHERE shipment_id=? AND COALESCE(cancelled,0)=0 AND COALESCE(picked,0)=0""", (sid,))
-    c.execute("""UPDATE shipments SET status='picked', picked_at=CURRENT_TIMESTAMP, picked_by=?
-                 WHERE shipment_id=? AND status='pending'""", (user, sid))
     c.commit(); c.close()
     return jsonify({"ok": True})
 
