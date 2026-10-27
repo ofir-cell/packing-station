@@ -132,11 +132,46 @@ def _safe_parse(rid):
         return False
 
 
+def verify_run(store, run_id):
+    """Return (ok, detail). A run is VERIFIED only if its manifest parses AND every
+    listed object exists with a size matching the manifest. Used to protect the last
+    known-good backup from pruning and to detect incomplete/partial uploads."""
+    mkey = "%s/%s/%s" % (BACKUP_PREFIX, run_id, MANIFEST_NAME)
+    try:
+        raw = store.get_bytes(mkey)
+    except Exception as e:
+        return False, "manifest missing: %r" % e
+    try:
+        man = json.loads(raw.decode())
+    except Exception as e:
+        return False, "manifest unparseable: %r" % e
+    files = man.get("files") or []
+    if not files:
+        return False, "manifest lists no files"
+    for e in files:
+        try:
+            sz = store.size(e["key"])
+        except Exception as ex:
+            return False, "object missing: %s (%r)" % (e.get("name"), ex)
+        if sz != e.get("bytes"):
+            return False, "size mismatch: %s (manifest=%s store=%s)" % (e.get("name"), e.get("bytes"), sz)
+    return True, "ok"
+
+
 def retention_prune(store, now=None, keep_6h=8, keep_daily=7, keep_weekly=6, dry_run=False):
     """Delete backup runs not selected for retention. Returns (kept, deleted)."""
     now = now or datetime.datetime.utcnow()
     runs = list_runs(store)
+    if not runs:
+        return [], []
     keep = select_retained(runs, now, keep_6h, keep_daily, keep_weekly)
+    # SAFETY: always protect the newest run id outright...
+    keep.add(max(runs))
+    # ...and refuse to prune at all unless at least one retained run is VERIFIED
+    # known-good (manifest + all objects present at the right size). This prevents a
+    # partial/corrupt latest upload from triggering deletion of the last good backup.
+    if not any(verify_run(store, r)[0] for r in keep):
+        return sorted(keep), []   # nothing verified to fall back on -> delete nothing
     deleted = []
     for r in runs:
         if r in keep:

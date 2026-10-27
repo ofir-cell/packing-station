@@ -127,3 +127,64 @@ def test_retention_prune_deletes_old(workspace):
         assert ("db-backups/%s/manifest.json" % r) in store.obj
     for r in deleted:
         assert not store.list_keys("db-backups/%s/" % r)
+
+
+# ---------- Cycle-7 staging-integration hardening ----------
+def test_verify_run_ok_and_failures(workspace):
+    store = FakeStore()
+    man = ps_backup.run_backup(workspace["targets"], store, now=datetime.datetime(2026,1,15,6,0,0), tmp_dir=workspace["tmp"])
+    rid = man["run_id"]
+    ok, _ = ps_backup.verify_run(store, rid); assert ok
+    # missing object -> not verified
+    bad = dict(store.obj); victim = man["files"][0]["key"]; del store.obj[victim]
+    ok2, detail = ps_backup.verify_run(store, rid); assert not ok2 and "missing" in detail
+    store.obj = bad
+    # size mismatch (incomplete upload) -> not verified
+    store.obj[man["files"][0]["key"]] = b"short"
+    ok3, detail3 = ps_backup.verify_run(store, rid); assert not ok3 and "size mismatch" in detail3
+
+
+def test_verify_run_missing_manifest(workspace):
+    store = FakeStore()
+    ok, detail = ps_backup.verify_run(store, "20260101T000000Z")
+    assert not ok and "manifest missing" in detail
+
+
+def test_prune_protects_last_known_good_when_latest_corrupt(workspace):
+    store = FakeStore()
+    base = datetime.datetime(2026,1,1,6,0,0)
+    runs = []
+    for day in range(12):
+        m = ps_backup.run_backup(workspace["targets"], store, now=base+datetime.timedelta(days=day), tmp_dir=workspace["tmp"])
+        runs.append(m["run_id"])
+    # corrupt the NEWEST run's objects (incomplete) so only older runs are known-good
+    newest = max(runs)
+    for e in json.loads(store.obj["db-backups/%s/manifest.json" % newest].decode())["files"]:
+        store.obj[e["key"]] = b"x"   # size mismatch
+    kept, deleted = ps_backup.retention_prune(store, keep_6h=2, keep_daily=2, keep_weekly=1)
+    # a verified older run still exists among kept -> prune proceeds but newest is always protected
+    assert newest in kept
+    assert any(ps_backup.verify_run(store, r)[0] for r in kept)
+
+
+def test_prune_deletes_nothing_if_no_verified_run(workspace):
+    store = FakeStore()
+    base = datetime.datetime(2026,1,1,6,0,0)
+    runs = []
+    for day in range(6):
+        m = ps_backup.run_backup(workspace["targets"], store, now=base+datetime.timedelta(days=day), tmp_dir=workspace["tmp"])
+        runs.append(m["run_id"])
+    # corrupt EVERY run -> no known-good -> must delete nothing (never leave zero good)
+    for r in runs:
+        for e in json.loads(store.obj["db-backups/%s/manifest.json" % r].decode())["files"]:
+            store.obj[e["key"]] = b"x"
+    kept, deleted = ps_backup.retention_prune(store, keep_6h=1, keep_daily=1, keep_weekly=1)
+    assert deleted == []   # refused to prune
+
+
+def test_restore_raises_on_missing_object(workspace):
+    store = FakeStore()
+    man = ps_backup.run_backup(workspace["targets"], store, now=datetime.datetime(2026,1,15,6,0,0), tmp_dir=workspace["tmp"])
+    del store.obj[man["files"][0]["key"]]   # object missing from R2
+    with pytest.raises(Exception):
+        ps_backup.restore_run(store, man["run_id"], os.path.join(workspace["tmp"], "r"), data_dir_guard=workspace["data"])
