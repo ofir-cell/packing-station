@@ -312,6 +312,7 @@ def pdb():
     c=sqlite3.connect(PLATFORM_DB,timeout=10.0)
     c.row_factory=sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA busy_timeout=60000")
     return c
 
 def pdb_init():
@@ -1043,6 +1044,7 @@ def gdb(org=None):
     c=sqlite3.connect(giveaway_db_path(org),timeout=10.0)
     c.row_factory=sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA busy_timeout=60000")
     c.execute("PRAGMA foreign_keys=ON")
     return c
 
@@ -1114,6 +1116,7 @@ def sdb(org=None):
     c = sqlite3.connect(shipments_db_path(org), timeout=10.0)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA busy_timeout=60000")
     c.execute("PRAGMA foreign_keys=ON")
     return c
 
@@ -2101,12 +2104,12 @@ TIKTOK_AUTH_PORTAL=os.environ.get("TIKTOK_AUTH_PORTAL","https://services.us.tikt
 def _tiktok_ready():
     return bool(TIKTOK_APP_KEY and TIKTOK_APP_SECRET)
 
-def _ss(method, path, payload=None):
+def _ss(method, path, payload=None, idem_key=None):
     """Call the ShipStation V2 API. Raises RuntimeError('ShipStation: <msg>') on error."""
     if STAGING_SAFE: raise RuntimeError("ShipStation: disabled in staging safe mode")
     data=json.dumps(payload).encode() if payload is not None else None
     req=_urlreq.Request(SHIPSTATION_BASE+path, data=data, method=method,
-        headers={"API-Key":SHIPSTATION_API_KEY or "","Content-Type":"application/json","Accept":"application/json"})
+        headers={"API-Key":SHIPSTATION_API_KEY or "","Content-Type":"application/json","Accept":"application/json",**({"Idempotency-Key":idem_key} if idem_key else {})})
     try:
         with _urlreq.urlopen(req, timeout=45) as r:
             return json.loads(r.read().decode())
@@ -2190,12 +2193,12 @@ def _ship_rates(to, frm, weight, dims):
     rates.sort(key=_rate_sort_key)   # UPS first, then cheapest
     return resp.get("shipment_id"), rates
 
-def _ship_buy(rate_id):
+def _ship_buy(rate_id, idem_key=None):
     """Purchase a label for a rate. Returns EasyPost-shaped dict so routes are unchanged.
     Routes to UPS direct when configured, else ShipStation."""
     if UPS_ENABLED:
-        return _ups_buy(rate_id)
-    lbl=_ss("POST","/v2/labels/rates/"+str(rate_id),{"label_layout":"4x6","label_format":"pdf"})
+        return _ups_buy(rate_id, idem_key=idem_key)
+    lbl=_ss("POST","/v2/labels/rates/"+str(rate_id),{"label_layout":"4x6","label_format":"pdf"}, idem_key=idem_key)
     dl=lbl.get("label_download") or {}
     url=dl.get("pdf") or dl.get("href") or dl.get("png")
     cost=float((lbl.get("shipment_cost") or {}).get("amount") or 0)
@@ -2328,7 +2331,7 @@ def _ups_rates(to, frm, weight, dims):
     rates.sort(key=lambda x: float(x["rate"] if x["rate"] is not None else 9999))
     return quote_id, rates
 
-def _ups_buy(rate_id):
+def _ups_buy(rate_id, idem_key=None):
     """Buy a UPS label. rate_id = '<quote_id>~<serviceCode>'. Returns EasyPost-shaped dict."""
     quote_id,_,code=str(rate_id).partition("~")
     ctx=_ship_quote_load(quote_id)
@@ -6902,12 +6905,15 @@ def _deplete_stock_for(c, shipment_id):
             c.execute("UPDATE shipment_items SET depleted_qty=0, depleted_sku=NULL WHERE id=?",(it["id"],))
             dq=0
         if psku and dq==0:
-            c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(qty,psku))
-            _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(psku,)).fetchone()
-            c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
-                      (psku,-qty,(_ac["avg_cost"] if _ac else 0) or 0,"sale packed ("+label+")",now,who))
-            c.execute("UPDATE shipment_items SET depleted_qty=?, depleted_sku=? WHERE id=?",(qty,psku,it["id"]))
-            any_dep=True
+            # Atomic claim: only ONE concurrent worker whose conditional UPDATE matches (rowcount=1)
+            # may decrement stock — prevents a race from double-deducting the same unit.
+            claimed=c.execute("UPDATE shipment_items SET depleted_qty=?, depleted_sku=? WHERE id=? AND COALESCE(depleted_qty,0)=0",(qty,psku,it["id"])).rowcount
+            if claimed:
+                c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(qty,psku))
+                _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(psku,)).fetchone()
+                c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
+                          (psku,-qty,(_ac["avg_cost"] if _ac else 0) or 0,"sale packed ("+label+")",now,who))
+                any_dep=True
     c.execute("UPDATE shipments SET stock_depleted=? WHERE shipment_id=?",(1 if any_dep else 0,shipment_id))
 
 def _undeplete_stock_for(c, shipment_id):
@@ -13436,6 +13442,65 @@ def api_label_rates():
     except Exception as e: return jsonify({"ok":False,"error":str(e)})
     return jsonify({"ok":True,"shipment_id":sid,"rates":rates})
 
+def _label_claim_ensure(c):
+    c.execute("""CREATE TABLE IF NOT EXISTS label_purchases(
+        rate_id TEXT PRIMARY KEY, shipment_id TEXT, status TEXT,
+        tracking TEXT, label_url TEXT, cost REAL, carrier TEXT, service TEXT,
+        error TEXT, idem_key TEXT, created_at TEXT, updated_at TEXT)""")
+
+def _buy_label_idempotent(org, sid, rid, supplier=None, po_id=None, who="", batch=None):
+    """Purchase a label at most once per rate_id, safe under concurrent/repeat requests.
+    Flow: ATOMIC claim (INSERT OR IGNORE on the rate_id PK) -> commit/release the write lock
+    -> call the carrier WITH an idempotency key -> record authoritatively. Returns a dict.
+    - already 'bought'  -> returns the stored label (no second purchase)
+    - already 'purchasing' (in flight / crashed mid-buy) -> refuses, no carrier call
+    - previous 'error'  -> re-claims and retries (carrier idempotency key prevents double charge)."""
+    now=datetime.now().isoformat(timespec="seconds")
+    idem="idem_"+hashlib.sha256((str(sid)+"|"+str(rid)).encode()).hexdigest()[:24]
+    c=sdb(org); _label_claim_ensure(c)
+    owned=c.execute("INSERT OR IGNORE INTO label_purchases(rate_id,shipment_id,status,idem_key,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                    (rid,sid,"purchasing",idem,now,now)).rowcount
+    c.commit()
+    if not owned:
+        row=c.execute("SELECT * FROM label_purchases WHERE rate_id=?",(rid,)).fetchone()
+        st=(row["status"] or "")
+        if st=="bought":
+            c.close()
+            return {"ok":True,"idempotent":True,"label_url":row["label_url"],"tracking":row["tracking"],
+                    "cost":row["cost"],"carrier":row["carrier"],"service":row["service"]}
+        if st=="purchasing":
+            c.close()
+            return {"ok":False,"in_progress":True,"error":"A label purchase for this rate is already in progress"}
+        idem=row["idem_key"] or idem
+        c.execute("UPDATE label_purchases SET status='purchasing', error=NULL, updated_at=? WHERE rate_id=? AND status='error'",(now,rid))
+        c.commit()
+    c.close()   # release the write lock BEFORE the network call — never hold a lock across I/O
+    try:
+        sh=_ship_buy(rid, idem_key=idem)
+    except Exception as e:
+        c=sdb(org); _label_claim_ensure(c)
+        c.execute("UPDATE label_purchases SET status='error', error=?, updated_at=? WHERE rate_id=?",
+                  (str(e)[:300], datetime.now().isoformat(timespec="seconds"), rid))
+        c.commit(); c.close()
+        return {"ok":False,"error":str(e)[:300]}
+    label=(sh.get("postage_label") or {}).get("label_url"); tracking=sh.get("tracking_code")
+    sr=sh.get("selected_rate") or {}; cost=float(sr.get("rate") or 0)
+    c=sdb(org); _label_claim_ensure(c)
+    # Authoritative purchase record FIRST, so the paid label is never lost even if the
+    # inbound_shipments insert below fails.
+    c.execute("UPDATE label_purchases SET status='bought', tracking=?, label_url=?, cost=?, carrier=?, service=?, updated_at=? WHERE rate_id=?",
+              (tracking,label,cost,sr.get("carrier"),sr.get("service"),datetime.now().isoformat(timespec="seconds"),rid))
+    c.commit()
+    try:
+        c.execute("""INSERT INTO inbound_shipments(supplier,carrier,service,tracking,cost,label_url,po_id,created_by,batch_id)
+                     VALUES(?,?,?,?,?,?,?,?,?)""",
+                  (supplier,sr.get("carrier"),sr.get("service"),tracking,cost,label,po_id,who,batch))
+        c.commit()
+    except Exception as e:
+        print("inbound record failed (label already bought+recorded):",repr(e),flush=True)
+    c.close()
+    return {"ok":True,"label_url":label,"tracking":tracking,"cost":cost,"carrier":sr.get("carrier"),"service":sr.get("service")}
+
 @app.route("/api/label/buy",methods=["POST"])
 @req_role("admin","cs")
 def api_label_buy():
@@ -13444,22 +13509,9 @@ def api_label_buy():
     d=request.get_json() or {}
     sid=(d.get("shipment_id") or "").strip(); rid=(d.get("rate_id") or "").strip()
     if not sid or not rid: return jsonify({"ok":False,"error":"Missing shipment/rate"})
-    try:
-        sh=_ship_buy(rid)
-    except _urlerr.HTTPError as e:
-        try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
-        except Exception: msg="HTTP "+str(e.code)
-        return jsonify({"ok":False,"error":"ShipStation: "+str(msg)})
-    except Exception as e: return jsonify({"ok":False,"error":str(e)})
-    label=(sh.get("postage_label") or {}).get("label_url"); tracking=sh.get("tracking_code")
-    sr=sh.get("selected_rate") or {}
-    c=sdb()
-    c.execute("""INSERT INTO inbound_shipments(supplier,carrier,service,tracking,cost,label_url,po_id,created_by)
-                 VALUES(?,?,?,?,?,?,?,?)""",
-              (d.get("supplier"),sr.get("carrier"),sr.get("service"),tracking,float(sr.get("rate") or 0),
-               label,d.get("po_id"),session.get("name","")[:60]))
-    c.commit(); c.close()
-    return jsonify({"ok":True,"label_url":label,"tracking":tracking,"cost":float(sr.get("rate") or 0)})
+    res=_buy_label_idempotent(current_org() or DEFAULT_ORG, sid, rid,
+                              d.get("supplier"), d.get("po_id"), session.get("name","")[:60])
+    return jsonify(res), (409 if res.get("in_progress") else 200)
 
 @app.route("/api/label/rates-multi",methods=["POST"])
 @req_role("admin","cs")
@@ -13521,23 +13573,18 @@ def api_label_buy_multi():
     legs=d.get("legs") or []
     if not legs: return jsonify({"ok":False,"error":"No boxes selected"})
     batch=secrets.token_hex(6)
-    labels=[]; total=0.0; c=sdb(); err=None
-    try:
-        for leg in legs:
-            sid=(leg.get("shipment_id") or "").strip(); rid=(leg.get("rate_id") or "").strip()
-            if not sid or not rid: continue
-            sh=_ship_buy(rid)
-            label=(sh.get("postage_label") or {}).get("label_url"); tracking=sh.get("tracking_code")
-            sr=sh.get("selected_rate") or {}; cost=float(sr.get("rate") or 0); total+=cost
-            c.execute("""INSERT INTO inbound_shipments(supplier,carrier,service,tracking,cost,label_url,po_id,created_by,batch_id)
-                         VALUES(?,?,?,?,?,?,?,?,?)""",
-                      (d.get("supplier"),sr.get("carrier"),sr.get("service"),tracking,cost,label,d.get("po_id"),session.get("name","")[:60],batch))
-            labels.append({"label_url":label,"tracking":tracking,"cost":cost,"carrier":sr.get("carrier"),"service":sr.get("service")})
-    except _urlerr.HTTPError as e:
-        try: err="EasyPost: "+str(json.loads(e.read().decode()).get("error",{}).get("message",str(e)))
-        except Exception: err="HTTP "+str(e.code)
-    except Exception as e: err=str(e)
-    c.commit(); c.close()
+    org=current_org() or DEFAULT_ORG; who=session.get("name","")[:60]
+    labels=[]; total=0.0; err=None
+    for leg in legs:
+        sid=(leg.get("shipment_id") or "").strip(); rid=(leg.get("rate_id") or "").strip()
+        if not sid or not rid: continue
+        res=_buy_label_idempotent(org, sid, rid, d.get("supplier"), d.get("po_id"), who, batch=batch)
+        if res.get("ok"):
+            total+=float(res.get("cost") or 0)
+            labels.append({"label_url":res.get("label_url"),"tracking":res.get("tracking"),"cost":res.get("cost"),
+                           "carrier":res.get("carrier"),"service":res.get("service"),"idempotent":res.get("idempotent",False)})
+        else:
+            err=res.get("error") or "purchase failed"; break   # stop on first real failure
     if err: return jsonify({"ok":False,"error":err,"labels":labels,"total":round(total,2),"batch_id":batch})
     return jsonify({"ok":True,"labels":labels,"total":round(total,2),"count":len(labels),"batch_id":batch})
 
