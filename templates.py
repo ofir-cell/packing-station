@@ -828,9 +828,9 @@ function loadChecklist(tracking){
     hideReminder();
     var ov=document.getElementById('countOverlay');
     var side=document.getElementById('reminderSide');
-    document.getElementById('countBuyer').textContent='Looking up order…';
+    document.getElementById('countBuyer').textContent=t('lookingup');
     document.getElementById('countBig').textContent='—';
-    document.getElementById('countLabel').textContent='items in package';
+    document.getElementById('countLabel').textContent=t('itemsinpkg');
     document.getElementById('countLabel').className='count-label';
     document.getElementById('countItems').innerHTML='';
     document.getElementById('countFoot').textContent='If an item is missing — set the package aside';
