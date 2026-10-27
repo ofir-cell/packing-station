@@ -853,7 +853,8 @@ function loadChecklist(tracking){
         var safeBuyer=buyer.replace(/&/g,'&amp;').replace(/</g,'&lt;');
 
         // ── Stage 1: big overlay ─────────────────────────────
-        document.getElementById('countBuyer').innerHTML='Buyer: <b>'+safeBuyer+'</b>';
+        var combN=(d.combined_from&&d.combined_from.length)?d.combined_from.length:0;
+        document.getElementById('countBuyer').innerHTML='Buyer: <b>'+safeBuyer+'</b>'+(combN?(' <span style="background:#fde68a;color:#92400e;border-radius:8px;padding:2px 8px;font-weight:800;font-size:13px">📦 COMBINED BOX · '+(combN+1)+' orders — pack all</span>'):'');
         document.getElementById('countBig').textContent=totalQty;
         document.getElementById('countLabel').textContent=(totalQty===1?t('iteminpkg'):t('itemsinpkg'));
         document.getElementById('countLabel').className='count-label';
@@ -5134,11 +5135,14 @@ function loadShows(){
             if(dirty){
                 cleanupPill='<span class="pill" style="background:rgba(245,158,11,.18);color:#b45309">🧹 '+sh.cleanup.groups_pending+' to clear</span>';
             }
-            return '<button class="show-card'+(dirty?' show-dirty':'')+'" data-name="'+escapeHtml(sh.name)+'" data-dirty="'+(dirty?'1':'0')+'">'+
+            // New-show table clean-out gate: must clear the table before picking a fresh show.
+            var needsClean=!!sh.needs_cleanout;
+            var cleanoutPill=needsClean?'<span class="pill" style="background:rgba(16,185,129,.16);color:#047857">🧼 clean out table first</span>':'';
+            return '<button class="show-card'+(dirty?' show-dirty':'')+'" data-name="'+escapeHtml(sh.name)+'" data-dirty="'+(dirty?'1':'0')+'" data-needsclean="'+(needsClean?'1':'0')+'">'+
                 '<div class="name">'+escapeHtml(sh.name)+'</div>'+
                 '<div class="meta">'+
                     '<span class="pill '+platCls+'">'+(sh.platform_count>1?'mixed':escapeHtml(sh.platform||'?'))+'</span>'+
-                    cleanupPill+
+                    cleanupPill+cleanoutPill+
                     '<span>'+sh.shipments+' total</span>'+
                     '<span class="pending-count">'+pendN+'<span class="lbl">to pick</span></span>'+
                 '</div>'+
@@ -5151,10 +5155,23 @@ function loadShows(){
                     location.href='/admin/cleanup?show='+encodeURIComponent(b.dataset.name);
                     return;
                 }
-                currentShow=b.dataset.name;
-                localStorage.setItem('pickShow',currentShow);
-                renderTopShow();
-                switchState('scan');
+                var proceed=function(){
+                    currentShow=b.dataset.name;
+                    localStorage.setItem('pickShow',currentShow);
+                    renderTopShow();
+                    switchState('scan');
+                };
+                if(b.dataset.needsclean==='1'){
+                    // New show — require a table clean-out before picking can start.
+                    if(!confirm('🧼 New show — clean out the table first.\\n\\nClear every item from the previous show off the packing table, THEN confirm.\\n\\nHas the table been cleaned out for "'+b.dataset.name+'"?'))return;
+                    fetch('/api/show/cleanout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:b.dataset.name})})
+                      .then(function(r){return r.json()}).then(function(d){
+                        if(d&&d.ok){b.dataset.needsclean='0';proceed();}
+                        else alert('Could not record the clean-out. Try again.');
+                      }).catch(function(){alert('Network error recording the clean-out.');});
+                    return;
+                }
+                proceed();
             });
         });
         switchState('show');
@@ -5217,6 +5234,18 @@ function openDetail(sid){
             var lbl=s.import_label||'';
             showToast(t('clearcancelled'),true);
             setTimeout(function(){location.href='/admin/cleanup?show='+encodeURIComponent(lbl)},900);
+            return;
+        }
+        // New-show table clean-out gate — the table must be cleared before picking starts.
+        if(d.cleanout_required){
+            sndError();
+            var clbl=s.import_label||'';
+            if(!confirm('🧼 New show — clean out the table first.\\n\\nClear every item from the previous show off the packing table, THEN confirm.\\n\\nHas the table been cleaned out for "'+clbl+'"?'))return;
+            fetch('/api/show/cleanout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:clbl})})
+              .then(function(r){return r.json()}).then(function(res){
+                if(res&&res.ok){openDetail(sid);}  // re-open now that it's cleared
+                else showToast('Could not record the clean-out. Try again.',true);
+              }).catch(function(){showToast('Network error recording the clean-out.',true);});
             return;
         }
         if(s.status==='cancelled'){

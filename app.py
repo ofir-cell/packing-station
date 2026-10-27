@@ -2504,6 +2504,53 @@ def _show_is_clean(label):
     """Quick bool — used by /pick to decide whether to allow scanning."""
     return _cleanup_progress(label)["is_clean"]
 
+# ── TABLE CLEAN-OUT GATE ───────────────────────────────────────────────
+# Separate from the cancelled-item cleanup above. Before a worker starts picking
+# a NEW show, the physical packing table must be cleared of the previous show's
+# items. This records, per show, that the table was cleaned out — and the pick
+# flow blocks a show until it is. Existing shows at launch are grandfathered so
+# work in progress is never interrupted.
+def _cleanout_ensure(c):
+    cols={r[1] for r in c.execute("PRAGMA table_info(show_state)").fetchall()}
+    if "cleanout_at" not in cols:
+        try: c.execute("ALTER TABLE show_state ADD COLUMN cleanout_at TEXT")
+        except Exception: pass
+    if "cleanout_by" not in cols:
+        try: c.execute("ALTER TABLE show_state ADD COLUMN cleanout_by TEXT")
+        except Exception: pass
+    # One-time: mark every show that already exists as cleaned, so only shows
+    # created AFTER this feature ships will require a clean-out.
+    done=c.execute("SELECT value FROM settings WHERE key='cleanout_backfilled'").fetchone()
+    if not done:
+        now=datetime.now().isoformat(timespec="seconds")
+        for r in c.execute("""SELECT DISTINCT import_label FROM shipments
+                              WHERE import_label IS NOT NULL AND import_label!=''""").fetchall():
+            lbl=r["import_label"]
+            c.execute("""INSERT INTO show_state(import_label,cleanout_at,cleanout_by) VALUES(?,?,'(existing)')
+                         ON CONFLICT(import_label) DO UPDATE SET
+                           cleanout_at=COALESCE(show_state.cleanout_at,excluded.cleanout_at),
+                           cleanout_by=COALESCE(show_state.cleanout_by,excluded.cleanout_by)""",(lbl,now))
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('cleanout_backfilled','1')")
+        c.commit()
+
+def _show_needs_cleanout(c, label):
+    """True when this show has orders to pick but the table was never cleaned out for it."""
+    if not label: return False
+    _cleanout_ensure(c)
+    r=c.execute("SELECT cleanout_at FROM show_state WHERE import_label=?",(label,)).fetchone()
+    if r and (r["cleanout_at"] or ""): return False   # already cleaned out
+    # Only gate shows that actually have pickable work.
+    n=c.execute("""SELECT COUNT(*) FROM shipments WHERE import_label=? AND status='pending'""",(label,)).fetchone()[0]
+    return n>0
+
+def _show_mark_cleanout(c, label, who):
+    _cleanout_ensure(c)
+    now=datetime.now().isoformat(timespec="seconds")
+    c.execute("""INSERT INTO show_state(import_label,cleanout_at,cleanout_by) VALUES(?,?,?)
+                 ON CONFLICT(import_label) DO UPDATE SET cleanout_at=excluded.cleanout_at,
+                   cleanout_by=excluded.cleanout_by""",(label,now,who))
+    c.commit()
+
 
 # ──────────────────────────────────────────────────────────────────────
 # NEW HIRE ONBOARDING HELPERS
@@ -5696,14 +5743,39 @@ def api_shipment_lookup(code):
         return jsonify({"ok": False, "error": "Shipment not found"})
     items = c.execute("""SELECT sku, product_name, quantity, item_weight_g
                          FROM shipment_items WHERE shipment_id=?""", (row["shipment_id"],)).fetchall()
+    items=[dict(i) for i in items]
+    gvs=_pending_giveaways_for(row["shipment_id"], row["tracking_code"])
+    # ── Combined package: when TikTok merges two orders of the same buyer into ONE package
+    # with ONE shared label (e.g. a live giveaway order + the buyer's purchase), they can land
+    # in separate shipments that share the same tracking_code. Scanning that single label must
+    # show EVERYTHING in the box — not just the first shipment — or the packer misses an item
+    # (e.g. sees only the giveaway). Merge every sibling shipment on the same tracking_code.
+    combined=[]
+    trk=(row["tracking_code"] or "").strip()
+    if trk:
+        sibs=c.execute("""SELECT shipment_id FROM shipments
+                          WHERE tracking_code=? AND shipment_id<>?
+                            AND COALESCE(status,'') NOT IN ('cancelled')""",
+                       (trk, row["shipment_id"])).fetchall()
+        for sib in sibs:
+            sid2=sib["shipment_id"]
+            sib_items=c.execute("""SELECT sku, product_name, quantity, item_weight_g
+                                   FROM shipment_items WHERE shipment_id=?""",(sid2,)).fetchall()
+            si=[dict(i) for i in sib_items]
+            if si:
+                items.extend(si)
+                combined.append(sid2)
+            for g in _pending_giveaways_for(sid2, trk):
+                if g not in gvs: gvs.append(g)
     cfg = c.execute("SELECT * FROM weight_config WHERE id=1").fetchone()
     c.close()
     return jsonify({
         "ok": True,
         "shipment": dict(row),
-        "items": [dict(i) for i in items],
+        "items": items,
         "config": dict(cfg) if cfg else {},
-        "giveaways": _pending_giveaways_for(row["shipment_id"], row["tracking_code"]),
+        "giveaways": gvs,
+        "combined_from": combined,   # other shipments merged into this box (same shared label)
     })
 
 
@@ -6071,6 +6143,15 @@ def api_pick_get(sid):
         if not cp["is_clean"] and not (force and role in ("admin", "cs")):
             cleanup_blocked = True
         cleanup_info = cp
+    # Clean-out gate — a NEW show must have the table cleared before picking starts.
+    cleanout_required = False
+    if label:
+        c2 = sdb()
+        try:
+            if _show_needs_cleanout(c2, label) and not (force and role in ("admin", "cs")):
+                cleanout_required = True
+        finally:
+            c2.close()
     # Already-handled gate — an order that's been picked (or packed/shipped) must not
     # be re-opened for picking. Admin/CS can override with ?force=1 to fix a mistake.
     st = (s["status"] or "").lower()
@@ -6085,6 +6166,7 @@ def api_pick_get(sid):
         "items": [dict(i) for i in items],
         "cleanup_blocked": cleanup_blocked,
         "cleanup": cleanup_info,
+        "cleanout_required": cleanout_required,
         "already_picked": already_picked,
         "picked_by": s["picked_by"],
         "picked_at": s["picked_at"],
@@ -6272,6 +6354,7 @@ def api_shows():
     cutoff_dt = (datetime.now() - timedelta(days=SHOW_WINDOW_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     cap_dt = (datetime.now() - timedelta(days=SHOW_HARD_CAP_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     c = sdb()
+    _cleanout_ensure(c)   # add columns + grandfather existing shows before we read show_state
     _now_ts = int(time.time())
     rows = c.execute("""
         SELECT import_label AS name,
@@ -6332,8 +6415,24 @@ def api_shows():
         d["done"] = bool(st and st.get("done"))
         d["done_by"] = st.get("done_by") if st else None
         d["done_at"] = st.get("done_at") if st else None
+        d["cleanout_at"] = (st.get("cleanout_at") if st else None)
+        d["needs_cleanout"] = bool((d.get("pending") or 0) > 0 and not (st and st.get("cleanout_at")))
         out.append(d)
     return jsonify(out)
+
+@app.route("/api/show/cleanout", methods=["POST"])
+@req_role("admin","cs","picker","worker")
+def api_show_cleanout():
+    """Record that the packing table was cleaned out for this show, unblocking picking.
+    Label comes in the JSON body (show names can contain '/', so never in the URL path)."""
+    label=((request.get_json(silent=True) or {}).get("label") or "").strip()
+    if not label: return jsonify({"ok":False,"error":"No show"})
+    c=sdb()
+    try:
+        _show_mark_cleanout(c, label, session.get("name","") or session.get("role",""))
+    finally:
+        c.close()
+    return jsonify({"ok":True,"label":label})
 
 @app.route("/api/home/fulfillment")
 @req_role("admin","cs")
