@@ -9502,6 +9502,8 @@ def api_hires_list():
     out = []
     for r in rows:
         d = dict(r)
+        d["has_temp_password"] = bool(d.get("provisioned_password"))
+        d.pop("provisioned_password", None)   # never return the plaintext temp password in bulk
         if d["workflow_id"]:
             done, total, pct = _hire_completion_pct(d["id"], d["workflow_id"])
             d["progress_done"] = done
@@ -9667,6 +9669,16 @@ def api_email_test():
     return jsonify({"ok":ok,"error":err,"sent_to":(to if ok else None),
                     "via":_via,"from":_eff_from,"reply_to":EMAIL_REPLY_TO})
 
+_HIRE_PRIVILEGED_ROLES = {"admin", "manager", "cs"}
+def _hire_role_assignable(role):
+    """Server-side guard (AUDIT #6): privileged roles (admin/manager/cs) may be assigned via the
+    hire flow ONLY by a true admin. CS/others may assign non-privileged roles only — this prevents
+    a CS user from provisioning themselves an admin account."""
+    r=(role or "").strip().lower()
+    if r in _HIRE_PRIVILEGED_ROLES:
+        return "admin" in session_roles()
+    return True
+
 @app.route("/api/hires", methods=["POST"])
 @req_role("admin", "cs")
 def api_hires_create():
@@ -9678,6 +9690,8 @@ def api_hires_create():
     email = (d.get("email") or "").strip() or None
     phone = (d.get("phone") or "").strip() or None
     role_target = (d.get("role_target") or "worker").strip()
+    if not _hire_role_assignable(role_target):
+        return jsonify({"ok": False, "error": "Only an admin can assign that role"}), 403
     preferred_language = (d.get("preferred_language") or "en").lower()
     if preferred_language not in ("en", "es"):
         preferred_language = "en"
@@ -9725,6 +9739,8 @@ def api_hire_get(hire_id):
         c.close()
         return jsonify({"ok": False, "error": "Not found"}), 404
     h = dict(h)
+    h["has_temp_password"] = bool(h.get("provisioned_password"))
+    h.pop("provisioned_password", None)   # not returned via API; shown once at provision time
     steps = _hire_steps_with_progress(h["id"], h["workflow_id"]) if h["workflow_id"] else []
     sigs = [dict(r) for r in c.execute("SELECT * FROM onboarding_signatures WHERE hire_id=? ORDER BY signed_at DESC",
                                        (hire_id,)).fetchall()]
@@ -9760,6 +9776,8 @@ def api_hire_update(hire_id):
         role = (d.get("role_target") or "").strip().lower()
         if role and role not in ("admin", "cs", "worker", "picker", "host", "assistant"):
             c.close(); return jsonify({"ok": False, "error": "Invalid role"})
+        if role and not _hire_role_assignable(role):
+            c.close(); return jsonify({"ok": False, "error": "Only an admin can assign that role"}), 403
         sets.append("role_target=?"); vals.append(role or None)
     if "preferred_language" in d:
         lang = (d.get("preferred_language") or "en").strip().lower()
