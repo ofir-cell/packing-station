@@ -853,7 +853,8 @@ function loadChecklist(tracking){
         var safeBuyer=buyer.replace(/&/g,'&amp;').replace(/</g,'&lt;');
 
         // ── Stage 1: big overlay ─────────────────────────────
-        document.getElementById('countBuyer').innerHTML='Buyer: <b>'+safeBuyer+'</b>';
+        var combN=(d.combined_from&&d.combined_from.length)?d.combined_from.length:0;
+        document.getElementById('countBuyer').innerHTML='Buyer: <b>'+safeBuyer+'</b>'+(combN?(' <span style="background:#fde68a;color:#92400e;border-radius:8px;padding:2px 8px;font-weight:800;font-size:13px">📦 COMBINED BOX · '+(combN+1)+' orders — pack all</span>'):'');
         document.getElementById('countBig').textContent=totalQty;
         document.getElementById('countLabel').textContent=(totalQty===1?t('iteminpkg'):t('itemsinpkg'));
         document.getElementById('countLabel').className='count-label';
@@ -5019,7 +5020,12 @@ function applyLang(){
  var lb=document.getElementById('langBtn');if(lb)lb.textContent=(LANG==='en'?'ES':'EN');
 }
 applyLang();
-var currentShow=localStorage.getItem('pickShow')||'';
+// Deep-link: /pick?show=NAME lands straight on the scan screen for that show
+// (used after the table clean-out screen hands off to picking).
+var _urlShow=new URLSearchParams(location.search).get('show')||'';
+var currentShow=_urlShow||localStorage.getItem('pickShow')||'';
+if(_urlShow){try{localStorage.setItem('pickShow',_urlShow);}catch(e){}
+  try{history.replaceState(null,'',location.pathname);}catch(e){}}
 var currentDetail=null,currentItems=[],currentGiveaways=[],sessionCount=0;
 var availableShows=[];
 
@@ -5134,11 +5140,14 @@ function loadShows(){
             if(dirty){
                 cleanupPill='<span class="pill" style="background:rgba(245,158,11,.18);color:#b45309">🧹 '+sh.cleanup.groups_pending+' to clear</span>';
             }
-            return '<button class="show-card'+(dirty?' show-dirty':'')+'" data-name="'+escapeHtml(sh.name)+'" data-dirty="'+(dirty?'1':'0')+'">'+
+            // New-show table clean-out gate: must clear the table before picking a fresh show.
+            var needsClean=!!sh.needs_cleanout;
+            var cleanoutPill=needsClean?'<span class="pill" style="background:rgba(16,185,129,.16);color:#047857">🧼 clean out table first</span>':'';
+            return '<button class="show-card'+(dirty?' show-dirty':'')+'" data-name="'+escapeHtml(sh.name)+'" data-dirty="'+(dirty?'1':'0')+'" data-needsclean="'+(needsClean?'1':'0')+'">'+
                 '<div class="name">'+escapeHtml(sh.name)+'</div>'+
                 '<div class="meta">'+
                     '<span class="pill '+platCls+'">'+(sh.platform_count>1?'mixed':escapeHtml(sh.platform||'?'))+'</span>'+
-                    cleanupPill+
+                    cleanupPill+cleanoutPill+
                     '<span>'+sh.shipments+' total</span>'+
                     '<span class="pending-count">'+pendN+'<span class="lbl">to pick</span></span>'+
                 '</div>'+
@@ -5151,10 +5160,19 @@ function loadShows(){
                     location.href='/admin/cleanup?show='+encodeURIComponent(b.dataset.name);
                     return;
                 }
-                currentShow=b.dataset.name;
-                localStorage.setItem('pickShow',currentShow);
-                renderTopShow();
-                switchState('scan');
+                var proceed=function(){
+                    currentShow=b.dataset.name;
+                    localStorage.setItem('pickShow',currentShow);
+                    renderTopShow();
+                    switchState('scan');
+                };
+                if(b.dataset.needsclean==='1'){
+                    // New show — send them to the table clean-out screen first; it hands
+                    // back to picking (scan) for this show once the table is cleared.
+                    location.href='/admin/cleanup?show='+encodeURIComponent(b.dataset.name)+'&prepick=1';
+                    return;
+                }
+                proceed();
             });
         });
         switchState('show');
@@ -5217,6 +5235,14 @@ function openDetail(sid){
             var lbl=s.import_label||'';
             showToast(t('clearcancelled'),true);
             setTimeout(function(){location.href='/admin/cleanup?show='+encodeURIComponent(lbl)},900);
+            return;
+        }
+        // New-show table clean-out gate — send to the table clean-out screen first.
+        if(d.cleanout_required){
+            sndError();
+            var clbl=s.import_label||'';
+            showToast('🧼 Clean out the table first',true);
+            setTimeout(function(){location.href='/admin/cleanup?show='+encodeURIComponent(clbl)+'&prepick=1'},900);
             return;
         }
         if(s.status==='cancelled'){
@@ -5793,6 +5819,15 @@ __NAVBAR__
       <div class="txt">Table is clean. <b>Pickers can start picking this show.</b></div>
     </div>
 
+    <div id="prepickBar" style="display:none;margin:4px 0 18px">
+      <div style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:14px;padding:16px 18px">
+        <div style="font-weight:800;color:#065f46;font-size:16px;margin-bottom:4px">🧼 Clean out the table for this new show</div>
+        <div style="color:#047857;font-size:13px;margin-bottom:12px">Clear every item from the previous show off the packing table. When the table is empty, start picking.</div>
+        <button id="startPickBtn" style="width:100%;padding:16px;border:0;border-radius:12px;background:#10b981;color:#fff;font-weight:800;font-size:17px;cursor:pointer">✅ Table cleared — start picking</button>
+        <div id="startPickHint" style="text-align:center;color:#b45309;font-size:12px;margin-top:8px;display:none">Clear the cancelled items above first.</div>
+      </div>
+    </div>
+
     <div id="groupsList" class="groups"></div>
   </div>
 
@@ -5803,6 +5838,8 @@ __NAVBAR__
 var currentLabel=null;
 var role='__ROLE__';
 var preLabel=new URLSearchParams(location.search).get('show');
+var prePick=new URLSearchParams(location.search).get('prepick')==='1';  // came from /pick for a new show
+var lastClean=false;
 
 function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function fmtPart(name){var safe=esc(name||'');var m=safe.match(/(Part\\s*\\d+)/i);if(!m)return safe;var stripped=safe.replace(/[\\s·,—–-]*Part\\s*\\d+[\\s·,—–-]*/i,' ').replace(/\\s{2,}/g,' ').trim();return '<span class="part-tag">'+m[1].toUpperCase()+'</span>'+stripped}
@@ -5848,7 +5885,9 @@ function loadShows(){
             el.addEventListener('click',function(){openShow(el.dataset.label)});
         });
         // Deep-link via ?show=NAME — pickers get redirected here from /pick.
-        if(preLabel){var match=shows.find(function(x){return x.label===preLabel});if(match){openShow(preLabel);preLabel=null}}
+        // In pre-pick mode always open the show (even if it has no cancellations) so the
+        // worker lands on the clean-out screen with the "start picking" hand-off.
+        if(preLabel){var match=shows.find(function(x){return x.label===preLabel});if(match||prePick){openShow(preLabel);preLabel=null}}
     });
 }
 
@@ -5880,6 +5919,16 @@ function renderDetail(d){
     st.textContent=d.is_clean?'✓ Clean':'Not clean';
     st.className='big-prog-status '+(d.is_clean?'clean':'dirty');
     document.getElementById('cleanBanner').classList.toggle('on',d.is_clean && d.total_groups>0);
+    // Pre-pick clean-out flow: show the "start picking" bar; enable only once clean.
+    lastClean=!!d.is_clean;
+    if(prePick){
+        document.getElementById('prepickBar').style.display='block';
+        var sb=document.getElementById('startPickBtn');
+        sb.disabled=!lastClean;
+        sb.style.opacity=lastClean?'1':'.5';
+        sb.style.cursor=lastClean?'pointer':'not-allowed';
+        document.getElementById('startPickHint').style.display=lastClean?'none':'block';
+    }
     var list=document.getElementById('groupsList');
     if(groups.length===0){
         list.innerHTML='<div class="empty"><div class="icn">🎉</div><div class="ttl">No cancelled items for this show</div><div>Nothing to remove. Pickers can start whenever.</div></div>';
@@ -5939,6 +5988,17 @@ document.getElementById('backLink').addEventListener('click',function(e){
     document.getElementById('detailView').classList.remove('on');
     document.getElementById('listView').style.display='block';
     loadShows();  // refresh tile progress
+});
+
+// Pre-pick: table cleared → record the clean-out and hand straight off to picking.
+document.getElementById('startPickBtn').addEventListener('click',function(){
+    if(!lastClean)return;
+    var b=this;b.disabled=true;b.textContent='Starting…';
+    fetch('/api/show/cleanout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:currentLabel})})
+      .then(function(r){return r.json()}).then(function(d){
+        if(d&&d.ok){location.href='/pick?show='+encodeURIComponent(currentLabel);}
+        else{b.disabled=false;b.textContent='✅ Table cleared — start picking';toast('Could not start — try again',true);}
+      }).catch(function(){b.disabled=false;b.textContent='✅ Table cleared — start picking';toast('Network error',true);});
 });
 
 loadShows();
@@ -7164,7 +7224,9 @@ __NAVBAR__
 <button class="btn btn-p" id="refresh">↻ Reload</button></div>
 <div class="wrap">
 <div id="notice"></div>
-<div class="sec-h">🩺 Shipment health — needs attention</div>
+<div class="sec-h" style="display:flex;align-items:center;gap:12px;justify-content:space-between">🩺 Shipment health — needs attention
+  <button class="btn btn-p" id="backfill" style="font-size:12px;padding:7px 12px">↻ Refresh delivery from TikTok</button></div>
+<div id="bfMsg" class="mut" style="margin:-4px 2px 10px;font-size:12px;color:#6b7280"></div>
 <div class="hcards" id="hcards"></div>
 <div id="hbox" style="display:none;margin-bottom:22px">
   <table><thead><tr><th>Buyer</th><th>Tracking</th><th>Our status</th><th>TikTok</th><th>USPS</th><th>Show</th></tr></thead>
@@ -7187,7 +7249,7 @@ var BUCKETS=[['PENDING','Pending','pending'],['PICKED','Picked','picked'],['PACK
 ['OUT_FOR_DELIVERY','Out for delivery','ofd'],['DELIVERED','Delivered','delivered'],
 ['EXCEPTION','Exception','exc'],['RETURNED','Returned','ret'],['CANCELLED','Cancelled','cancelled'],
 ['GIVEAWAY','Giveaway','giveaway'],['ISSUE','Issue','issue'],['UNKNOWN','Unknown','unk']];
-var filter='';var fillsDone=false;
+var filter=(new URLSearchParams(location.search).get('status')||'').toUpperCase();var fillsDone=false;
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3500)}
 function esc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
 function fmt(ts){if(!ts)return '—';var d=new Date(ts);return isNaN(d)?esc(ts):d.toLocaleDateString()+' '+d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}
@@ -7261,6 +7323,18 @@ function loadHealth(){
   }).catch(function(){});
 }
 function pickHealth(b){hbucket=(hbucket===b?'':b);loadHealth();}
+var bf=document.getElementById('backfill');
+if(bf)bf.onclick=function(){bf.disabled=true;var old=bf.textContent;bf.textContent='Refreshing…';
+  var m=document.getElementById('bfMsg');m.textContent='Checking existing orders against TikTok (delivery status only — nothing new is created)…';
+  fetch('/api/shipping/backfill',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+   .then(function(r){return r.json();}).then(function(d){
+     bf.disabled=false;bf.textContent=old;
+     if(!d.ok){m.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
+     var diag=(d.note)?(' <span style="color:#b45309">— '+esc(d.note)+(d.sample_ids?(' e.g. '+(d.sample_ids||[]).join(', ')):'')+'</span>'):((d.checked===0 && (d.last_error||d.sample_ids))?(' <span style="color:#b91c1c">— '+esc(d.last_error||('no orders returned; sample ids: '+(d.sample_ids||[]).join(', ')))+'</span>'):'');
+     m.innerHTML='<span style="color:#166534">✓ Checked '+(d.checked||0)+' order(s), updated '+(d.updated||0)+' shipment(s)'+((d.scanned&&d.scanned>=1500)?' · a lot pending — click again to continue':'')+'.</span>'+diag;
+     load();loadHealth();
+   }).catch(function(){bf.disabled=false;bf.textContent=old;document.getElementById('bfMsg').innerHTML='<span style="color:#b91c1c">Network error</span>';});
+};
 load();loadHealth();
 </script></body></html>'''
 

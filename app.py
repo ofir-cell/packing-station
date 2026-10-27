@@ -2056,6 +2056,8 @@ _NO_LABEL_MSG=("Buying shipping labels is turned off for this workspace, because
 # TikTok moves them.
 TIKTOK_APP_KEY=os.environ.get("TIKTOK_APP_KEY","").strip()
 TIKTOK_APP_SECRET=os.environ.get("TIKTOK_APP_SECRET","").strip()
+# Emergency only — see api_tiktok_webhook. Default: unsigned webhooks are rejected (401).
+TIKTOK_WEBHOOK_ALLOW_UNSIGNED=os.environ.get("TIKTOK_WEBHOOK_ALLOW_UNSIGNED","").strip().lower() in ("1","true","yes")
 TIKTOK_SERVICE_ID=os.environ.get("TIKTOK_SERVICE_ID","").strip()
 TIKTOK_AUTH_BASE=os.environ.get("TIKTOK_AUTH_BASE","https://auth.tiktok-shops.com").rstrip("/")
 TIKTOK_API_BASE=os.environ.get("TIKTOK_API_BASE","https://open-api.tiktokglobalshop.com").rstrip("/")
@@ -2503,6 +2505,53 @@ def _cleanup_progress(label):
 def _show_is_clean(label):
     """Quick bool — used by /pick to decide whether to allow scanning."""
     return _cleanup_progress(label)["is_clean"]
+
+# ── TABLE CLEAN-OUT GATE ───────────────────────────────────────────────
+# Separate from the cancelled-item cleanup above. Before a worker starts picking
+# a NEW show, the physical packing table must be cleared of the previous show's
+# items. This records, per show, that the table was cleaned out — and the pick
+# flow blocks a show until it is. Existing shows at launch are grandfathered so
+# work in progress is never interrupted.
+def _cleanout_ensure(c):
+    cols={r[1] for r in c.execute("PRAGMA table_info(show_state)").fetchall()}
+    if "cleanout_at" not in cols:
+        try: c.execute("ALTER TABLE show_state ADD COLUMN cleanout_at TEXT")
+        except Exception: pass
+    if "cleanout_by" not in cols:
+        try: c.execute("ALTER TABLE show_state ADD COLUMN cleanout_by TEXT")
+        except Exception: pass
+    # One-time: mark every show that already exists as cleaned, so only shows
+    # created AFTER this feature ships will require a clean-out.
+    done=c.execute("SELECT value FROM settings WHERE key='cleanout_backfilled'").fetchone()
+    if not done:
+        now=datetime.now().isoformat(timespec="seconds")
+        for r in c.execute("""SELECT DISTINCT import_label FROM shipments
+                              WHERE import_label IS NOT NULL AND import_label!=''""").fetchall():
+            lbl=r["import_label"]
+            c.execute("""INSERT INTO show_state(import_label,cleanout_at,cleanout_by) VALUES(?,?,'(existing)')
+                         ON CONFLICT(import_label) DO UPDATE SET
+                           cleanout_at=COALESCE(show_state.cleanout_at,excluded.cleanout_at),
+                           cleanout_by=COALESCE(show_state.cleanout_by,excluded.cleanout_by)""",(lbl,now))
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('cleanout_backfilled','1')")
+        c.commit()
+
+def _show_needs_cleanout(c, label):
+    """True when this show has orders to pick but the table was never cleaned out for it."""
+    if not label: return False
+    _cleanout_ensure(c)
+    r=c.execute("SELECT cleanout_at FROM show_state WHERE import_label=?",(label,)).fetchone()
+    if r and (r["cleanout_at"] or ""): return False   # already cleaned out
+    # Only gate shows that actually have pickable work.
+    n=c.execute("""SELECT COUNT(*) FROM shipments WHERE import_label=? AND status='pending'""",(label,)).fetchone()[0]
+    return n>0
+
+def _show_mark_cleanout(c, label, who):
+    _cleanout_ensure(c)
+    now=datetime.now().isoformat(timespec="seconds")
+    c.execute("""INSERT INTO show_state(import_label,cleanout_at,cleanout_by) VALUES(?,?,?)
+                 ON CONFLICT(import_label) DO UPDATE SET cleanout_at=excluded.cleanout_at,
+                   cleanout_by=excluded.cleanout_by""",(label,now,who))
+    c.commit()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -4064,7 +4113,7 @@ def api_today():
     try:
         out["packed_not_moving"]=c.execute(
             """SELECT COUNT(*) n FROM shipments
-               WHERE status IN ('packed','shipped') AND COALESCE(tt_status,'') NOT IN ('IN_TRANSIT','DELIVERED','COMPLETED')
+               WHERE status IN ('packed','shipped') AND COALESCE(tt_status,'') IN ('AWAITING_SHIPMENT','AWAITING_COLLECTION')
                  AND COALESCE(packed_at,'')<>'' AND julianday('now')-julianday(substr(packed_at,1,10)) > ?""",
             (_SHIP_NOMOVE_DAYS,)).fetchone()["n"]
     except Exception: out["packed_not_moving"]=0
@@ -5254,7 +5303,10 @@ def api_shipments_import():
         cancel_count = sum(1 for n in norm if n["status"].lower().startswith("cancel"))
         explicit_cancel = (request.form.get("kind") == "tiktok_cancel")
         ratio = cancel_count / len(norm)
-        is_cancel_file = (ratio > 0.8) or (explicit_cancel and ratio > 0.4)
+        # Trust the user's explicit choice (they picked the Cancellations upload) even if our
+        # status parsing under-counts — otherwise a real cancel file falls through to the normal
+        # path and its cancellations are dropped, forcing a confusing second upload.
+        is_cancel_file = explicit_cancel or (ratio > 0.8)
         if is_cancel_file:
             return _process_cancel_file(norm, "tiktok", label)
         platform = "tiktok"
@@ -5331,6 +5383,7 @@ def api_shipments_import():
     revenue_parsed = any((n.get("revenue") or 0) > 0 for n in norm)
 
     inserted = 0; updated = 0; items_inserted = 0
+    _cx_matched = 0; _cx_inserted = 0
     unique_skus = set()
     _bn = 0   # commit in batches so a big file persists incrementally (no 120s mega-txn)
     try:
@@ -5438,6 +5491,12 @@ def api_shipments_import():
             _bn += 1
             if _bn % 400 == 0:
                 c.commit()   # flush this batch so progress survives a slow/huge file
+        # Apply any cancelled rows that rode along in this file (mixed To-Ship + cancels, or a
+        # cancel file our ratio check didn't flag). Previously these were only counted and then
+        # dropped, so cancellations silently vanished until a second, cleaner upload.
+        _cx_matched = _cx_inserted = 0
+        if cancelled_inline:
+            _cx_matched, _cx_inserted, _cx_aff = _apply_cancel_rows(c, cancelled_inline, platform, label, import_batch)
         c.commit()
     finally:
         c.close()
@@ -5499,12 +5558,60 @@ def api_shipments_import():
         "items": items_inserted,
         "skipped_rows": skipped,
         "cancelled_inline": len(cancelled_inline),
+        "cancellations_matched": _cx_matched,
+        "cancellations_added": _cx_inserted,
         "unique_skus": len(unique_skus),
         "skus_missing_weight": len(sku_missing),
         "missing_sku_list": sku_missing[:50],
         "live_reconciled": live_reconciled,
     })
 
+
+def _apply_cancel_rows(c, norm_rows, source, label, import_batch):
+    """Apply cancelled rows on an OPEN connection. (a) mark matching existing shipment
+    items cancelled, (b) insert synthetic cancelled shipments for orders we've never seen,
+    so the cleanup / reconciliation screens find them. Idempotent. Returns
+    (matched_existing, inserted_new, affected_ship_ids)."""
+    matched_existing = 0
+    inserted_new = 0
+    affected_ships = set()
+    by_order = {}
+    for n in norm_rows:
+        if not n.get("order_id"): continue
+        by_order.setdefault(n["order_id"], []).append(n)
+    for oid, group in by_order.items():
+        first = group[0]
+        reason = first.get("cancel_reason") or "cancelled"
+        # Path A: already in our shipments (was in a previous To-Ship / the same upload)
+        existing = c.execute("SELECT DISTINCT shipment_id FROM shipment_items WHERE order_id=?", (oid,)).fetchall()
+        if existing:
+            c.execute("""UPDATE shipment_items SET cancelled=1, cancel_reason=?
+                         WHERE order_id=? AND COALESCE(cancelled,0)=0""", (reason, oid))
+            matched_existing += 1
+            for r in existing: affected_ships.add(r["shipment_id"])
+            continue
+        # Path B: never seen — insert a synthetic shipment so cleanup can find it
+        synthetic_id = "cancel_" + oid
+        _tot = sum(int(n.get("quantity") or 1) for n in group)
+        c.execute("""INSERT OR REPLACE INTO shipments
+            (shipment_id, tracking_code, buyer_username, buyer_name, address_full,
+             postal_code, show_date, status, platform, import_batch, import_label,
+             total_items, expected_weight_g, missing_weights, flag_reason)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, 'cancelled', ?, ?, ?, ?, 0, 0, ?)""",
+            (synthetic_id, first.get("buyer_username"), first.get("buyer_name"), first.get("address"),
+             first.get("postal"), first.get("created_at"), source, import_batch, label, _tot, reason))
+        c.execute("DELETE FROM shipment_items WHERE shipment_id=?", (synthetic_id,))
+        for n in group:
+            c.execute("""INSERT INTO shipment_items
+                         (shipment_id, order_id, sku, product_name, quantity, item_weight_g,
+                          cancelled, cancel_reason)
+                         VALUES (?,?,?,?,?,?, 1, ?)""",
+                      (synthetic_id, oid, n.get("sku"), n.get("product_name"), n.get("quantity"),
+                       n.get("weight_g") or None, reason))
+        inserted_new += 1
+    for sid in affected_ships:
+        _recompute_shipment_weight(c, sid)
+    return matched_existing, inserted_new, affected_ships
 
 def _process_cancel_file(norm_rows, source, label):
     """A pure cancellation file from TikTok lists orders that were canceled BEFORE the
@@ -5513,48 +5620,7 @@ def _process_cancel_file(norm_rows, source, label):
     reconciliation screen can find them. Both code paths are idempotent."""
     c = sdb()
     import_batch = "cancel_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-    matched_existing = 0
-    inserted_new = 0
-    affected_ships = set()
-    # Group by order_id to combine multiple SKUs per cancelled order
-    by_order = {}
-    for n in norm_rows:
-        if not n["order_id"]: continue
-        by_order.setdefault(n["order_id"], []).append(n)
-
-    for oid, group in by_order.items():
-        first = group[0]
-        reason = first["cancel_reason"] or "cancelled"
-        # Path A: this order is already in our shipments (was in a previous To-Ship)
-        existing = c.execute("SELECT DISTINCT shipment_id FROM shipment_items WHERE order_id=?", (oid,)).fetchall()
-        if existing:
-            c.execute("""UPDATE shipment_items SET cancelled=1, cancel_reason=?
-                         WHERE order_id=? AND COALESCE(cancelled,0)=0""", (reason, oid))
-            matched_existing += 1
-            for r in existing: affected_ships.add(r["shipment_id"])
-            continue
-        # Path B: never seen — insert a synthetic shipment so reconciliation can find it
-        synthetic_id = "cancel_" + oid
-        _tot = sum(int(n.get("quantity") or 1) for n in group)   # real item count (was hard-coded 0)
-        c.execute("""INSERT OR REPLACE INTO shipments
-            (shipment_id, tracking_code, buyer_username, buyer_name, address_full,
-             postal_code, show_date, status, platform, import_batch, import_label,
-             total_items, expected_weight_g, missing_weights, flag_reason)
-            VALUES (?, NULL, ?, ?, ?, ?, ?, 'cancelled', ?, ?, ?, ?, 0, 0, ?)""",
-            (synthetic_id, first["buyer_username"], first["buyer_name"], first["address"],
-             first["postal"], first["created_at"], source, import_batch, label, _tot, reason))
-        c.execute("DELETE FROM shipment_items WHERE shipment_id=?", (synthetic_id,))
-        for n in group:
-            c.execute("""INSERT INTO shipment_items
-                         (shipment_id, order_id, sku, product_name, quantity, item_weight_g,
-                          cancelled, cancel_reason)
-                         VALUES (?,?,?,?,?,?, 1, ?)""",
-                      (synthetic_id, oid, n["sku"], n["product_name"], n["quantity"],
-                       n["weight_g"] or None, reason))
-        inserted_new += 1
-
-    for sid in affected_ships:
-        _recompute_shipment_weight(c, sid)
+    matched_existing, inserted_new, affected_ships = _apply_cancel_rows(c, norm_rows, source, label, import_batch)
     c.commit(); c.close()
     return jsonify({
         "ok": True,
@@ -5696,14 +5762,39 @@ def api_shipment_lookup(code):
         return jsonify({"ok": False, "error": "Shipment not found"})
     items = c.execute("""SELECT sku, product_name, quantity, item_weight_g
                          FROM shipment_items WHERE shipment_id=?""", (row["shipment_id"],)).fetchall()
+    items=[dict(i) for i in items]
+    gvs=_pending_giveaways_for(row["shipment_id"], row["tracking_code"])
+    # ── Combined package: when TikTok merges two orders of the same buyer into ONE package
+    # with ONE shared label (e.g. a live giveaway order + the buyer's purchase), they can land
+    # in separate shipments that share the same tracking_code. Scanning that single label must
+    # show EVERYTHING in the box — not just the first shipment — or the packer misses an item
+    # (e.g. sees only the giveaway). Merge every sibling shipment on the same tracking_code.
+    combined=[]
+    trk=(row["tracking_code"] or "").strip()
+    if trk:
+        sibs=c.execute("""SELECT shipment_id FROM shipments
+                          WHERE tracking_code=? AND shipment_id<>?
+                            AND COALESCE(status,'') NOT IN ('cancelled')""",
+                       (trk, row["shipment_id"])).fetchall()
+        for sib in sibs:
+            sid2=sib["shipment_id"]
+            sib_items=c.execute("""SELECT sku, product_name, quantity, item_weight_g
+                                   FROM shipment_items WHERE shipment_id=?""",(sid2,)).fetchall()
+            si=[dict(i) for i in sib_items]
+            if si:
+                items.extend(si)
+                combined.append(sid2)
+            for g in _pending_giveaways_for(sid2, trk):
+                if g not in gvs: gvs.append(g)
     cfg = c.execute("SELECT * FROM weight_config WHERE id=1").fetchone()
     c.close()
     return jsonify({
         "ok": True,
         "shipment": dict(row),
-        "items": [dict(i) for i in items],
+        "items": items,
         "config": dict(cfg) if cfg else {},
-        "giveaways": _pending_giveaways_for(row["shipment_id"], row["tracking_code"]),
+        "giveaways": gvs,
+        "combined_from": combined,   # other shipments merged into this box (same shared label)
     })
 
 
@@ -6071,6 +6162,15 @@ def api_pick_get(sid):
         if not cp["is_clean"] and not (force and role in ("admin", "cs")):
             cleanup_blocked = True
         cleanup_info = cp
+    # Clean-out gate — a NEW show must have the table cleared before picking starts.
+    cleanout_required = False
+    if label:
+        c2 = sdb()
+        try:
+            if _show_needs_cleanout(c2, label) and not (force and role in ("admin", "cs")):
+                cleanout_required = True
+        finally:
+            c2.close()
     # Already-handled gate — an order that's been picked (or packed/shipped) must not
     # be re-opened for picking. Admin/CS can override with ?force=1 to fix a mistake.
     st = (s["status"] or "").lower()
@@ -6085,6 +6185,7 @@ def api_pick_get(sid):
         "items": [dict(i) for i in items],
         "cleanup_blocked": cleanup_blocked,
         "cleanup": cleanup_info,
+        "cleanout_required": cleanout_required,
         "already_picked": already_picked,
         "picked_by": s["picked_by"],
         "picked_at": s["picked_at"],
@@ -6272,6 +6373,7 @@ def api_shows():
     cutoff_dt = (datetime.now() - timedelta(days=SHOW_WINDOW_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     cap_dt = (datetime.now() - timedelta(days=SHOW_HARD_CAP_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     c = sdb()
+    _cleanout_ensure(c)   # add columns + grandfather existing shows before we read show_state
     _now_ts = int(time.time())
     rows = c.execute("""
         SELECT import_label AS name,
@@ -6332,8 +6434,24 @@ def api_shows():
         d["done"] = bool(st and st.get("done"))
         d["done_by"] = st.get("done_by") if st else None
         d["done_at"] = st.get("done_at") if st else None
+        d["cleanout_at"] = (st.get("cleanout_at") if st else None)
+        d["needs_cleanout"] = bool((d.get("pending") or 0) > 0 and not (st and st.get("cleanout_at")))
         out.append(d)
     return jsonify(out)
+
+@app.route("/api/show/cleanout", methods=["POST"])
+@req_role("admin","cs","picker","worker")
+def api_show_cleanout():
+    """Record that the packing table was cleaned out for this show, unblocking picking.
+    Label comes in the JSON body (show names can contain '/', so never in the URL path)."""
+    label=((request.get_json(silent=True) or {}).get("label") or "").strip()
+    if not label: return jsonify({"ok":False,"error":"No show"})
+    c=sdb()
+    try:
+        _show_mark_cleanout(c, label, session.get("name","") or session.get("role",""))
+    finally:
+        c.close()
+    return jsonify({"ok":True,"label":label})
 
 @app.route("/api/home/fulfillment")
 @req_role("admin","cs")
@@ -12773,6 +12891,159 @@ def api_tracking_summary():
         "shows":[{"label":s["import_label"],"date":s["show_date"]} for s in shows],
         "dates":[d["show_date"] for d in dates]})
 
+_TT_DLV_MAP={"IN_TRANSIT":("IN_TRANSIT","In transit · per TikTok"),
+             "AWAITING_COLLECTION":("AWAITING_COLLECTION","Label made · awaiting carrier pickup"),
+             "DELIVERED":("DELIVERED","Delivered · per TikTok"),
+             "COMPLETED":("DELIVERED","Delivered · per TikTok")}
+def _tt_delivery_fields(order):
+    """(status, delivery_status, delivery_detail, delivered_at) from a raw TikTok order."""
+    status_api=(order.get("status") or "").upper()
+    dvs=dvd=dva=None
+    if order.get("delivery_time"):
+        dvs,dvd="DELIVERED","Delivered · per TikTok"
+        try: dva=datetime.fromtimestamp(int(order["delivery_time"])).isoformat(timespec="seconds")
+        except Exception: dva=None
+    elif status_api in _TT_DLV_MAP:
+        dvs,dvd=_TT_DLV_MAP[status_api]
+    return status_api,dvs,dvd,dva
+
+def _tt_backfill_delivery(org, limit=1500):
+    """Refresh ONLY the delivery status of shipments we ALREADY have, by matching them to
+    TikTok by Order ID (CSV and API share the same Order ID). Never creates a shipment or a
+    show and never changes grouping/packing — it only writes delivery_status / tt_status /
+    delivered_at on existing rows. Lets old, already-shipped orders catch up to Delivered."""
+    sc=sdb(org)
+    try:
+        raw_oids=[r["oid"] for r in sc.execute("""SELECT DISTINCT i.order_id oid
+              FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+              WHERE COALESCE(i.order_id,'')<>'' AND COALESCE(s.status,'') NOT IN ('cancelled','giveaway')
+                AND COALESCE(s.delivery_status,'') NOT IN ('DELIVERED','RETURNED')
+              LIMIT ?""",(limit,)).fetchall()]
+    except Exception: raw_oids=[]
+    sc.close()
+    # Only real TikTok order ids (long all-digit). A malformed id poisons the whole batch with
+    # 'invalid parameters', so we drop non-conforming ones (e.g. Whatnot/legacy CSV ids).
+    oids=[str(x).strip() for x in raw_oids if str(x).strip().isdigit() and len(str(x).strip())>=15]
+    if not oids:
+        return {"ok":True,"checked":0,"updated":0,
+                "note":"No TikTok-format order ids to refresh (%d candidate id(s), none look like a TikTok order id)."%len(raw_oids),
+                "sample_ids":raw_oids[:5]}
+    c=pdb()
+    row=c.execute("SELECT * FROM tiktok_shops WHERE org_id=? AND active=1 ORDER BY updated_at DESC LIMIT 1",(org,)).fetchone()
+    c.close()
+    if not row: return {"ok":False,"error":"No connected shop. Connect TikTok first."}
+    row=dict(row); shop_id=row["shop_id"]
+    tok=_tt_valid_token(org, shop_id)
+    if not tok or not tok.get("access_token"): return {"ok":False,"error":"No valid access token for the shop."}
+    tok=_tt_ensure_cipher(org, shop_id, tok)
+    checked=0; updated=0; last=None; last_err=None
+    sc=sdb(org)
+    try:
+        for i in range(0,len(oids),50):
+            chunk=oids[i:i+50]
+            params={"ids":",".join(chunk)}
+            if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
+            try:
+                res=_tt_request("GET", TIKTOK_API_BASE+"/order/%s/orders"%TIKTOK_API_VERSION,
+                                params=params, signed=True, access_token=tok["access_token"])
+            except Exception as e:
+                last_err=str(e)[:200]; _tt_log("backfill request failed: %r"%e); continue
+            last=res
+            if res.get("code"):
+                last_err="code %s: %s"%(res.get("code"), (res.get("message") or "")[:160]); continue
+            for o in ((res.get("data") or {}).get("orders") or []):
+                checked+=1
+                oid=str(o.get("id") or "")
+                if not oid: continue
+                status_api,dvs,dvd,dva=_tt_delivery_fields(o)
+                if not (dvs or status_api): continue
+                for sr in sc.execute("SELECT DISTINCT s.shipment_id sid FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id WHERE i.order_id=?",(oid,)).fetchall():
+                    sc.execute("""UPDATE shipments SET
+                        delivery_status=CASE WHEN COALESCE(delivery_status,'') IN ('DELIVERED','RETURNED') THEN delivery_status ELSE COALESCE(?,delivery_status) END,
+                        delivery_detail=CASE WHEN COALESCE(delivery_status,'') IN ('DELIVERED','RETURNED') THEN delivery_detail ELSE COALESCE(?,delivery_detail) END,
+                        delivered_at=COALESCE(?,delivered_at),
+                        tt_status=COALESCE(NULLIF(?,''),tt_status)
+                        WHERE shipment_id=?""",(dvs,dvd,dva,status_api,sr["sid"]))
+                    updated+=1
+        sc.commit()
+    finally:
+        sc.close()
+    try: alog("shipping.backfill","checked %d orders, updated %d shipments"%(checked,updated))
+    except Exception: pass
+    out={"ok":True,"checked":checked,"updated":updated,"scanned":len(oids)}
+    if checked==0:   # help diagnose an empty result
+        out["sample_ids"]=oids[:5]; out["last_error"]=last_err
+        out["raw_keys"]=list((last or {}).keys()) if isinstance(last,dict) else None
+        out["data_keys"]=list(((last or {}).get("data") or {}).keys()) if isinstance(last,dict) else None
+    return out
+
+@app.route("/api/shipping/backfill", methods=["POST"])
+@req_role("admin","cs")
+def api_shipping_backfill():
+    org=current_org() or DEFAULT_ORG
+    return jsonify(_tt_backfill_delivery(org))
+
+def _tt_refresh_stored_statuses(org, limit=1500):
+    """Send TikTok a LIVE request for the current status of the TikTok orders we already have
+    stored, and update them in place (status + raw). Updates tiktok_orders ONLY — never creates
+    a shipment or show — so the delivery overview reflects fresh data (e.g. newly delivered)."""
+    c=pdb()
+    try:
+        rows=c.execute("SELECT order_id FROM tiktok_orders WHERE org_id=? ORDER BY updated_at ASC LIMIT ?",(org,limit)).fetchall()
+    except Exception: rows=[]
+    c.close()
+    oids=[str(r["order_id"]).strip() for r in rows if str(r["order_id"]).strip().isdigit() and len(str(r["order_id"]).strip())>=15]
+    if not oids: return {"ok":True,"checked":0,"updated":0,"note":"No stored TikTok orders to refresh."}
+    c=pdb()
+    row=c.execute("SELECT * FROM tiktok_shops WHERE org_id=? AND active=1 ORDER BY updated_at DESC LIMIT 1",(org,)).fetchone()
+    c.close()
+    if not row: return {"ok":False,"error":"No connected shop."}
+    row=dict(row); shop_id=row["shop_id"]
+    tok=_tt_valid_token(org, shop_id)
+    if not tok or not tok.get("access_token"): return {"ok":False,"error":"No valid access token."}
+    tok=_tt_ensure_cipher(org, shop_id, tok)
+    checked=0; updated=0; last_err=None; now=datetime.now().isoformat(timespec='seconds')
+    c=pdb()
+    try:
+        for i in range(0,len(oids),50):
+            chunk=oids[i:i+50]
+            params={"ids":",".join(chunk)}
+            if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
+            try:
+                res=_tt_request("GET", TIKTOK_API_BASE+"/order/%s/orders"%TIKTOK_API_VERSION,
+                                params=params, signed=True, access_token=tok["access_token"])
+            except Exception as e:
+                last_err=str(e)[:160]; continue
+            if res.get("code"):
+                last_err="code %s: %s"%(res.get("code"),(res.get("message") or "")[:140]); continue
+            for o in ((res.get("data") or {}).get("orders") or []):
+                checked+=1; oid=str(o.get("id") or "")
+                if not oid: continue
+                c.execute("UPDATE tiktok_orders SET status=?, raw=?, updated_at=? WHERE org_id=? AND order_id=?",
+                          ((o.get("status") or o.get("order_status") or "").upper(), json.dumps(o)[:40000], now, org, oid))
+                updated+=1
+        c.commit()
+    finally:
+        c.close()
+    out={"ok":True,"checked":checked,"updated":updated,"scanned":len(oids)}
+    if checked==0: out["last_error"]=last_err
+    return out
+
+@app.route("/api/tiktok/delivery-refresh", methods=["POST"])
+@req_role("admin","cs")
+def api_tiktok_delivery_refresh():
+    org=current_org() or DEFAULT_ORG
+    r=_tt_refresh_stored_statuses(org)
+    # return the fresh overview too
+    orders=_tt_stored_orders(org); cnt={}
+    for o in orders:
+        s=(o.get("status") or "UNKNOWN").upper(); cnt[s]=cnt.get(s,0)+1
+    g=lambda *ks: sum(cnt.get(k,0) for k in ks)
+    r["overview"]={"total":len(orders),"delivered":g("DELIVERED","COMPLETED"),"in_transit":g("IN_TRANSIT"),
+                   "awaiting_collection":g("AWAITING_COLLECTION"),"awaiting_shipment":g("AWAITING_SHIPMENT"),
+                   "on_hold":g("ON_HOLD"),"unpaid":g("UNPAID"),"cancelled":g("CANCELLED")}
+    return jsonify(r)
+
 _SHIP_STUCK_DAYS=2; _SHIP_NOMOVE_DAYS=3
 def _health_where():
     """Exception buckets: the WHERE clause for each 'shipment health' problem state."""
@@ -12783,8 +13054,10 @@ def _health_where():
       # never collected it, i.e. it never actually went out. (TikTok status, no USPS needed.)
       "stuck": ("COALESCE(tt_status,'')='AWAITING_COLLECTION' "
                 "AND julianday('now')-julianday(COALESCE(NULLIF(show_date,''),substr(imported_at,1,10))) > %d" % _SHIP_STUCK_DAYS),
-      # Packed here but TikTok still doesn't show it moving/delivered after a few days → confirm it shipped.
-      "packed_no_move": ("status IN ('packed','shipped') AND COALESCE(tt_status,'') NOT IN ('IN_TRANSIT','DELIVERED','COMPLETED') "
+      # Packed here but TikTok ACTIVELY still says it's awaiting shipment/collection after a few
+      # days → confirm it shipped. (Only when TikTok tells us so — an empty tt_status, e.g. an old
+      # CSV order we never synced, is 'unknown', NOT flagged, so history doesn't raise false alarms.)
+      "packed_no_move": ("status IN ('packed','shipped') AND COALESCE(tt_status,'') IN ('AWAITING_SHIPMENT','AWAITING_COLLECTION') "
                 "AND COALESCE(packed_at,'')<>'' AND julianday('now')-julianday(substr(packed_at,1,10)) > %d" % _SHIP_NOMOVE_DAYS),
       # Delivered — from TikTok's own status (or USPS, if ever configured).
       "delivered": "COALESCE(tt_status,'') IN ('DELIVERED','COMPLETED') OR COALESCE(delivery_status,'')='DELIVERED'",
@@ -13684,7 +13957,20 @@ def _tt_store_shop(org, token_data, shop, who=""):
        scopes, who))
     c.commit(); c.close()
 
+def _tt_org_for_shop_exact(shop_id):
+    """Read-only lookup: the org that already owns this shop_id, or None. No self-heal."""
+    if not shop_id: return None
+    c=pdb()
+    try:
+        r=c.execute("SELECT org_id FROM tiktok_shops WHERE shop_id=? AND active=1 ORDER BY updated_at DESC LIMIT 1",
+                    (str(shop_id),)).fetchone()
+    finally:
+        c.close()
+    return r["org_id"] if r else None
+
 def _tt_org_for_shop(shop_id):
+    """Resolve a VERIFIED webhook's shop_id to an org (may self-heal a wrong stored id by
+    checking TikTok's own shop list). Never call this for unsigned input."""
     if not shop_id: return None
     shop_id=str(shop_id)
     c=pdb()
@@ -13716,16 +14002,10 @@ def _tt_org_for_shop(shop_id):
                     return org
         except Exception as e:
             _tt_log("org self-heal failed for %s: %r"%(org,e))
-    # Last resort: exactly one shop is connected → attribute to it and adopt the shop_id,
-    # so a single-shop setup never drops orders even if the shop-list refetch failed.
-    if len(stored)==1:
-        org=stored[0]["org_id"]
-        c=pdb()
-        c.execute("UPDATE tiktok_shops SET shop_id=?, updated_at=CURRENT_TIMESTAMP WHERE org_id=? AND shop_id=?",
-                  (shop_id, org, stored[0]["shop_id"]))
-        c.commit(); c.close()
-        _tt_log("adopted shop_id %s for sole org %s"%(shop_id, org))
-        return org
+    # No blind "adopt this shop_id" fallback: a shop_id is only re-mapped when TikTok's own
+    # shop list (above) confirms it. Unknown shop → ignore; the background sweep still pulls
+    # every connected shop's orders, so nothing is dropped.
+    _tt_log("webhook for unknown shop_id %s — ignored"%shop_id)
     return None
 
 def _tt_valid_token(org, shop_id):
@@ -14113,6 +14393,8 @@ def _tt_order_in_nonapi(c, oid, tracking=None, pkg=None):
             return True
     return False
 
+_TT_KEEP_LOCAL_STATUS=("picked","issue","packed","shipped","cancelled")
+
 def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
     """Create/update a shipment (+items) from a TikTok API order, in the SAME shipments/
     shipment_items tables the CSV importer uses, so every existing screen works unchanged.
@@ -14195,8 +14477,11 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
     if is_cancelled: new_status="cancelled"
     elif all_gift: new_status="giveaway"
     else: new_status="pending"
-    if ex and ex["status"] in ("packed","shipped") and not is_cancelled:
-        new_status=ex["status"]   # don't undo warehouse progress
+    # Never undo warehouse progress or a human decision. Only a real TikTok cancellation may
+    # override a local status; picked / issue / packed / shipped / cancelled are kept as-is
+    # (previously picked + issue were reset to pending on every sweep, ~every 5 min).
+    if ex and ex["status"] in _TT_KEEP_LOCAL_STATUS and not is_cancelled:
+        new_status=ex["status"]
     if ex:
         c.execute("""UPDATE shipments SET tracking_code=COALESCE(?,tracking_code),
                        buyer_username=?, buyer_name=?, address_full=COALESCE(NULLIF(?,''),address_full),
@@ -14324,6 +14609,8 @@ def _tt_sweep_once(window_sec=7200):
                 orders=[o for o in orders if int(o.get("create_time") or 0) >= _co]  # honour the start-from cutover
             if not orders: continue
             sc=sdb(org)
+            try: sc.execute("PRAGMA busy_timeout=60000")   # wait, don't abort, under concurrent writes
+            except Exception: pass
             skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
             _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
             ovh=_cfg["packaging_overhead_g"] if _cfg else 30
@@ -14417,6 +14704,7 @@ def api_tiktok_callback():
 
 @app.route("/api/tiktok/webhook", methods=["POST","GET"])
 def api_tiktok_webhook():
+    global _tt_last_event
     # Some verification flows do a GET with a challenge/echo param.
     if request.method=="GET":
         ch=request.args.get("challenge") or request.args.get("verify_token") or ""
@@ -14424,6 +14712,15 @@ def api_tiktok_webhook():
     body=request.get_data() or b""
     sig=request.headers.get("Authorization","") or request.headers.get("authorization","")
     verified=_tt_webhook_verify(body, sig)
+    # SECURITY: an unsigned request must never change state. Only a verified TikTok push may
+    # log events, deactivate a shop (type 6) or re-map shop_ids. Emergency escape hatch
+    # TIKTOK_WEBHOOK_ALLOW_UNSIGNED=1 (if TikTok's signature format ever changes): unsigned
+    # pushes are then treated ONLY as a "go fetch this order" hint for an already-known shop —
+    # the order itself is fetched from TikTok with our own token, so a forged payload can't
+    # inject data, and nothing destructive runs.
+    if not verified and not TIKTOK_WEBHOOK_ALLOW_UNSIGNED:
+        _tt_log("webhook rejected: missing/invalid signature (%d bytes)"%len(body))
+        return jsonify({"code":401,"message":"invalid signature"}),401
     try: payload=json.loads(body.decode("utf-8") or "{}")
     except Exception: payload={}
     ttype=payload.get("type")
@@ -14433,6 +14730,13 @@ def api_tiktok_webhook():
     d=payload.get("data") or {}
     order_id=str(d.get("order_id") or "")
     status=str(d.get("order_status") or d.get("status") or "")
+    if not verified:
+        org=_tt_org_for_shop_exact(shop_id)
+        if ttype==1 and order_id and org:
+            _tt_last_event=time.time()
+            try: _tt_ingest_order(org, shop_id, order_id)
+            except Exception as e: _tt_log("ingest (unsigned hint) failed %s: %r"%(order_id,e))
+        return jsonify({"code":0,"message":"success"})
     org=_tt_org_for_shop(shop_id)
     try:
         c=pdb()
@@ -14449,7 +14753,6 @@ def api_tiktok_webhook():
     # Order status change (topic 1): signal live activity so the background poller switches
     # to ~5s fast polling, and best-effort fetch this one order now. Never block the 200 ack.
     if ttype==1:
-        global _tt_last_event
         _tt_last_event=time.time()
         if order_id and org:
             try: _tt_ingest_order(org, shop_id, order_id)
@@ -14493,6 +14796,7 @@ def api_tiktok_cutover():
     (which is already handled via CSV). Body: {now:true} to start now, or {clear:true} to remove."""
     org=current_org() or DEFAULT_ORG
     d=request.get_json(silent=True) or {}
+    paused=_tt_is_paused(org)
     if d.get("clear"):
         ts=_tt_set_cutover(org, 0)
     else:
@@ -14500,7 +14804,10 @@ def api_tiktok_cutover():
         except Exception: ts=0
         if not ts: ts=int(time.time())   # default: now
         ts=_tt_set_cutover(org, ts)
-    return jsonify({"ok":True,"cutover":ts,
+        # "Start from now" means turn ingestion ON. If it was paused, resume it — otherwise
+        # setting the cutover does nothing and the live keeps getting skipped by the sweep.
+        if paused: paused=_tt_set_paused(org, False)
+    return jsonify({"ok":True,"cutover":ts,"paused":bool(paused),
                     "cutover_human":(datetime.fromtimestamp(ts).strftime("%b %d, %Y %-I:%M %p") if ts else "")})
 
 def _tt_epoch(v):
@@ -14642,30 +14949,43 @@ def _tt_materialize_orders(org, orders):
     def _ck(o):
         try: return int(o.get("create_time") or 0)
         except Exception: return 0
+    n_in=len(orders)
     cutover=_tt_cutover(org)
     if cutover:
         orders=[o for o in orders if _ck(o) >= cutover]   # ignore pre-cutover history
+    n_after=len(orders)
+    # Diagnostics so a failed/empty materialize can explain itself in the UI (not just the log).
+    diag={"in":n_in,"after_cutover":n_after,"cutover":cutover,"applied":0,"skipped":0,
+          "errors":0,"last_error":None,"batch_error":None,"zero_create_time":0}
+    sc=None
     try:
         sc=sdb(org)
+        try: sc.execute("PRAGMA busy_timeout=60000")   # wait, don't crash, if the live sweep is mid-write
+        except Exception: pass
         skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
         _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
         ovh=_cfg["packaging_overhead_g"] if _cfg else 30
-        # Authoritative room→label for the whole batch (dominant listing + the room's date),
-        # and persist it so the live sweep reuses the exact same show names.
-        room_names=_tt_room_names(sc, orders)
-        if room_names:
-            _tt_rooms_ensure(sc)
-            starts={}
-            for o in orders:
-                r=_tt_room_id(o); ct=_ck(o)
-                if r and ct and (r not in starts or ct<starts[r]): starts[r]=ct
-            for r,lbl in room_names.items():
-                # Preserve any hand-set custom_name — only refresh the auto label/date.
-                sc.execute("""INSERT INTO tiktok_rooms(room_id,label,start_ts,named) VALUES(?,?,?,1)
-                              ON CONFLICT(room_id) DO UPDATE SET label=excluded.label,
-                                 start_ts=excluded.start_ts, named=1""",
-                           (r, lbl, starts.get(r,0)))
+        # Authoritative room→label for the whole batch — isolated so one bad order can't abort
+        # the entire build (that would silently load 0 shows).
+        room_names={}
+        try:
+            room_names=_tt_room_names(sc, orders) or {}
+            if room_names:
+                _tt_rooms_ensure(sc)
+                starts={}
+                for o in orders:
+                    r=_tt_room_id(o); ct=_ck(o)
+                    if r and ct and (r not in starts or ct<starts[r]): starts[r]=ct
+                for r,lbl in room_names.items():
+                    # Preserve any hand-set custom_name — only refresh the auto label/date.
+                    sc.execute("""INSERT INTO tiktok_rooms(room_id,label,start_ts,named) VALUES(?,?,?,1)
+                                  ON CONFLICT(room_id) DO UPDATE SET label=excluded.label,
+                                     start_ts=excluded.start_ts, named=1""",
+                               (r, lbl, starts.get(r,0)))
+        except Exception as e:
+            diag["batch_error"]="room-names: "+repr(e)[:160]; _tt_log("room-names failed: %r"%e)
         for o in sorted(orders, key=_ck):
+            if not _ck(o): diag["zero_create_time"]+=1
             try:
                 oid=str(o.get("id") or "")
                 trk=(o.get("tracking_number") or "").strip() or None
@@ -14679,11 +14999,22 @@ def _tt_materialize_orders(org, orders):
                 lbl=_tt_apply_order(sc, o, label=lbl, sku_map=skus, overhead=ovh)
                 if lbl: shows.add(lbl); shipped+=1
             except Exception as e:
+                diag["errors"]+=1; diag["last_error"]=repr(e)[:160]
                 _tt_log("apply failed %s: %r"%(o.get("id"),e))
-        sc.commit(); sc.close()
+        sc.commit()
     except Exception as e:
+        diag["batch_error"]=repr(e)[:200]
         _tt_log("materialize batch failed: %r"%e)
+    finally:
+        if sc:
+            try: sc.close()
+            except Exception: pass
+    diag["applied"]=shipped; diag["skipped"]=skipped
+    global _TT_LAST_MATERIALIZE
+    _TT_LAST_MATERIALIZE=diag
     return sorted(shows), shipped, skipped
+
+_TT_LAST_MATERIALIZE={}
 
 def _tt_stored_orders(org):
     """Every raw order dict this org has previously stored (offline data source for
@@ -14806,7 +15137,8 @@ def _tt_pull_core(org, days=30):
     shows_list, shipped, skipped = _tt_materialize_orders(org, orders)
     return {"ok":True,"shop":row.get("shop_name") or shop_id,"total":total,
             "fetched":len(orders),"stored":stored,"preview":preview,
-            "shows":shows_list,"loaded":shipped,"skipped":skipped,"pages":pages}
+            "shows":shows_list,"loaded":shipped,"skipped":skipped,"pages":pages,
+            "diag":dict(_TT_LAST_MATERIALIZE)}
 
 @app.route("/api/tiktok/pull", methods=["POST"])
 @req_role("admin")
@@ -14816,6 +15148,43 @@ def api_tiktok_pull():
     try: days=int((request.get_json(silent=True) or {}).get("days") or 30)
     except Exception: days=30
     return jsonify(_tt_pull_core(org, days))
+
+def _tt_regroup_begin(org):
+    """Non-destructive regroup, step 1. Instead of DELETING every API shipment (which reset
+    packed/shipped orders to pending and dropped stock-depletion markers → double deduction),
+    only CLEAR their show label so the next ingest assigns a fresh one (apply uses
+    COALESCE(import_label, new)). Status, items, picked and depleted_* are untouched.
+    Session memory is cleared so grouping starts clean; per-show side tables (live sales,
+    sticker map, show state) are KEPT — they hold real ledger data.
+    Returns {shipment_id: old_label} so step 2 can restore anything the re-pull didn't reach."""
+    sc=sdb(org)
+    try:
+        snap={r["shipment_id"]:r["import_label"] for r in sc.execute(
+            "SELECT shipment_id, import_label FROM shipments WHERE import_batch='tiktok-api'").fetchall()}
+        sc.execute("UPDATE shipments SET import_label=NULL WHERE import_batch='tiktok-api'")
+        for t in ("tiktok_sessions","tiktok_rooms","tiktok_lives"):   # same as before
+            try: sc.execute("DELETE FROM "+t)
+            except Exception: pass
+        sc.commit()
+    finally:
+        sc.close()
+    return snap
+
+def _tt_regroup_finish(org, snap):
+    """Non-destructive regroup, step 2: any shipment the re-pull did not re-label (older than
+    the pull window, page cap, API error) gets its previous label back, so no order ever
+    falls out of the show lists. Returns how many were restored."""
+    if not snap: return 0
+    sc=sdb(org); n=0
+    try:
+        for sid, lbl in snap.items():
+            if lbl is None: continue
+            n+=sc.execute("UPDATE shipments SET import_label=? WHERE shipment_id=? AND import_label IS NULL",
+                          (lbl, sid)).rowcount
+        sc.commit()
+    finally:
+        sc.close()
+    return n
 
 @app.route("/api/tiktok/regroup", methods=["POST"])
 @req_role("admin")
@@ -14827,32 +15196,15 @@ def api_tiktok_regroup():
     org=current_org() or DEFAULT_ORG
     try: days=int((request.get_json(silent=True) or {}).get("days") or 45)
     except Exception: days=45
-    wiped=0
-    try:
-        sc=sdb(org)
-        # labels currently owned by the API path (so we can clean their side-tables too)
-        labels=[r["import_label"] for r in sc.execute(
-            "SELECT DISTINCT import_label FROM shipments WHERE import_batch='tiktok-api' AND import_label IS NOT NULL").fetchall()]
-        ids=[r["shipment_id"] for r in sc.execute(
-            "SELECT shipment_id FROM shipments WHERE import_batch='tiktok-api'").fetchall()]
-        for sid in ids:
-            sc.execute("DELETE FROM shipment_items WHERE shipment_id=?",(sid,))
-        wiped=sc.execute("DELETE FROM shipments WHERE import_batch='tiktok-api'").rowcount
-        # forget session windows so re-grouping starts clean
-        for t in ("tiktok_sessions","tiktok_rooms","tiktok_lives"):
-            try: sc.execute("DELETE FROM "+t)
-            except Exception: pass
-        # drop orphaned per-show state for the labels we just removed
-        for lbl in labels:
-            for t in ("show_state","cleanup_state","show_product_map","live_sales","live_reconcile"):
-                try: sc.execute("DELETE FROM "+t+" WHERE import_label=?",(lbl,))
-                except Exception: pass
-        sc.commit(); sc.close()
+    try: snap=_tt_regroup_begin(org)
     except Exception as e:
-        _tt_log("regroup wipe failed: %r"%e)
-        return jsonify({"ok":False,"error":"Could not clear old shows: "+str(e)[:200]})
-    res=_tt_pull_core(org, days)
-    res["regrouped"]=True; res["cleared"]=wiped
+        _tt_log("regroup prepare failed: %r"%e)
+        return jsonify({"ok":False,"error":"Could not prepare regroup: "+str(e)[:200]})
+    try:
+        res=_tt_pull_core(org, days)
+    finally:
+        restored=_tt_regroup_finish(org, snap)
+    res["regrouped"]=True; res["relabeled"]=len(snap)-restored; res["kept_old_label"]=restored
     return jsonify(res)
 
 @app.route("/api/tiktok/export-orders")
@@ -14917,31 +15269,17 @@ def api_tiktok_regroup_stored():
     current tiktok-api shows and rebuilds them from tiktok_orders.raw — the fast loop
     for iterating on the routing rules in staging after an import."""
     org=current_org() or DEFAULT_ORG
-    wiped=0
-    try:
-        sc=sdb(org)
-        labels=[r["import_label"] for r in sc.execute(
-            "SELECT DISTINCT import_label FROM shipments WHERE import_batch='tiktok-api' AND import_label IS NOT NULL").fetchall()]
-        ids=[r["shipment_id"] for r in sc.execute(
-            "SELECT shipment_id FROM shipments WHERE import_batch='tiktok-api'").fetchall()]
-        for sid in ids:
-            sc.execute("DELETE FROM shipment_items WHERE shipment_id=?",(sid,))
-        wiped=sc.execute("DELETE FROM shipments WHERE import_batch='tiktok-api'").rowcount
-        for t in ("tiktok_sessions","tiktok_rooms","tiktok_lives"):
-            try: sc.execute("DELETE FROM "+t)
-            except Exception: pass
-        for lbl in labels:
-            for t in ("show_state","cleanup_state","show_product_map","live_sales","live_reconcile"):
-                try: sc.execute("DELETE FROM "+t+" WHERE import_label=?",(lbl,))
-                except Exception: pass
-        sc.commit(); sc.close()
+    try: snap=_tt_regroup_begin(org)
     except Exception as e:
-        _tt_log("regroup-stored wipe failed: %r"%e)
-        return jsonify({"ok":False,"error":"Could not clear old shows: "+str(e)[:200]})
-    orders=_tt_stored_orders(org)
-    shows_list, shipped, skipped=_tt_materialize_orders(org, orders)
-    return jsonify({"ok":True,"regrouped":True,"cleared":wiped,"fetched":len(orders),
-                    "loaded":shipped,"skipped":skipped,"shows":shows_list})
+        _tt_log("regroup-stored prepare failed: %r"%e)
+        return jsonify({"ok":False,"error":"Could not prepare regroup: "+str(e)[:200]})
+    try:
+        orders=_tt_stored_orders(org)
+        shows_list, shipped, skipped=_tt_materialize_orders(org, orders)
+    finally:
+        restored=_tt_regroup_finish(org, snap)
+    return jsonify({"ok":True,"regrouped":True,"relabeled":len(snap)-restored,"kept_old_label":restored,
+                    "fetched":len(orders),"loaded":shipped,"skipped":skipped,"shows":shows_list})
 
 @app.route("/api/tiktok/live-sessions", methods=["GET","POST"])
 @req_role("admin")
@@ -14997,6 +15335,28 @@ def api_tiktok_live_detail():
 def _tt_part_label(name):
     m=re.search(r'part\s*(\d+)', (name or ''), re.I)
     return "Part "+m.group(1) if m else ""
+
+@app.route("/api/tiktok/delivery-overview")
+@req_role("admin","cs")
+def api_tiktok_delivery_overview():
+    """Delivery status of ALL your TikTok orders, read straight from the stored TikTok data —
+    independent of the warehouse pipeline (so it shows even for orders not materialized into
+    shows because of the cutover). Pure read; creates nothing."""
+    org=current_org() or DEFAULT_ORG
+    orders=_tt_stored_orders(org)
+    cnt={}
+    for o in orders:
+        s=(o.get("status") or "UNKNOWN").upper()
+        cnt[s]=cnt.get(s,0)+1
+    g=lambda *ks: sum(cnt.get(k,0) for k in ks)
+    buckets={"delivered":g("DELIVERED","COMPLETED"),
+             "in_transit":g("IN_TRANSIT"),
+             "awaiting_collection":g("AWAITING_COLLECTION"),
+             "awaiting_shipment":g("AWAITING_SHIPMENT"),
+             "on_hold":g("ON_HOLD"),"unpaid":g("UNPAID"),"cancelled":g("CANCELLED")}
+    out={"ok":True,"total":len(orders),"buckets":buckets,"raw_counts":cnt}
+    out.update(buckets)  # also flat, so the UI can read d.delivered etc.
+    return jsonify(out)
 
 @app.route("/api/tiktok/routing")
 @req_role("admin")
@@ -15204,6 +15564,16 @@ th{color:#6b7280;font-weight:700;font-size:11px;text-transform:uppercase}
 </div>
 
 <div class="card">
+  <h2>📦 TikTok delivery status <span class="mut" id="dvTotal"></span></h2>
+  <div class="mut" style="margin-bottom:10px">Live delivery status of your TikTok orders, straight from TikTok — independent of the warehouse. Reads/updates the stored TikTok orders only; never creates a show.</div>
+  <div class="row" style="margin:0 0 12px">
+    <button id="dvRefresh" class="btn g" style="background:#dcfce7;color:#166534">↻ Refresh delivery from TikTok</button>
+    <span class="mut" id="dvMsg"></span>
+  </div>
+  <div id="dvCards" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+</div>
+
+<div class="card">
   <h2>🧪 Test data — move real orders to staging</h2>
   <div class="mut" style="margin-bottom:10px">Export every real order this environment has pulled as one JSON file. Import it into the staging/test environment to work on grouping &amp; routing on real content — no live connection needed there.</div>
   <div class="row">
@@ -15263,8 +15633,8 @@ function applyCutover(ts){_cutover=ts||0;var st=document.getElementById('cutStat
 document.getElementById('cutBtn').onclick=function(){var b=this;b.disabled=true;
   if(_cutover && !confirm('Move the start point to NOW? Orders created before now will no longer build shows.')){b.disabled=false;return;}
   fetch('/api/tiktok/cutover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({now:true})})
-   .then(function(r){return r.json();}).then(function(d){b.disabled=false;if(d&&d.ok)applyCutover(d.cutover);
-     document.getElementById('cutMsg').innerHTML='<span style="color:#166534">✓ From now on, only orders created after '+esc(d.cutover_human||'')+' will build shows.</span>';})
+   .then(function(r){return r.json();}).then(function(d){b.disabled=false;if(d&&d.ok){applyCutover(d.cutover);if(d.paused===false)applyPause(false);}
+     document.getElementById('cutMsg').innerHTML='<span style="color:#166534">✓ Ingestion is ON. From now on, only orders created after '+esc(d.cutover_human||'')+' will build shows.</span>';})
    .catch(function(){b.disabled=false;});};
 document.getElementById('cutClear').onclick=function(){var b=this;b.disabled=true;
   if(!confirm('Clear the start point? The API will then build every order it pulls, including old history.')){b.disabled=false;return;}
@@ -15281,7 +15651,17 @@ pb.onclick=function(){
      pb.disabled=false;pb.textContent=old;
      if(!d.ok){pm.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
      var shw=(d.shows&&d.shows.length)?(' → loaded into show(s): '+d.shows.map(esc).join(', ')):'';
-     pm.innerHTML='<span style="color:#166534">✓ Pulled '+d.fetched+' order(s) from '+esc(d.shop||'')+(d.total!=null?(' · '+d.total+' total in shop'):'')+(d.skipped?(' · skipped '+d.skipped+' already in the system'):'')+shw+'</span>';
+     var dg=d.diag||{};
+     var diagHtml='';
+     if((d.loaded||0)===0){
+       diagHtml='<br><span style="color:#b45309">Nothing loaded into a show. '+
+         esc(dg.in||0)+' pulled · '+esc(dg.after_cutover||0)+' after the start-point · applied '+esc(dg.applied||0)+
+         ' · skipped '+esc(dg.skipped||0)+' · errors '+esc(dg.errors||0)+
+         (dg.zero_create_time?(' · '+esc(dg.zero_create_time)+' had no create_time'):'')+
+         (dg.batch_error?('<br>⚠️ '+esc(dg.batch_error)):'')+
+         (dg.last_error?('<br>⚠️ '+esc(dg.last_error)):'')+'</span>';
+     }
+     pm.innerHTML='<span style="color:#166534">✓ Pulled '+d.fetched+' order(s) from '+esc(d.shop||'')+(d.total!=null?(' · '+d.total+' total in shop'):'')+(d.skipped?(' · skipped '+d.skipped+' already in the system'):'')+shw+'</span>'+diagHtml;
      var od=document.getElementById('orders');
      if(!d.preview||!d.preview.length){od.innerHTML='<span class="mut">No recent orders in the last 30 days.</span>';return;}
      var h='<table><tr><th>Order</th><th>Status</th><th>Items (seller SKU × qty)</th></tr>';
@@ -15314,7 +15694,7 @@ rb.onclick=function(){
      rb.disabled=false;pb.disabled=false;rb.textContent=old;
      if(!d.ok){pm.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
      var shw=(d.shows&&d.shows.length)?('<br>Shows now: '+d.shows.map(esc).join(', ')):'';
-     pm.innerHTML='<span style="color:#166534">✓ Regrouped — cleared '+(d.cleared||0)+' old shipment(s), re-loaded '+(d.loaded||0)+' into '+((d.shows||[]).length)+' show(s).'+shw+'</span>';
+     pm.innerHTML='<span style="color:#166534">✓ Regrouped — '+(d.relabeled||0)+' shipment(s) re-labeled, '+(d.kept_old_label||0)+' kept their old show, '+((d.shows||[]).length)+' show(s). Packing progress and stock kept.'+shw+'</span>';
    }).catch(function(e){rb.disabled=false;pb.disabled=false;rb.textContent=old;pm.innerHTML='<span style="color:#b91c1c">Network error</span>';});
 };
 var sbtn=document.getElementById('sessBtn');
@@ -15356,9 +15736,35 @@ if(rsb)rsb.onclick=function(){
      rsb.disabled=false;rsb.textContent=old;
      if(!d.ok){im.innerHTML='<span style="color:#b91c1c">⚠️ '+esc(d.error||'failed')+'</span>';return;}
      var shw=(d.shows&&d.shows.length)?('<br>Shows now: '+d.shows.map(esc).join(', ')):'';
-     im.innerHTML='<span style="color:#166534">✓ Regrouped '+(d.fetched||0)+' stored order(s) → '+((d.shows||[]).length)+' show(s), cleared '+(d.cleared||0)+'.'+shw+'</span>';
+     im.innerHTML='<span style="color:#166534">✓ Regrouped '+(d.fetched||0)+' stored order(s) → '+((d.shows||[]).length)+' show(s), '+(d.relabeled||0)+' re-labeled.'+shw+'</span>';
    }).catch(function(){rsb.disabled=false;rsb.textContent=old;im.innerHTML='<span style="color:#b91c1c">Network error</span>';});
 };
+var DV=[['delivered','Delivered','#dcfce7','#166534','DELIVERED'],['in_transit','In transit','#dbeafe','#1e40af','IN_TRANSIT'],
+  ['awaiting_collection','Awaiting pickup','#fef3c7','#92400e','AWAITING_COLLECTION'],['awaiting_shipment','Awaiting shipment','#f3f4f6','#374151','PENDING'],
+  ['on_hold','On hold','#fee2e2','#991b1b',''],['unpaid','Unpaid','#f3f4f6','#6b7280',''],['cancelled','Cancelled','#f3f4f6','#6b7280','CANCELLED']];
+function dvRender(d){
+  var box=document.getElementById('dvCards');var tot=document.getElementById('dvTotal');
+  if(!d||d.ok===false){box.innerHTML='<span class="mut">'+esc((d&&d.error)||'Could not load')+'</span>';return;}
+  tot.textContent=d.total!=null?('· '+d.total+' TikTok orders'):'';
+  box.innerHTML=DV.map(function(x){var n=(d[x[0]]||0);
+    var inner='<div style="background:'+x[2]+';color:'+x[3]+';border-radius:12px;padding:12px 16px;min-width:110px'+(x[4]?';cursor:pointer;transition:transform .1s" onmouseover="this.style.transform=\\'translateY(-2px)\\'" onmouseout="this.style.transform=\\'\\'':'"')+'>'+
+      '<div style="font-size:26px;font-weight:900;line-height:1">'+n+'</div>'+
+      '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;font-weight:700;margin-top:4px">'+x[1]+(x[4]?' ↗':'')+'</div></div>';
+    return x[4]?('<a href="/shipping-status?status='+x[4]+'" style="text-decoration:none" title="See these in the shipments screen">'+inner+'</a>'):inner;}).join('');
+}
+function dvLoad(){var box=document.getElementById('dvCards');box.innerHTML='<span class="mut">Loading…</span>';
+  fetch('/api/tiktok/delivery-overview').then(function(r){return r.json();}).then(dvRender)
+   .catch(function(){document.getElementById('dvCards').innerHTML='<span class="mut">Network error</span>';});}
+dvLoad();
+document.getElementById('dvRefresh').onclick=function(){var b=this;b.disabled=true;var old=b.textContent;b.textContent='Asking TikTok…';
+  var m=document.getElementById('dvMsg');m.textContent='';
+  fetch('/api/tiktok/delivery-refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+   .then(function(r){return r.json();}).then(function(d){
+     b.disabled=false;b.textContent=old;
+     if(!d||d.ok===false){m.innerHTML='<span style="color:#b91c1c">⚠️ '+esc((d&&d.error)||'failed')+'</span>';return;}
+     m.innerHTML='<span style="color:#166534">✓ Refreshed '+(d.checked||0)+' order(s) from TikTok'+(d.updated!=null?(', '+d.updated+' status change(s)'):'')+'.</span>';
+     dvRender(d.overview||d);
+   }).catch(function(){b.disabled=false;b.textContent=old;m.innerHTML='<span style="color:#b91c1c">Network error</span>';});};
 </script>
 </body></html>"""
     return (html.replace("__NAVBAR__",nav).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
