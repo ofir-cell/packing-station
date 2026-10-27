@@ -539,9 +539,9 @@ body.sr{background:#ffffff}body.sc{background:#fff1f2}body.sd{background:#f0fdf4
 .top{position:fixed;top:0;left:0;right:0;padding:12px 18px;display:flex;justify-content:space-between;align-items:center;z-index:10;gap:12px}
 .brand-tag{display:flex;align-items:center;gap:10px;min-width:0}
 .brand-mark-mini{font-size:14px;font-weight:900;color:#d9748f;letter-spacing:1.2px;flex-shrink:0}
-.portal-b{background:rgba(217,116,143,.08);border:1px solid rgba(217,116,143,.22);border-radius:8px;padding:7px 13px;font-size:12px;font-weight:700;color:#d9748f;text-decoration:none;font-family:inherit;transition:all .15s}
+.portal-b{background:rgba(217,116,143,.08);border:1px solid rgba(217,116,143,.22);border-radius:8px;padding:7px 13px;min-height:44px;display:inline-flex;align-items:center;font-size:12px;font-weight:700;color:#d9748f;text-decoration:none;font-family:inherit;transition:all .15s}
 .portal-b:hover{background:rgba(217,116,143,.16)}
-.role-switch{background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.28);border-radius:8px;padding:7px 13px;font-size:12px;font-weight:700;color:#059669;text-decoration:none;font-family:inherit;transition:all .15s}
+.role-switch{background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.28);border-radius:8px;padding:7px 13px;min-height:44px;display:inline-flex;align-items:center;font-size:12px;font-weight:700;color:#059669;text-decoration:none;font-family:inherit;transition:all .15s}
 .role-switch:hover{background:rgba(16,185,129,.2)}
 .badge{background:rgba(217,116,143,.12);border:1.5px solid rgba(217,116,143,.28);border-radius:50px;padding:8px 20px;font-size:13px;font-weight:700;color:#d9748f}
 .top-r{display:flex;gap:10px;align-items:center}
@@ -549,7 +549,7 @@ body.sr{background:#ffffff}body.sc{background:#fff1f2}body.sd{background:#f0fdf4
 .cam-d{width:7px;height:7px;border-radius:50%}
 .cam.ok .cam-d{background:#10b981}.cam.ok span{color:#10b981}
 .cam.err .cam-d{background:#f43f5e}.cam.err span{color:#f43f5e}
-.out-b{background:none;border:1px solid rgba(17,24,39,0.128);border-radius:8px;padding:6px 14px;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit}
+.out-b{background:none;border:1px solid rgba(17,24,39,0.128);border-radius:8px;padding:6px 14px;min-height:44px;display:inline-flex;align-items:center;font-size:12px;color:#6b7280;cursor:pointer;font-family:inherit}
 .pv{position:fixed;bottom:16px;left:16px;width:150px;border-radius:12px;overflow:hidden;border:2px solid rgba(17,24,39,0.096);opacity:.35;transition:all .3s}
 .pv video{width:100%;display:block}
 body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
