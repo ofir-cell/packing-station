@@ -673,6 +673,7 @@ body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 .f-sub{font-size:20px;color:#1a2130;margin-bottom:20px}
 .f-msg{font-size:16px;color:#6b7280}
 body.sw{background:linear-gradient(135deg,#ffffff,#fffbeb)}
+body.se{background:linear-gradient(135deg,#ffffff,#fff1f2)}
 body.sf{background:linear-gradient(135deg,#ffffff,#f0fdf4)}
 </style></head><body class="sr">
 <div class="top"><div class="brand-tag"><span class="brand-mark-mini">__BRANDMARK__</span><span class="badge">__STATION__ — __NAME__</span><span class="badge" id="todayStat" style="margin-left:8px;background:linear-gradient(135deg,#ecfdf5,#d1fae5);color:#065f46;font-weight:800">📦 —</span></div><div class="top-r"><div class="cam" id="cm"><div class="cam-d"></div><span data-i18n="camera">Camera</span></div><button class="role-switch" id="langBtn" onclick="toggleLang()" style="cursor:pointer">ES</button><a href="/pick" class="role-switch" data-i18n="switchpick">📋 Switch to Picking</a><a href="/home" class="portal-b" data-i18n="portal">🏠 Portal</a><button class="out-b" id="endBtn" data-i18n="endshift">End Shift</button></div></div>
@@ -735,11 +736,12 @@ body.sf{background:linear-gradient(135deg,#ffffff,#f0fdf4)}
 <div class="x" id="xd"><div class="d-icon">✓</div><div class="dt" data-i18n="saved">Saved!</div><div class="dk" id="dkk"></div><div class="dd" id="ddd"></div><div class="dn" data-i18n="nextorder">Next order...</div></div>
 
 <div class="x" id="xf"><div class="f-icon">🌟</div><div class="f-title" data-i18n="greatjob">Great job today!</div><div class="f-sub"><span data-i18n="thankyou">Thank you for your hard work</span>, __NAME__</div><div class="f-msg" data-i18n="wonderfulday">Have a wonderful day! See you next time 👋</div></div>
+<div class="x" id="xe"><div class="r-icon">⚠️</div><div class="r-title" data-i18n="uploadfailed">Upload failed</div><div class="r-sub" data-i18n="scanagainretry">The recording did not save — scan the barcode again to retry</div></div>
 
 <script>
 var st='w',ti=null,t0=0,n=0,mr=null,ch=[],sm=null,ct='';
 var mi=document.getElementById('mi'),ri=document.getElementById('ri');
-var X={w:document.getElementById('xw'),r:document.getElementById('xr'),c:document.getElementById('xc'),u:document.getElementById('xu'),d:document.getElementById('xd'),f:document.getElementById('xf')};
+var X={w:document.getElementById('xw'),r:document.getElementById('xr'),c:document.getElementById('xc'),u:document.getElementById('xu'),d:document.getElementById('xd'),f:document.getElementById('xf'),e:document.getElementById('xe')};
 var LANG=localStorage.getItem('lang')||'en';
 var T={en:{
  camera:'Camera',switchpick:'📋 Switch to Picking',portal:'🏠 Portal',endshift:'End Shift',welcomeg:'Welcome',youareat:'You are at',
@@ -751,7 +753,7 @@ var T={en:{
  gotomanagerpack:'Go to the <b>manager</b> to get the prize, then add it to the box before sealing',addedcontinue:'✓ Added — continue',
  savingrec:'Saving recording...',pleasewait:'Please wait',saved:'Saved!',nextorder:'Next order...',greatjob:'Great job today!',
  thankyou:'Thank you for your hard work',wonderfulday:'Have a wonderful day! See you next time 👋',nocamera:'No camera',
- countbox:'Count what you put in the box — if anything is missing, set the package aside',prepicked:'✓ Pre-picked by',justverify:'· just verify count and pack',ordernotfound:'Order not found in system'
+ countbox:'Count what you put in the box — if anything is missing, set the package aside',prepicked:'✓ Pre-picked by',justverify:'· just verify count and pack',ordernotfound:'Order not found in system',uploadfailed:"Upload failed",scanagainretry:"The recording did not save — scan the barcode again to retry"
 },es:{
  camera:'Cámara',switchpick:'📋 Cambiar a Recolección',portal:'🏠 Portal',endshift:'Terminar Turno',welcomeg:'Bienvenido',youareat:'Estás en',
  greatshift:'¡Que tengas un buen turno! Tu cámara se está configurando...',scantracking:'Escanea el Número de Rastreo',scantostart:'Escanea el código para empezar a grabar',
@@ -762,7 +764,7 @@ var T={en:{
  gotomanagerpack:'Ve al <b>gerente</b> por el regalo, luego agrégalo a la caja antes de sellar',addedcontinue:'✓ Agregado — continuar',
  savingrec:'Guardando grabación...',pleasewait:'Por favor espera',saved:'¡Guardado!',nextorder:'Siguiente pedido...',greatjob:'¡Buen trabajo hoy!',
  thankyou:'Gracias por tu esfuerzo',wonderfulday:'¡Que tengas un buen día! Hasta la próxima 👋',nocamera:'Sin cámara',
- countbox:'Cuenta lo que pones en la caja — si falta algo, aparta el paquete',prepicked:'✓ Pre-recolectado por',justverify:'· solo verifica y empaca',ordernotfound:'Pedido no encontrado en el sistema'
+ countbox:'Cuenta lo que pones en la caja — si falta algo, aparta el paquete',prepicked:'✓ Pre-recolectado por',justverify:'· solo verifica y empaca',ordernotfound:'Pedido no encontrado en el sistema',uploadfailed:"Error al subir",scanagainretry:"La grabación no se guardó — escanea el código otra vez para reintentar"
 }};
 function t(k){return (T[LANG]&&T[LANG][k])||T.en[k]||k}
 function toggleLang(){LANG=(LANG==='en'?'es':'en');localStorage.setItem('lang',LANG);location.reload()}
@@ -772,7 +774,7 @@ function applyLang(){
  var lb=document.getElementById('langBtn');if(lb)lb.textContent=(LANG==='en'?'ES':'EN');
 }
 applyLang();
-function go(s){st=s;document.body.className=s==='c'?'sc':s==='d'?'sd':s==='u'?'su':s==='w'?'sw':s==='f'?'sf':'sr';
+function go(s){st=s;document.body.className=s==='c'?'sc':s==='d'?'sd':s==='u'?'su':s==='w'?'sw':s==='f'?'sf':s==='e'?'se':'sr';
 for(var k in X)X[k].classList.toggle('on',k===s);
 if(s==='r'){mi.value='';setTimeout(function(){mi.focus()},100)}
 if(s==='c'){ri.value='';setTimeout(function(){ri.focus()},100)}}
@@ -974,7 +976,7 @@ function upload(){go('u');var dur=Math.round((Date.now()-t0)/1000);var vb=new Bl
 capPhoto().then(function(pb){var fd=new FormData();fd.append('tracking',ct);fd.append('station','__SID__');fd.append('duration',dur);fd.append('video',vb,ct+'.webm');if(pb)fd.append('photo',pb,ct+'.jpg');
 return fetch('/api/upload',{method:'POST',body:fd})}).then(function(r){return r.json()}).then(function(d){
 if(d.ok){n++;document.getElementById('cn').textContent=n;document.getElementById('dkk').textContent=ct;document.getElementById('ddd').textContent='Duration: '+dur+'s';loadMyStats();go('d');setTimeout(function(){go('r')},3000)}
-else{alert('Failed');go('r')}}).catch(function(){alert('Upload failed');go('r')})}
+else{go('e');setTimeout(function(){go('r')},2500)}}).catch(function(){go('e');setTimeout(function(){go('r')},2500)})}
 // USPS labels carry "service + ZIP + tracking" in the barcode (up to ~33 digits)
 // but humans only see the 22-digit tracking. Strip the prefix on entry so the
 // recording, the upload payload, and the CSV log all carry the clean 22-digit code.
