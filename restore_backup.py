@@ -16,12 +16,25 @@ from botocore.client import Config as BotoConfig
 import ps_backup
 
 
+REQUIRED_ENV = ("R2_BACKUP_ENDPOINT", "R2_BACKUP_ACCESS_KEY_ID",
+                "R2_BACKUP_SECRET_ACCESS_KEY", "R2_BACKUP_BUCKET")
+
+def _require_backup_env():
+    """Backup V2 restores use the DEDICATED R2_BACKUP_* credentials/bucket ONLY — never the
+    operational R2_* creds. Fail loudly (no silent fallback) when any are missing."""
+    missing = [k for k in REQUIRED_ENV if not (os.environ.get(k) or "").strip()]
+    if missing:
+        raise SystemExit("Missing required env for Backup V2 restore: %s\n"
+                         "Set the dedicated staging backup token vars (R2_BACKUP_*), "
+                         "not the operational R2_* ones." % ", ".join(missing))
+
 class R2Store:
     def __init__(self, bucket):
+        _require_backup_env()
         self.bucket = bucket
-        self.c = boto3.client("s3", endpoint_url=os.environ["R2_ENDPOINT"],
-                              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-                              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        self.c = boto3.client("s3", endpoint_url=os.environ["R2_BACKUP_ENDPOINT"],
+                              aws_access_key_id=os.environ["R2_BACKUP_ACCESS_KEY_ID"],
+                              aws_secret_access_key=os.environ["R2_BACKUP_SECRET_ACCESS_KEY"],
                               config=BotoConfig(signature_version="s3v4",
                                                 connect_timeout=5, read_timeout=60,
                                                 retries={"max_attempts": 3, "mode": "standard"}),
@@ -49,7 +62,7 @@ def main():
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--run")
     ap.add_argument("--dest", default="/tmp/ps_restore_check")
-    ap.add_argument("--bucket", default=os.environ.get("R2_BACKUP_BUCKET") or os.environ.get("R2_BUCKET"))
+    ap.add_argument("--bucket", default=os.environ.get("R2_BACKUP_BUCKET"))
     a = ap.parse_args()
     store = R2Store(a.bucket)
     if a.list:
