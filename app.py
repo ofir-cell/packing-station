@@ -3242,11 +3242,37 @@ def _backup_loop():
 # Exactly ONE scheduler ever runs: when BACKUP_V2 is on, the legacy loop is NOT started
 # (no duplicate schedulers). Both respect STAGING_SAFE (no external writes in safe mode).
 BACKUP_V2_ENABLED = os.environ.get("BACKUP_V2","").strip().lower() in ("1","true","yes")
-BACKUP_PRUNE_IN_APP = os.environ.get("BACKUP_PRUNE_IN_APP","1").strip().lower() in ("1","true","yes")
+BACKUP_PRUNE_IN_APP = os.environ.get("BACKUP_PRUNE_IN_APP","0").strip().lower() in ("1","true","yes")  # default OFF: review Bucket Lock + lifecycle before enabling in-app deletes
 R2_BACKUP_BUCKET = os.environ.get("R2_BACKUP_BUCKET") or R2_BUCKET
 _APP_REVISION = (os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_SHA") or "unknown")[:12]
 # last-run status for monitoring (no secrets); exposed via /api/ops/backup-status
 _backup_status = {"last_run_id":None,"last_ok":None,"last_error":None,"last_finished_utc":None,"files":0}
+
+def _backup_v2_permitted():
+    """Decide whether the Backup V2 scheduler may run. Returns (allowed, reason).
+
+    This is the ONLY thing that may run an external write while STAGING_SAFE is on, and
+    it is a NARROW, backup-only exception: it writes consistent DB snapshots to a
+    DEDICATED staging backup bucket using DEDICATED least-privilege credentials, and
+    touches nothing else. It does NOT relax Safe Mode for TikTok, carriers, email, R2
+    operational writes, or any customer-facing path — those remain blocked by
+    STAGING_SAFE / IS_STAGING everywhere else. FAIL-CLOSED: any missing or mismatched
+    config returns (False, reason) and no scheduler starts."""
+    if not BACKUP_V2_ENABLED:
+        return (False, "BACKUP_V2 disabled")
+    bkt = (os.environ.get("R2_BACKUP_BUCKET") or "").strip()
+    if not bkt:
+        return (False, "R2_BACKUP_BUCKET not set")
+    if bkt in ((R2_BUCKET or ""), (R2_HR_BUCKET or "")):
+        return (False, "R2_BACKUP_BUCKET must differ from operational buckets")
+    ak = (os.environ.get("R2_BACKUP_ACCESS_KEY_ID") or "").strip()
+    sk = (os.environ.get("R2_BACKUP_SECRET_ACCESS_KEY") or "").strip()
+    ep = (os.environ.get("R2_BACKUP_ENDPOINT") or "").strip()
+    if not (ak and sk and ep):
+        return (False, "dedicated R2_BACKUP_ACCESS_KEY_ID/SECRET/ENDPOINT required")
+    if ak == (R2_ACCESS_KEY_ID or "") or sk == (R2_SECRET_ACCESS_KEY or ""):
+        return (False, "backup credentials must be separate from operational R2 credentials")
+    return (True, "ok")
 
 def _backup_targets():
     t=[("platform.db",PLATFORM_DB),("users.json",USERS_FILE),("stations.json",STATIONS_FILE)]
@@ -3261,11 +3287,15 @@ class _R2BackupStore:
     def __init__(self):
         import boto3
         from botocore.client import Config as _BC
+        # Dedicated creds ONLY — never fall back to operational R2 creds (fail-closed).
+        _ep=(os.environ.get("R2_BACKUP_ENDPOINT") or "").strip()
+        _ak=(os.environ.get("R2_BACKUP_ACCESS_KEY_ID") or "").strip()
+        _sk=(os.environ.get("R2_BACKUP_SECRET_ACCESS_KEY") or "").strip()
+        if not (R2_BACKUP_BUCKET and _ep and _ak and _sk):
+            raise RuntimeError("backup store refused: dedicated R2_BACKUP_* config incomplete")
         self.bucket=R2_BACKUP_BUCKET
         self.c=boto3.client('s3',
-            endpoint_url=os.environ.get("R2_BACKUP_ENDPOINT") or R2_ENDPOINT,
-            aws_access_key_id=os.environ.get("R2_BACKUP_ACCESS_KEY_ID") or R2_ACCESS_KEY_ID,
-            aws_secret_access_key=os.environ.get("R2_BACKUP_SECRET_ACCESS_KEY") or R2_SECRET_ACCESS_KEY,
+            endpoint_url=_ep, aws_access_key_id=_ak, aws_secret_access_key=_sk,
             config=_BC(signature_version='s3v4',connect_timeout=5,read_timeout=120,
                        retries={'max_attempts':3,'mode':'standard'}), region_name='auto')
     def put_fileobj(self,key,fh): self.c.upload_fileobj(fh,self.bucket,key)
@@ -3332,13 +3362,24 @@ def _backup_v2_loop():
             print("[backup-v2] loop error:",e,flush=True)
         time.sleep(600)   # re-check every 10 min; 6h gate above controls cadence
 
-if BACKUP_V2_ENABLED and not STAGING_SAFE:
+_BK_OK, _BK_REASON = _backup_v2_permitted()
+if _BK_OK:
+    # Backup V2 may run even under STAGING_SAFE — this is the narrow, isolated backup-only
+    # exception (dedicated bucket + dedicated creds; nothing else external is unblocked).
     threading.Thread(target=_backup_v2_loop,daemon=True).start()
-    print("[backup-v2] scheduler started (6h; bucket=%s; rev=%s)"%(R2_BACKUP_BUCKET,_APP_REVISION),flush=True)
-elif not STAGING_SAFE:
-    threading.Thread(target=_backup_loop,daemon=True).start()   # legacy (unchanged)
+    print("[backup-v2] scheduler started (6h; bucket=%s; rev=%s; safe_mode=%s; backup-only exception=%s)"
+          %(R2_BACKUP_BUCKET,_APP_REVISION,STAGING_SAFE,STAGING_SAFE),flush=True)
+elif STAGING_SAFE:
+    # Safe mode + V2 off or misconfigured -> start NOTHING external (fail-closed).
+    if BACKUP_V2_ENABLED:
+        print("[backup-v2] NOT started (fail-closed under safe mode): %s"%_BK_REASON,flush=True)
+    else:
+        print("[STAGING-SAFE] R2 backup thread not started",flush=True)
 else:
-    print("[STAGING-SAFE] R2 backup thread not started",flush=True)
+    # Not safe mode (e.g. production): preserve the legacy backup fallback.
+    threading.Thread(target=_backup_loop,daemon=True).start()
+    if BACKUP_V2_ENABLED:
+        print("[backup-v2] not permitted (%s); legacy backup loop running as fallback"%_BK_REASON,flush=True)
 
 # ── Bootstrap the platform super-admin (you) from env ──────────────
 # The platform owner is a DEDICATED account, separate from every tenant (5sec
@@ -15270,7 +15311,11 @@ def api_ops_backup_status():
             age=int((datetime.utcnow()-dt).total_seconds())
     except Exception: age=None
     stale = (age is None) or (age > BACKUP_MAX_AGE_SEC)
+    permitted, reason = _backup_v2_permitted()
     return jsonify({"ok":True,"enabled":bool(BACKUP_V2_ENABLED),"bucket_configured":bool(R2_BACKUP_BUCKET),
+                    "permitted":bool(permitted),"permit_reason":reason,
+                    "safe_mode":bool(STAGING_SAFE),"backup_only_exception_active":bool(permitted and STAGING_SAFE),
+                    "prune_in_app":bool(BACKUP_PRUNE_IN_APP),
                     "last_run_id":st.get("last_run_id"),"last_ok":st.get("last_ok"),
                     "last_error":st.get("last_error"),"last_finished_utc":st.get("last_finished_utc"),
                     "files":st.get("files"),"age_seconds":age,"max_age_seconds":BACKUP_MAX_AGE_SEC,
