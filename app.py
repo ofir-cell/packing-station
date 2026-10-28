@@ -3275,10 +3275,16 @@ def _backup_v2_permitted():
     return (True, "ok")
 
 def _backup_targets():
+    # DBs + control-plane JSON, plus the small per-org files that live ONLY on the volume
+    # (not in R2). Large media (videos/photos/documents/labels/invoices) stays durable in
+    # the operational R2 bucket and is intentionally not re-copied here. run_backup skips
+    # any path that doesn't exist, so absent files are simply omitted.
     t=[("platform.db",PLATFORM_DB),("users.json",USERS_FILE),("stations.json",STATIONS_FILE)]
     for org in list_org_ids():
         t.append((org+"/shipments.db",shipments_db_path(org)))
         t.append((org+"/giveaways.db",giveaway_db_path(org)))
+        for fn in ("packing_log.csv","documents.json","announcements.json","onboarding.json"):
+            t.append((org+"/"+fn, org_path(org, fn)))
     return t
 
 class _R2BackupStore:
