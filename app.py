@@ -3344,23 +3344,33 @@ def _backup_v2_run_once():
 BACKUP_ALERT_EMAIL=(os.environ.get("BACKUP_ALERT_EMAIL") or "").strip()
 BACKUP_MAX_AGE_SEC=int(os.environ.get("BACKUP_MAX_AGE_SEC","25200"))  # 7h default
 
+def _backup_v2_due(last_mtime, now, ran_ok_once, last_ok):
+    """One scheduler-tick decision. Run when 6h have elapsed since the last SUCCESSFUL
+    backup marker, OR when this process has not yet had a successful run (so a stale
+    marker left by a FAILED deploy cannot suppress the first real backup for 6h).
+    Returns False once a success exists and <6h have passed -> no uncontrolled repeats."""
+    if not ran_ok_once and last_ok is not True:
+        return True
+    return (now - last_mtime) >= 6*3600
+
 def _backup_v2_loop():
     guard=open(os.path.join(DATA_DIR,".backupv2.guard"),"a+")
     try: fcntl.flock(guard.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
     except OSError: return  # another worker owns backups (no duplicate scheduler)
+    _ran_ok_once=False
     while True:
         try:
             marker=os.path.join(DATA_DIR,".backupv2_last")
             last=os.path.getmtime(marker) if os.path.exists(marker) else 0
-            if time.time()-last >= 6*3600:            # every 6 hours
-                open(marker,"w").close()
+            if _backup_v2_due(last, time.time(), _ran_ok_once, _backup_status.get("last_ok")):
                 _backup_v2_run_once()
-            # age alert: if the newest successful backup is too old, warn once per loop
-            if BACKUP_ALERT_EMAIL and _backup_status.get("last_finished_utc"):
-                pass  # external monitor uses /api/ops/backup-status; in-loop alert on failure above
+                # Advance the 6h clock ONLY after a real success; a failure retries next loop
+                # (it must NOT touch the marker, or it would suppress retries for 6 hours).
+                if _backup_status.get("last_ok") is True:
+                    open(marker,"w").close(); _ran_ok_once=True
         except Exception as e:
             print("[backup-v2] loop error:",e,flush=True)
-        time.sleep(600)   # re-check every 10 min; 6h gate above controls cadence
+        time.sleep(600)   # re-check every 10 min; the decision above controls cadence
 
 _BK_OK, _BK_REASON = _backup_v2_permitted()
 if _BK_OK:
