@@ -3316,7 +3316,7 @@ class _R2BackupStore:
 def _backup_v2_run_once():
     """One snapshot cycle. Temp snapshots go to TMPDIR (NOT /data). Records status and
     alerts on failure. Returns the manifest or None."""
-    import ps_backup
+    import ps_backup, tempfile
     tmp=os.environ.get("TMPDIR") or tempfile.gettempdir()
     if os.path.abspath(tmp).startswith(os.path.abspath(DATA_DIR)):
         tmp=tempfile.gettempdir()   # never stage snapshots on the data volume
