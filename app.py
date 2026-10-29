@@ -14893,9 +14893,15 @@ def _tt_rooms_ensure(c):
     c.execute("""CREATE TABLE IF NOT EXISTS tiktok_rooms(
         room_id TEXT PRIMARY KEY, label TEXT, start_ts INTEGER, named INTEGER DEFAULT 0)""")
     cols={r[1] for r in c.execute("PRAGMA table_info(tiktok_rooms)").fetchall()}
-    if "custom_name" not in cols:
-        try: c.execute("ALTER TABLE tiktok_rooms ADD COLUMN custom_name TEXT")
-        except Exception: pass
+    # Backfill EVERY column on tables created by an older schema (CREATE IF NOT EXISTS is a
+    # no-op on an existing table). A pre-existing prod table was missing label/start_ts/named,
+    # which broke order materialization with "no such column: label". Additive ALTERs only --
+    # no data rewrite, never drops or changes existing columns/rows.
+    for _name,_ddl in (("label","label TEXT"),("start_ts","start_ts INTEGER"),
+                       ("named","named INTEGER DEFAULT 0"),("custom_name","custom_name TEXT")):
+        if _name not in cols:
+            try: c.execute("ALTER TABLE tiktok_rooms ADD COLUMN "+_ddl)
+            except Exception: pass
 
 def _tt_room_customs(c):
     """{room_id: custom_name} — names the user set by hand (sticky across regroup)."""
