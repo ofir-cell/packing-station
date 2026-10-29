@@ -1234,6 +1234,10 @@ def sdb_init(org):
         # (so order doesn't matter), exactly once per unit, and be reversed on un-pack.
         "ALTER TABLE shipment_items ADD COLUMN depleted_qty INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN depleted_sku TEXT",
+        # How an item was checked off while picking: 'scan' (product barcode verified),
+        # 'tap' (tapped on screen) or 'bypass' (filled in by Mark as picked). Lets us
+        # measure the scan-to-verify pilot.
+        "ALTER TABLE shipment_items ADD COLUMN pick_method TEXT",
         # Pre-import match: how many units we've already deducted for a binding,
         # so re-binding / unmapping can restore on_hand correctly.
         "ALTER TABLE show_product_map ADD COLUMN depleted_qty INTEGER DEFAULT 0",
@@ -6580,7 +6584,7 @@ def api_pick_get(sid):
     return jsonify({
         "ok": True,
         "shipment": dict(s),
-        "items": [dict(i) for i in items],
+        "items": _pick_items_with_products(label, items),
         "cleanup_blocked": cleanup_blocked,
         "cleanup": cleanup_info,
         "cleanout_required": cleanout_required,
@@ -6589,6 +6593,99 @@ def api_pick_get(sid):
         "picked_at": s["picked_at"],
         "giveaways": _pending_giveaways_for(s["shipment_id"], s["tracking_code"]),
     })
+
+def _pick_items_with_products(label, items):
+    """Pick-screen items, each with the product its sticker was linked to during the
+    live (Live Match / Live Scan), so the picker sees a photo and can scan to verify.
+    Items with no linked product get product=None and are checked off by tapping."""
+    out = [dict(i) for i in items]
+    if not label or not out:
+        for d in out: d["product"] = None
+        return out
+    c = sdb()
+    try:
+        exact, by_st = _ship_bindings(c, label)
+        cache = {}
+        for d in out:
+            psku = _resolve_item_product(exact, by_st, (d.get("sku") or "").strip(), d.get("product_name"))
+            if psku and psku not in cache:
+                p = c.execute("SELECT sku, name, barcode, image_url FROM products WHERE sku=?", (psku,)).fetchone()
+                cache[psku] = dict(p) if p else None
+            d["product"] = cache.get(psku) if psku else None
+    finally:
+        c.close()
+    return out
+
+@app.route("/api/pick/<sid>/scan", methods=["POST"])
+@req_role("picker", "worker", "admin", "cs")
+def api_pick_scan(sid):
+    """Scan-to-verify: the picker scans a PRODUCT barcode while an order is open. If it is
+    the product linked to one of this order's not-yet-picked stickers, that item is checked
+    off (pick_method='scan'). Anything else is refused with a reason the screen can show:
+      wrong      — a real product, but not one this order needs (shows what to take)
+      no_binding — this order's items aren't linked to products yet (tap them instead)
+      label      — the code is a shipping label, not a product
+      already    — that product was already scanned for this order
+    Tapping an item and Mark as picked keep working exactly as before (the bypass)."""
+    if not re.match(r'^[A-Za-z0-9_\-]{1,64}$', sid):
+        return jsonify({"ok": False, "error": "Invalid id"})
+    code = ((request.get_json(silent=True) or {}).get("code") or "").strip()
+    if not code or len(code) > 64:
+        return jsonify({"ok": False, "error": "Nothing scanned"})
+    c = sdb()
+    try:
+        s = c.execute("SELECT shipment_id, status, import_label, tracking_code FROM shipments WHERE shipment_id=?", (sid,)).fetchone()
+        if not s:
+            return jsonify({"ok": False, "error": "Shipment not found"})
+        if (s["status"] or "") == "cancelled":
+            return jsonify({"ok": False, "error": "This order was cancelled -- its items can't be picked"})
+        if (s["status"] or "") in ("picked", "packed", "shipped"):
+            return jsonify({"ok": False, "error": "This order is already picked"})
+        items = c.execute("""SELECT id, sku, product_name, quantity, COALESCE(picked,0) AS picked
+                             FROM shipment_items WHERE shipment_id=? AND COALESCE(cancelled,0)=0
+                             ORDER BY id""", (sid,)).fetchall()
+        exact, by_st = _ship_bindings(c, s["import_label"] or "")
+        linked = []          # (item, product_sku)
+        for it in items:
+            psku = _resolve_item_product(exact, by_st, (it["sku"] or "").strip(), it["product_name"])
+            if psku: linked.append((it, psku))
+        scanned = c.execute("SELECT sku, name, image_url FROM products WHERE barcode=? OR sku=?", (code, code)).fetchone()
+        scanned_sku = scanned["sku"] if scanned else None
+        hits = [it for it, psku in linked if scanned_sku and psku == scanned_sku]
+        todo = [it for it in hits if not it["picked"]]
+        if todo:
+            it = todo[0]
+            c.execute("""UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP, pick_method='scan'
+                         WHERE id=?""", (it["id"],))
+            c.commit()
+            return jsonify({"ok": True, "item_id": it["id"], "sticker": it["sku"],
+                            "product": {"sku": scanned_sku, "name": scanned["name"], "image_url": scanned["image_url"]}})
+        if hits:
+            return jsonify({"ok": False, "already": True, "item_id": hits[0]["id"],
+                            "error": "Already scanned for this order"})
+        # Not a product of this order — is it a shipping label (picker moved on)?
+        if not scanned:
+            other = _resolve_shipment_by_code(c, code)
+            if other:
+                return jsonify({"ok": False, "label": True,
+                                "same_order": other["shipment_id"] == sid,
+                                "error": "That's a shipping label, not a product"})
+        if not linked:
+            return jsonify({"ok": False, "no_binding": True,
+                            "error": "This order's items aren't linked to products yet -- tap them instead"})
+        expected = []
+        for it, psku in linked:
+            if it["picked"]: continue
+            p = c.execute("SELECT name, image_url FROM products WHERE sku=?", (psku,)).fetchone()
+            expected.append({"item_id": it["id"], "sticker": it["sku"], "listing": it["product_name"],
+                             "name": p["name"] if p else psku, "image_url": p["image_url"] if p else None})
+        return jsonify({"ok": False, "wrong": True,
+                        "scanned": ({"name": scanned["name"], "image_url": scanned["image_url"]} if scanned
+                                    else {"name": "Unknown barcode " + code, "image_url": None}),
+                        "expected": expected,
+                        "error": "Wrong item for this order"})
+    finally:
+        c.close()
 
 @app.route("/api/pick/item/<int:item_id>/toggle", methods=["POST"])
 @req_role("picker", "worker", "admin", "cs")
@@ -6605,9 +6702,9 @@ def api_pick_item_toggle(item_id):
         return jsonify({"ok": False, "error": "This order was cancelled -- its items can't be picked"})
     new_state = 0 if row["picked"] else 1
     if new_state:
-        c.execute("UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
+        c.execute("UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP, pick_method='tap' WHERE id=?", (item_id,))
     else:
-        c.execute("UPDATE shipment_items SET picked=0, picked_at=NULL WHERE id=?", (item_id,))
+        c.execute("UPDATE shipment_items SET picked=0, picked_at=NULL, pick_method=NULL WHERE id=?", (item_id,))
     c.commit(); c.close()
     return jsonify({"ok": True, "picked": new_state})
 
@@ -6756,7 +6853,7 @@ def api_pick_complete(sid):
                         "picked_by": row["picked_by"] if row else None,
                         "picked_at": row["picked_at"] if row else None,
                         "error": "Already picked by " + who})
-    c.execute("""UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP
+    c.execute("""UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP, pick_method='bypass'
                  WHERE shipment_id=? AND COALESCE(cancelled,0)=0 AND COALESCE(picked,0)=0""", (sid,))
     c.commit(); c.close()
     return jsonify({"ok": True})

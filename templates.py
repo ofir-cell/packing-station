@@ -4902,6 +4902,25 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .btn-cancel:active{background:rgba(17,24,39,0.064)}
 .btn-submit{background:#f43f5e;color:#fff;border:none;border-radius:12px;padding:11px 22px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;letter-spacing:.4px}
 .btn-submit:active{transform:scale(.97)}
+.scan-hint{margin:2px 0 12px;padding:9px 12px;border-radius:10px;background:rgba(79,70,229,.08);color:#4f46e5;font-size:13px;font-weight:700;text-align:center;display:none}
+.scan-hint.on{display:block}
+.item-scan{position:absolute;left:-9999px;width:1px;height:1px;opacity:0}
+.pi-img{width:54px;height:54px;border-radius:10px;object-fit:cover;flex-shrink:0;background:rgba(17,24,39,.06)}
+.pi-prod{font-size:13px;font-weight:700;color:var(--text);margin-top:3px}
+.pi-badge{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:800;background:rgba(16,185,129,.16);color:#059669;vertical-align:middle}
+.pi.flash{animation:piflash .9s ease}
+@keyframes piflash{0%{box-shadow:0 0 0 0 rgba(16,185,129,.7)}100%{box-shadow:0 0 0 14px rgba(16,185,129,0)}}
+.wrong-overlay{position:fixed;inset:0;background:rgba(190,18,60,.92);display:none;align-items:center;justify-content:center;z-index:300;padding:18px}
+.wrong-overlay.on{display:flex}
+.wrong-card{background:#fff;color:#141b26;border-radius:20px;padding:22px;max-width:460px;width:100%;text-align:center}
+.wrong-title{font-size:30px;font-weight:900;color:#e11d48;margin-bottom:8px}
+.wrong-sub{font-size:15px;margin-bottom:14px}
+.wrong-need{font-size:12px;font-weight:800;text-transform:uppercase;color:#64748b;margin-bottom:8px;letter-spacing:.4px}
+.wrong-exp{display:flex;align-items:center;gap:12px;text-align:left;padding:10px;border:2px solid rgba(16,185,129,.5);border-radius:12px;margin-bottom:8px}
+.wrong-exp img{width:64px;height:64px;border-radius:10px;object-fit:cover;background:rgba(17,24,39,.06)}
+.wrong-exp .st{font-family:'SF Mono',Menlo,monospace;font-weight:800;color:#d9748f;font-size:13px}
+.wrong-exp .nm{font-weight:800;font-size:15px}
+.wrong-ok{margin-top:10px;width:100%;padding:15px;border:0;border-radius:12px;background:#141b26;color:#fff;font-size:16px;font-weight:800;font-family:inherit}
 </style>
 </head><body data-role="__ROLE__">
 <div class="top">
@@ -4966,7 +4985,20 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
       <div class="progress-text"><b id="pickedCount">0</b> <span data-i18n="of">of</span> <span id="totalCount">0</span> <span data-i18n="pickedw">picked</span></div>
       <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
     </div>
+    <div class="scan-hint" id="scanHint"><span data-i18n="scanhint">📷 Scan each product to check it — or tap it</span></div>
+    <input class="item-scan" id="itemScanInput" inputmode="none" autocomplete="off" aria-label="Scan product">
     <div class="items-list" id="itemsList"></div>
+  </div>
+</div>
+
+<!-- Scan-to-verify: wrong item alert -->
+<div class="wrong-overlay" id="wrongOverlay">
+  <div class="wrong-card">
+    <div class="wrong-title" data-i18n="wrongitem">✋ WRONG ITEM</div>
+    <div class="wrong-sub"><span data-i18n="youscanned">You scanned</span>: <b id="wrongScanned"></b></div>
+    <div class="wrong-need" data-i18n="thisneeds">This order needs:</div>
+    <div id="wrongExpected"></div>
+    <button class="wrong-ok" id="wrongOk" data-i18n="putback">Put it back — got it</button>
   </div>
 </div>
 
@@ -5018,6 +5050,7 @@ var T={en:{
  describeproblem:'Or describe the problem here…',cancel:'Cancel',reportskip:'Report & skip',
  donotpick:'DO NOT PICK',cancelledsub:'This order has been cancelled by the customer.<br>Skip it and scan the next label.',
  gotitscan:'Got it — back to scan',donebring:'✓ Done — bring to packer',moretopick:'more to pick',
+ scanhint:'📷 Scan each product to check it — or tap it',scanned:'scanned',wrongitem:'✋ WRONG ITEM',youscanned:'You scanned',thisneeds:'This order needs:',putback:'Put it back — got it',allscanned:'Everything in this order is already checked',alreadyscanned:'Already scanned for this order',scanproduct:'That is the label — now scan the PRODUCT',otherlabel:'That is another order label — finish this one or go back first',notlinked:'Not linked to a product yet — tap the item instead',
  combined:'⚠️ COMBINED ORDER',shows:'SHOWS',combinedsub:'Items come from different shows — pick each TABLE SET below in order',
  tableset:'TABLE SET',giveaway:'GIVEAWAY',gotomanager:'GO TO MANAGER TO GET IT',alreadypicked:'Already picked by',
  clearcancelled:'Clear cancelled items off the table first',noshipment:'No shipment for',lookupfailed:'Lookup failed'
@@ -5033,6 +5066,7 @@ var T={en:{
  describeproblem:'O describe el problema aquí…',cancel:'Cancelar',reportskip:'Reportar y saltar',
  donotpick:'NO RECOLECTAR',cancelledsub:'Este pedido fue cancelado por el cliente.<br>Sáltalo y escanea la siguiente etiqueta.',
  gotitscan:'Entendido — volver a escanear',donebring:'✓ Listo — llévalo al empacador',moretopick:'por recolectar',
+ scanhint:'📷 Escanea cada producto para verificarlo — o tócalo',scanned:'escaneado',wrongitem:'✋ PRODUCTO EQUIVOCADO',youscanned:'Escaneaste',thisneeds:'Esta orden necesita:',putback:'Devuélvelo — entendido',allscanned:'Todo en esta orden ya está marcado',alreadyscanned:'Ya escaneado para esta orden',scanproduct:'Esa es la etiqueta — ahora escanea el PRODUCTO',otherlabel:'Esa es la etiqueta de otra orden — termina esta o vuelve primero',notlinked:'Aún no está vinculado a un producto — toca el artículo',
  combined:'⚠️ PEDIDO COMBINADO',shows:'SHOWS',combinedsub:'Los artículos son de shows distintos — recolecta cada SET DE MESAS abajo en orden',
  tableset:'SET DE MESAS',giveaway:'REGALO',gotomanager:'VE AL GERENTE POR ESTE REGALO',alreadypicked:'Ya recolectado por',
  clearcancelled:'Primero retira los artículos cancelados de la mesa',noshipment:'No hay envío para',lookupfailed:'Búsqueda fallida'
@@ -5244,6 +5278,54 @@ setInterval(function(){
     }
 },500);
 
+// ─── Scan-to-verify while an order is open ───
+// The scanner types into a hidden field (inputmode=none: no on-screen keyboard). A product
+// barcode is checked against the product linked to each sticker during the live. Tapping an
+// item and the Done button still work as before, so nothing is ever blocked by this.
+document.getElementById('itemScanInput').addEventListener('keydown',function(e){
+    if(e.key!=='Enter')return;
+    var code=(this.value||'').trim(); this.value='';
+    if(code)scanItem(code);
+});
+setInterval(function(){
+    if(!document.getElementById('listView').classList.contains('on'))return;
+    if(document.getElementById('issueModal').style.display==='flex')return;
+    var inp=document.getElementById('itemScanInput');
+    if(document.activeElement!==inp)inp.focus({preventScroll:true});
+},500);
+document.getElementById('wrongOk').addEventListener('click',function(){
+    document.getElementById('wrongOverlay').classList.remove('on');
+});
+function scanItem(code){
+    if(!currentDetail)return;
+    document.getElementById('wrongOverlay').classList.remove('on');
+    fetch('/api/pick/'+encodeURIComponent(currentDetail)+'/scan',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({code:code})}).then(function(r){return r.json()}).then(function(d){
+        if(d.ok){
+            var it=currentItems.find(function(x){return x.id===d.item_id});
+            if(it){it.picked=1;it.pick_method='scan';}
+            sndCheck(); renderItems();
+            var el=document.querySelector('.pi[data-id="'+d.item_id+'"]'); if(el)el.classList.add('flash');
+            return;
+        }
+        if(d.wrong){
+            sndError();
+            document.getElementById('wrongScanned').textContent=(d.scanned&&d.scanned.name)||code;
+            document.getElementById('wrongExpected').innerHTML=(d.expected||[]).map(function(x){
+                return '<div class="wrong-exp">'+(x.image_url?'<img src="'+escapeHtml(x.image_url)+'" alt="">':'')+
+                  '<div><div class="st">#'+escapeHtml(x.sticker||'')+(_partOf(x.listing||'')!==9999?' · PART '+_partOf(x.listing||''):'')+'</div><div class="nm">'+escapeHtml(x.name||'')+'</div></div></div>';
+            }).join('')||'<div class="wrong-exp"><div class="nm">'+t('allscanned')+'</div></div>';
+            document.getElementById('wrongOverlay').classList.add('on');
+            return;
+        }
+        sndError();
+        if(d.already){showToast(t('alreadyscanned'));return;}
+        if(d.label){showToast(d.same_order?t('scanproduct'):t('otherlabel'));return;}
+        if(d.no_binding){showToast(t('notlinked'));return;}
+        showToast(d.error||'Error');
+    }).catch(function(){sndError();showToast(t('lookupfailed'))});
+}
+
 function lookupAndOpen(code){
     fetch('/api/pick/'+encodeURIComponent(code)).then(function(r){return r.json()}).then(function(d){
         // /api/pick/<id> takes shipment_id. The label barcode is likely tracking_code.
@@ -5350,9 +5432,11 @@ function renderItems(){
         var it=x.it, cls='pi'+(it.cancelled?' cancelled':(it.picked?' done':''));
         html+='<div class="'+cls+'" data-id="'+it.id+'">'+
             '<div class="pi-box"></div>'+
+            (it.product&&it.product.image_url?'<img class="pi-img" src="'+escapeHtml(it.product.image_url)+'" alt="">':'')+
             '<div class="pi-info">'+
-                '<div class="pi-sku">'+escapeHtml(it.sku||'?')+'</div>'+
+                '<div class="pi-sku">'+escapeHtml(it.sku||'?')+(it.picked&&it.pick_method==='scan'?'<span class="pi-badge">✓ '+t('scanned')+'</span>':'')+'</div>'+
                 '<div class="pi-name">'+renderProductName(it.product_name||'')+(it.cancelled?' · CANCELLED':'')+'</div>'+
+                (it.product?'<div class="pi-prod">📦 '+escapeHtml(it.product.name||'')+'</div>':'')+
             '</div>'+
             '<div class="pi-qty">×'+(it.quantity||1)+'</div>'+
         '</div>';
@@ -5372,6 +5456,7 @@ function renderItems(){
         });
     }
     document.getElementById('itemsList').innerHTML=html;
+    document.getElementById('scanHint').classList.toggle('on',active.some(function(i){return !!i.product}));
     document.getElementById('itemsList').querySelectorAll('.pi').forEach(function(el){
         if(el.classList.contains('cancelled'))return;
         if(el.classList.contains('gv')){el.addEventListener('click',function(){toggleGiveaway(parseInt(el.dataset.gid))});return;}
@@ -5391,7 +5476,7 @@ function toggleItem(itemId){
     fetch('/api/pick/item/'+itemId+'/toggle',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
         if(!d.ok){sndError();showToast(d.error||'Error');return}
         var it=currentItems.find(function(x){return x.id===itemId});
-        if(it)it.picked=d.picked;
+        if(it){it.picked=d.picked;it.pick_method=d.picked?'tap':null;}
         if(d.picked)sndCheck();else sndClick();
         renderItems();
     });
