@@ -16195,6 +16195,11 @@ TT_PATH_PACKAGE = os.environ.get("TIKTOK_PATH_PACKAGE", "/fulfillment/{v}/packag
 TT_PATH_SLOTS = os.environ.get("TIKTOK_PATH_HANDOVER_SLOTS", "/fulfillment/{v}/packages/{pid}/handover_time_slots").strip()
 TT_PATH_SHIP = os.environ.get("TIKTOK_PATH_SHIP", "/fulfillment/{v}/packages/{pid}/ship").strip()
 TT_PATH_DOC = os.environ.get("TIKTOK_PATH_SHIPPING_DOC", "/fulfillment/{v}/packages/{pid}/shipping_documents").strip()
+TT_PATH_ORDERS = os.environ.get("TIKTOK_PATH_ORDER_DETAIL", "/order/{v}/orders").strip()
+# An order is ready for a label only once TikTok moved it from Pending (ON_HOLD / UNPAID) to
+# Processing (AWAITING_SHIPMENT). Anything else that isn't final just waits for a later batch.
+TT_READY_STATUSES = {"AWAITING_SHIPMENT"}
+TT_DEAD_STATUSES = {"CANCELLED"}
 TT_SHIP_SEND_BOX = os.environ.get("TIKTOK_SHIP_SEND_BOX", "").strip().lower() in ("1", "true", "yes")
 TT_LABEL_DOC_SIZE = os.environ.get("TIKTOK_LABEL_DOC_SIZE", "A6").strip()   # A6 = 4x6
 TT_DEFAULT_BOX = {"weight_lb": 1.0, "length_in": 9.0, "width_in": 6.0, "height_in": 3.0}
@@ -16264,6 +16269,52 @@ def _tt_api_label(org, shop_id, pid):
     url = str(d.get("doc_url") or d.get("url") or "")
     if not url: raise TTError("TikTok returned no label document")
     return url
+
+def _tt_api_order_statuses(org, shop_id, order_ids):
+    """{order_id: STATUS} straight from TikTok (read-only, 50 ids per call)."""
+    out = {}
+    ids = [str(o) for o in order_ids]
+    for i in range(0, len(ids), 50):
+        d = _tt_shop_call(org, shop_id, "GET", TT_PATH_ORDERS, params={"ids": ",".join(ids[i:i + 50])})
+        for o in d.get("orders") or []:
+            oid = str(o.get("id") or "")
+            if oid: out[oid] = str(o.get("status") or o.get("order_status") or "").upper()
+    return out
+
+def _tt_live_order_statuses(org, order_ids):
+    """Current TikTok status of these orders. Asks TikTok first (and saves what it says);
+    if TikTok can't be reached, falls back to the last status our sync stored.
+    Returns (statuses, fresh, error)."""
+    org = _org_or_current(org)
+    ids = sorted({str(o) for o in order_ids})
+    if not ids: return {}, True, None
+    p = pdb()
+    try:
+        q = "SELECT order_id, shop_id, status FROM tiktok_orders WHERE org_id=? AND order_id IN (%s)" % ",".join("?" * len(ids))
+        rows = [dict(r) for r in p.execute(q, [org] + ids).fetchall()]
+    finally:
+        p.close()
+    stored = {str(r["order_id"]): (r["status"] or "").upper() for r in rows}
+    by_shop = {}
+    for r in rows: by_shop.setdefault(r["shop_id"] or "", []).append(str(r["order_id"]))
+    fresh, err = {}, None
+    for shop, oids in by_shop.items():
+        if not shop: continue
+        try:
+            fresh.update(_tt_api_order_statuses(org, shop, oids))
+        except TTError as e:
+            err = str(e)
+    if fresh:
+        now = datetime.now().isoformat(timespec="seconds")
+        p = pdb()
+        try:
+            for oid, st in fresh.items():
+                if st: p.execute("UPDATE tiktok_orders SET status=?, updated_at=? WHERE org_id=? AND order_id=?", (st, now, org, oid))
+            p.commit()
+        finally:
+            p.close()
+    out = {o: (fresh.get(o) or stored.get(o) or "") for o in ids}
+    return out, (err is None and all(o in fresh for o in ids)), err
 
 # ---- storage ----
 def _tt_labels_ensure(c):
@@ -16423,6 +16474,27 @@ def _tt_batch_plan(org, label):
     finally:
         c.close()
     need = {k: v for k, v in need.items() if k not in labeled}
+    # Only orders TikTok already moved to Processing get a label. If one of a buyer's
+    # orders in this live is still Pending, hold ALL that buyer's packages so they can still
+    # be combined into one box once it clears.
+    statuses, fresh, st_err = _tt_live_order_statuses(org, [o for os_ in need.values() for o in os_])
+    c = sdb(org)
+    try:
+        buyer = {}
+        for pid in need:
+            r = c.execute("SELECT buyer_username, buyer_name FROM shipments WHERE shipment_id=?", (pid,)).fetchone()
+            buyer[pid] = ((r["buyer_username"] or r["buyer_name"] or "") if r else "") or pid
+    finally:
+        c.close()
+    dead = {pid for pid, os_ in need.items() if all(statuses.get(o) in TT_DEAD_STATUSES for o in os_)}
+    need = {k: v for k, v in need.items() if k not in dead}
+    not_ready = {pid for pid, os_ in need.items()
+                 if any(statuses.get(o) not in TT_READY_STATUSES and statuses.get(o) not in TT_DEAD_STATUSES for o in os_)}
+    held_buyers = {buyer[p] for p in not_ready}
+    waiting = [{"package": p, "buyer": buyer[p], "pending": p in not_ready,
+                "statuses": sorted({statuses.get(o) or "UNKNOWN" for o in need[p]})}
+               for p in sorted(need) if buyer[p] in held_buyers]
+    need = {k: v for k, v in need.items() if buyer[k] not in held_buyers}
     order_to_pkg = {o: p for p, os_ in need.items() for o in os_}
     combines = []
     if len(need) > 1:
@@ -16434,7 +16506,9 @@ def _tt_batch_plan(org, label):
     in_combine = {p for cb in combines for p in cb["packages"]}
     singles = sorted(p for p in need if p not in in_combine)
     return {"show": label, "combines": combines, "singles": singles,
-            "labels": len(singles) + len(combines), "packages_before": len(need)}
+            "labels": len(singles) + len(combines), "packages_before": len(need),
+            "waiting": waiting, "waiting_count": len(waiting), "cancelled_at_tiktok": len(dead),
+            "status_fresh": fresh, "status_error": st_err}
 
 def _tt_batch_counts(c, bid):
     rows = c.execute("SELECT status, COUNT(*) n FROM tt_label_jobs WHERE batch_id=? GROUP BY status", (bid,)).fetchall()
@@ -16450,6 +16524,24 @@ def _tt_run_batch(org, bid):
     box = _tt_box(org)
     targets = []   # (shop_id, package_id)
     combined = 0
+    # Re-check TikTok right before buying: the plan may be minutes/hours old, and an order can
+    # be cancelled in between. Anything no longer in Processing is skipped (never labeled).
+    if not plan.get("rechecked"):
+        c = sdb(org)
+        single_orders = {p: [str(r["order_id"]) for r in c.execute(
+            "SELECT DISTINCT order_id FROM shipment_items WHERE shipment_id=?", (p,)).fetchall()] for p in plan.get("singles", [])}
+        c.close()
+        all_o = [o for cb in plan.get("combines", []) for o in cb["order_ids"]] + [o for os_ in single_orders.values() for o in os_]
+        st, fresh, _err = _tt_live_order_statuses(org, all_o)
+        if fresh:
+            ok = lambda os_: all(st.get(str(o)) in TT_READY_STATUSES for o in os_)
+            skipped = [p for cb in plan.get("combines", []) if not cb.get("new_pid") and not ok(cb["order_ids"]) for p in cb["packages"]]
+            skipped += [p for p, os_ in single_orders.items() if not ok(os_)]
+            plan["combines"] = [cb for cb in plan.get("combines", []) if cb.get("new_pid") or ok(cb["order_ids"])]
+            plan["singles"] = [p for p in plan.get("singles", []) if ok(single_orders[p])]
+            plan["skipped"] = skipped
+        plan["rechecked"] = True
+        c = sdb(org); c.execute("UPDATE tt_batches SET plan=? WHERE id=?", (json.dumps(plan), bid)); c.commit(); c.close()
     for cb in plan.get("combines", []):
         shop = cb.get("shop_id") or _tt_shop_for_orders(org, cb["order_ids"])
         if cb.get("new_pid"):
@@ -16507,7 +16599,9 @@ def api_tiktok_label_shows():
     org = current_org() or DEFAULT_ORG
     cutoff = (datetime.now() - timedelta(days=14)).isoformat(timespec="seconds")
     c = sdb(org); _tt_labels_ensure(c)
-    rows = c.execute("""SELECT s.import_label label, COUNT(DISTINCT s.shipment_id) n, MAX(s.imported_at) last
+    rows = c.execute("""SELECT s.import_label label, COUNT(DISTINCT s.shipment_id) n, MAX(s.imported_at) last,
+                               SUM(CASE WHEN UPPER(COALESCE(s.tt_status,''))='AWAITING_SHIPMENT' THEN 1 ELSE 0 END) ready,
+                               SUM(CASE WHEN UPPER(COALESCE(s.tt_status,'')) IN ('ON_HOLD','UNPAID') THEN 1 ELSE 0 END) pending
                         FROM shipments s WHERE COALESCE(s.import_batch,'')='tiktok-api'
                           AND s.status NOT IN ('cancelled','shipped','giveaway') AND COALESCE(s.tracking_code,'')=''
                           AND COALESCE(s.imported_at,'')>=? AND COALESCE(s.import_label,'')<>''
@@ -16539,6 +16633,9 @@ def api_tiktok_batch_prepare():
     if not label: return jsonify({"ok": False, "error": "show required"})
     plan = _tt_batch_plan(org, label)
     if not plan["labels"]:
+        if plan.get("waiting_count"):
+            return jsonify({"ok": False, "plan": plan, "error": "All %d packages are still Pending at TikTok. "
+                            "Try again once TikTok moves them to Processing." % plan["waiting_count"]})
         return jsonify({"ok": False, "error": "Nothing in this show needs a label."})
     c = sdb(org); _tt_labels_ensure(c)
     cur = c.execute("INSERT INTO tt_batches(show,status,plan,created_by,created_at) VALUES(?,?,?,?,?)",

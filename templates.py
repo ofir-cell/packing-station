@@ -13171,7 +13171,7 @@ function loadShows(){
       document.getElementById('bwd').value=d.box.width_in;document.getElementById('bh').value=d.box.height_in;}
     var el=document.getElementById('needShows');
     el.innerHTML=d.shows.length?d.shows.map(function(s,i){
-      return '<div class="srow"><div><div class="nm">'+esc(s.label)+'</div><div class="ct">'+s.n+' package'+(s.n===1?'':'s')+' without a label</div></div>'+
+      return '<div class="srow"><div><div class="nm">'+esc(s.label)+'</div><div class="ct">'+s.n+' package'+(s.n===1?'':'s')+' without a label'+(s.pending?' · <b>'+(s.ready||0)+' ready</b> · <span style="color:#b45309">'+s.pending+' still Pending at TikTok</span>':'')+'</div></div>'+
         '<button class="btn primary" data-i="'+i+'">Prepare labels</button></div>';
     }).join(''):'<div class="empty">Every TikTok package from the last 2 weeks has a label.</div>';
     Array.prototype.forEach.call(el.querySelectorAll('button[data-i]'),function(b){
@@ -13193,15 +13193,18 @@ function prepare(label){
   modal('<h3>Preparing…</h3><div class="ct">Checking with TikTok what can be combined.</div>');
   fetch('/api/tiktok/batch/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:label})})
   .then(function(r){return r.json();}).then(function(d){
-    if(!d.ok){modal('<h3>Nothing to do</h3><div class="merr">'+esc(d.error)+'</div><button class="btn" id="mx">Close</button>');document.getElementById('mx').onclick=closeModal;return;}
+    if(!d.ok){modal('<h3>'+(d.plan&&d.plan.waiting_count?'Not ready yet':'Nothing to do')+'</h3><div class="merr">'+esc(d.error)+'</div><button class="btn" id="mx">Close</button>');document.getElementById('mx').onclick=closeModal;return;}
     BATCH=d.batch_id; var p=d.plan, b=d.box;
     var saved=p.packages_before-p.labels;
     modal('<h3>Create TikTok labels</h3><div class="ct" style="margin-bottom:8px">'+esc(p.show)+'</div>'+
-      '<div class="kv"><span>Packages without a label</span><b>'+p.packages_before+'</b></div>'+
+      '<div class="kv"><span>Ready (Processing at TikTok)</span><b>'+p.packages_before+'</b></div>'+
+      (p.waiting_count?'<div class="kv"><span>Waiting (a buyer still has a Pending order)</span><b style="color:#b45309">'+p.waiting_count+'</b></div>':'')+
       '<div class="kv"><span>Combines (TikTok-approved)</span><b>'+p.combines.length+(saved?' · saves '+saved+' box'+(saved===1?'':'es'):'')+'</b></div>'+
       '<div class="kv"><span>Labels to create</span><b>'+p.labels+'</b></div>'+
       '<div class="kv"><span>Box</span><b>'+b.weight_lb+' lb · '+b.length_in+'×'+b.width_in+'×'+b.height_in+' in</b></div>'+
       '<div class="kv"><span>Handover</span><b>Carrier pickup</b></div>'+
+      (p.waiting_count?'<div class="ct" style="margin-top:8px">Waiting packages are left for a later batch, so a buyer with several orders still gets one box. This live will show up again once they move to Processing.</div>':'')+
+      (p.status_fresh===false?'<div class="merr">Could not get the latest status from TikTok, so this uses the last synced status. It is checked again right before buying.</div>':'')+
       (WRITE?'<input class="pin" id="pin" type="password" inputmode="numeric" placeholder="Manager PIN" autocomplete="off">':
         '<div class="lock" style="margin-top:14px"><span>🔒</span><span>Label creation is not turned on yet. This is what the batch would do.</span></div>')+
       '<div class="merr" id="merr"></div><div style="display:flex;gap:8px;margin-top:8px">'+

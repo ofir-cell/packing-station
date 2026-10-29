@@ -28,10 +28,17 @@ class FakeTikTok:
         self.fail_combine = False
         self.crash_ship_after_sending = set()   # pids: TikTok ships it, but our call "times out"
         self.ship_silently_lost = set()          # pids: our call "times out" and TikTok did NOT ship
+        self.order_status = {}           # order_id -> TikTok status (default AWAITING_SHIPMENT = Processing)
+        self.orders_down = False         # the order-status read fails
 
     def request(self, method, url, params=None, body=None, **kw):
         path = url.split("tiktokglobalshop.com", 1)[-1]
         self.calls.append((method, path))
+        if path.startswith("/order/") and path.endswith("/orders"):
+            if self.orders_down:
+                raise ConnectionError("TikTok down")
+            ids = (params or {}).get("ids", "").split(",")
+            return {"code": 0, "data": {"orders": [{"id": i, "status": self.order_status.get(i, "AWAITING_SHIPMENT")} for i in ids if i]}}
         if "combinable_packages" in path:
             return {"code": 0, "data": {"combinable_packages": self.groups, "next_page_token": ""}}
         if path.endswith("/packages/combine"):
@@ -280,3 +287,56 @@ def test_if_our_db_update_fails_after_tiktok_combined_the_new_package_still_gets
     assert tt.ship_calls.get("CMB-G" + t) == 1                          # the package that exists on TikTok
     assert "PA1" + t not in tt.ship_calls and "PA2" + t not in tt.ship_calls   # never the old ones
     assert "disk full" in d["plan"]["combines"][0]["merge_error"]
+
+
+# ── Pending → Processing: only orders TikTok already moved to Processing get a label ──
+def test_order_still_pending_at_tiktok_waits_and_the_rest_go_ahead(appmod, client, tt, show):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    tt.order_status["OB1" + t] = "ON_HOLD"
+    p = _prepare(client, hdr, show["label"])["plan"]
+    assert p["singles"] == [] and len(p["combines"]) == 1               # Amy goes ahead, Bob waits
+    assert [w["package"] for w in p["waiting"]] == ["PB1" + t] and p["waiting_count"] == 1
+    assert p["status_fresh"] is True
+
+
+def test_buyer_with_one_pending_order_is_held_whole_so_her_box_is_still_combined(appmod, client, tt, show):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    tt.order_status["OA2" + t] = "ON_HOLD"
+    p = _prepare(client, hdr, show["label"])["plan"]
+    assert p["combines"] == [] and p["singles"] == ["PB1" + t]
+    assert sorted(w["package"] for w in p["waiting"]) == sorted(["PA1" + t, "PA2" + t])
+    assert [w["pending"] for w in sorted(p["waiting"], key=lambda w: w["package"])] == [False, True]
+
+
+def test_whole_live_still_pending_says_not_ready(appmod, client, tt, show):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    for o in ("OA1", "OA2", "OB1"):
+        tt.order_status[o + t] = "ON_HOLD"
+    d = _prepare(client, hdr, show["label"])
+    assert d["ok"] is False and "Pending" in d["error"] and d["plan"]["waiting_count"] == 3
+    assert tt.writes() == []
+
+
+def test_order_cancelled_after_planning_is_never_labeled(appmod, client, tt, show, write_on):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    bid = _prepare(client, hdr, show["label"])["batch_id"]
+    tt.order_status["OB1" + t] = "CANCELLED"                              # buyer cancels before approval
+    client.post("/api/tiktok/batch/%d/run" % bid, headers=hdr, json={"pin": "4321"})
+    assert "PB1" + t not in tt.ship_calls
+    d = client.get("/api/tiktok/batch/%d" % bid).get_json()
+    assert d["plan"]["skipped"] == ["PB1" + t] and d["batch"]["status"] == "done"
+
+
+def test_tiktok_status_unreachable_uses_last_synced_status(appmod, client, tt, show):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    tt.orders_down = True
+    c = A.pdb(); c.execute("UPDATE tiktok_orders SET status='ON_HOLD' WHERE order_id=?", ("OB1" + t,)); c.commit(); c.close()
+    p = _prepare(client, hdr, show["label"])["plan"]
+    assert p["status_fresh"] is False and [w["package"] for w in p["waiting"]] == ["PB1" + t]
+
+
+def test_lives_list_shows_ready_and_pending_counts(appmod, client, tt, show):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    c = A.sdb(A.DEFAULT_ORG); c.execute("UPDATE shipments SET tt_status='ON_HOLD' WHERE shipment_id=?", ("PB1" + t,)); c.commit(); c.close()
+    s = [x for x in client.get("/api/tiktok/label-shows").get_json()["shows"] if x["label"] == show["label"]][0]
+    assert s["n"] == 3 and s["ready"] == 2 and s["pending"] == 1
