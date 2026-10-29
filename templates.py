@@ -13110,6 +13110,8 @@ __NAVBAR__
   </div>
   <div class="sec">Shows that need labels</div>
   <div id="needShows"><div class="empty">Loading…</div></div>
+  <div class="sec" id="labeledTitle" style="display:none">Lives with labels</div>
+  <div id="labeledShows"></div>
   <div class="sec" id="batchesTitle" style="display:none">Recent label batches</div>
   <div id="batches"></div>
   <div class="sec">Can be combined (from TikTok)</div>
@@ -13177,6 +13179,13 @@ function loadShows(){
     Array.prototype.forEach.call(el.querySelectorAll('button[data-i]'),function(b){
       b.addEventListener('click',function(){prepare(d.shows[+b.getAttribute('data-i')].label);});
     });
+    var ls=d.labeled_shows||[];
+    document.getElementById('labeledTitle').style.display=ls.length?'block':'none';
+    document.getElementById('labeledShows').innerHTML=ls.map(function(s){
+      var q=encodeURIComponent(s.label);
+      return '<div class="srow"><div><div class="nm">'+esc(s.label)+'</div><div class="ct">'+s.n+' label'+(s.n===1?'':'s')+' saved for this live</div></div>'+
+        '<span><a class="btn" href="/api/tiktok/live-labels?show='+q+'" target="_blank">Print all</a> <a class="btn" href="/api/tiktok/live-labels?show='+q+'&pdf=1&dl=1">Download PDF</a></span></div>';
+    }).join('');
     document.getElementById('batchesTitle').style.display=d.batches.length?'block':'none';
     document.getElementById('batches').innerHTML=d.batches.map(function(b){
       return '<div class="brow"><span>#'+b.id+' · '+esc(b.show)+'</span><span>'+esc(b.status)+' · '+b.done+'/'+b.total+' labels'+(b.failed?' · '+b.failed+' need attention':'')+'</span>'+

@@ -16321,12 +16321,25 @@ def _tt_labels_ensure(c):
     c.execute("""CREATE TABLE IF NOT EXISTS tt_label_jobs(
         package_id TEXT PRIMARY KEY, shop_id TEXT, batch_id INTEGER, status TEXT,
         tracking TEXT, doc_url TEXT, label_file TEXT, error TEXT, created_at TEXT, updated_at TEXT)""")
-    try: c.execute("ALTER TABLE tt_label_jobs ADD COLUMN label_file TEXT")
-    except sqlite3.OperationalError: pass
+    for col in ("label_file", "show"):
+        try: c.execute("ALTER TABLE tt_label_jobs ADD COLUMN %s TEXT" % col)
+        except sqlite3.OperationalError: pass
     c.execute("""CREATE TABLE IF NOT EXISTS tt_batches(
         id INTEGER PRIMARY KEY AUTOINCREMENT, show TEXT, status TEXT, plan TEXT,
         total INTEGER DEFAULT 0, done INTEGER DEFAULT 0, failed INTEGER DEFAULT 0, combined INTEGER DEFAULT 0,
         created_by TEXT, approved_by TEXT, created_at TEXT, started_at TEXT, finished_at TEXT, note TEXT)""")
+    try: c.execute("ALTER TABLE tt_batches ADD COLUMN pdf_file TEXT")
+    except sqlite3.OperationalError: pass
+
+def _tt_live_folder(show):
+    """Folder name for one live's labels: readable + a short hash so two lives never share one."""
+    base = re.sub(r"[^A-Za-z0-9]+", "-", show or "").strip("-")[:70] or "live"
+    return "%s-%s" % (base, hashlib.sha1((show or "").encode("utf-8")).hexdigest()[:6])
+
+def _tt_safe_rel(rel):
+    """'tiktok/<live>/<file>.pdf' with every part sanitized (no path tricks)."""
+    parts = [secure_filename(x) for x in str(rel or "").split("/")]
+    return "/".join(x for x in parts if x)
 
 def _tt_box(org=None):
     # explicit org: this also runs in the background batch thread (no request context)
@@ -16386,17 +16399,20 @@ def _tt_merge_into_package(c, new_pid, order_ids):
     try: _recompute_shipment_weight(c, new_pid)
     except Exception: pass
 
-def _tt_store_label_copy(org, data):
-    """Save a label PDF for this tenant (R2 or local) and return its file name. Takes the
-    org explicitly because it runs in the background batch thread."""
-    fn = secrets.token_hex(10) + ".pdf"
+def _tt_store_label_copy(org, data, show=None, name=None):
+    """Save a label PDF for this tenant (R2 or local) under its live's folder —
+    labels/tiktok/<live>/<name>.pdf — and return that relative name. Takes the org
+    explicitly because it runs in the background batch thread."""
+    fn = _tt_safe_rel("tiktok/%s/%s.pdf" % (_tt_live_folder(show), name or secrets.token_hex(10)))
     if r2:
         try:
             r2.put_object(Bucket=R2_BUCKET, Key=_r2_media_key("labels", fn, org), Body=data, ContentType="application/pdf")
             return fn
         except Exception as e:
             _tt_log("R2 label put failed: %r" % e)
-    with open(os.path.join(_labels_dir(org), fn), "wb") as fh: fh.write(data)
+    path = os.path.join(_labels_dir(org), *fn.split("/"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as fh: fh.write(data)
     return fn
 
 def _tt_label_one(org, shop_id, pid, batch_id, box):
@@ -16404,8 +16420,10 @@ def _tt_label_one(org, shop_id, pid, batch_id, box):
     now = lambda: datetime.now().isoformat(timespec="seconds")
     c = sdb(org); _tt_labels_ensure(c)
     try:
-        c.execute("""INSERT OR IGNORE INTO tt_label_jobs(package_id,shop_id,batch_id,status,created_at,updated_at)
-                     VALUES(?,?,?,'claimed',?,?)""", (pid, shop_id, batch_id, now(), now()))
+        br = c.execute("SELECT show FROM tt_batches WHERE id=?", (batch_id,)).fetchone()
+        show = br["show"] if br else ""
+        c.execute("""INSERT OR IGNORE INTO tt_label_jobs(package_id,shop_id,batch_id,status,show,created_at,updated_at)
+                     VALUES(?,?,?,'claimed',?,?,?)""", (pid, shop_id, batch_id, show, now(), now()))
         c.commit()
         job = dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
         st = job["status"]
@@ -16452,7 +16470,7 @@ def _tt_label_one(org, shop_id, pid, batch_id, box):
             fn = None
             try:
                 data, ct = _fetch_label_bytes(url)
-                fn = _tt_store_label_copy(org, data)
+                fn = _tt_store_label_copy(org, data, show=job.get("show") or show, name=pid)
             except Exception as e:
                 _tt_log("label copy failed %s: %r" % (pid, e))
             c.execute("UPDATE tt_label_jobs SET status='labeled', tracking=?, doc_url=?, label_file=?, error=NULL, updated_at=? WHERE package_id=?",
@@ -16583,11 +16601,38 @@ def _tt_run_batch(org, bid):
         c = sdb(org); n = _tt_batch_counts(c, bid)
         c.execute("UPDATE tt_batches SET done=?, failed=? WHERE id=?",
                   (n.get("labeled", 0), n.get("error", 0) + n.get("uncertain", 0), bid)); c.commit(); c.close()
+    _tt_save_live_pdfs(org, bid)
     c = sdb(org); n = _tt_batch_counts(c, bid)
     bad = n.get("error", 0) + n.get("uncertain", 0) + n.get("shipped", 0) + n.get("shipping", 0) + n.get("claimed", 0)
     c.execute("UPDATE tt_batches SET status=?, finished_at=?, done=?, failed=? WHERE id=?",
               ("done" if not bad else "needs_attention", datetime.now().isoformat(timespec="seconds"),
                n.get("labeled", 0), bad, bid)); c.commit(); c.close()
+
+def _tt_live_label_rows(c, show):
+    return [dict(r) for r in c.execute(
+        "SELECT package_id, doc_url, label_file FROM tt_label_jobs WHERE show=? AND status='labeled' ORDER BY batch_id, package_id",
+        (show,)).fetchall()]
+
+def _tt_save_live_pdfs(org, bid):
+    """Archive in the live's folder: this batch's PDF, and ALL-labels.pdf with every label of
+    the live so far (rewritten after each batch, so late orders are included)."""
+    try:
+        c = sdb(org); _tt_labels_ensure(c)
+        b = c.execute("SELECT show FROM tt_batches WHERE id=?", (bid,)).fetchone()
+        show = b["show"] if b else ""
+        brows = [dict(r) for r in c.execute(
+            "SELECT package_id, doc_url, label_file FROM tt_label_jobs WHERE batch_id=? AND status='labeled' ORDER BY package_id", (bid,)).fetchall()]
+        lrows = _tt_live_label_rows(c, show)
+        c.close()
+        if not brows: return
+        blob = _tt_batch_pdf(brows, org)
+        if blob:
+            fn = _tt_store_label_copy(org, blob, show=show, name="batch-%d" % bid)
+            c = sdb(org); c.execute("UPDATE tt_batches SET pdf_file=? WHERE id=?", (fn, bid)); c.commit(); c.close()
+        blob = _tt_batch_pdf(lrows, org)
+        if blob: _tt_store_label_copy(org, blob, show=show, name="ALL-labels")
+    except Exception as e:
+        _tt_log("saving live label PDFs failed (batch %s): %r" % (bid, e))
 
 def _tt_start_batch_thread(org, bid):
     threading.Thread(target=_tt_run_batch, args=(org, bid), daemon=True, name="tt-batch-%s" % bid).start()
@@ -16607,8 +16652,11 @@ def api_tiktok_label_shows():
                           AND COALESCE(s.imported_at,'')>=? AND COALESCE(s.import_label,'')<>''
                         GROUP BY s.import_label ORDER BY last DESC LIMIT 40""", (cutoff,)).fetchall()
     batches = [dict(r) for r in c.execute("SELECT id, show, status, total, done, failed, combined, created_at, finished_at FROM tt_batches ORDER BY id DESC LIMIT 10").fetchall()]
+    labeled = [dict(r) for r in c.execute("""SELECT show label, COUNT(*) n, MAX(updated_at) last FROM tt_label_jobs
+                                             WHERE status='labeled' AND COALESCE(show,'')<>'' AND COALESCE(updated_at,'')>=?
+                                             GROUP BY show ORDER BY last DESC LIMIT 40""", (cutoff,)).fetchall()]
     c.close()
-    return jsonify({"ok": True, "shows": [dict(r) for r in rows], "batches": batches,
+    return jsonify({"ok": True, "shows": [dict(r) for r in rows], "batches": batches, "labeled_shows": labeled,
                     "write_enabled": TT_FULFILL_WRITE, "box": _tt_box(org)})
 
 @app.route("/api/tiktok/box", methods=["POST"])
@@ -16712,7 +16760,7 @@ def api_tiktok_batch_labels(bid):
     c.close()
     if not rows: return ("No labels in this batch yet.", 404)
     if request.args.get("pdf") == "1":
-        blob = _tt_batch_pdf(rows)
+        blob = _tt_batch_pdf(rows, org)
         if not blob: return ("Could not build the labels PDF.", 502)
         resp = Response(blob, mimetype="application/pdf")
         resp.headers["Content-Disposition"] = '%s; filename="tiktok-labels-batch-%d.pdf"' % (
@@ -16721,26 +16769,46 @@ def api_tiktok_batch_labels(bid):
     items = [{"url": r["doc_url"], "name": r["package_id"]} for r in rows]
     return _labels_page_or_pdf(items, "TikTok labels · batch %d · %d labels" % (bid, len(rows)), "/api/tiktok/batch/%d/labels?pdf=1" % bid)
 
-def _tt_label_file_bytes(fn):
-    fn = secure_filename(fn or "")
+@app.route("/api/tiktok/live-labels")
+@req_role("admin", "cs", "worker")
+def api_tiktok_live_labels():
+    """Every label created for one live, across all its batches: print page or one PDF (?pdf=1)."""
+    org = current_org() or DEFAULT_ORG
+    show = (request.args.get("show") or "").strip()
+    if not show: return ("show required", 400)
+    c = sdb(org); _tt_labels_ensure(c); rows = _tt_live_label_rows(c, show); c.close()
+    if not rows: return ("No labels for this live yet.", 404)
+    if request.args.get("pdf") == "1":
+        blob = _tt_batch_pdf(rows, org)
+        if not blob: return ("Could not build the labels PDF.", 502)
+        resp = Response(blob, mimetype="application/pdf")
+        resp.headers["Content-Disposition"] = '%s; filename="%s-labels.pdf"' % (
+            "attachment" if request.args.get("dl") == "1" else "inline", _tt_live_folder(show))
+        return resp
+    items = [{"url": r["doc_url"], "name": r["package_id"]} for r in rows]
+    return _labels_page_or_pdf(items, "TikTok labels · %s · %d labels" % (show, len(rows)),
+                               "/api/tiktok/live-labels?show=%s&pdf=1" % _urlparse.quote(show))
+
+def _tt_label_file_bytes(fn, org=None):
+    fn = _tt_safe_rel(fn)
     if not fn: return None
     if r2:
         try:
-            return r2.get_object(Bucket=R2_BUCKET, Key=_r2_resolve("labels", fn))["Body"].read()
+            return r2.get_object(Bucket=R2_BUCKET, Key=_r2_resolve("labels", fn, org))["Body"].read()
         except Exception as e:
             _tt_log("label read failed %s: %r" % (fn, e))
-    p = os.path.join(_labels_dir(), fn)
+    p = os.path.join(_labels_dir(org), *fn.split("/"))
     if os.path.exists(p):
         with open(p, "rb") as fh: return fh.read()
     return None
 
-def _tt_batch_pdf(rows):
+def _tt_batch_pdf(rows, org=None):
     """One PDF with every label of the batch: our stored copy first, TikTok's link as fallback."""
     from pypdf import PdfWriter, PdfReader
     import io
     w = PdfWriter(); ok = 0
     for r in rows:
-        data = _tt_label_file_bytes(r.get("label_file"))
+        data = _tt_label_file_bytes(r.get("label_file"), org)
         if data is None and r.get("doc_url"):
             try: data, _ = _fetch_label_bytes(r["doc_url"])
             except Exception as e: _tt_log("label fetch failed %s: %r" % (r["package_id"], e))

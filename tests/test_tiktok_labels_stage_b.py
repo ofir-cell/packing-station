@@ -340,3 +340,39 @@ def test_lives_list_shows_ready_and_pending_counts(appmod, client, tt, show):
     c = A.sdb(A.DEFAULT_ORG); c.execute("UPDATE shipments SET tt_status='ON_HOLD' WHERE shipment_id=?", ("PB1" + t,)); c.commit(); c.close()
     s = [x for x in client.get("/api/tiktok/label-shows").get_json()["shows"] if x["label"] == show["label"]][0]
     assert s["n"] == 3 and s["ready"] == 2 and s["pending"] == 1
+
+
+# ── one live only, and every label kept under its live ───────────────────────
+def test_tiktok_group_reaching_into_another_live_is_never_combined(appmod, client, tt, show):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    _order(A, "OX1" + t, "PX1" + t, "amy", "Yesterday Live " + t)        # same buyer, a different live
+    tt.groups = [{"id": "GX" + t, "order_ids": ["OA1" + t, "OX1" + t]}]
+    p = _prepare(client, hdr, show["label"])["plan"]
+    assert p["combines"] == []
+    assert p["singles"] == sorted(["PA1" + t, "PA2" + t, "PB1" + t])     # PX1 (other live) not in this batch at all
+
+
+def test_labels_are_saved_under_their_live_with_one_file_for_the_whole_live(appmod, client, tt, show, write_on):
+    import os
+    from pypdf import PdfReader
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    folder = os.path.join(A._labels_dir(A.DEFAULT_ORG), "tiktok", A._tt_live_folder(show["label"]))
+    bid = _prepare(client, hdr, show["label"])["batch_id"]
+    client.post("/api/tiktok/batch/%d/run" % bid, headers=hdr, json={"pin": "4321"})
+    c = A.sdb(A.DEFAULT_ORG)
+    files = [r["label_file"] for r in c.execute("SELECT label_file FROM tt_label_jobs WHERE batch_id=?", (bid,)).fetchall()]
+    c.close()
+    assert files and all(f.startswith("tiktok/%s/" % A._tt_live_folder(show["label"])) for f in files)
+    assert len(PdfReader(os.path.join(folder, "ALL-labels.pdf")).pages) == 2
+    assert os.path.exists(os.path.join(folder, "batch-%d.pdf" % bid))
+    # an order of the same live arrives late -> second batch; the live file now has all 3
+    _order(A, "OL1" + t, "PL1" + t, "lucy", show["label"])
+    bid2 = _prepare(client, hdr, show["label"])["batch_id"]
+    client.post("/api/tiktok/batch/%d/run" % bid2, headers=hdr, json={"pin": "4321"})
+    assert len(PdfReader(os.path.join(folder, "ALL-labels.pdf")).pages) == 3
+    r = client.get("/api/tiktok/live-labels?pdf=1&show=" + show["label"])
+    assert r.status_code == 200 and len(PdfReader(io.BytesIO(r.data)).pages) == 3
+    ls = client.get("/api/tiktok/label-shows").get_json()["labeled_shows"]
+    assert [x["n"] for x in ls if x["label"] == show["label"]] == [3]
+    # a different live's folder is untouched
+    assert not os.path.exists(os.path.join(A._labels_dir(A.DEFAULT_ORG), "tiktok", A._tt_live_folder("Other " + t)))
