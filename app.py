@@ -1234,17 +1234,17 @@ def sdb_init(org):
         # (so order doesn't matter), exactly once per unit, and be reversed on un-pack.
         "ALTER TABLE shipment_items ADD COLUMN depleted_qty INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN depleted_sku TEXT",
+        # Pre-import match: how many units we've already deducted for a binding,
+        # so re-binding / unmapping can restore on_hand correctly.
+        "ALTER TABLE show_product_map ADD COLUMN depleted_qty INTEGER DEFAULT 0",
+        # Inbound: group all labels bought in one click as a batch.
+        "ALTER TABLE inbound_shipments ADD COLUMN batch_id TEXT",
         # Packing: the packer scans each product into the box while the video records
         "ALTER TABLE shipment_items ADD COLUMN pack_scanned_qty INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN pack_method TEXT",
         "ALTER TABLE shipment_items ADD COLUMN pack_scanned_at TEXT",
         "ALTER TABLE shipments ADD COLUMN pack_check TEXT",
         "ALTER TABLE shipments ADD COLUMN pack_missing TEXT",
-        # Pre-import match: how many units we've already deducted for a binding,
-        # so re-binding / unmapping can restore on_hand correctly.
-        "ALTER TABLE show_product_map ADD COLUMN depleted_qty INTEGER DEFAULT 0",
-        # Inbound: group all labels bought in one click as a batch.
-        "ALTER TABLE inbound_shipments ADD COLUMN batch_id TEXT",
         # Bilingual onboarding — Spanish translations live in *_es columns
         # alongside the English originals. NULL ES → frontend falls back to EN.
         "ALTER TABLE onboarding_steps ADD COLUMN title_es TEXT",
