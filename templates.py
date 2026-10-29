@@ -12127,6 +12127,107 @@ showTab('scan');
 </script></body></html>'''
 
 
+
+# ── Combine & Labels (TikTok Shipping) — stage A, read-only ───────────────────
+COMBINE_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Combine &amp; Labels — __BRANDMARK__</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1100px;margin:0 auto;padding:32px 20px 0}
+.head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap}
+.page-title{font-size:30px;font-weight:900;color:#141b26;letter-spacing:-.5px}
+.page-sub{color:var(--text-muted);margin:8px 0 18px;font-size:14px;line-height:1.5;max-width:760px}
+.btn{background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px 16px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit}
+.btn.primary{background:#4f46e5;color:#fff;border-color:#4f46e5}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.lock{display:flex;gap:10px;align-items:flex-start;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.35);color:#92400e;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.5;margin-bottom:14px}
+.shops{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.shop{font-size:12px;font-weight:700;padding:6px 10px;border-radius:999px;border:1px solid var(--border)}
+.shop.ok{background:rgba(16,185,129,.1);color:#047857;border-color:rgba(16,185,129,.3)}
+.shop.bad{background:rgba(244,63,94,.08);color:#be123c;border-color:rgba(244,63,94,.3)}
+.sum{font-size:14px;font-weight:800;margin:6px 0 14px}
+.list{display:flex;flex-direction:column;gap:12px}
+.g{background:var(--surface);border:1px solid var(--border);border-left:4px solid #4f46e5;border-radius:16px;padding:14px 16px}
+.g.warn{border-left-color:#f59e0b}
+.g-top{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center}
+.g-buyer{font-size:18px;font-weight:900;color:#141b26}
+.g-meta{font-size:12px;color:var(--text-muted);margin-top:2px}
+.pill{display:inline-block;font-family:'SF Mono',Menlo,monospace;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;background:rgba(99,102,241,.12);color:#4f46e5;margin:2px 4px 2px 0}
+.note{font-size:12px;font-weight:700;color:#b45309;margin-top:8px}
+.orders{margin-top:10px;display:grid;gap:8px}
+.o{border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:13px;background:#fff}
+.o .oid{font-family:'SF Mono',Menlo,monospace;font-size:11px;color:var(--text-muted)}
+.o .st{font-size:11px;font-weight:800;text-transform:uppercase;margin-left:6px}
+.it{font-size:12px;color:var(--text-muted);margin-top:3px}
+.empty{padding:40px;text-align:center;color:var(--text-muted);border:1px dashed var(--border);border-radius:16px}
+pre.raw{white-space:pre-wrap;word-break:break-all;font-size:11px;background:#0f172a;color:#e2e8f0;border-radius:12px;padding:14px;margin-top:16px;max-height:420px;overflow:auto;display:none}
+</style></head><body>
+__NAVBAR__
+<div class="wrap">
+  <div class="head">
+    <div class="page-title">Combine &amp; Labels</div>
+    <div style="display:flex;gap:8px"><button class="btn" id="rawBtn" style="display:none">Show raw TikTok response</button><button class="btn" id="refresh">Refresh</button></div>
+  </div>
+  <div class="page-sub">Packages TikTok allows to ship together, next to where each order is in our warehouse. With TikTok Shipping the label is created on TikTok, which sets the tracking number and updates the orders itself.</div>
+  <div class="lock" id="lock" style="display:none"><span>🔒</span><span><b>Read-only for now.</b> This screen only reads from TikTok. Combining and creating labels unlock after the TikTok connection is verified and turned on (TIKTOK_FULFILL_WRITE), and each batch will need manager approval.</span></div>
+  <div class="shops" id="shops"></div>
+  <div id="main"><div class="empty">Loading from TikTok…</div></div>
+  <pre class="raw" id="raw"></pre>
+</div>
+<script>
+var ROLE='__ROLE__', WRITE=false;
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+var ST={pending:'#64748b',picked:'#2563eb',packed:'#059669',shipped:'#047857',cancelled:'#e11d48',issue:'#b45309'};
+function load(withRaw){
+  document.getElementById('main').innerHTML='<div class="empty">Loading from TikTok…</div>';
+  fetch('/api/tiktok/combinable'+(withRaw?'?raw=1':'')).then(function(r){return r.json();}).then(function(d){
+    if(!d.ok){document.getElementById('main').innerHTML='<div class="empty">'+esc(d.error||'Could not load')+'</div>';return;}
+    WRITE=!!d.write_enabled;
+    document.getElementById('lock').style.display=WRITE?'none':'flex';
+    document.getElementById('rawBtn').style.display=(ROLE==='admin')?'inline-block':'none';
+    document.getElementById('shops').innerHTML=d.shops.map(function(s){
+      var ok=s.has_fulfillment_scope&&!s.error;
+      return '<span class="shop '+(ok?'ok':'bad')+'" title="'+esc(s.scopes)+'">'+esc(s.shop_name||s.shop_id)+' · '+
+        (s.error?esc(s.error):(s.has_fulfillment_scope?'fulfillment permission ✓':'no fulfillment permission — reconnect'))+'</span>';
+    }).join('');
+    var m=document.getElementById('main');
+    if(!d.groups.length){m.innerHTML='<div class="empty">TikTok has nothing to combine right now.</div>';}
+    else{
+      m.innerHTML='<div class="sum">'+d.count+' group'+(d.count===1?'':'s')+' · '+d.orders+' orders can ship in '+d.count+' box'+(d.count===1?'':'es')+'</div>'+
+        '<div class="list">'+d.groups.map(card).join('')+'</div>';
+    }
+    if(withRaw&&d.raw_first!==undefined){var pr=document.getElementById('raw');pr.style.display='block';pr.textContent='GET '+d.path+'\\n\\n'+JSON.stringify(d.raw_first,null,2);}
+  }).catch(function(){document.getElementById('main').innerHTML='<div class="empty">Network error — try again</div>';});
+}
+function card(g){
+  var shows={};g.orders.forEach(function(o){if(o.import_label)shows[o.import_label]=1;});
+  var notes=[];
+  if(g.already_handled)notes.push('Some of these orders are already picked or packed — their boxes may already be separate.');
+  if(g.missing_in_app)notes.push(g.missing_in_app+' order(s) not in our app yet (the sync will bring them in).');
+  return '<div class="g'+(notes.length?' warn':'')+'"><div class="g-top"><div>'+
+      '<div class="g-buyer">'+esc(g.buyer||(g.missing_in_app===g.order_ids.length?'Not in our app yet':'Several buyers'))+' — '+g.order_ids.length+' orders → 1 box</div>'+
+      '<div class="g-meta">'+g.item_count+' items · '+esc(Object.keys(shows).join(' · ')||'—')+'</div>'+
+      '<div>'+g.packages.map(function(p){return '<span class="pill">'+esc(p)+'</span>';}).join('')+'</div></div>'+
+      '<button class="btn primary" disabled title="'+(WRITE?'Coming in the next step':'Locked until the TikTok connection is verified')+'">Combine + label</button></div>'+
+    notes.map(function(n){return '<div class="note">⚠️ '+esc(n)+'</div>';}).join('')+
+    '<div class="orders">'+g.orders.map(function(o){
+      return '<div class="o"><span class="oid">'+esc(o.order_id)+'</span>'+
+        (o.in_app?'<span class="st" style="color:'+(ST[o.status]||'#64748b')+'">'+esc(o.status)+'</span>':'<span class="st" style="color:#b45309">not in app</span>')+
+        (o.items||[]).map(function(i){return '<div class="it">#'+esc(i.sku)+' · '+esc(i.product_name)+(i.quantity>1?' ×'+i.quantity:'')+(i.cancelled?' · cancelled':'')+'</div>';}).join('')+
+      '</div>';
+    }).join('')+'</div></div>';
+}
+document.getElementById('refresh').addEventListener('click',function(){load(false);});
+document.getElementById('rawBtn').addEventListener('click',function(){load(true);});
+load(false);
+</script>
+</body></html>'''
+
+
 # ── Public new-client onboarding intake (/apply) ──────────────────────────────
 APPLY_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -13027,105 +13128,5 @@ function render(items){
 function run(q){fetch('/api/recordings?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){if((inp.value||'').trim()!==q)return;render((d&&d.items)||[]);}).catch(function(){});}
 inp.addEventListener('input',function(){var q=inp.value.trim();clearTimeout(t);if(q.length<3){res.innerHTML='';return;}t=setTimeout(function(){run(q);},250);});
 inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();var q=inp.value.trim();if(q)run(q);}});
-</script>
-</body></html>'''
-
-
-# ── Combine & Labels (TikTok Shipping) — stage A, read-only ───────────────────
-COMBINE_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-''' + _FONT + '''
-<title>Combine &amp; Labels — __BRANDMARK__</title>
-__NAVBAR_CSS__
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
-.wrap{max-width:1100px;margin:0 auto;padding:32px 20px 0}
-.head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap}
-.page-title{font-size:30px;font-weight:900;color:#141b26;letter-spacing:-.5px}
-.page-sub{color:var(--text-muted);margin:8px 0 18px;font-size:14px;line-height:1.5;max-width:760px}
-.btn{background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:9px 16px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit}
-.btn.primary{background:#4f46e5;color:#fff;border-color:#4f46e5}
-.btn:disabled{opacity:.45;cursor:not-allowed}
-.lock{display:flex;gap:10px;align-items:flex-start;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.35);color:#92400e;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.5;margin-bottom:14px}
-.shops{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
-.shop{font-size:12px;font-weight:700;padding:6px 10px;border-radius:999px;border:1px solid var(--border)}
-.shop.ok{background:rgba(16,185,129,.1);color:#047857;border-color:rgba(16,185,129,.3)}
-.shop.bad{background:rgba(244,63,94,.08);color:#be123c;border-color:rgba(244,63,94,.3)}
-.sum{font-size:14px;font-weight:800;margin:6px 0 14px}
-.list{display:flex;flex-direction:column;gap:12px}
-.g{background:var(--surface);border:1px solid var(--border);border-left:4px solid #4f46e5;border-radius:16px;padding:14px 16px}
-.g.warn{border-left-color:#f59e0b}
-.g-top{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center}
-.g-buyer{font-size:18px;font-weight:900;color:#141b26}
-.g-meta{font-size:12px;color:var(--text-muted);margin-top:2px}
-.pill{display:inline-block;font-family:'SF Mono',Menlo,monospace;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;background:rgba(99,102,241,.12);color:#4f46e5;margin:2px 4px 2px 0}
-.note{font-size:12px;font-weight:700;color:#b45309;margin-top:8px}
-.orders{margin-top:10px;display:grid;gap:8px}
-.o{border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:13px;background:#fff}
-.o .oid{font-family:'SF Mono',Menlo,monospace;font-size:11px;color:var(--text-muted)}
-.o .st{font-size:11px;font-weight:800;text-transform:uppercase;margin-left:6px}
-.it{font-size:12px;color:var(--text-muted);margin-top:3px}
-.empty{padding:40px;text-align:center;color:var(--text-muted);border:1px dashed var(--border);border-radius:16px}
-pre.raw{white-space:pre-wrap;word-break:break-all;font-size:11px;background:#0f172a;color:#e2e8f0;border-radius:12px;padding:14px;margin-top:16px;max-height:420px;overflow:auto;display:none}
-</style></head><body>
-__NAVBAR__
-<div class="wrap">
-  <div class="head">
-    <div class="page-title">Combine &amp; Labels</div>
-    <div style="display:flex;gap:8px"><button class="btn" id="rawBtn" style="display:none">Show raw TikTok response</button><button class="btn" id="refresh">Refresh</button></div>
-  </div>
-  <div class="page-sub">Packages TikTok allows to ship together, next to where each order is in our warehouse. With TikTok Shipping the label is created on TikTok, which sets the tracking number and updates the orders itself.</div>
-  <div class="lock" id="lock" style="display:none"><span>🔒</span><span><b>Read-only for now.</b> This screen only reads from TikTok. Combining and creating labels unlock after the TikTok connection is verified and turned on (TIKTOK_FULFILL_WRITE), and each batch will need manager approval.</span></div>
-  <div class="shops" id="shops"></div>
-  <div id="main"><div class="empty">Loading from TikTok…</div></div>
-  <pre class="raw" id="raw"></pre>
-</div>
-<script>
-var ROLE='__ROLE__', WRITE=false;
-function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
-var ST={pending:'#64748b',picked:'#2563eb',packed:'#059669',shipped:'#047857',cancelled:'#e11d48',issue:'#b45309'};
-function load(withRaw){
-  document.getElementById('main').innerHTML='<div class="empty">Loading from TikTok…</div>';
-  fetch('/api/tiktok/combinable'+(withRaw?'?raw=1':'')).then(function(r){return r.json();}).then(function(d){
-    if(!d.ok){document.getElementById('main').innerHTML='<div class="empty">'+esc(d.error||'Could not load')+'</div>';return;}
-    WRITE=!!d.write_enabled;
-    document.getElementById('lock').style.display=WRITE?'none':'flex';
-    document.getElementById('rawBtn').style.display=(ROLE==='admin')?'inline-block':'none';
-    document.getElementById('shops').innerHTML=d.shops.map(function(s){
-      var ok=s.has_fulfillment_scope&&!s.error;
-      return '<span class="shop '+(ok?'ok':'bad')+'" title="'+esc(s.scopes)+'">'+esc(s.shop_name||s.shop_id)+' · '+
-        (s.error?esc(s.error):(s.has_fulfillment_scope?'fulfillment permission ✓':'no fulfillment permission — reconnect'))+'</span>';
-    }).join('');
-    var m=document.getElementById('main');
-    if(!d.groups.length){m.innerHTML='<div class="empty">TikTok has nothing to combine right now.</div>';}
-    else{
-      m.innerHTML='<div class="sum">'+d.count+' group'+(d.count===1?'':'s')+' · '+d.orders+' orders can ship in '+d.count+' box'+(d.count===1?'':'es')+'</div>'+
-        '<div class="list">'+d.groups.map(card).join('')+'</div>';
-    }
-    if(withRaw&&d.raw_first!==undefined){var pr=document.getElementById('raw');pr.style.display='block';pr.textContent='GET '+d.path+'\\n\\n'+JSON.stringify(d.raw_first,null,2);}
-  }).catch(function(){document.getElementById('main').innerHTML='<div class="empty">Network error — try again</div>';});
-}
-function card(g){
-  var shows={};g.orders.forEach(function(o){if(o.import_label)shows[o.import_label]=1;});
-  var notes=[];
-  if(g.already_handled)notes.push('Some of these orders are already picked or packed — their boxes may already be separate.');
-  if(g.missing_in_app)notes.push(g.missing_in_app+' order(s) not in our app yet (the sync will bring them in).');
-  return '<div class="g'+(notes.length?' warn':'')+'"><div class="g-top"><div>'+
-      '<div class="g-buyer">'+esc(g.buyer||(g.missing_in_app===g.order_ids.length?'Not in our app yet':'Several buyers'))+' — '+g.order_ids.length+' orders → 1 box</div>'+
-      '<div class="g-meta">'+g.item_count+' items · '+esc(Object.keys(shows).join(' · ')||'—')+'</div>'+
-      '<div>'+g.packages.map(function(p){return '<span class="pill">'+esc(p)+'</span>';}).join('')+'</div></div>'+
-      '<button class="btn primary" disabled title="'+(WRITE?'Coming in the next step':'Locked until the TikTok connection is verified')+'">Combine + label</button></div>'+
-    notes.map(function(n){return '<div class="note">⚠️ '+esc(n)+'</div>';}).join('')+
-    '<div class="orders">'+g.orders.map(function(o){
-      return '<div class="o"><span class="oid">'+esc(o.order_id)+'</span>'+
-        (o.in_app?'<span class="st" style="color:'+(ST[o.status]||'#64748b')+'">'+esc(o.status)+'</span>':'<span class="st" style="color:#b45309">not in app</span>')+
-        (o.items||[]).map(function(i){return '<div class="it">#'+esc(i.sku)+' · '+esc(i.product_name)+(i.quantity>1?' ×'+i.quantity:'')+(i.cancelled?' · cancelled':'')+'</div>';}).join('')+
-      '</div>';
-    }).join('')+'</div></div>';
-}
-document.getElementById('refresh').addEventListener('click',function(){load(false);});
-document.getElementById('rawBtn').addEventListener('click',function(){load(true);});
-load(false);
 </script>
 </body></html>'''
