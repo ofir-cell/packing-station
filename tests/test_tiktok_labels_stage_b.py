@@ -69,7 +69,9 @@ class FakeTikTok:
         return {"code": 0, "data": {}}
 
     def writes(self):
-        return [c for c in self.calls if c[0] != "GET"]
+        # fulfillment writes only (combine / ship): order *search* is a POST that is a read, and
+        # other tests' background sync threads can hit this fake while a test runs
+        return [c for c in self.calls if c[0] != "GET" and "/fulfillment/" in c[1]]
 
 
 @pytest.fixture
