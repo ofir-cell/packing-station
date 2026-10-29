@@ -1234,6 +1234,12 @@ def sdb_init(org):
         # (so order doesn't matter), exactly once per unit, and be reversed on un-pack.
         "ALTER TABLE shipment_items ADD COLUMN depleted_qty INTEGER DEFAULT 0",
         "ALTER TABLE shipment_items ADD COLUMN depleted_sku TEXT",
+        # Packing: the packer scans each product into the box while the video records
+        "ALTER TABLE shipment_items ADD COLUMN pack_scanned_qty INTEGER DEFAULT 0",
+        "ALTER TABLE shipment_items ADD COLUMN pack_method TEXT",
+        "ALTER TABLE shipment_items ADD COLUMN pack_scanned_at TEXT",
+        "ALTER TABLE shipments ADD COLUMN pack_check TEXT",
+        "ALTER TABLE shipments ADD COLUMN pack_missing TEXT",
         # Pre-import match: how many units we've already deducted for a binding,
         # so re-binding / unmapping can restore on_hand correctly.
         "ALTER TABLE show_product_map ADD COLUMN depleted_qty INTEGER DEFAULT 0",
@@ -1435,6 +1441,18 @@ def sdb_init(org):
         updated_at TEXT
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)")
+    # Columns added after `products` was first released. They are ALSO in the big ALTER list
+    # above, but that list runs before this CREATE on a brand-new database — so add them
+    # here too, or a new workspace would lack them until its second boot.
+    for _stmt in ("ALTER TABLE products ADD COLUMN retail_price REAL DEFAULT 0",
+                  "ALTER TABLE products ADD COLUMN msrp_source TEXT",
+                  "ALTER TABLE products ADD COLUMN product_notes TEXT",
+                  "ALTER TABLE products ADD COLUMN notes_source TEXT",
+                  "ALTER TABLE products ADD COLUMN info_status TEXT",
+                  "ALTER TABLE products ADD COLUMN info_checked_at TEXT",
+                  "ALTER TABLE products ADD COLUMN info_attempts INTEGER DEFAULT 0"):
+        try: c.execute(_stmt)
+        except sqlite3.OperationalError: pass
     c.execute("""CREATE TABLE IF NOT EXISTS purchase_orders(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         supplier TEXT,
@@ -4730,6 +4748,7 @@ def api_upload():
     # Customers / SKU Reconciliation pages read from. Without this update, every
     # shipment looks 'pending' even after the recording is done.
     # Skip if no matching shipment, if it's already shipped, or if it's cancelled.
+    pack_res=None
     try:
         c = sdb()
         # Resolve the SAME way the scan lookup does (exact + substring fallbacks) and
@@ -4742,6 +4761,9 @@ def api_upload():
             c.execute("""UPDATE shipments
                          SET status='packed', packed_at=CURRENT_TIMESTAMP, packed_by=?
                          WHERE shipment_id=?""", (wrk, row["shipment_id"]))
+            if _get_setting("pack_scan_items","1")!="0":
+                try: pack_res=_pack_finish(c, row, vn)
+                except Exception as e: print("pack check failed for", trk, ":", e, flush=True)
             # Deplete inventory for the items in this shipment (once per shipment).
             try: _deplete_stock_for(c, row["shipment_id"])
             except Exception as e: print("stock deplete failed for", trk, ":", e, flush=True)
@@ -4764,7 +4786,7 @@ def api_upload():
             g.commit(); g.close()
     except Exception as e:
         print("giveaway filmed-status update failed for", trk, ":", e, flush=True)
-    return jsonify({"ok":True})
+    return jsonify({"ok":True,"pack":pack_res})
 
 @app.route("/api/backfill-packed-status", methods=["POST"])
 @req_role("admin")
@@ -6193,6 +6215,212 @@ def api_shipment_lookup(code):
         "combined_from": combined,   # other shipments merged into this box (same shared label)
     })
 
+
+# ══════════════════════════════════════════════════════════
+# PACK SCAN — between "start video" (label scan) and "stop video" (box scan) the packer
+# scans each product he puts in the box. The screen guides him in ascending sticker order;
+# any order is accepted. A product never linked to a barcode is linked by its first scan
+# (like Live Match). Stopping early is allowed — the order is flagged with what's missing.
+# ══════════════════════════════════════════════════════════
+def _pack_ensure(c):
+    c.execute("""CREATE TABLE IF NOT EXISTS pack_scans(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id TEXT, tracking TEXT, item_id INTEGER,
+        sticker TEXT, code TEXT, product_sku TEXT, result TEXT, worker TEXT, station TEXT,
+        video_file TEXT, scanned_at TEXT)""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_pack_scans_ship ON pack_scans(shipment_id)")
+
+def _sticker_order(sku):
+    m=re.match(r"\s*(\d+)", str(sku or ""))
+    return (0, int(m.group(1)), str(sku)) if m else (1, 0, str(sku or ""))
+
+def _pack_box(c, row):
+    """Every active item in this box (the shipment + siblings sharing its label), in
+    ascending sticker order, with the product each one is linked to (if any)."""
+    sids=[row["shipment_id"]]
+    trk=(row["tracking_code"] or "").strip()
+    if trk:
+        sids+=[r["shipment_id"] for r in c.execute(
+            "SELECT shipment_id FROM shipments WHERE tracking_code=? AND shipment_id<>? AND COALESCE(status,'')<>'cancelled'",
+            (trk,row["shipment_id"])).fetchall()]
+    binds={}
+    items=[]
+    for sid in sids:
+        lbl=(c.execute("SELECT import_label FROM shipments WHERE shipment_id=?",(sid,)).fetchone() or {"import_label":""})["import_label"] or ""
+        if lbl not in binds: binds[lbl]=_ship_bindings(c, lbl)
+        exact,by_st=binds[lbl]
+        for it in c.execute("""SELECT id, shipment_id, sku, product_name, quantity, COALESCE(pack_scanned_qty,0) AS scanned,
+                                      pack_method FROM shipment_items
+                               WHERE shipment_id=? AND COALESCE(cancelled,0)=0""",(sid,)).fetchall():
+            d=dict(it); d["label"]=lbl; d["part"]=_part_num(d["product_name"] or "")
+            d["quantity"]=max(1,int(d["quantity"] or 1))
+            psku=_resolve_item_product(exact, by_st, (d["sku"] or "").strip(), d["product_name"])
+            p=c.execute("SELECT sku,name,barcode,image_url FROM products WHERE sku=?",(psku,)).fetchone() if psku else None
+            d["product"]=dict(p) if p else None
+            items.append(d)
+    items.sort(key=lambda d:(_sticker_order(d["sku"]), d["part"], d["id"]))
+    return items
+
+def _pack_view(items):
+    return [{"id":d["id"],"sticker":d["sku"],"name":d["product_name"],"quantity":d["quantity"],
+             "scanned":min(d["scanned"],d["quantity"]),"done":d["scanned"]>=d["quantity"],"method":d["pack_method"],
+             "linked":bool(d["product"]),"product_name":(d["product"] or {}).get("name"),
+             "image_url":(d["product"] or {}).get("image_url")} for d in items]
+
+def _looks_like_tracking(code):
+    c=(code or "").upper()
+    return bool(re.match(r"^(\d{20,}|1Z[0-9A-Z]{16}|TBA\d{9,}|9[2-5]\d{18,})$", c))
+
+@app.route("/api/pack/begin", methods=["POST"])
+@req_login
+def api_pack_begin():
+    """Recording just started for this label: the box's item list for the scan panel.
+    A new recording of the same box starts the scan list from zero."""
+    code=_normalize_tracking((request.get_json() or {}).get("tracking") or "")
+    c=sdb(); _pack_ensure(c)
+    try:
+        row=_resolve_shipment_by_code(c, code) if code else None
+        if not row: return jsonify({"ok":False,"error":"Shipment not found"})
+        if (row["status"] or "") not in ("shipped","cancelled"):
+            ids=[d["id"] for d in _pack_box(c,row)]
+            if ids:
+                c.execute("UPDATE shipment_items SET pack_scanned_qty=0, pack_method=NULL, pack_scanned_at=NULL WHERE id IN (%s)"
+                          % ",".join("?"*len(ids)), ids)
+                c.commit()
+        items=_pack_box(c,row)
+        on=_get_setting("pack_scan_items","1")!="0"
+        return jsonify({"ok":True,"enabled":on,"shipment_id":row["shipment_id"],"items":_pack_view(items)})
+    finally:
+        c.close()
+
+@app.route("/api/pack/scan", methods=["POST"])
+@req_login
+def api_pack_scan():
+    """One scan while the video records. Returns what the screen should do:
+    ok / learned (counted) · already · wrong · stop (it's this box's label) ·
+    next_label (another box's label: finish this one, start that one) · unknown."""
+    d=request.get_json() or {}
+    trk=_normalize_tracking(d.get("tracking") or "")
+    raw=(d.get("code") or "").strip()
+    code=re.sub(r"\s","",raw)
+    if not trk or not code or len(code)>64:
+        return jsonify({"ok":False,"error":"tracking and code required"})
+    who=session.get("name","")[:60]; sta=re.sub(r"[^A-Za-z0-9_\-]","",str(d.get("station") or ""))[:16]
+    now=datetime.now().isoformat(timespec="seconds")
+    c=sdb(); _pack_ensure(c)
+    try:
+        row=_resolve_shipment_by_code(c, trk)
+        if not row: return jsonify({"ok":False,"error":"Shipment not found"})
+        if _normalize_tracking(code)==trk or _normalize_tracking(code)==(row["tracking_code"] or ""):
+            return jsonify({"ok":True,"result":"stop"})
+        items=_pack_box(c,row)
+        def log(result, item=None, psku=None):
+            c.execute("""INSERT INTO pack_scans(shipment_id,tracking,item_id,sticker,code,product_sku,result,worker,station,scanned_at)
+                         VALUES(?,?,?,?,?,?,?,?,?,?)""",(row["shipment_id"],trk,(item or {}).get("id"),(item or {}).get("sku"),
+                                                          code,psku,result,who,sta,now))
+        def count(item, method):
+            c.execute("""UPDATE shipment_items SET pack_scanned_qty=COALESCE(pack_scanned_qty,0)+1,
+                         pack_method=CASE WHEN COALESCE(pack_method,'')='learned' THEN 'learned' ELSE ? END,
+                         pack_scanned_at=? WHERE id=?""",(method,now,item["id"]))
+        prod=c.execute("SELECT sku,name,barcode,image_url FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
+        if prod:
+            mine=[it for it in items if it["product"] and it["product"]["sku"]==prod["sku"]]
+            open_=[it for it in mine if it["scanned"]<it["quantity"]]
+            if open_:
+                it=open_[0]; count(it,"scan"); log("ok",it,prod["sku"]); c.commit()
+                return jsonify({"ok":True,"result":"ok","item_id":it["id"],"items":_pack_view(_pack_box(c,row))})
+            if mine:
+                log("already",mine[0],prod["sku"]); c.commit()
+                return jsonify({"ok":True,"result":"already","item_id":mine[0]["id"],"product":prod["name"]})
+        # another box's label -> finish this box and start that one
+        nc=_normalize_tracking(code)       # EXACT label/order match only — a product barcode must never
+        other=c.execute("SELECT shipment_id,tracking_code FROM shipments WHERE tracking_code=? OR shipment_id=? LIMIT 1",
+                        (nc,nc)).fetchone()          # look like "another box" and stop the video
+        if other and other["shipment_id"]!=row["shipment_id"] and (other["tracking_code"] or "")!=(row["tracking_code"] or ""):
+            return jsonify({"ok":True,"result":"next_label"})
+        if not prod and _looks_like_tracking(code):
+            return jsonify({"ok":True,"result":"next_label"})
+        # Teach: ONLY the item the screen is asking for, and only if it has no barcode yet —
+        # an unknown barcode while the screen shows a linked item may be that item in other
+        # packaging, so we never guess another item. Never if this product is already linked
+        # to a different sticker in the same live — then it's simply wrong.
+        unlinked=[it for it in items if not it["product"] and it["scanned"]<it["quantity"]]
+        exp=d.get("expected_item_id")
+        target=next((it for it in unlinked if str(it["id"])==str(exp)), None)
+        if target:
+            taken=prod and c.execute("""SELECT 1 FROM show_product_map WHERE import_label=? AND product_sku=?
+                                        AND NOT (sticker_sku=? AND part=?)""",
+                                     (target["label"],prod["sku"],(target["sku"] or "").strip(),target["part"])).fetchone()
+            if not taken:
+                if not prod:
+                    prod,_created,_src=_resolve_or_create_product_by_barcode(c, code, who=who)
+                if prod:
+                    c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by)
+                                 VALUES(?,?,?,?,0,?,?)
+                                 ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET product_sku=excluded.product_sku,
+                                    mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
+                              (target["label"],(target["sku"] or "").strip(),target["part"],prod["sku"],now,who+" (pack)"))
+                    try: _deplete_show_packed(c, target["label"], (target["sku"] or "").strip())
+                    except Exception as e: print("deplete after pack-link failed:",e,flush=True)
+                    count(target,"learned"); log("learned",target,prod["sku"]); c.commit()
+                    return jsonify({"ok":True,"result":"learned","item_id":target["id"],"product":prod["name"],
+                                    "items":_pack_view(_pack_box(c,row))})
+        log("wrong",None,prod["sku"] if prod else None); c.commit()
+        expected=[{"sticker":it["sku"],"name":(it["product"] or {}).get("name") or it["product_name"]}
+                  for it in items if it["scanned"]<it["quantity"]]
+        return jsonify({"ok":True,"result":"wrong","product":(prod["name"] if prod else None),"expected":expected[:6],
+                        "unlinked":[it["sku"] for it in unlinked]})
+    finally:
+        c.close()
+
+def _pack_finish(c, row, video_file):
+    """At upload: record whether every product was scanned into the box (flag if not)."""
+    _pack_ensure(c)
+    items=_pack_box(c,row)
+    if not items: return None
+    missing=[{"sticker":it["sku"],"name":(it["product"] or {}).get("name") or it["product_name"],
+              "missing":it["quantity"]-min(it["scanned"],it["quantity"])} for it in items if it["scanned"]<it["quantity"]]
+    chk="missing" if missing else "complete"
+    c.execute("UPDATE shipments SET pack_check=?, pack_missing=? WHERE shipment_id=?",
+              (chk, json.dumps(missing) if missing else None, row["shipment_id"]))
+    if video_file:
+        c.execute("UPDATE pack_scans SET video_file=? WHERE shipment_id=? AND video_file IS NULL",(video_file,row["shipment_id"]))
+    return {"check":chk,"missing":missing}
+
+@app.route("/api/pack/setting", methods=["GET","POST"])
+@req_role("admin","cs")
+def api_pack_setting():
+    if request.method=="POST":
+        if "admin" not in session_roles() and "manager" not in session_roles():
+            return jsonify({"ok":False,"error":"Admins only"}),403
+        on=bool((request.get_json() or {}).get("on"))
+        _set_setting("pack_scan_items","1" if on else "0"); alog("pack.scan_setting","on" if on else "off")
+        return jsonify({"ok":True,"on":on})
+    return jsonify({"ok":True,"on":_get_setting("pack_scan_items","1")!="0"})
+
+@app.route("/api/pack/missing")
+@req_role("admin","cs")
+def api_pack_missing():
+    """Boxes packed in the last N days where not every product was scanned in."""
+    days=max(1,min(60,int(request.args.get("days") or 14)))
+    cutoff=(datetime.now()-timedelta(days=days)).strftime("%Y-%m-%d")
+    c=sdb()
+    rows=[dict(r) for r in c.execute("""SELECT shipment_id,tracking_code,buyer_name,buyer_username,import_label,packed_at,packed_by,pack_missing
+                                        FROM shipments WHERE pack_check='missing' AND COALESCE(packed_at,'')>=?
+                                        ORDER BY packed_at DESC LIMIT 300""",(cutoff,)).fetchall()]
+    c.close()
+    for r in rows:
+        try: r["missing"]=json.loads(r.pop("pack_missing") or "[]")
+        except Exception: r["missing"]=[]
+    return jsonify({"ok":True,"rows":rows})
+
+@app.route("/api/pack/missing/<sid>/checked", methods=["POST"])
+@req_role("admin","cs")
+def api_pack_missing_checked(sid):
+    c=sdb()
+    n=c.execute("UPDATE shipments SET pack_check='checked' WHERE shipment_id=? AND pack_check='missing'",(sid,)).rowcount
+    c.commit(); c.close()
+    alog("pack.missing_checked",sid)
+    return jsonify({"ok":bool(n)})
 
 @app.route("/api/sku-weights")
 @req_role("admin")

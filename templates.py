@@ -554,6 +554,30 @@ body.sr{background:#ffffff}body.sc{background:#fff1f2}body.sd{background:#f0fdf4
 .pv video{width:100%;display:block}
 body.sc .pv{width:200px;opacity:1;border-color:#f43f5e}
 
+/* Pack scan: products scanned into the box while the video records */
+.ps{display:none;width:100%;max-width:760px;margin-top:22px;text-align:left}
+body.sc.packscan .ps{display:block}
+body.sc.packscan .steps{display:none}
+body.sc.packscan .rm{font-size:40px;margin-bottom:4px}
+.ps-next{display:flex;align-items:center;gap:18px;background:#fff;border:3px solid #6366f1;border-radius:22px;padding:18px 22px;box-shadow:0 10px 30px rgba(99,102,241,.15)}
+.ps-next .k{font-size:15px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#6366f1}
+.ps-next .st{font-size:64px;font-weight:900;line-height:1;color:#111827;min-width:110px;text-align:center}
+.ps-next .nm{font-size:22px;font-weight:800;color:#111827;line-height:1.2}
+.ps-next .sub{font-size:14px;font-weight:700;color:#6b7280;margin-top:4px}
+.ps-next .im{width:84px;height:84px;border-radius:14px;background:#f3f4f6 center/contain no-repeat;flex:0 0 auto}
+.ps-next.done{border-color:#10b981;box-shadow:0 10px 30px rgba(16,185,129,.18)}
+.ps-next.done .k{color:#059669}
+.ps-fb{min-height:46px;margin:10px 0 6px;border-radius:14px;padding:10px 16px;font-size:20px;font-weight:800;display:none}
+.ps-fb.on{display:block}.ps-fb.ok{background:#ecfdf5;color:#047857}.ps-fb.bad{background:#fee2e2;color:#b91c1c}.ps-fb.mid{background:#fef3c7;color:#92400e}
+.ps-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.ps-i{cursor:pointer;display:flex;align-items:center;gap:8px;background:#fff;border:1.5px solid rgba(17,24,39,.1);border-radius:12px;padding:8px 12px;font-size:15px;font-weight:700;color:#374151}
+.ps-i b{font-size:20px;font-weight:900;color:#111827}
+.ps-i.done{background:#ecfdf5;border-color:#6ee7b7;color:#047857}.ps-i.done b{color:#047857}
+.ps-i.cur{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.18)}
+.ps-i .q{font-size:12px;color:#6b7280}
+.ps-flash-ok{animation:psok .5s}.ps-flash-bad{animation:psbad .5s}
+@keyframes psok{0%{background:#bbf7d0}100%{background:#fff1f2}}
+@keyframes psbad{0%,40%{background:#fecaca}100%{background:#fff1f2}}
 .r-icon{width:120px;height:120px;background:#ffffff;border-radius:30px;display:flex;align-items:center;justify-content:center;font-size:56px;margin-bottom:32px;border:2.5px solid rgba(17,24,39,0.096)}
 .r-title{font-size:40px;font-weight:800;margin-bottom:10px}
 .r-sub{font-size:18px;color:#6b7280;margin-bottom:36px}
@@ -684,7 +708,9 @@ body.sf{background:linear-gradient(135deg,#ffffff,#f0fdf4)}
 <div class="x" id="xr"><div class="r-icon">📦</div><div class="r-title" data-i18n="scantracking">Scan Tracking Number</div><div class="r-sub" data-i18n="scantostart">Scan the barcode to start recording</div><div class="inp-w"><input class="inp" id="mi" placeholder="Waiting for scan..." data-i18n-ph="waitscan" autocomplete="off"></div><div class="hint"><span class="pd"></span><span data-i18n="scannerready">Scanner ready</span></div><div class="ctr"><span data-i18n="recorded">Recorded:</span> <b id="cn">0</b></div></div>
 
 <div class="x" id="xc"><div class="rp"><div class="rd"></div><div class="rl" data-i18n="recording">RECORDING</div></div><div class="rk" id="rk"></div><div class="rm" id="rmm">00:00</div>
-<div class="steps" id="stepsLight"><div class="step ok"><div class="si">✓</div><span data-i18n="step_scan">Scan tracking number</span></div><div class="step now"><div class="si">2</div><span data-i18n="step_pack">Pack the order in front of the camera</span></div><div class="step"><div class="si">3</div><span data-i18n="step_again">Scan again to finish</span></div></div><input class="hinp" id="ri" autocomplete="off"></div>
+<div class="steps" id="stepsLight"><div class="step ok"><div class="si">✓</div><span data-i18n="step_scan">Scan tracking number</span></div><div class="step now"><div class="si">2</div><span data-i18n="step_pack">Pack the order in front of the camera</span></div><div class="step"><div class="si">3</div><span data-i18n="step_again">Scan again to finish</span></div></div>
+<div class="ps" id="ps"><div class="ps-next" id="psNext"></div><div class="ps-fb" id="psFb"></div><div class="ps-list" id="psList"></div></div>
+<input class="hinp" id="ri" autocomplete="off"></div>
 
 <!-- Stage 1 (8s): big centered count overlay shown after every scan -->
 <div id="countOverlay">
@@ -799,7 +825,7 @@ function startRec(trk){if(!sm){alert(t('nocamera'));return}ct=trk;ch=[];
   try{console.log('[rec] '+w+'x'+h+'@'+fps+'fps '+Math.round(br/1000)+'kbps '+(mime||'default'))}catch(e){}
   mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};
   mr.start();  // no timeslice → one complete blob on stop (no chunk-join risk)
-  t0=Date.now();startTmr();document.getElementById('rk').textContent=trk;go('c');loadChecklist(trk)}
+  t0=Date.now();startTmr();document.getElementById('rk').textContent=trk;go('c');loadChecklist(trk);packBegin(trk)}
 
 // ─── Packer item-count reminder (NO touch / NO buttons) ───
 // After each scan we look up the shipment and:
@@ -858,7 +884,8 @@ function loadChecklist(tracking){
             countTimer=setTimeout(function(){ov.classList.remove('on');side.classList.add('on')},8000);
             return;
         }
-        var s=d.shipment, items=d.items||[];
+        var s=d.shipment, items=(d.items||[]).slice().sort(function(a,b){
+            var x=parseInt(a.sku,10),y=parseInt(b.sku,10);if(isNaN(x)&&isNaN(y))return 0;if(isNaN(x))return 1;if(isNaN(y))return -1;return x-y;});
         if(s.status==='cancelled'){
             ov.classList.remove('on');
             showCancelAlert(s.buyer_name||s.buyer_username||'(unknown)', s.flag_reason||'Order was cancelled');
@@ -926,8 +953,8 @@ function loadChecklist(tracking){
         // After 8 seconds, hide overlay, slide in side card. Stays until next scan / scan-out.
         countTimer=setTimeout(function(){
             ov.classList.remove('on');
-            side.classList.add('on');
-        },8000);
+            if(!PS)side.classList.add('on');     // the scan panel replaces the side card
+        },PS?2500:8000);
     }).catch(function(){
         document.getElementById('countBuyer').textContent='—';
         document.getElementById('countBig').textContent='?';
@@ -970,21 +997,101 @@ document.getElementById('gvOk').addEventListener('click',function(){
     gvPending=[];
     if(st==='c')ri.focus();
 });
+// ─── Pack scan: scan each product into the box while recording ───
+// The list is in ascending sticker order and the next one is highlighted; any order counts.
+// A product with no barcode linked yet is linked by its first scan. The box label stops.
+var PS=null, PSWAIT=false, PSSEL=null;
+var PST={en:{next:'Scan',done:'All products scanned ✓',donesub:'Scan the box label to finish',nolink:'No barcode yet — scanning it links it',
+  ok:'✓ Packed',learned:'✓ Linked & packed',already:'Already scanned',wrong:'✗ Not in this order',wrongexp:'Scan one of:',
+  offline:'Could not check this scan — scan again',missing:'Not scanned:',of:'of',
+  taptolink:'new barcode? tap %s on the screen, then scan it'},
+ es:{next:'Escanea',done:'Todos los productos escaneados ✓',donesub:'Escanea la etiqueta de la caja para terminar',nolink:'Sin código aún — al escanearlo se vincula',
+  ok:'✓ Empacado',learned:'✓ Vinculado y empacado',already:'Ya escaneado',wrong:'✗ No es de este pedido',wrongexp:'Escanea uno de:',
+  offline:'No se pudo verificar — escanea de nuevo',missing:'Sin escanear:',of:'de',
+  taptolink:'¿código nuevo? toca %s en la pantalla y escanéalo'}};
+function pt(k){return (PST[LANG]&&PST[LANG][k])||PST.en[k]}
+function pesc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function beep(ok){try{var a=window._ac||(window._ac=new (window.AudioContext||window.webkitAudioContext)());var o=a.createOscillator(),g=a.createGain();
+  o.frequency.value=ok?880:220;o.type=ok?'sine':'square';g.gain.value=.08;o.connect(g);g.connect(a.destination);o.start();o.stop(a.currentTime+(ok?.12:.35));}catch(e){}}
+function packBegin(trk){
+  PS=null;PSSEL=null;PSWAIT=true;document.body.classList.remove('packscan');
+  fetch('/api/pack/begin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tracking:trk})})
+  .then(function(r){return r.json()}).then(function(d){
+    if(ct!==trk)return;
+    PSWAIT=false;
+    if(!d.ok||!d.enabled||!d.items||!d.items.length)return;
+    PS={items:d.items};document.body.classList.add('packscan');psFb('');psDraw();
+    var ov=document.getElementById('countOverlay');            // the scan panel takes over: shorten the count overlay
+    if(ov&&ov.classList.contains('on')){if(countTimer)clearTimeout(countTimer);countTimer=setTimeout(function(){ov.classList.remove('on')},2500);}
+  }).catch(function(){if(ct===trk)PSWAIT=false;});
+}
+function psNextItem(){if(!PS)return null;
+  if(PSSEL){for(var j=0;j<PS.items.length;j++)if(PS.items[j].id===PSSEL&&!PS.items[j].done)return PS.items[j];PSSEL=null;}
+  for(var i=0;i<PS.items.length;i++)if(!PS.items[i].done)return PS.items[i];return null}
+function psDraw(){
+  if(!PS)return;var nx=psNextItem(),el=document.getElementById('psNext');
+  if(nx){
+    var img=nx.image_url?' style="background-image:url('+encodeURI(nx.image_url)+')"':'';
+    el.className='ps-next';
+    el.innerHTML='<div><div class="k">'+pt('next')+'</div><div class="st">#'+pesc(nx.sticker)+'</div></div>'+
+      (nx.image_url?'<div class="im"'+img+'></div>':'')+
+      '<div style="min-width:0"><div class="nm">'+renderProductNameHtml(nx.product_name||nx.name||'')+'</div>'+
+      '<div class="sub">'+(nx.quantity>1?(nx.scanned+' '+pt('of')+' '+nx.quantity+' · '):'')+(nx.linked?'':pt('nolink'))+'</div></div>';
+  }else{
+    el.className='ps-next done';
+    el.innerHTML='<div><div class="k">✓</div></div><div><div class="nm">'+pt('done')+'</div><div class="sub">'+pt('donesub')+'</div></div>';
+  }
+  document.getElementById('psList').innerHTML=PS.items.map(function(it){
+    return '<div class="ps-i'+(it.done?' done':'')+(nx&&it.id===nx.id?' cur':'')+'" data-id="'+it.id+'">'+(it.done?'✓ ':'')+'<b>#'+pesc(it.sticker)+'</b>'+
+      (it.quantity>1?'<span class="q">'+it.scanned+'/'+it.quantity+'</span>':'')+(it.linked||it.done?'':' <span class="q">🔗?</span>')+'</div>';}).join('');
+  Array.prototype.forEach.call(document.querySelectorAll('#psList .ps-i'),function(x){x.onclick=function(ev){ev.stopPropagation();
+    var id=+x.getAttribute('data-id');PSSEL=id;psDraw();ri.focus();};});
+}
+function psFb(txt,kind){var f=document.getElementById('psFb');f.textContent=txt||'';f.className='ps-fb'+(txt?' on '+(kind||''):'');
+  if(txt){clearTimeout(f._t);f._t=setTimeout(function(){f.className='ps-fb'},kind==='bad'?4000:1800);}}
+function psFlash(ok){var b=document.body;b.classList.remove('ps-flash-ok','ps-flash-bad');void b.offsetWidth;b.classList.add(ok?'ps-flash-ok':'ps-flash-bad');}
+function finishBox(){stopTmr();hideReminder();stopRec().then(upload)}
+function nextBox(t){stopTmr();hideReminder();stopRec().then(upload).then(function(){setTimeout(function(){startRec(t)},500)})}
+function packScan(raw,t){
+  var nx=psNextItem(),trk=ct;
+  fetch('/api/pack/scan',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({tracking:trk,code:raw,expected_item_id:nx?nx.id:null,station:'__SID__'})})
+  .then(function(r){return r.json()}).then(function(d){
+    if(ct!==trk||st!=='c')return;
+    if(!d.ok){psFb(d.error||pt('offline'),'bad');beep(false);return}
+    var r=d.result;
+    if(r==='stop'){finishBox();return}
+    if(r==='next_label'){nextBox(t);return}
+    if(r==='ok'||r==='learned'){if(d.items){if(!PS){PS={items:[]};document.body.classList.add('packscan');}PS.items=d.items;}psDraw();psFb(pt(r)+(d.product?' · '+d.product:''),'ok');psFlash(true);beep(true);return}
+    if(r==='already'){psFb(pt('already')+(d.product?' · '+d.product:''),'mid');beep(false);return}
+    var exp=(d.expected||[]).map(function(x){return '#'+x.sticker}).join(', ');
+    var tip=(!d.product&&d.unlinked&&d.unlinked.length)?' · '+pt('taptolink').replace('%s','#'+d.unlinked.join(', #')):'';
+    psFb(pt('wrong')+(d.product?' ('+d.product+')':'')+(exp?' — '+pt('wrongexp')+' '+exp:'')+tip,'bad');psFlash(false);beep(false);
+  }).catch(function(){
+    if(ct!==trk)return;
+    if(/^\d{20,}$|^1Z|^TBA/i.test(t)){nextBox(t);return}   // offline: a label-looking code still moves on
+    psFb(pt('offline'),'bad');beep(false);
+  });
+}
 function stopRec(){return new Promise(function(res){mr.onstop=res;mr.stop()})}
 function capPhoto(){var v=document.getElementById('pv'),c=document.createElement('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);return new Promise(function(res){c.toBlob(res,'image/jpeg',.7)})}
 function upload(){go('u');var dur=Math.round((Date.now()-t0)/1000);var vb=new Blob(ch,{type:'video/webm'});
 capPhoto().then(function(pb){var fd=new FormData();fd.append('tracking',ct);fd.append('station','__SID__');fd.append('duration',dur);fd.append('video',vb,ct+'.webm');if(pb)fd.append('photo',pb,ct+'.jpg');
 return fetch('/api/upload',{method:'POST',body:fd})}).then(function(r){return r.json()}).then(function(d){
-if(d.ok){n++;document.getElementById('cn').textContent=n;document.getElementById('dkk').textContent=ct;document.getElementById('ddd').textContent='Duration: '+dur+'s';loadMyStats();go('d');setTimeout(function(){go('r')},3000)}
+if(d.ok){n++;document.getElementById('cn').textContent=n;document.getElementById('dkk').textContent=ct;
+var miss=(d.pack&&d.pack.check==='missing')?d.pack.missing.map(function(m){return '#'+m.sticker+(m.missing>1?' ×'+m.missing:'')}).join(', '):'';
+document.getElementById('ddd').innerHTML='Duration: '+dur+'s'+(miss?'<div style="margin-top:10px;background:#fef3c7;color:#92400e;border-radius:12px;padding:8px 14px;font-weight:800">⚠ '+pt('missing')+' '+pesc(miss)+'</div>':'');
+PS=null;document.body.classList.remove('packscan');loadMyStats();go('d');setTimeout(function(){go('r')},miss?4500:3000)}
 else{go('e');setTimeout(function(){go('r')},2500)}}).catch(function(){go('e');setTimeout(function(){go('r')},2500)})}
 // USPS labels carry "service + ZIP + tracking" in the barcode (up to ~33 digits)
 // but humans only see the 22-digit tracking. Strip the prefix on entry so the
 // recording, the upload payload, and the CSV log all carry the clean 22-digit code.
 function normTrk(s){s=(s||'').trim();if(/^\d{23,40}$/.test(s))return s.slice(-22);return s}
 mi.addEventListener('keydown',function(e){if(e.key==='Enter'){var t=normTrk(mi.value);if(t)startRec(t)}});
-ri.addEventListener('keydown',function(e){if(e.key!=='Enter')return;var t=normTrk(ri.value);if(!t)return;stopTmr();
-hideReminder();
-if(t===ct){stopRec().then(upload)}else{stopRec().then(upload).then(function(){setTimeout(function(){startRec(t)},500)})}});
+ri.addEventListener('keydown',function(e){if(e.key!=='Enter')return;var raw=(ri.value||'').trim(),t=normTrk(raw);ri.value='';if(!t)return;
+if(t===ct){finishBox();return}
+if(PS||PSWAIT){var ov=document.getElementById('countOverlay');if(ov)ov.classList.remove('on');packScan(raw,t);return}   // scanning products into the box: only the box label stops
+nextBox(t);});
 function startTmr(){stopTmr();ti=setInterval(function(){var s=Math.floor((Date.now()-t0)/1000);document.getElementById('rmm').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')},200)}
 function stopTmr(){if(ti){clearInterval(ti);ti=null}}
 // Packer's own daily count + rank (no other names/counts shown — privacy by design).
@@ -5591,6 +5698,11 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
 .item-tag .qty{color:var(--text-dim);font-weight:700}
 .item-tag.cancelled{opacity:.5;text-decoration:line-through}
 
+.pm-head{font-size:13px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:10px}
+.pm{background:var(--surface);border:1px solid rgba(245,158,11,.3);border-left:4px solid #f59e0b;border-radius:16px;padding:16px 20px;margin-bottom:10px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.pm .who{flex:1;min-width:220px}.pm .who b{font-size:16px;font-weight:800;color:#141b26}.pm .who div{font-size:12px;color:var(--text-muted);margin-top:2px}
+.pm .miss{display:flex;flex-wrap:wrap;gap:6px}
+.pm button{background:#fff;border:1px solid var(--border);border-radius:10px;padding:9px 14px;font-weight:800;font-family:inherit;cursor:pointer}
 .issue-actions{display:flex;gap:10px;flex-wrap:wrap;padding-top:14px;border-top:1px solid var(--border)}
 .action-retry{background:rgba(16,185,129,.14);color:#059669;border:1px solid rgba(16,185,129,.3);border-radius:11px;padding:11px 22px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;flex:1;min-width:200px;display:flex;align-items:center;justify-content:center;gap:8px}
 .action-retry:hover{background:rgba(16,185,129,.22)}
@@ -5625,6 +5737,7 @@ __NAVBAR__
   </div>
   <div id="countWrap" style="margin-bottom:24px"></div>
   <div id="list"></div>
+  <div id="packMissing" style="margin-top:34px"></div>
 </div>
 
 <div class="toast" id="toast">—</div>
@@ -7031,6 +7144,22 @@ function submitStep(btn,s,bodyEl){
 }
 
 // Force a load — the inside of load() detects first-visit language preference
+function loadPackMissing(){
+    fetch('/api/pack/missing').then(function(r){return r.json()}).then(function(d){
+        var el=document.getElementById('packMissing');
+        if(!d.ok||!d.rows.length){el.innerHTML='';return;}
+        el.innerHTML='<div class="pm-head">📦 Packed without scanning every product · last 14 days ('+d.rows.length+')</div>'+
+          d.rows.map(function(r){
+            return '<div class="pm" data-sid="'+escapeHtml(r.shipment_id)+'"><div class="who"><b>'+escapeHtml(r.buyer_name||r.buyer_username||r.shipment_id)+'</b>'+
+              '<div>'+escapeHtml(r.import_label||'')+' · packed by '+escapeHtml(r.packed_by||'?')+' · '+escapeHtml((r.packed_at||'').replace('T',' ').slice(0,16))+' · '+escapeHtml(r.tracking_code||'')+'</div></div>'+
+              '<div class="miss">'+r.missing.map(function(m){return '<span class="item-tag"><span class="sku">#'+escapeHtml(m.sticker)+'</span><span class="name">'+escapeHtml(m.name||'')+'</span>'+(m.missing>1?'<span class="qty">×'+m.missing+'</span>':'')+'</span>';}).join('')+'</div>'+
+              '<button data-chk="'+escapeHtml(r.shipment_id)+'">✓ Checked the video</button></div>';
+          }).join('');
+        Array.prototype.forEach.call(el.querySelectorAll('button[data-chk]'),function(b){b.onclick=function(){
+            fetch('/api/pack/missing/'+encodeURIComponent(b.getAttribute('data-chk'))+'/checked',{method:'POST'}).then(function(){loadPackMissing();});};});
+    }).catch(function(){});
+}
+loadPackMissing();
 load();
 </script>
 </body></html>'''
@@ -9726,6 +9855,12 @@ __NAVBAR__
   <button class="btn btn-s" id="addPkg" style="margin-top:6px">+ Add package</button>
   <button class="btn btn-p" id="savePkgs" style="margin-top:6px;margin-left:8px">Save presets</button>
 </div>
+<div class="card">
+  <h2>🎥 Packing — scan each product into the box</h2>
+  <div class="desc">While the video records, the packer scans every product he puts in the box (the screen guides him in ascending sticker order). Boxes finished without scanning everything are listed on Picking / Packing Issues. Turn off to go back to scan-to-start / scan-to-stop only.</div>
+  <label style="display:flex;align-items:center;gap:10px;font-weight:700;cursor:pointer"><input type="checkbox" id="packScanOn" style="width:20px;height:20px"> Ask packers to scan each product</label>
+  <div id="packScanMsg" style="font-size:12px;color:var(--text-muted);margin-top:6px;min-height:14px"></div>
+</div>
 </div><!-- /packages panel -->
 
 <div class="tab-panel" data-panel="integrations">
@@ -9742,6 +9877,10 @@ __NAVBAR__
 </div>
 <div class="toast" id="t"></div>
 <script>
+(function(){var cb=document.getElementById('packScanOn');if(!cb)return;
+  fetch('/api/pack/setting').then(function(r){return r.json()}).then(function(d){cb.checked=!!d.on;});
+  cb.addEventListener('change',function(){fetch('/api/pack/setting',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:cb.checked})})
+    .then(function(r){return r.json()}).then(function(d){document.getElementById('packScanMsg').textContent=d.ok?(cb.checked?'On — applies from the next box':'Off'):'Could not save';});});})();
 function toast(m,e){var x=document.getElementById('t');x.textContent=m;x.className=e?'toast err':'toast';x.style.display='block';setTimeout(function(){x.style.display='none'},2500)}
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
 // ── Tabs ──
