@@ -279,7 +279,7 @@ def test_workers_cannot_plan_or_run(appmod, client, tt, show):
 
 def test_if_our_db_update_fails_after_tiktok_combined_the_new_package_still_gets_its_label(appmod, client, tt, show, write_on, monkeypatch):
     A = appmod; hdr = _as(client, A); t = show["t"]
-    def boom(c, new_pid, order_ids): raise RuntimeError("disk full")
+    def boom(*a, **k): raise RuntimeError("disk full")
     monkeypatch.setattr(A, "_tt_merge_into_package", boom)
     bid = _prepare(client, hdr, show["label"])["batch_id"]
     client.post("/api/tiktok/batch/%d/run" % bid, headers=hdr, json={"pin": "4321"})
@@ -454,3 +454,116 @@ def test_two_workers_racing_on_one_package_buy_one_label(appmod, client, tt, sho
     A._tt_label_one(A.DEFAULT_ORG, SHOP, pid, bid, A.TT_DEFAULT_BOX)       # a later resume settles it
     c = A.sdb(A.DEFAULT_ORG); st = c.execute("SELECT status FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone()[0]; c.close()
     assert st == "labeled" and tt.ship_calls[pid] == 1
+
+
+# ── independent review findings, kept as regression tests ────────────────────
+def _run(client, hdr, bid, ep="run"):
+    return client.post("/api/tiktok/batch/%d/%s" % (bid, ep), headers=hdr, json={"pin": "4321"}).get_json()
+
+
+def test_cancelled_while_tiktok_status_is_unreachable_buys_nothing(appmod, client, tt, show, write_on):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    bid = _prepare(client, hdr, show["label"])["batch_id"]
+    tt.order_status["OB1" + t] = "CANCELLED"; tt.orders_down = True
+    _run(client, hdr, bid)
+    assert tt.ship_calls == {}                                            # nothing bought blind
+    d = client.get("/api/tiktok/batch/%d" % bid).get_json()
+    assert d["batch"]["status"] == "needs_attention"
+    assert all("Could not confirm" in j["error"] for j in d["problems"])
+
+
+def test_resume_days_later_rechecks_and_skips_an_order_cancelled_meanwhile(appmod, client, tt, show, write_on, monkeypatch):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    orig = tt.request; state = {"fail": True}
+    def req(method, url, params=None, body=None, **kw):
+        if url.endswith("PB1%s/ship" % t) and state["fail"]:
+            return {"code": 429, "message": "rate limited"}
+        return orig(method, url, params=params, body=body, **kw)
+    monkeypatch.setattr(A, "_tt_request", req)
+    bid = _prepare(client, hdr, show["label"])["batch_id"]
+    _run(client, hdr, bid)
+    state["fail"] = False; tt.order_status["OB1" + t] = "CANCELLED"
+    _run(client, hdr, bid, "resume")
+    assert "PB1" + t not in tt.ship_calls
+    d = client.get("/api/tiktok/batch/%d" % bid).get_json()
+    assert d["batch"]["status"] == "done" and [j["package_id"] for j in d["skipped"]] == ["PB1" + t]
+
+
+def test_package_recovered_in_a_new_batch_belongs_to_that_batch(appmod, client, tt, show, write_on):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    tt.crash_ship_after_sending.add("PB1" + t)
+    _run(client, hdr, _prepare(client, hdr, show["label"])["batch_id"])
+    bid2 = _prepare(client, hdr, show["label"])["batch_id"]               # new batch instead of Resume
+    _run(client, hdr, bid2)
+    b2 = client.get("/api/tiktok/batch/%d" % bid2).get_json()["batch"]
+    assert b2["done"] == 1 and b2["status"] == "done"
+    assert client.get("/api/tiktok/batch/%d/labels?pdf=1" % bid2).status_code == 200
+    assert tt.ship_calls["PB1" + t] == 1
+
+
+def test_merge_failure_is_flagged_retried_on_resume_and_old_ids_never_planned_again(appmod, client, tt, show, write_on, monkeypatch):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    real = A._tt_merge_into_package
+    monkeypatch.setattr(A, "_tt_merge_into_package", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("database is locked")))
+    bid = _prepare(client, hdr, show["label"])["batch_id"]
+    _run(client, hdr, bid)
+    assert client.get("/api/tiktok/batch/%d" % bid).get_json()["batch"]["status"] == "needs_attention"
+    tt.groups = []
+    d2 = _prepare(client, hdr, show["label"])
+    assert d2["ok"] is False or "PA1" + t not in d2["plan"]["singles"]  # dead TikTok ids are never offered again
+    monkeypatch.setattr(A, "_tt_merge_into_package", real)
+    _run(client, hdr, bid, "resume")
+    assert client.get("/api/tiktok/batch/%d" % bid).get_json()["batch"]["status"] == "done"
+    assert _ship(A, "CMB-G" + t)["tracking_code"] and _ship(A, "PA1" + t) is None
+    assert tt.ship_calls["CMB-G" + t] == 1
+
+
+def test_combine_that_timed_out_buys_nothing_until_tiktok_shows_what_happened(appmod, client, tt, show, write_on, monkeypatch):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    orig = tt.request; state = {"timeout": True}
+    def req(method, url, params=None, body=None, **kw):
+        if url.endswith("/packages/combine") and state["timeout"]:
+            orig(method, url, params=params, body=body, **kw)            # TikTok DID combine
+            raise TimeoutError("timed out")
+        if url.endswith("/orders") and not state["timeout"]:            # order detail now shows the new package
+            ids = (params or {}).get("ids", "").split(",")
+            return {"code": 0, "data": {"orders": [{"id": i, "status": "AWAITING_SHIPMENT",
+                    "packages": [{"id": "CMB-G" + t}] if i.startswith("OA") else [{"id": "PB1" + t}]} for i in ids]}}
+        return orig(method, url, params=params, body=body, **kw)
+    monkeypatch.setattr(A, "_tt_request", req)
+    bid = _prepare(client, hdr, show["label"])["batch_id"]
+    _run(client, hdr, bid)
+    assert "PA1" + t not in tt.ship_calls and "PA2" + t not in tt.ship_calls and "CMB-G" + t not in tt.ship_calls
+    assert client.get("/api/tiktok/batch/%d" % bid).get_json()["batch"]["status"] == "needs_attention"
+    state["timeout"] = False
+    _run(client, hdr, bid, "resume")
+    assert tt.ship_calls.get("CMB-G" + t) == 1 and "PA1" + t not in tt.ship_calls
+    assert client.get("/api/tiktok/batch/%d" % bid).get_json()["batch"]["status"] == "done"
+
+
+def test_packed_box_is_never_reopened_by_a_combine(appmod, client, tt, show):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    c = A.sdb(A.DEFAULT_ORG); c.execute("UPDATE shipments SET status='packed' WHERE shipment_id=?", ("PA2" + t,)); c.commit(); c.close()
+    p = _prepare(client, hdr, show["label"])["plan"]
+    assert p["combines"] == [] and "PA2" + t in p["singles"]
+
+
+def test_merged_box_takes_the_least_advanced_status(appmod, client, tt, show, write_on):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    c = A.sdb(A.DEFAULT_ORG); c.execute("UPDATE shipments SET status='picked' WHERE shipment_id=?", ("PA1" + t,)); c.commit(); c.close()
+    _run(client, hdr, _prepare(client, hdr, show["label"])["batch_id"])
+    assert _ship(A, "CMB-G" + t)["status"] == "pending"
+
+
+def test_uncertain_package_can_be_released_only_with_the_pin(appmod, client, tt, show, write_on):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    tt.ship_silently_lost.add("PB1" + t)
+    bid = _prepare(client, hdr, show["label"])["batch_id"]
+    _run(client, hdr, bid); _run(client, hdr, bid, "resume")
+    url = "/api/tiktok/label-job/PB1%s/release" % t
+    assert client.post(url, headers=hdr, json={"pin": "0000"}).status_code == 401
+    assert client.post(url, headers=hdr, json={"pin": "4321"}).get_json()["ok"]
+    tt.ship_silently_lost.discard("PB1" + t)
+    _run(client, hdr, bid, "resume")
+    d = client.get("/api/tiktok/batch/%d" % bid).get_json()
+    assert d["batch"]["status"] == "done" and tt.ship_calls["PB1" + t] == 2   # second try only after a human checked

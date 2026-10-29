@@ -16272,6 +16272,20 @@ def _tt_api_label(org, shop_id, pid):
     if not url: raise TTError("TikTok returned no label document")
     return url
 
+def _tt_api_order_packages(org, shop_id, order_ids):
+    """{order_id: [package_id, ...]} from TikTok's order detail (read-only)."""
+    out = {}
+    ids = [str(o) for o in order_ids]
+    for i in range(0, len(ids), 50):
+        d = _tt_shop_call(org, shop_id, "GET", TT_PATH_ORDERS, params={"ids": ",".join(ids[i:i + 50])})
+        for o in d.get("orders") or []:
+            oid = str(o.get("id") or "")
+            pk = [str(p.get("id") or "") for p in (o.get("packages") or []) if p.get("id")]
+            if not pk:
+                pk = sorted({str(li.get("package_id")) for li in (o.get("line_items") or []) if li.get("package_id")})
+            if oid: out[oid] = pk
+    return out
+
 def _tt_api_order_statuses(org, shop_id, order_ids):
     """{order_id: STATUS} straight from TikTok (read-only, 50 ids per call)."""
     out = {}
@@ -16283,7 +16297,12 @@ def _tt_api_order_statuses(org, shop_id, order_ids):
             if oid: out[oid] = str(o.get("status") or o.get("order_status") or "").upper()
     return out
 
-def _tt_live_order_statuses(org, order_ids):
+def _tt_fresh_order_statuses(org, order_ids):
+    """Only what TikTok answered just now: ({order_id: STATUS}, error)."""
+    st, _fresh, err = _tt_live_order_statuses(org, order_ids, _fresh_only=True)
+    return st, err
+
+def _tt_live_order_statuses(org, order_ids, _fresh_only=False):
     """Current TikTok status of these orders. Asks TikTok first (and saves what it says);
     if TikTok can't be reached, falls back to the last status our sync stored.
     Returns (statuses, fresh, error)."""
@@ -16315,6 +16334,8 @@ def _tt_live_order_statuses(org, order_ids):
             p.commit()
         finally:
             p.close()
+    if _fresh_only:
+        return {o: fresh[o] for o in ids if fresh.get(o)}, None, err
     out = {o: (fresh.get(o) or stored.get(o) or "") for o in ids}
     return out, (err is None and all(o in fresh for o in ids)), err
 
@@ -16401,22 +16422,33 @@ def _tt_needs_label(c, label):
         out.setdefault(r["shipment_id"], set()).add(str(r["order_id"]))
     return {k: sorted(v) for k, v in out.items()}
 
-def _tt_merge_into_package(c, new_pid, order_ids):
+_TT_STAGE_RANK = {"pending": 0, "picked": 1, "packed": 2}
+
+def _tt_merge_into_package(c, new_pid, order_ids, packages=None):
     """After TikTok combined some orders into package new_pid: move those orders' items into
     one shipment row keyed new_pid (keeping picked/depletion flags — rows are moved, not
-    rebuilt) and drop the now-empty API-owned rows. Idempotent."""
+    rebuilt) and drop the now-empty API-owned rows. Touches ONLY the combine's own TikTok
+    packages (never a CSV/manual row that happens to share an order id). Idempotent."""
+    scope = list(packages or []) + [new_pid]
     olds = [r["shipment_id"] for r in c.execute(
-        "SELECT DISTINCT shipment_id FROM shipment_items WHERE order_id IN (%s)" % ",".join("?" * len(order_ids)),
-        list(order_ids)).fetchall()]
+        "SELECT DISTINCT i.shipment_id FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id "
+        "WHERE i.order_id IN (%s) AND i.shipment_id IN (%s) AND COALESCE(s.import_batch,'')='tiktok-api'"
+        % (",".join("?" * len(order_ids)), ",".join("?" * len(scope))),
+        list(order_ids) + scope).fetchall()]
     if not olds: return
+    # the combined box is only as far along as its least-advanced part
+    sts = [(r["status"] or "pending") for r in c.execute(
+        "SELECT status FROM shipments WHERE shipment_id IN (%s)" % ",".join("?" * len(olds)), olds).fetchall()]
+    merged_status = min(sts, key=lambda x: _TT_STAGE_RANK.get(x, 0)) if sts else "pending"
     if not c.execute("SELECT 1 FROM shipments WHERE shipment_id=?", (new_pid,)).fetchone():
         # copy the first package's row; tracking starts empty (the label assigns it) — never
         # copy it, because tracking_code is unique among non-NULL values
         cols = [r[1] for r in c.execute("PRAGMA table_info(shipments)").fetchall() if r[1] not in ("shipment_id", "tracking_code")]
         c.execute("INSERT INTO shipments(shipment_id,tracking_code,%s) SELECT ?,NULL,%s FROM shipments WHERE shipment_id=?"
                   % (",".join(cols), ",".join(cols)), (new_pid, olds[0]))
-    c.execute("UPDATE shipment_items SET shipment_id=? WHERE order_id IN (%s)" % ",".join("?" * len(order_ids)),
-              [new_pid] + list(order_ids))
+    c.execute("UPDATE shipment_items SET shipment_id=? WHERE order_id IN (%s) AND shipment_id IN (%s)"
+              % (",".join("?" * len(order_ids)), ",".join("?" * len(olds))), [new_pid] + list(order_ids) + olds)
+    c.execute("UPDATE shipments SET status=? WHERE shipment_id=?", (merged_status, new_pid))
     for o in olds:
         if o == new_pid: continue
         if not c.execute("SELECT 1 FROM shipment_items WHERE shipment_id=?", (o,)).fetchone():
@@ -16454,6 +16486,11 @@ def _tt_label_one(org, shop_id, pid, batch_id, box):
         st = job["status"]
         if st == "labeled":
             return job
+        if job.get("batch_id") != batch_id:     # finishing it here: it belongs to this batch now
+            c.execute("UPDATE tt_label_jobs SET batch_id=? WHERE package_id=?", (batch_id, pid)); c.commit()
+        if st == "skipped":
+            st = "claimed"
+            c.execute("UPDATE tt_label_jobs SET status='claimed' WHERE package_id=? AND status='skipped'", (pid,)); c.commit()
         if st in ("shipping", "uncertain"):
             # The ship call may or may not have reached TikTok. READ before doing anything.
             try:
@@ -16501,7 +16538,10 @@ def _tt_label_one(org, shop_id, pid, batch_id, box):
             c.execute("UPDATE tt_label_jobs SET status='labeled', tracking=?, doc_url=?, label_file=?, error=NULL, updated_at=? WHERE package_id=?",
                       (pk["tracking"], url, fn, now(), pid))
             if pk["tracking"]:
-                c.execute("UPDATE shipments SET tracking_code=? WHERE shipment_id=? AND COALESCE(tracking_code,'')=''", (pk["tracking"], pid))
+                n = c.execute("UPDATE shipments SET tracking_code=? WHERE shipment_id=? AND COALESCE(tracking_code,'')=''", (pk["tracking"], pid)).rowcount
+                if not n and not c.execute("SELECT 1 FROM shipments WHERE tracking_code=?", (pk["tracking"],)).fetchone():
+                    c.execute("UPDATE tt_label_jobs SET error=? WHERE package_id=?",
+                              ("Label bought, but our package row is missing — tracking not saved yet", pid))
             c.commit()
         return dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
     finally:
@@ -16548,13 +16588,27 @@ def _tt_batch_plan(org, label):
                 "statuses": sorted({statuses.get(o) or "UNKNOWN" for o in need[p]})}
                for p in sorted(need) if buyer[p] in held_buyers]
     need = {k: v for k, v in need.items() if buyer[k] not in held_buyers}
+    # package ids an earlier batch already combined away on TikTok no longer exist there
+    c = sdb(org)
+    try:
+        dead_ids = set()
+        for r in c.execute("SELECT plan FROM tt_batches WHERE status NOT IN ('planned','superseded')").fetchall():
+            for cb in (json.loads(r["plan"] or "{}").get("combines") or []):
+                if cb.get("new_pid"): dead_ids.update(p for p in cb.get("packages", []) if p != cb["new_pid"])
+        stage = {pid: (c.execute("SELECT status FROM shipments WHERE shipment_id=?", (pid,)).fetchone() or {"status": ""})["status"] or ""
+                 for pid in need}
+    finally:
+        c.close()
+    need = {k: v for k, v in need.items() if k not in dead_ids}
     order_to_pkg = {o: p for p, os_ in need.items() for o in os_}
     combines = []
     if len(need) > 1:
         for g in _tt_fetch_combinable(org)["groups"]:
             if len(g["order_ids"]) > 1 and all(o in order_to_pkg for o in g["order_ids"]):
                 pk = sorted({order_to_pkg[o] for o in g["order_ids"]})
-                if len(pk) > 1:
+                whole = set(g["order_ids"]) == {o for p in pk for o in need[p]}     # no order left behind
+                packed = any(stage.get(p) == "packed" for p in pk)                  # never re-open a packed box
+                if len(pk) > 1 and whole and not packed:
                     combines.append({"id": g["id"], "order_ids": g["order_ids"], "shop_id": g.get("shop_id"), "packages": pk})
     in_combine = {p for cb in combines for p in cb["packages"]}
     singles = sorted(p for p in need if p not in in_combine)
@@ -16581,6 +16635,50 @@ def _tt_run_batch(org, bid):
         except Exception:
             pass
 
+def _tt_pkg_orders(org, pid):
+    c = sdb(org)
+    try:
+        return [str(r["order_id"]) for r in c.execute("SELECT DISTINCT order_id FROM shipment_items WHERE shipment_id=?", (pid,)).fetchall()]
+    finally:
+        c.close()
+
+def _tt_job_status(org, pid):
+    c = sdb(org); _tt_labels_ensure(c)
+    try:
+        r = c.execute("SELECT status FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone()
+        return r["status"] if r else None
+    finally:
+        c.close()
+
+def _tt_job_note(org, pid, bid, status, error):
+    now = datetime.now().isoformat(timespec="seconds")
+    c = sdb(org); _tt_labels_ensure(c)
+    try:
+        c.execute("""INSERT INTO tt_label_jobs(package_id,batch_id,status,error,created_at,updated_at) VALUES(?,?,?,?,?,?)
+                     ON CONFLICT(package_id) DO UPDATE SET batch_id=excluded.batch_id, status=excluded.status,
+                       error=excluded.error, updated_at=excluded.updated_at
+                     WHERE tt_label_jobs.status IN ('claimed','error','skipped')""", (pid, bid, status, error, now, now))
+        c.commit()
+    finally:
+        c.close()
+
+def _tt_try_merge(org, cb):
+    c = sdb(org)
+    try:
+        _tt_merge_into_package(c, cb["new_pid"], cb["order_ids"], cb.get("packages"))
+        _tt_labels_ensure(c)
+        j = c.execute("SELECT tracking FROM tt_label_jobs WHERE package_id=? AND status='labeled'", (cb["new_pid"],)).fetchone()
+        if j and j["tracking"]:   # the label was bought before our merge caught up: attach its tracking now
+            c.execute("UPDATE shipments SET tracking_code=? WHERE shipment_id=? AND COALESCE(tracking_code,'')=''", (j["tracking"], cb["new_pid"]))
+            c.execute("UPDATE tt_label_jobs SET error=NULL WHERE package_id=?", (cb["new_pid"],))
+        c.commit()
+        cb["merged"] = True; cb.pop("merge_error", None)
+    except Exception as e:
+        c.rollback(); cb["merged"] = False; cb["merge_error"] = str(e)[:200]
+        _tt_log("merge after combine failed %s: %r" % (cb["new_pid"], e))
+    finally:
+        c.close()
+
 def _tt_run_batch_inner(org, bid):
     c = sdb(org); _tt_labels_ensure(c)
     b = dict(c.execute("SELECT * FROM tt_batches WHERE id=?", (bid,)).fetchone())
@@ -16588,64 +16686,107 @@ def _tt_run_batch_inner(org, bid):
     c.close()
     _tt_batch_beat(org, bid)
     box = _tt_box(org)
-    targets = []   # (shop_id, package_id)
-    combined = 0
-    # Re-check TikTok right before buying: the plan may be minutes/hours old, and an order can
-    # be cancelled in between. Anything no longer in Processing is skipped (never labeled).
-    if not plan.get("rechecked"):
+    combines = plan.get("combines", [])
+
+    def save_plan():
         c = sdb(org)
-        single_orders = {p: [str(r["order_id"]) for r in c.execute(
-            "SELECT DISTINCT order_id FROM shipment_items WHERE shipment_id=?", (p,)).fetchall()] for p in plan.get("singles", [])}
-        c.close()
-        all_o = [o for cb in plan.get("combines", []) for o in cb["order_ids"]] + [o for os_ in single_orders.values() for o in os_]
-        st, fresh, _err = _tt_live_order_statuses(org, all_o)
-        _tt_batch_beat(org, bid)
-        if fresh:
-            ok = lambda os_: all(st.get(str(o)) in TT_READY_STATUSES for o in os_)
-            skipped = [p for cb in plan.get("combines", []) if not cb.get("new_pid") and not ok(cb["order_ids"]) for p in cb["packages"]]
-            skipped += [p for p, os_ in single_orders.items() if not ok(os_)]
-            plan["combines"] = [cb for cb in plan.get("combines", []) if cb.get("new_pid") or ok(cb["order_ids"])]
-            plan["singles"] = [p for p in plan.get("singles", []) if ok(single_orders[p])]
-            plan["skipped"] = skipped
-        plan["rechecked"] = True
-        c = sdb(org); c.execute("UPDATE tt_batches SET plan=? WHERE id=?", (json.dumps(plan), bid)); c.commit(); c.close()
-    for cb in plan.get("combines", []):
+        c.execute("UPDATE tt_batches SET plan=?, combined=?, heartbeat=? WHERE id=?",
+                  (json.dumps(plan), sum(1 for x in combines if x.get("new_pid")),
+                   datetime.now().isoformat(timespec="seconds"), bid))
+        c.commit(); c.close()
+
+    # 1) Combines whose result was unclear last time: ask TikTok where the orders are now.
+    for cb in combines:
+        if not cb.get("combine_uncertain"): continue
         shop = cb.get("shop_id") or _tt_shop_for_orders(org, cb["order_ids"])
-        if cb.get("new_pid"):
-            targets.append((shop, cb["new_pid"])); continue
         try:
-            new_pid = _tt_api_combine(org, shop, cb["id"], cb["order_ids"])
+            where = _tt_api_order_packages(org, shop, cb["order_ids"])
         except TTError as e:
-            new_pid = None
-            cb["error"] = str(e)   # keep the packages separate; label them one by one
-            for p in cb["packages"]:
-                targets.append((_tt_shop_for_orders(org, cb["order_ids"]), p))
-        if new_pid:
-            # TikTok has combined them: from here on only the NEW package exists there.
-            cb["new_pid"] = new_pid; combined += 1
-            targets.append((shop, new_pid))
-            c = sdb(org)
-            try:
-                _tt_merge_into_package(c, new_pid, cb["order_ids"]); c.commit()
-            except Exception as e:
-                c.rollback(); cb["merge_error"] = str(e)[:200]
-                _tt_log("merge after combine failed %s: %r" % (new_pid, e))
-            finally:
-                c.close()
-        c = sdb(org); c.execute("UPDATE tt_batches SET plan=?, combined=?, heartbeat=? WHERE id=?",
-                                (json.dumps(plan), combined, datetime.now().isoformat(timespec="seconds"), bid)); c.commit(); c.close()
+            cb["combine_error"] = "Still can't tell if TikTok combined these: %s" % e; continue
+        pk = {p for o in cb["order_ids"] for p in where.get(str(o), [])}
+        if len(pk) == 1 and next(iter(pk)) not in cb["packages"]:
+            cb["new_pid"] = next(iter(pk)); cb.pop("combine_uncertain", None); cb.pop("combine_error", None)
+        elif pk and pk <= set(cb["packages"]) and len(pk) == len(cb["packages"]):
+            cb.pop("combine_uncertain", None); cb.pop("combine_error", None)       # it never happened: may retry
+        else:
+            cb["combine_error"] = "TikTok shows these orders in packages %s — check Seller Center" % sorted(pk)
+    save_plan()
+
+    # 2) What still has to be bought, and which orders it carries.
     c = sdb(org)
-    for p in plan.get("singles", []):
-        oids = [r["order_id"] for r in c.execute("SELECT DISTINCT order_id FROM shipment_items WHERE shipment_id=?", (p,)).fetchall()]
-        targets.append((_tt_shop_for_orders(org, oids), p))
-    c.execute("UPDATE tt_batches SET total=? WHERE id=?", (len(targets), bid)); c.commit(); c.close()
+    single_orders = {p: [str(r["order_id"]) for r in c.execute(
+        "SELECT DISTINCT order_id FROM shipment_items WHERE shipment_id=?", (p,)).fetchall()] for p in plan.get("singles", [])}
+    c.close()
+    to_buy = lambda pid: _tt_job_status(org, pid) in (None, "claimed", "error", "skipped")
+    # already sent to TikTok earlier (ship may have happened): recover by READING, no status gate
+    recover = []
+    units = []     # (kind, ref, order_ids)
+    for cb in combines:
+        if cb.get("combine_uncertain"): continue
+        shop_cb = cb.get("shop_id") or _tt_shop_for_orders(org, cb["order_ids"])
+        if cb.get("new_pid"):
+            if to_buy(cb["new_pid"]): units.append(("combined", cb, cb["order_ids"]))
+            elif _tt_job_status(org, cb["new_pid"]) != "labeled": recover.append((shop_cb, cb["new_pid"]))
+        elif cb.get("error"):    # refused earlier -> its packages are labeled one by one
+            for p in cb["packages"]:
+                if to_buy(p): units.append(("single", p, _tt_pkg_orders(org, p) or cb["order_ids"]))
+                elif _tt_job_status(org, p) != "labeled": recover.append((shop_cb, p))
+        else:
+            units.append(("combine", cb, cb["order_ids"]))
+    for p, os_ in single_orders.items():
+        if to_buy(p): units.append(("single", p, os_))
+        elif _tt_job_status(org, p) != "labeled": recover.append((_tt_shop_for_orders(org, os_), p))
+
+    # 3) Re-check TikTok on EVERY run (also on Resume, days later): only orders TikTok confirms
+    #    right now as Processing get a label. Cancelled -> skipped for good; anything we can't
+    #    confirm -> waits (error), never bought blind.
+    st, st_err = _tt_fresh_order_statuses(org, [o for _k, _r, os_ in units for o in os_])
+    _tt_batch_beat(org, bid)
+    skipped = set(plan.get("skipped") or [])
+    targets = list(recover)   # (shop_id, package_id)
+    for kind, ref, os_ in units:
+        pids = [ref["new_pid"]] if kind == "combined" else (ref["packages"] if kind == "combine" else [ref])
+        vals = [st.get(str(o)) for o in os_]
+        if any(v in TT_DEAD_STATUSES for v in vals):
+            for p in pids: _tt_job_note(org, p, bid, "skipped", "Cancelled at TikTok — no label bought")
+            skipped.update(pids); continue
+        if not all(v in TT_READY_STATUSES for v in vals):
+            why = ("Could not confirm the order status with TikTok (%s) — Resume to try again" % (st_err or "no answer")
+                   if any(v is None for v in vals) else
+                   "Order is not in Processing at TikTok (%s) — Resume once it is" % ", ".join(sorted({v for v in vals if v})))
+            for p in pids: _tt_job_note(org, p, bid, "error", why)
+            continue
+        shop = (ref.get("shop_id") if isinstance(ref, dict) else None) or _tt_shop_for_orders(org, os_)
+        if kind == "single":
+            targets.append((shop, ref)); continue
+        cb = ref
+        if kind == "combine":
+            try:
+                cb["new_pid"] = _tt_api_combine(org, shop, cb["id"], cb["order_ids"])
+            except TTError as e:
+                if e.sent:
+                    # it may have happened on TikTok: buy nothing for these until we know
+                    cb["combine_uncertain"] = True; cb["combine_error"] = str(e)
+                    save_plan(); continue
+                cb["error"] = str(e)     # refused: label the packages one by one
+                targets.extend((shop, p) for p in cb["packages"])
+                save_plan(); continue
+        if not cb.get("merged"):
+            _tt_try_merge(org, cb)
+        targets.append((shop, cb["new_pid"]))
+        save_plan()
+    # combines merged earlier but not yet in our DB (merge failed last time) — retry
+    for cb in combines:
+        if cb.get("new_pid") and not cb.get("merged"):
+            _tt_try_merge(org, cb)
+    plan["skipped"] = sorted(skipped)
+    save_plan()
+
+    c = sdb(org)
+    c.execute("UPDATE tt_batches SET total=? WHERE id=?", (max(len(targets), b.get("total") or 0), bid)); c.commit(); c.close()
     for shop, pid in targets:
         if not shop:
-            c = sdb(org); _tt_labels_ensure(c)
-            c.execute("""INSERT INTO tt_label_jobs(package_id,batch_id,status,error,created_at,updated_at) VALUES(?,?,'error','Shop unknown for this package',?,?)
-                         ON CONFLICT(package_id) DO UPDATE SET error=excluded.error""",
-                      (pid, bid, datetime.now().isoformat(timespec="seconds"), datetime.now().isoformat(timespec="seconds")))
-            c.commit(); c.close(); continue
+            _tt_job_note(org, pid, bid, "error", "Shop unknown for this package"); continue
         _tt_batch_beat(org, bid)
         try: _tt_label_one(org, shop, pid, bid, box)
         except Exception as e: _tt_log("label job crashed %s: %r" % (pid, e))
@@ -16656,6 +16797,7 @@ def _tt_run_batch_inner(org, bid):
     _tt_save_live_pdfs(org, bid)
     c = sdb(org); n = _tt_batch_counts(c, bid)
     bad = n.get("error", 0) + n.get("uncertain", 0) + n.get("shipped", 0) + n.get("shipping", 0) + n.get("claimed", 0)
+    bad += sum(1 for cb in combines if cb.get("combine_uncertain") or (cb.get("new_pid") and not cb.get("merged")))
     c.execute("UPDATE tt_batches SET status=?, finished_at=?, done=?, failed=? WHERE id=?",
               ("done" if not bad else "needs_attention", datetime.now().isoformat(timespec="seconds"),
                n.get("labeled", 0), bad, bid)); c.commit(); c.close()
@@ -16677,11 +16819,12 @@ def _tt_save_live_pdfs(org, bid):
         lrows = _tt_live_label_rows(c, show)
         c.close()
         if not brows: return
-        blob = _tt_batch_pdf(brows, org)
+        hb = lambda: _tt_batch_beat(org, bid)
+        blob = _tt_batch_pdf(brows, org, hb)
         if blob:
             fn = _tt_store_label_copy(org, blob, show=show, name="batch-%d" % bid)
             c = sdb(org); c.execute("UPDATE tt_batches SET pdf_file=? WHERE id=?", (fn, bid)); c.commit(); c.close()
-        blob = _tt_batch_pdf(lrows, org)
+        blob = _tt_batch_pdf(lrows, org, hb)
         if blob: _tt_store_label_copy(org, blob, show=show, name="ALL-labels")
     except Exception as e:
         _tt_log("saving live label PDFs failed (batch %s): %r" % (bid, e))
@@ -16802,6 +16945,23 @@ def api_tiktok_batch_resume(bid):
     _tt_start_batch_thread(org, bid)
     return jsonify({"ok": True, "batch_id": bid})
 
+@app.route("/api/tiktok/label-job/<path:pid>/release", methods=["POST"])
+@req_role("admin", "cs")
+def api_tiktok_label_job_release(pid):
+    """A person checked Seller Center and confirmed there is NO label for this package:
+    allow the next Resume to try it again. Manager PIN, uncertain jobs only."""
+    d = request.get_json() or {}
+    bad = _tt_batch_gate(d)
+    if bad: return bad
+    org = current_org() or DEFAULT_ORG
+    c = sdb(org); _tt_labels_ensure(c)
+    n = c.execute("UPDATE tt_label_jobs SET status='error', error=?, updated_at=? WHERE package_id=? AND status='uncertain'",
+                  ("Checked in Seller Center by %s — no label there; retry allowed" % session.get("name", "")[:40],
+                   datetime.now().isoformat(timespec="seconds"), pid)).rowcount
+    c.commit(); c.close()
+    if not n: return jsonify({"ok": False, "error": "This package is not waiting for a check."}), 409
+    return jsonify({"ok": True})
+
 @app.route("/api/tiktok/batch/<int:bid>")
 @req_role("admin", "cs")
 def api_tiktok_batch_status(bid):
@@ -16815,7 +16975,8 @@ def api_tiktok_batch_status(bid):
     b = dict(b); plan = json.loads(b.pop("plan") or "{}")
     b["stale"] = b["status"] == "running" and (b.get("heartbeat") or "") < _tt_hb_cutoff()
     return jsonify({"ok": True, "batch": b, "plan": plan, "jobs": jobs,
-                    "problems": [j for j in jobs if j["status"] != "labeled"]})
+                    "problems": [j for j in jobs if j["status"] not in ("labeled", "skipped")],
+                    "skipped": [j for j in jobs if j["status"] == "skipped"]})
 
 @app.route("/api/tiktok/batch/<int:bid>/labels")
 @req_role("admin", "cs", "worker")
@@ -16871,12 +17032,13 @@ def _tt_label_file_bytes(fn, org=None):
         with open(p, "rb") as fh: return fh.read()
     return None
 
-def _tt_batch_pdf(rows, org=None):
+def _tt_batch_pdf(rows, org=None, beat=None):
     """One PDF with every label of the batch: our stored copy first, TikTok's link as fallback."""
     from pypdf import PdfWriter, PdfReader
     import io
     w = PdfWriter(); ok = 0
-    for r in rows:
+    for k, r in enumerate(rows):
+        if beat and k % 10 == 0: beat()
         data = _tt_label_file_bytes(r.get("label_file"), org)
         if data is None and r.get("doc_url"):
             try: data, _ = _fetch_label_bytes(r["doc_url"])

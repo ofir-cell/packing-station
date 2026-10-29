@@ -13248,7 +13248,14 @@ function openBatch(id){
       if(!d.ok)return; var b=d.batch, tot=b.total||d.plan.labels||0, pct=tot?Math.round(100*b.done/tot):0;
       document.getElementById('pf').style.width=pct+'%';
       document.getElementById('pt').textContent=b.done+' of '+tot+' labels · '+b.status.replace('_',' ')+(b.combined?' · '+b.combined+' combined':'');
-      document.getElementById('pp').innerHTML=d.problems.slice(0,30).map(function(j){return '<div class="prob">⚠️ '+esc(j.package_id)+' — '+esc(j.status)+(j.error?': '+esc(j.error):'')+'</div>';}).join('');
+      document.getElementById('pp').innerHTML=d.problems.slice(0,30).map(function(j){return '<div class="prob">⚠️ '+esc(j.package_id)+' — '+esc(j.status)+(j.error?': '+esc(j.error):'')+
+        (j.status==='uncertain'?' <a href="#" class="rel" data-p="'+esc(j.package_id)+'">I checked — no label there, allow retry</a>':'')+'</div>';}).join('')+
+        ((d.skipped||[]).length?'<div class="ct">'+d.skipped.length+' cancelled at TikTok — no label bought.</div>':'')+
+        (d.plan.combines||[]).filter(function(x){return x.combine_error||x.merge_error;}).map(function(x){return '<div class="prob">⚠️ Combine '+esc(x.packages.join(' + '))+': '+esc(x.combine_error||('saved on TikTok, not yet in our app: '+x.merge_error))+'</div>';}).join('');
+      Array.prototype.forEach.call(document.querySelectorAll('#pp a.rel'),function(a){a.onclick=function(e){e.preventDefault();
+        var pin=prompt('Manager PIN — confirm you checked Seller Center and this package has NO label');if(pin===null)return;
+        fetch('/api/tiktok/label-job/'+encodeURIComponent(a.getAttribute('data-p'))+'/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin})})
+        .then(function(r){return r.json();}).then(function(x){if(!x.ok)alert(x.error);else tick();});};});
       var prt=document.getElementById('prt');
       if(b.done){prt.style.display='inline-flex';prt.href='/api/tiktok/batch/'+id+'/labels';}
       document.getElementById('res').style.display=(b.status==='needs_attention'||b.stale)?'inline-block':'none';
