@@ -6288,7 +6288,7 @@ def api_pack_begin():
                           % ",".join("?"*len(ids)), ids)
                 c.commit()
         items=_pack_box(c,row)
-        on=_get_setting("pack_scan_items","1")!="0"
+        on=_get_setting("pack_scan_items","1")!="0" and (row["status"] or "")!="cancelled"
         return jsonify({"ok":True,"enabled":on,"shipment_id":row["shipment_id"],"items":_pack_view(items)})
     finally:
         c.close()
@@ -6309,34 +6309,42 @@ def api_pack_scan():
     now=datetime.now().isoformat(timespec="seconds")
     c=sdb(); _pack_ensure(c)
     try:
+        nc=_normalize_tracking(code)
+        def other_box(cur_sid, cur_trk):
+            # EXACT label/order match only — a product barcode must never look like "another box"
+            o=c.execute("SELECT shipment_id,tracking_code FROM shipments WHERE tracking_code=? OR shipment_id=? LIMIT 1",(nc,nc)).fetchone()
+            if not o or o["shipment_id"]==cur_sid: return False
+            return not (cur_trk and (o["tracking_code"] or "")==cur_trk)
         row=_resolve_shipment_by_code(c, trk)
-        if not row: return jsonify({"ok":False,"error":"Shipment not found"})
-        if _normalize_tracking(code)==trk or _normalize_tracking(code)==(row["tracking_code"] or ""):
+        if nc==trk or (row and nc==(row["tracking_code"] or "")):
             return jsonify({"ok":True,"result":"stop"})
+        if not row:   # this box isn't in the system: only a label can move on, nothing else stops the video
+            if other_box(None,"") or _looks_like_tracking(code):
+                return jsonify({"ok":True,"result":"next_label"})
+            return jsonify({"ok":True,"result":"wrong","product":None,"expected":[]})
         items=_pack_box(c,row)
         def log(result, item=None, psku=None):
             c.execute("""INSERT INTO pack_scans(shipment_id,tracking,item_id,sticker,code,product_sku,result,worker,station,scanned_at)
                          VALUES(?,?,?,?,?,?,?,?,?,?)""",(row["shipment_id"],trk,(item or {}).get("id"),(item or {}).get("sku"),
                                                           code,psku,result,who,sta,now))
-        def count(item, method):
-            c.execute("""UPDATE shipment_items SET pack_scanned_qty=COALESCE(pack_scanned_qty,0)+1,
-                         pack_method=?,
-                         pack_scanned_at=? WHERE id=?""",(method,now,item["id"]))
-        prod=c.execute("SELECT sku,name,barcode,image_url FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
-        if prod:
-            mine=[it for it in items if it["product"] and it["product"]["sku"]==prod["sku"]]
-            open_=[it for it in mine if it["scanned"]<it["quantity"]]
-            if open_:
-                it=open_[0]; count(it,"scan"); log("ok",it,prod["sku"]); c.commit()
-                return jsonify({"ok":True,"result":"ok","item_id":it["id"],"items":_pack_view(_pack_box(c,row))})
+        # every catalog product carrying this barcode (duplicates happen) — match any of them
+        prods=c.execute("SELECT sku,name,barcode,image_url FROM products WHERE barcode=? OR sku=?",(code,code)).fetchall()
+        skus={p["sku"] for p in prods}
+        if prods:
+            mine=[it for it in items if it["product"] and it["product"]["sku"] in skus]
+            for it in [x for x in mine if x["scanned"]<x["quantity"]]:
+                # atomic: two quick scans on two workers can never both land on the same line
+                n=c.execute("""UPDATE shipment_items SET pack_scanned_qty=COALESCE(pack_scanned_qty,0)+1, pack_method='scan',
+                               pack_scanned_at=? WHERE id=? AND COALESCE(pack_scanned_qty,0)<?""",(now,it["id"],it["quantity"])).rowcount
+                if n:
+                    log("ok",it,it["product"]["sku"]); c.commit()
+                    return jsonify({"ok":True,"result":"ok","item_id":it["id"],"items":_pack_view(_pack_box(c,row))})
             if mine:
-                log("already",mine[0],prod["sku"]); c.commit()
-                return jsonify({"ok":True,"result":"already","item_id":mine[0]["id"],"product":prod["name"]})
+                log("already",mine[0],mine[0]["product"]["sku"]); c.commit()
+                return jsonify({"ok":True,"result":"already","item_id":mine[0]["id"],"product":mine[0]["product"]["name"]})
+        prod=prods[0] if prods else None
         # another box's label -> finish this box and start that one
-        nc=_normalize_tracking(code)       # EXACT label/order match only — a product barcode must never
-        other=c.execute("SELECT shipment_id,tracking_code FROM shipments WHERE tracking_code=? OR shipment_id=? LIMIT 1",
-                        (nc,nc)).fetchone()          # look like "another box" and stop the video
-        if other and other["shipment_id"]!=row["shipment_id"] and (other["tracking_code"] or "")!=(row["tracking_code"] or ""):
+        if other_box(row["shipment_id"], (row["tracking_code"] or "").strip()):
             return jsonify({"ok":True,"result":"next_label"})
         if not prod and _looks_like_tracking(code):
             return jsonify({"ok":True,"result":"next_label"})

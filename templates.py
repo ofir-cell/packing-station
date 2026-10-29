@@ -1001,7 +1001,7 @@ document.getElementById('gvOk').addEventListener('click',function(){
 // ─── Pack scan: scan each product into the box while recording ───
 // The list is in ascending sticker order and the next one is highlighted; any order counts.
 // A product with no barcode linked yet is linked by its first scan. The box label stops.
-var PS=null, PSWAIT=false;
+var PS=null, PSWAIT=false, PSMODE=false;
 var PST={en:{next:'Scan',done:'All products scanned ✓',donesub:'Scan the box label to finish',nonelinked:'No barcodes linked for this order yet — just pack',
   ok:'✓ Packed',already:'Already scanned',wrong:'✗ Not in this order',unknown:'✗ This barcode is not linked to this order',wrongexp:'Scan one of:',
   offline:'Could not check this scan — scan again',missing:'Not scanned:',notlinked:'not linked yet'},
@@ -1013,12 +1013,13 @@ function pesc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){retur
 function beep(ok){try{var a=window._ac||(window._ac=new (window.AudioContext||window.webkitAudioContext)());var o=a.createOscillator(),g=a.createGain();
   o.frequency.value=ok?880:220;o.type=ok?'sine':'square';g.gain.value=.08;o.connect(g);g.connect(a.destination);o.start();o.stop(a.currentTime+(ok?.12:.35));}catch(e){}}
 function packBegin(trk){
-  PS=null;PSWAIT=true;document.body.classList.remove('packscan');
+  PS=null;PSWAIT=true;PSMODE=true;document.body.classList.remove('packscan');
   fetch('/api/pack/begin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tracking:trk})})
   .then(function(r){return r.json()}).then(function(d){
     if(ct!==trk)return;
     PSWAIT=false;
-    if(!d.ok||!d.enabled||!d.items||!d.items.length)return;
+    if(d.ok&&d.enabled===false){PSMODE=false;return}      // switched off (or a cancelled order): plain start/stop
+    if(!d.ok||!d.items||!d.items.length)return;             // no list, but product scans still never stop the video
     PS={items:d.items};document.body.classList.add('packscan');psFb('');psDraw();
     var ov=document.getElementById('countOverlay');            // the scan panel takes over: shorten the count overlay
     if(ov&&ov.classList.contains('on')){if(countTimer)clearTimeout(countTimer);countTimer=setTimeout(function(){ov.classList.remove('on')},2500);}
@@ -1047,7 +1048,7 @@ function psFb(txt,kind){var f=document.getElementById('psFb');f.textContent=txt|
   if(txt){clearTimeout(f._t);f._t=setTimeout(function(){f.className='ps-fb'},kind==='bad'?4000:1800);}}
 function psFlash(ok){var b=document.body;b.classList.remove('ps-flash-ok','ps-flash-bad');void b.offsetWidth;b.classList.add(ok?'ps-flash-ok':'ps-flash-bad');}
 function finishBox(){stopTmr();hideReminder();stopRec().then(upload)}
-function nextBox(t){stopTmr();hideReminder();stopRec().then(upload).then(function(){setTimeout(function(){startRec(t)},500)})}
+function nextBox(t){stopTmr();hideReminder();stopRec().then(function(){upload();setTimeout(function(){startRec(t)},500)})}
 function packScan(raw,t){
   var nx=psNextItem(),trk=ct;
   fetch('/api/pack/scan',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1064,20 +1065,23 @@ function packScan(raw,t){
     psFb((d.product?pt('wrong')+' ('+d.product+')':pt('unknown'))+(exp?' — '+pt('wrongexp')+' '+exp:''),'bad');psFlash(false);beep(false);
   }).catch(function(){
     if(ct!==trk)return;
-    if(/^\d{20,}$|^1Z|^TBA/i.test(t)){nextBox(t);return}   // offline: a label-looking code still moves on
+    if(/^[0-9]{20,}$|^1Z|^TBA/i.test(t)){nextBox(t);return}   // offline: a label-looking code still moves on
     psFb(pt('offline'),'bad');beep(false);
   });
 }
 function stopRec(){return new Promise(function(res){mr.onstop=res;mr.stop()})}
 function capPhoto(){var v=document.getElementById('pv'),c=document.createElement('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);return new Promise(function(res){c.toBlob(res,'image/jpeg',.7)})}
-function upload(){go('u');var dur=Math.round((Date.now()-t0)/1000);var vb=new Blob(ch,{type:'video/webm'});
-capPhoto().then(function(pb){var fd=new FormData();fd.append('tracking',ct);fd.append('station','__SID__');fd.append('duration',dur);fd.append('video',vb,ct+'.webm');if(pb)fd.append('photo',pb,ct+'.jpg');
+function upload(){var my=ct;go('u');var dur=Math.round((Date.now()-t0)/1000);var vb=new Blob(ch,{type:'video/webm'});
+var moved=function(){return ct!==my&&st==='c'};   // the next box is already recording: don't touch its screen
+return capPhoto().then(function(pb){var fd=new FormData();fd.append('tracking',my);fd.append('station','__SID__');fd.append('duration',dur);fd.append('video',vb,my+'.webm');if(pb)fd.append('photo',pb,my+'.jpg');
 return fetch('/api/upload',{method:'POST',body:fd})}).then(function(r){return r.json()}).then(function(d){
-if(d.ok){n++;document.getElementById('cn').textContent=n;document.getElementById('dkk').textContent=ct;
+if(d.ok&&moved()){n++;document.getElementById('cn').textContent=n;loadMyStats();return}
+if(!d.ok&&moved()){psFb(t('uploadfailed')||'Previous upload failed','bad');return}
+if(d.ok){n++;document.getElementById('cn').textContent=n;document.getElementById('dkk').textContent=my;
 var miss=(d.pack&&d.pack.check==='missing')?d.pack.missing.map(function(m){return '#'+m.sticker}).join(', '):'';
 document.getElementById('ddd').innerHTML='Duration: '+dur+'s'+(miss?'<div style="margin-top:10px;background:#fef3c7;color:#92400e;border-radius:12px;padding:8px 14px;font-weight:800">⚠ '+pt('missing')+' '+pesc(miss)+'</div>':'');
 PS=null;document.body.classList.remove('packscan');loadMyStats();go('d');setTimeout(function(){go('r')},miss?4500:3000)}
-else{go('e');setTimeout(function(){go('r')},2500)}}).catch(function(){go('e');setTimeout(function(){go('r')},2500)})}
+else{go('e');setTimeout(function(){go('r')},2500)}}).catch(function(){if(moved())return;go('e');setTimeout(function(){go('r')},2500)})}
 // USPS labels carry "service + ZIP + tracking" in the barcode (up to ~33 digits)
 // but humans only see the 22-digit tracking. Strip the prefix on entry so the
 // recording, the upload payload, and the CSV log all carry the clean 22-digit code.
@@ -1085,7 +1089,7 @@ function normTrk(s){s=(s||'').trim();if(/^\d{23,40}$/.test(s))return s.slice(-22
 mi.addEventListener('keydown',function(e){if(e.key==='Enter'){var t=normTrk(mi.value);if(t)startRec(t)}});
 ri.addEventListener('keydown',function(e){if(e.key!=='Enter')return;var raw=(ri.value||'').trim(),t=normTrk(raw);ri.value='';if(!t)return;
 if(t===ct){finishBox();return}
-if(PS||PSWAIT){var ov=document.getElementById('countOverlay');if(ov)ov.classList.remove('on');packScan(raw,t);return}   // scanning products into the box: only the box label stops
+if(PSMODE){var ov=document.getElementById('countOverlay');if(ov)ov.classList.remove('on');packScan(raw,t);return}   // scanning products into the box: only the box label stops
 nextBox(t);});
 function startTmr(){stopTmr();ti=setInterval(function(){var s=Math.floor((Date.now()-t0)/1000);document.getElementById('rmm').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')},200)}
 function stopTmr(){if(ti){clearInterval(ti);ti=null}}
@@ -5819,6 +5823,22 @@ document.getElementById('refreshBtn').addEventListener('click',load);
 load();
 // Auto-refresh every 30s so a manager who leaves the page open sees new issues as they come in
 setInterval(load,30000);
+function loadPackMissing(){
+    fetch('/api/pack/missing').then(function(r){return r.json()}).then(function(d){
+        var el=document.getElementById('packMissing');
+        if(!d.ok||!d.rows.length){el.innerHTML='';return;}
+        el.innerHTML='<div class="pm-head">📦 Packed without scanning every product · last 14 days ('+d.rows.length+')</div>'+
+          d.rows.map(function(r){
+            return '<div class="pm" data-sid="'+escapeHtml(r.shipment_id)+'"><div class="who"><b>'+escapeHtml(r.buyer_name||r.buyer_username||r.shipment_id)+'</b>'+
+              '<div>'+escapeHtml(r.import_label||'')+' · packed by '+escapeHtml(r.packed_by||'?')+' · '+escapeHtml((r.packed_at||'').replace('T',' ').slice(0,16))+' · '+escapeHtml(r.tracking_code||'')+'</div></div>'+
+              '<div class="miss">'+r.missing.map(function(m){return '<span class="item-tag"><span class="sku">#'+escapeHtml(m.sticker)+'</span><span class="name">'+escapeHtml(m.name||'')+'</span>'+'</span>';}).join('')+'</div>'+
+              '<button data-chk="'+escapeHtml(r.shipment_id)+'">✓ Checked the video</button></div>';
+          }).join('');
+        Array.prototype.forEach.call(el.querySelectorAll('button[data-chk]'),function(b){b.onclick=function(){
+            fetch('/api/pack/missing/'+encodeURIComponent(b.getAttribute('data-chk'))+'/checked',{method:'POST'}).then(function(){loadPackMissing();});};});
+    }).catch(function(){});
+}
+loadPackMissing();
 </script>
 </body></html>'''
 
@@ -7139,22 +7159,6 @@ function submitStep(btn,s,bodyEl){
 }
 
 // Force a load — the inside of load() detects first-visit language preference
-function loadPackMissing(){
-    fetch('/api/pack/missing').then(function(r){return r.json()}).then(function(d){
-        var el=document.getElementById('packMissing');
-        if(!d.ok||!d.rows.length){el.innerHTML='';return;}
-        el.innerHTML='<div class="pm-head">📦 Packed without scanning every product · last 14 days ('+d.rows.length+')</div>'+
-          d.rows.map(function(r){
-            return '<div class="pm" data-sid="'+escapeHtml(r.shipment_id)+'"><div class="who"><b>'+escapeHtml(r.buyer_name||r.buyer_username||r.shipment_id)+'</b>'+
-              '<div>'+escapeHtml(r.import_label||'')+' · packed by '+escapeHtml(r.packed_by||'?')+' · '+escapeHtml((r.packed_at||'').replace('T',' ').slice(0,16))+' · '+escapeHtml(r.tracking_code||'')+'</div></div>'+
-              '<div class="miss">'+r.missing.map(function(m){return '<span class="item-tag"><span class="sku">#'+escapeHtml(m.sticker)+'</span><span class="name">'+escapeHtml(m.name||'')+'</span>'+'</span>';}).join('')+'</div>'+
-              '<button data-chk="'+escapeHtml(r.shipment_id)+'">✓ Checked the video</button></div>';
-          }).join('');
-        Array.prototype.forEach.call(el.querySelectorAll('button[data-chk]'),function(b){b.onclick=function(){
-            fetch('/api/pack/missing/'+encodeURIComponent(b.getAttribute('data-chk'))+'/checked',{method:'POST'}).then(function(){loadPackMissing();});};});
-    }).catch(function(){});
-}
-loadPackMissing();
 load();
 </script>
 </body></html>'''

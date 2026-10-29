@@ -174,3 +174,35 @@ def test_a_box_with_nothing_linked_is_never_flagged(appmod, client, box):
     d = _begin(client, hdr, box["trk"])
     assert d["enabled"] and not any(i["linked"] for i in d["items"])
     assert _upload(client, hdr, box["trk"])["pack"] is None
+
+
+# ── independent review findings ───────────────────────────────────────────────
+def test_box_not_in_the_system_never_stops_on_a_product(appmod, client, box):
+    hdr = _as(client, appmod)
+    ghost = "9400" + "7" * 18
+    assert _scan(client, hdr, ghost, box["bc"]["1"])["result"] == "wrong"        # product: keep recording
+    assert _scan(client, hdr, ghost, box["trk"])["result"] == "next_label"       # a real label moves on
+    assert _scan(client, hdr, ghost, ghost)["result"] == "stop"
+
+
+def test_cancelled_order_gets_plain_start_stop(appmod, client, box):
+    A = appmod; hdr = _as(client, A)
+    c = A.sdb(A.DEFAULT_ORG); c.execute("UPDATE shipments SET status='cancelled' WHERE shipment_id=?", (box["sid"],)); c.commit(); c.close()
+    assert _begin(client, hdr, box["trk"])["enabled"] is False
+
+
+def test_orders_without_tracking_still_move_to_the_next_box_by_order_id(appmod, client, box):
+    A = appmod; hdr = _as(client, A)
+    c = A.sdb(A.DEFAULT_ORG)
+    c.execute("UPDATE shipments SET tracking_code=NULL WHERE shipment_id IN (?,?)", (box["sid"], "Q" + box["t"]))
+    c.commit(); c.close()
+    assert _scan(client, hdr, box["sid"], "Q" + box["t"])["result"] == "next_label"
+
+
+def test_a_duplicate_barcode_in_the_catalog_still_matches_the_linked_product(appmod, client, box):
+    A = appmod; hdr = _as(client, A)
+    c = A.sdb(A.DEFAULT_ORG)
+    c.execute("INSERT INTO products(sku,name,barcode,on_hand,avg_cost) VALUES(?,?,?,0,0)", ("AAA" + box["t"], "Old duplicate", box["bc"]["1"]))
+    c.commit(); c.close()
+    _begin(client, hdr, box["trk"])
+    assert _scan(client, hdr, box["trk"], box["bc"]["1"])["result"] == "ok"
