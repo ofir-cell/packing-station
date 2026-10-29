@@ -1427,6 +1427,7 @@ def sdb_init(org):
         supplier TEXT,
         avg_cost REAL DEFAULT 0,
         target_price REAL DEFAULT 0,
+        retail_price REAL DEFAULT 0,
         reorder_point INTEGER DEFAULT 0,
         on_hand INTEGER DEFAULT 0,
         parent_sku TEXT,
