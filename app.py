@@ -1249,6 +1249,12 @@ def sdb_init(org):
         # Product page: target sell price + uploaded image storage key.
         "ALTER TABLE products ADD COLUMN target_price REAL DEFAULT 0",
         "ALTER TABLE products ADD COLUMN retail_price REAL DEFAULT 0",
+        # Scanit (host product screen) reads the ONE catalog: MSRP = retail_price, plus notes
+        "ALTER TABLE products ADD COLUMN msrp_source TEXT",
+        "ALTER TABLE products ADD COLUMN product_notes TEXT",
+        "ALTER TABLE products ADD COLUMN notes_source TEXT",
+        "ALTER TABLE products ADD COLUMN info_status TEXT",
+        "ALTER TABLE products ADD COLUMN info_checked_at TEXT",
         "ALTER TABLE products ADD COLUMN image_key TEXT",
         "ALTER TABLE products ADD COLUMN supplier TEXT",
         "ALTER TABLE products ADD COLUMN reorder_point INTEGER DEFAULT 0",
@@ -1435,6 +1441,17 @@ def sdb_init(org):
         updated_at TEXT
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)")
+    # Columns added after `products` was first released. They are ALSO in the big ALTER list
+    # above, but that list runs before this CREATE on a brand-new database — so add them
+    # here too, or a new workspace would lack them until its second boot.
+    for _stmt in ("ALTER TABLE products ADD COLUMN retail_price REAL DEFAULT 0",
+                  "ALTER TABLE products ADD COLUMN msrp_source TEXT",
+                  "ALTER TABLE products ADD COLUMN product_notes TEXT",
+                  "ALTER TABLE products ADD COLUMN notes_source TEXT",
+                  "ALTER TABLE products ADD COLUMN info_status TEXT",
+                  "ALTER TABLE products ADD COLUMN info_checked_at TEXT"):
+        try: c.execute(_stmt)
+        except sqlite3.OperationalError: pass
     c.execute("""CREATE TABLE IF NOT EXISTS purchase_orders(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         supplier TEXT,
@@ -7491,7 +7508,10 @@ def api_product_save():
     if "retail_price" in d:
         try: _rp=float(d.get("retail_price") or 0)
         except Exception: _rp=0
+        _old=c.execute("SELECT retail_price FROM products WHERE sku=?",(sku,)).fetchone()
         c.execute("UPDATE products SET retail_price=? WHERE sku=?",(_rp,sku))
+        if not _old or float(_old["retail_price"] or 0)!=_rp:
+            c.execute("UPDATE products SET msrp_source='manual' WHERE sku=?",(sku,))
     if "supplier" in d:
         c.execute("UPDATE products SET supplier=? WHERE sku=?",((d.get("supplier") or "").strip() or None,sku))
     if "reorder_point" in d:
@@ -7620,6 +7640,7 @@ def _resolve_or_create_product_by_barcode(c, code, who=""):
                      ON CONFLICT(sku) DO UPDATE SET name=COALESCE(NULLIF(products.name,''),excluded.name),
                        barcode=excluded.barcode, updated_at=excluded.updated_at""",
                   (code, name, code, img, cat, retail, now, now))
+        if retail: c.execute("UPDATE products SET msrp_source=COALESCE(msrp_source,?) WHERE sku=?",("db:"+src, code))
         c.commit()
     except Exception as e:
         print("auto-create product failed:",e,flush=True)
@@ -14334,11 +14355,261 @@ def _scanit_row(r):
     return d
 
 @app.route("/scanit")
-@req_role("admin","cs","host")
+@req_role("admin","cs","host","manager")
 def scanit_page():
+    org=current_org() or DEFAULT_ORG
+    try: _scanit_migrate_to_catalog(org)
+    except Exception as e: print("scanit migrate failed:",e,flush=True)
     return SCANIT_HTML.replace("__NAME__",esc(session.get("name","")))\
         .replace("__NAVBAR__",_navbar("scanit")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)\
-        .replace("__ISADMIN__","1" if session.get("role") in ("admin","cs") else "0")
+        .replace("__ISADMIN__","1" if session.get("role") in ("admin","cs","manager") else "0")
+
+# ── Scanit on the ONE catalog ─────────────────────────────────────────────────
+# The host keeps a screen open beside her and scans each product: name, MSRP, our target
+# price and the product's notes, all from `products` (the same catalog Live Mode, picking
+# and inventory use). Notes/MSRP missing? They're looked up once in the background and
+# cached on the product, with the source shown.
+SCANIT_AI_MODEL=os.environ.get("SCANIT_AI_MODEL","claude-haiku-4-5-20251001").strip()
+_SCANIT_LOOKUP_SEM=threading.Semaphore(2)
+
+def _scanit_migrate_to_catalog(org):
+    """One time per workspace: bring products entered in the old Scanit table into the
+    catalog (matched by barcode). Fills only what the catalog doesn't have yet."""
+    c=sdb(org)
+    try:
+        if c.execute("SELECT 1 FROM settings WHERE key='scanit_migrated'").fetchone(): return 0
+        n=0
+        try: rows=[dict(r) for r in c.execute("SELECT * FROM scanit_products WHERE active=1").fetchall()]
+        except sqlite3.OperationalError: rows=[]
+        now=datetime.now().isoformat(timespec="seconds")
+        for r in rows:
+            codes=[re.sub(r'[\s\-]','',r.get("upc") or "")]
+            try: codes+=[x["upc"] for x in c.execute("SELECT upc FROM scanit_barcodes WHERE product_id=?",(r["id"],)).fetchall()]
+            except sqlite3.OperationalError: pass
+            codes=[x for x in dict.fromkeys(codes) if x]
+            prod=None
+            for cd in codes:
+                prod=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(cd,cd)).fetchone()
+                if prod: break
+            name=" ".join(x for x in (r.get("brand"),r.get("product_name"),r.get("variant"),
+                          (str(r.get("size") or "")+(r.get("size_unit") or "")).strip() or None) if x).strip()
+            notes={}
+            for k_new,k_old in (("top","notes_top"),("heart","notes_heart"),("base","notes_base")):
+                if r.get(k_old): notes[k_new]=r[k_old]
+            try: pts=json.loads(r.get("benefits") or "[]")+json.loads(r.get("key_points") or "[]")
+            except Exception: pts=[]
+            if pts: notes["points"]=[str(x) for x in pts][:6]
+            if not prod:
+                sku=codes[0] if codes else "SCANIT-%d"%r["id"]
+                c.execute("""INSERT OR IGNORE INTO products(sku,name,barcode,image_url,category,on_hand,avg_cost,created_at,updated_at)
+                             VALUES(?,?,?,?,?,0,0,?,?)""",(sku,name or sku,(codes[0] if codes else None),r.get("image_url"),r.get("category"),now,now))
+                prod=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()
+            sku=prod["sku"]
+            if r.get("msrp") and not float(prod["retail_price"] or 0):
+                c.execute("UPDATE products SET retail_price=?, msrp_source=? WHERE sku=?",
+                          (r["msrp"], r.get("msrp_url") or "manual", sku))
+            if r.get("target_price") and not float(prod["target_price"] or 0):
+                c.execute("UPDATE products SET target_price=? WHERE sku=?",(r["target_price"],sku))
+            if notes and not (prod["product_notes"] or ""):
+                c.execute("UPDATE products SET product_notes=?, notes_source='manual' WHERE sku=?",(json.dumps(notes),sku))
+            if r.get("image_url") and not (prod["image_url"] or ""):
+                c.execute("UPDATE products SET image_url=? WHERE sku=?",(r["image_url"],sku))
+            n+=1
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('scanit_migrated',?)",(json.dumps({"at":now,"n":n}),))
+        c.commit()
+        return n
+    finally:
+        c.close()
+
+def _scanit_view(r):
+    """What the host screen shows for one catalog product."""
+    if not r: return None
+    d=dict(r)
+    try: notes=json.loads(d.get("product_notes") or "{}") or {}
+    except Exception: notes={}
+    ms=(d.get("msrp_source") or "")
+    return {"sku":d["sku"],"name":d.get("name") or d["sku"],"barcode":d.get("barcode") or "",
+            "image_url":d.get("image_url") or "","category":d.get("category") or "",
+            "msrp":float(d.get("retail_price") or 0),
+            "msrp_source":("" if ms=="manual" else ms.replace("db:","")),"msrp_manual":ms=="manual",
+            "target_price":float(d.get("target_price") or 0),
+            "notes":notes,"notes_source":d.get("notes_source") or "",
+            "info_status":d.get("info_status") or "",
+            "needs_review":(d.get("category") or "")=="Needs review"}
+
+def _scanit_wants_lookup(r):
+    """Look up once per product: when notes or a real MSRP are missing. A failed lookup is
+    retried after a day; 'done' is final (an admin can force a new lookup)."""
+    if not anthropic_client or not r: return False
+    st=r["info_status"] or ""
+    if st in ("looking","done"): return False
+    if st=="failed" and (r["info_checked_at"] or "")>(datetime.now()-timedelta(days=1)).isoformat(timespec="seconds"):
+        return False
+    has_notes=bool((r["product_notes"] or "").strip("{} "))
+    msrp_ok=float(r["retail_price"] or 0)>0 and not (r["msrp_source"] or "").startswith("db:")
+    return not (has_notes and msrp_ok)
+
+def _scanit_start_lookup(org, sku, force=False):
+    """Claim the lookup for this product (one at a time) and run it in the background."""
+    c=sdb(org)
+    try:
+        q=("UPDATE products SET info_status='looking', info_checked_at=? WHERE sku=? AND COALESCE(info_status,'')<>'looking'"
+           if force else
+           "UPDATE products SET info_status='looking', info_checked_at=? WHERE sku=? AND COALESCE(info_status,'') IN ('','failed')")
+        won=c.execute(q,(datetime.now().isoformat(timespec="seconds"),sku)).rowcount; c.commit()
+    finally:
+        c.close()
+    if won: threading.Thread(target=_scanit_lookup_info,args=(org,sku),daemon=True,name="scanit-"+sku[:20]).start()
+    return bool(won)
+
+def _scanit_ai_json(prompt, use_web):
+    kw={"model":SCANIT_AI_MODEL,"max_tokens":1200,"messages":[{"role":"user","content":prompt}]}
+    if use_web: kw["tools"]=[{"type":"web_search_20250305","name":"web_search","max_uses":3}]
+    msg=anthropic_client.messages.create(**kw)
+    txt="".join(getattr(b,"text","") or "" for b in msg.content if getattr(b,"type","")=="text").strip()
+    m=re.search(r"\{.*\}",txt,re.S)
+    if not m: raise ValueError("no JSON in answer")
+    return json.loads(m.group(0))
+
+def _scanit_lookup_info(org, sku):
+    """Find the product's notes (fragrance top/heart/base, or 3 short key points) and its
+    US MSRP. Web search first so facts come with a source; without web search the notes
+    are marked as unchecked and no price is taken."""
+    with _SCANIT_LOOKUP_SEM:
+        c=sdb(org)
+        try: r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()
+        finally: c.close()
+        if not r: return
+        name=r["name"] or ""; code=r["barcode"] or ""
+        ask=("Product: %s\nBarcode (UPC/EAN): %s\n\n"
+             "Identify this beauty product. If it is a fragrance give its official fragrance notes "
+             "(top, heart, base). Otherwise give up to 3 very short key points a live seller would say "
+             "(what it is, finish/benefit, who it's for). Also give the brand's US retail price (MSRP) "
+             "with the page you found it on. Never guess: leave a field empty if you are not sure.\n"
+             "Answer ONLY with JSON: {\"name\":\"<brand + product + size>\",\"kind\":\"fragrance|other\","
+             "\"top\":\"\",\"heart\":\"\",\"base\":\"\",\"points\":[],\"msrp\":0,\"msrp_url\":\"\",\"source_url\":\"\"}"
+             )%(name if not name.startswith("New product") else "(unknown — use the barcode)", code)
+        out=None; web=True; err=""
+        try: out=_scanit_ai_json(ask, True)
+        except Exception as e:
+            err=str(e)[:200]; web=False
+            try: out=_scanit_ai_json(ask, False)
+            except Exception as e2: err=str(e2)[:200]
+        now=datetime.now().isoformat(timespec="seconds")
+        c=sdb(org)
+        try:
+            if not out:
+                c.execute("UPDATE products SET info_status='failed', info_checked_at=? WHERE sku=?",(now,sku)); c.commit()
+                print("scanit lookup failed %s: %s"%(sku,err),flush=True); return
+            notes={}
+            for k in ("top","heart","base"):
+                v=str(out.get(k) or "").strip()
+                if v: notes[k]=v[:200]
+            pts=[str(x).strip()[:120] for x in (out.get("points") or []) if str(x).strip()][:3]
+            if pts and not notes: notes["points"]=pts
+            src=(out.get("source_url") or "").strip()[:300]
+            r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()
+            if notes and (r["notes_source"] or "")!="manual":
+                c.execute("UPDATE products SET product_notes=?, notes_source=? WHERE sku=?",
+                          (json.dumps(notes), (src or "web") if web else "ai-unchecked", sku))
+            try: msrp=round(float(out.get("msrp") or 0),2)
+            except Exception: msrp=0
+            murl=(out.get("msrp_url") or "").strip()[:300]
+            cur_src=r["msrp_source"] or ""
+            replaceable=(not float(r["retail_price"] or 0)) or cur_src.startswith("db:")
+            if web and msrp>0 and murl and replaceable and cur_src!="manual":
+                c.execute("UPDATE products SET retail_price=?, msrp_source=? WHERE sku=?",(msrp,murl,sku))
+            nm=str(out.get("name") or "").strip()[:120]
+            if nm and (r["name"] or "").startswith("New product"):
+                c.execute("UPDATE products SET name=? WHERE sku=?",(nm,sku))
+            c.execute("UPDATE products SET info_status='done', info_checked_at=? WHERE sku=?",(now,sku)); c.commit()
+        finally:
+            c.close()
+
+@app.route("/api/scanit/scan")
+@req_role("admin","cs","host","manager")
+def api_scanit_scan():
+    """Host scanned a code: the catalog product (created from the online barcode databases
+    if we've never seen it — never a dead end). No stock is touched."""
+    org=current_org() or DEFAULT_ORG
+    code=re.sub(r'[\s\-]','',(request.args.get("code") or "")).strip()
+    if not code: return jsonify({"ok":False,"error":"No barcode"})
+    c=sdb(org)
+    try:
+        r=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
+        created=False; src=""
+        if not r:
+            r,created,src=_resolve_or_create_product_by_barcode(c, code, who=session.get("name",""))
+        if not r: return jsonify({"ok":True,"found":False,"code":code})
+        c.execute("""CREATE TABLE IF NOT EXISTS scanit_scans(id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     username TEXT, sku TEXT, scanned_at TEXT)""")
+        c.execute("INSERT INTO scanit_scans(username,sku,scanned_at) VALUES(?,?,?)",
+                  (session.get("name",""),r["sku"],datetime.now().isoformat(timespec="seconds")))
+        c.commit()
+        want=_scanit_wants_lookup(r)
+    finally:
+        c.close()
+    if want: _scanit_start_lookup(org, r["sku"])
+    c=sdb(org); r=c.execute("SELECT * FROM products WHERE sku=?",(r["sku"],)).fetchone(); c.close()
+    return jsonify({"ok":True,"found":True,"created":created,"created_source":src,"product":_scanit_view(r)})
+
+@app.route("/api/scanit/item")
+@req_role("admin","cs","host","manager")
+def api_scanit_item():
+    sku=(request.args.get("sku") or "").strip()
+    c=sdb(); r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone(); c.close()
+    if not r: return jsonify({"ok":False,"error":"Not found"}),404
+    return jsonify({"ok":True,"product":_scanit_view(r)})
+
+@app.route("/api/scanit/item",methods=["POST"])
+@req_role("admin","cs","manager")
+def api_scanit_item_save():
+    """Quick fix from the host screen: name, MSRP, target price, notes. Typed values are
+    marked manual so a later lookup never overwrites them."""
+    d=request.get_json() or {}
+    sku=(d.get("sku") or "").strip()
+    c=sdb()
+    try:
+        r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()
+        if not r: return jsonify({"ok":False,"error":"Not found"}),404
+        def num(k):
+            v=d.get(k)
+            if v in (None,""): return 0.0
+            v=float(v)
+            if v<0 or v>100000: raise ValueError(k)
+            return round(v,2)
+        try:
+            if "name" in d and (d.get("name") or "").strip():
+                c.execute("UPDATE products SET name=? WHERE sku=?",(d["name"].strip()[:160],sku))
+            if "msrp" in d:
+                m=num("msrp")
+                if m!=float(r["retail_price"] or 0):
+                    c.execute("UPDATE products SET retail_price=?, msrp_source='manual' WHERE sku=?",(m,sku))
+            if "target_price" in d:
+                c.execute("UPDATE products SET target_price=? WHERE sku=?",(num("target_price"),sku))
+        except ValueError:
+            return jsonify({"ok":False,"error":"Prices must be numbers"})
+        if "notes" in d:
+            n=d.get("notes") or {}
+            clean={k:str(n.get(k) or "").strip()[:200] for k in ("top","heart","base") if str(n.get(k) or "").strip()}
+            pts=[str(x).strip()[:120] for x in (n.get("points") or []) if str(x).strip()][:6]
+            if pts: clean["points"]=pts
+            c.execute("UPDATE products SET product_notes=?, notes_source='manual' WHERE sku=?",(json.dumps(clean) if clean else None,sku))
+        c.execute("UPDATE products SET updated_at=? WHERE sku=?",(datetime.now().isoformat(timespec="seconds"),sku))
+        c.commit()
+        r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()
+    finally:
+        c.close()
+    alog("scanit.item_save",sku)
+    return jsonify({"ok":True,"product":_scanit_view(r)})
+
+@app.route("/api/scanit/item/lookup",methods=["POST"])
+@req_role("admin","cs","manager")
+def api_scanit_item_lookup():
+    sku=((request.get_json() or {}).get("sku") or "").strip()
+    if not anthropic_client: return jsonify({"ok":False,"error":"Lookup isn't set up (ANTHROPIC_API_KEY)."})
+    org=current_org() or DEFAULT_ORG
+    return jsonify({"ok":True,"started":_scanit_start_lookup(org, sku, force=True)})
 
 @app.route("/api/scanit/lookup")
 @req_role("admin","cs","host")
