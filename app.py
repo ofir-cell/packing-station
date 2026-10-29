@@ -14408,8 +14408,9 @@ def _scanit_migrate_to_catalog(org):
                 prod=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()
             sku=prod["sku"]
             if r.get("msrp") and not float(prod["retail_price"] or 0):
-                c.execute("UPDATE products SET retail_price=?, msrp_source=? WHERE sku=?",
-                          (r["msrp"], r.get("msrp_url") or "manual", sku))
+                verified=(r.get("verification_status") or "")=="verified"
+                src=(r.get("msrp_url") or "manual") if verified else "db:legacy"   # unverified: lowest rank, a lookup may improve it
+                c.execute("UPDATE products SET retail_price=?, msrp_source=? WHERE sku=?", (r["msrp"], src, sku))
             if r.get("target_price") and not float(prod["target_price"] or 0):
                 c.execute("UPDATE products SET target_price=? WHERE sku=?",(r["target_price"],sku))
             if notes and not (prod["product_notes"] or ""):
@@ -14439,11 +14440,18 @@ def _scanit_view(r):
             "info_status":d.get("info_status") or "",
             "needs_review":(d.get("category") or "")=="Needs review"}
 
+SCANIT_LOOKING_STALE_MIN=10
+def _scanit_stale_cutoff():
+    return (datetime.now()-timedelta(minutes=SCANIT_LOOKING_STALE_MIN)).isoformat(timespec="seconds")
+
 def _scanit_wants_lookup(r):
     """Look up once per product: when notes or a real MSRP are missing. A failed lookup is
-    retried after a day; 'done' is final (an admin can force a new lookup)."""
+    retried after a day; 'done' is final (an admin can force a new lookup). A 'looking' that
+    is older than 10 minutes lost its worker (restart/deploy) and counts as failed."""
     if not anthropic_client or not r: return False
     st=r["info_status"] or ""
+    if st=="looking" and (r["info_checked_at"] or "")<_scanit_stale_cutoff(): st="failed_stale"
+    if st=="failed_stale": return int(r["info_attempts"] or 0)<2
     if st in ("looking","done"): return False
     if st=="failed" and (int(r["info_attempts"] or 0)>=2 or
             (r["info_checked_at"] or "")>(datetime.now()-timedelta(days=1)).isoformat(timespec="seconds")):
@@ -14466,10 +14474,11 @@ def _scanit_start_lookup(org, sku, force=False):
     """Claim the lookup for this product (one at a time) and run it in the background."""
     c=sdb(org)
     try:
-        q=("UPDATE products SET info_status='looking', info_checked_at=? WHERE sku=? AND COALESCE(info_status,'')<>'looking'"
+        stale=_scanit_stale_cutoff()
+        q=("UPDATE products SET info_status='looking', info_checked_at=? WHERE sku=? AND (COALESCE(info_status,'')<>'looking' OR COALESCE(info_checked_at,'')<?)"
            if force else
-           "UPDATE products SET info_status='looking', info_checked_at=? WHERE sku=? AND COALESCE(info_status,'') IN ('','failed')")
-        won=c.execute(q,(datetime.now().isoformat(timespec="seconds"),sku)).rowcount
+           "UPDATE products SET info_status='looking', info_checked_at=? WHERE sku=? AND (COALESCE(info_status,'') IN ('','failed') OR (info_status='looking' AND COALESCE(info_checked_at,'')<?))")
+        won=c.execute(q,(datetime.now().isoformat(timespec="seconds"),sku,stale)).rowcount
         if won: c.execute("UPDATE products SET info_attempts=COALESCE(info_attempts,0)+1 WHERE sku=?",(sku,))
         c.commit()
     finally:
@@ -14487,6 +14496,18 @@ def _scanit_ai_json(prompt, use_web):
     return json.loads(m.group(0))
 
 def _scanit_lookup_info(org, sku):
+    """Background lookup; never leaves the product stuck at 'looking'."""
+    try:
+        _scanit_lookup_info_inner(org, sku)
+    except Exception as e:
+        print("scanit lookup crashed %s: %r"%(sku,e),flush=True)
+        try:
+            c=sdb(org)
+            c.execute("UPDATE products SET info_status='failed', info_checked_at=? WHERE sku=? AND info_status='looking'",
+                      (datetime.now().isoformat(timespec="seconds"),sku)); c.commit(); c.close()
+        except Exception: pass
+
+def _scanit_lookup_info_inner(org, sku):
     """Find the product's notes (fragrance top/heart/base, or 3 short key points) and its
     US MSRP. Web search first so facts come with a source; without web search the notes
     are marked as unchecked and no price is taken."""
@@ -14560,7 +14581,9 @@ def api_scanit_scan():
     try:
         r=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
         created=False; src=""
-        if not r:
+        # only a real product barcode (UPC/EAN: 8–14 digits) may add a product to the catalog —
+        # never a shipping label, a QR link or stray typing
+        if not r and re.fullmatch(r"\d{8,14}", code):
             r,created,src=_resolve_or_create_product_by_barcode(c, code, who=session.get("name",""))
         if not r: return jsonify({"ok":True,"found":False,"code":code})
         c.execute("""CREATE TABLE IF NOT EXISTS scanit_scans(id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -14616,7 +14639,10 @@ def api_scanit_item_save():
             clean={k:str(n.get(k) or "").strip()[:200] for k in ("top","heart","base") if str(n.get(k) or "").strip()}
             pts=[str(x).strip()[:120] for x in (n.get("points") or []) if str(x).strip()][:6]
             if pts: clean["points"]=pts
-            c.execute("UPDATE products SET product_notes=?, notes_source='manual' WHERE sku=?",(json.dumps(clean) if clean else None,sku))
+            try: old=json.loads(r["product_notes"] or "{}") or {}
+            except Exception: old={}
+            if clean!=old:
+                c.execute("UPDATE products SET product_notes=?, notes_source='manual' WHERE sku=?",(json.dumps(clean) if clean else None,sku))
         c.execute("UPDATE products SET updated_at=? WHERE sku=?",(datetime.now().isoformat(timespec="seconds"),sku))
         c.commit()
         r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()

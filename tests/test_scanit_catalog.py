@@ -243,3 +243,54 @@ def test_a_failing_product_is_tried_at_most_twice(appmod, client, monkeypatch, i
         client.get("/api/scanit/scan?code=" + p["barcode"])
         c = A.sdb(A.DEFAULT_ORG); c.execute("UPDATE products SET info_checked_at='2000-01-01' WHERE sku=?", (p["sku"],)); c.commit(); c.close()
     assert _get(A, p["sku"])["info_attempts"] == 2                        # each attempt = 1 web + 1 fallback call
+
+
+# ── independent review findings ───────────────────────────────────────────────
+def test_a_lookup_whose_worker_died_is_retried_not_stuck_looking(appmod, client, monkeypatch, inline_threads):
+    A = appmod; _as(client, A, "host1", "host")
+    ai = FakeAI(FRAG); monkeypatch.setattr(A, "anthropic_client", ai)
+    p = _product(A, info_status="looking")
+    c = A.sdb(A.DEFAULT_ORG); c.execute("UPDATE products SET info_checked_at='2000-01-01T00:00:00' WHERE sku=?", (p["sku"],)); c.commit(); c.close()
+    client.get("/api/scanit/scan?code=" + p["barcode"])
+    assert _get(A, p["sku"])["info_status"] == "done" and len(ai.calls) == 1
+
+
+def test_a_crashing_lookup_ends_as_failed(appmod, client, monkeypatch, inline_threads):
+    A = appmod; _as(client, A, "host1", "host")
+    monkeypatch.setattr(A, "anthropic_client", FakeAI(FRAG))
+    monkeypatch.setattr(A, "_scanit_lookup_info_inner", lambda org, sku: 1 / 0)
+    p = _product(A)
+    client.get("/api/scanit/scan?code=" + p["barcode"])
+    assert _get(A, p["sku"])["info_status"] == "failed"
+
+
+def test_labels_qr_links_and_typing_never_create_catalog_products(appmod, client, monkeypatch):
+    A = appmod; _as(client, A, "host1", "host")
+    monkeypatch.setattr(A, "anthropic_client", None)
+    monkeypatch.setattr(A, "_barcode_lookup_online", lambda c: None)
+    for code in ("HTTPS://TIKTOK.COM/X", "9400111899223344556677", "hello123"):
+        assert client.get("/api/scanit/scan?code=" + code).get_json()["found"] is False
+    c = A.sdb(A.DEFAULT_ORG)
+    assert not c.execute("SELECT 1 FROM products WHERE sku IN ('HTTPS://TIKTOK.COM/X','9400111899223344556677','hello123')").fetchone()
+    c.close()
+
+
+def test_old_unverified_prices_move_over_as_replaceable_not_as_team_entered(appmod, client, monkeypatch, inline_threads):
+    A = appmod; t = uuid.uuid4().hex[:6]
+    c = A.sdb(A.DEFAULT_ORG)
+    c.execute("DELETE FROM settings WHERE key='scanit_migrated'")
+    c.execute("INSERT INTO scanit_products(upc,brand,product_name,msrp,verification_status) VALUES(?,?,?,?,?)", ("55" + t, "Dior", "Sauvage", 99, "check"))
+    c.commit(); c.close()
+    A._scanit_migrate_to_catalog(A.DEFAULT_ORG)
+    assert _get(A, "55" + t)["msrp_source"] == "db:legacy"
+    hdr = _as(client, A)
+    monkeypatch.setattr(A, "anthropic_client", FakeAI(FRAG))
+    client.post("/api/scanit/item/lookup", headers=hdr, json={"sku": "55" + t})
+    assert _get(A, "55" + t)["retail_price"] == 140                         # the brand MSRP replaces it
+
+
+def test_renaming_does_not_turn_ai_notes_into_team_notes(appmod, client):
+    A = appmod; hdr = _as(client, A)
+    p = _product(A, product_notes=json.dumps({"top": "Pear"}), notes_source="ai-unchecked")
+    client.post("/api/scanit/item", headers=hdr, json={"sku": p["sku"], "name": "New name", "notes": {"top": "Pear"}})
+    assert _get(A, p["sku"])["notes_source"] == "ai-unchecked"

@@ -7813,7 +7813,7 @@ function fillP(p){
   document.getElementById('pTarget').value=(p.target_price||'');
   document.getElementById('pRetail').value=(p.retail_price||'');
   (function(){var s=p.msrp_source||'',el=document.getElementById('pRetailSrc');
-    el.textContent=!p.retail_price?'':(s==='manual'?'Entered by the team':(s==='ai-estimate'?'AI estimate — saved, not looked up again':(s.indexOf('http')===0?'Found on '+s.replace(/^https?:[/][/](www[.])?/,'').split('/')[0]:(s.indexOf('db:')===0?'Store price from '+s.slice(3):''))));
+    el.textContent=!p.retail_price?'':(s==='manual'?'Entered by the team':(s==='ai-estimate'?'AI estimate — saved, not looked up again':(s.indexOf('http')===0?'Found on '+s.replace(/^https?:[/][/](www[.])?/,'').split('/')[0]:(s==='db:legacy'?'From the old Scanit — not verified':s.indexOf('db:')===0?'Store price from '+s.slice(3):''))));
     var n={};try{n=JSON.parse(p.product_notes||'{}')||{};}catch(e){}
     var t=(n.top||n.heart||n.base)?['Top: '+(n.top||'—'),'Heart: '+(n.heart||'—'),'Base: '+(n.base||'—')].join(' · '):(n.points||[]).join(' · ');
     document.getElementById('pNotesBox').style.display=t?'block':'none';document.getElementById('pNotes').textContent=t;})();
@@ -11949,7 +11949,7 @@ function notesHtml(p){
 function show(p, created, fresh){
   CUR=p;
   var img=p.image_url?' style="background-image:url('+encodeURI(p.image_url)+')"':'';
-  var ms=p.msrp?(p.msrp_manual?'Entered by the team':(p.msrp_source==='ai-estimate'?'AI estimate':(p.msrp_source?(p.msrp_source.indexOf('http')===0?'From '+esc(host(p.msrp_source)):'Store price · '+esc(p.msrp_source)+' (estimate)'):''))):(p.info_status==='looking'?'Looking up…':'Not known yet');
+  var ms=p.msrp?(p.msrp_manual?'Entered by the team':(p.msrp_source==='ai-estimate'?'AI estimate':p.msrp_source==='legacy'?'From the old Scanit — not verified':(p.msrp_source?(p.msrp_source.indexOf('http')===0?'From '+esc(host(p.msrp_source)):'Store price · '+esc(p.msrp_source)+' (estimate)'):''))):(p.info_status==='looking'?'Looking up…':'Not known yet');
   var lbl=(p.msrp_source==='ai-estimate'&&!p.msrp_manual)?'Value':'MSRP';
   var h='<div class="card"><div class="prod"><div class="img"'+img+'>'+(p.image_url?'':'📦')+'</div><div>'+
     '<div class="name">'+esc(p.name)+'</div><div class="code">'+esc(p.barcode||p.sku)+'</div>'+
