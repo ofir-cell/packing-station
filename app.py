@@ -6553,16 +6553,18 @@ def api_pick_get(sid):
     role = session.get("role", "")
     cleanup_blocked = False
     cleanup_info = None
-    if label:
-        cp = _cleanup_progress(label)
-        if not cp["is_clean"] and not (force and role in ("admin", "cs")):
-            cleanup_blocked = True
-        cleanup_info = cp
-    # Clean-out gate — a NEW show must have the table cleared before picking starts.
     cleanout_required = False
     if label:
         c2 = sdb()
         try:
+            # Whatnot shows are exempt from BOTH cleanup gates (cancelled-items and
+            # table-cleanout) — those steps are for TikTok LIVE shows only.
+            _is_whatnot = (_show_platform(c2, label) == "whatnot")
+            cp = _cleanup_progress(label)
+            if not cp["is_clean"] and not _is_whatnot and not (force and role in ("admin", "cs")):
+                cleanup_blocked = True
+            cleanup_info = cp
+            # Clean-out gate — a NEW show must have the table cleared before picking starts.
             if _show_needs_cleanout(c2, label) and not (force and role in ("admin", "cs")):
                 cleanout_required = True
         finally:
@@ -6840,18 +6842,21 @@ def api_shows():
         if _is_done and (d["last_import"] or "") < cutoff_dt:
             continue
         cp = _cleanup_progress(d["name"])
+        _whatnot_only = ((d.get("platform_count") or 0) == 1 and (d.get("platform") or "").lower() == "whatnot")
+        # Whatnot shows are exempt from the picker-side cleanup gate: report clean so the
+        # pill and the hard-block don't appear. The /admin/cleanup management screen (a
+        # separate endpoint) still shows real cancelled-item data if any exists.
         d["cleanup"] = {
-            "is_clean": cp["is_clean"],
+            "is_clean": True if _whatnot_only else cp["is_clean"],
             "groups_total": cp["total_groups"],
             "groups_done": cp["groups_done"],
-            "groups_pending": cp["groups_pending"],
+            "groups_pending": 0 if _whatnot_only else cp["groups_pending"],
         }
         st = done_map.get(d["name"])
         d["done"] = bool(st and st.get("done"))
         d["done_by"] = st.get("done_by") if st else None
         d["done_at"] = st.get("done_at") if st else None
         d["cleanout_at"] = (st.get("cleanout_at") if st else None)
-        _whatnot_only = ((d.get("platform_count") or 0) == 1 and (d.get("platform") or "").lower() == "whatnot")
         d["needs_cleanout"] = bool((d.get("pending") or 0) > 0 and not (st and st.get("cleanout_at")) and not _whatnot_only)
         out.append(d)
     return jsonify(out)
