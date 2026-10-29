@@ -1255,6 +1255,7 @@ def sdb_init(org):
         "ALTER TABLE products ADD COLUMN notes_source TEXT",
         "ALTER TABLE products ADD COLUMN info_status TEXT",
         "ALTER TABLE products ADD COLUMN info_checked_at TEXT",
+        "ALTER TABLE products ADD COLUMN info_attempts INTEGER DEFAULT 0",
         "ALTER TABLE products ADD COLUMN image_key TEXT",
         "ALTER TABLE products ADD COLUMN supplier TEXT",
         "ALTER TABLE products ADD COLUMN reorder_point INTEGER DEFAULT 0",
@@ -1449,7 +1450,8 @@ def sdb_init(org):
                   "ALTER TABLE products ADD COLUMN product_notes TEXT",
                   "ALTER TABLE products ADD COLUMN notes_source TEXT",
                   "ALTER TABLE products ADD COLUMN info_status TEXT",
-                  "ALTER TABLE products ADD COLUMN info_checked_at TEXT"):
+                  "ALTER TABLE products ADD COLUMN info_checked_at TEXT",
+                  "ALTER TABLE products ADD COLUMN info_attempts INTEGER DEFAULT 0"):
         try: c.execute(_stmt)
         except sqlite3.OperationalError: pass
     c.execute("""CREATE TABLE IF NOT EXISTS purchase_orders(
@@ -14443,11 +14445,22 @@ def _scanit_wants_lookup(r):
     if not anthropic_client or not r: return False
     st=r["info_status"] or ""
     if st in ("looking","done"): return False
-    if st=="failed" and (r["info_checked_at"] or "")>(datetime.now()-timedelta(days=1)).isoformat(timespec="seconds"):
+    if st=="failed" and (int(r["info_attempts"] or 0)>=2 or
+            (r["info_checked_at"] or "")>(datetime.now()-timedelta(days=1)).isoformat(timespec="seconds")):
         return False
     has_notes=bool((r["product_notes"] or "").strip("{} "))
     msrp_ok=float(r["retail_price"] or 0)>0 and not (r["msrp_source"] or "").startswith("db:")
     return not (has_notes and msrp_ok)
+
+# Which value source wins: what the team typed > brand MSRP found on the web > AI estimate >
+# a store price from the barcode databases. A lower one never replaces a higher one.
+def _value_rank(src, price):
+    if not float(price or 0): return 0
+    s=src or ""
+    if s=="manual": return 4
+    if s.startswith("http"): return 3
+    if s=="ai-estimate": return 2
+    return 1
 
 def _scanit_start_lookup(org, sku, force=False):
     """Claim the lookup for this product (one at a time) and run it in the background."""
@@ -14456,7 +14469,9 @@ def _scanit_start_lookup(org, sku, force=False):
         q=("UPDATE products SET info_status='looking', info_checked_at=? WHERE sku=? AND COALESCE(info_status,'')<>'looking'"
            if force else
            "UPDATE products SET info_status='looking', info_checked_at=? WHERE sku=? AND COALESCE(info_status,'') IN ('','failed')")
-        won=c.execute(q,(datetime.now().isoformat(timespec="seconds"),sku)).rowcount; c.commit()
+        won=c.execute(q,(datetime.now().isoformat(timespec="seconds"),sku)).rowcount
+        if won: c.execute("UPDATE products SET info_attempts=COALESCE(info_attempts,0)+1 WHERE sku=?",(sku,))
+        c.commit()
     finally:
         c.close()
     if won: threading.Thread(target=_scanit_lookup_info,args=(org,sku),daemon=True,name="scanit-"+sku[:20]).start()
@@ -14485,9 +14500,11 @@ def _scanit_lookup_info(org, sku):
              "Identify this beauty product. If it is a fragrance give its official fragrance notes "
              "(top, heart, base). Otherwise give up to 3 very short key points a live seller would say "
              "(what it is, finish/benefit, who it's for). Also give the brand's US retail price (MSRP) "
-             "with the page you found it on. Never guess: leave a field empty if you are not sure.\n"
+             "with the page you found it on. If you cannot find an official MSRP, give est_value: your best "
+             "estimate of its typical US retail value in dollars (0 if you really have no idea). "
+             "Never guess notes: leave a field empty if you are not sure.\n"
              "Answer ONLY with JSON: {\"name\":\"<brand + product + size>\",\"kind\":\"fragrance|other\","
-             "\"top\":\"\",\"heart\":\"\",\"base\":\"\",\"points\":[],\"msrp\":0,\"msrp_url\":\"\",\"source_url\":\"\"}"
+             "\"top\":\"\",\"heart\":\"\",\"base\":\"\",\"points\":[],\"msrp\":0,\"msrp_url\":\"\",\"est_value\":0,\"source_url\":\"\"}"
              )%(name if not name.startswith("New product") else "(unknown — use the barcode)", code)
         out=None; web=True; err=""
         try: out=_scanit_ai_json(ask, True)
@@ -14515,10 +14532,15 @@ def _scanit_lookup_info(org, sku):
             try: msrp=round(float(out.get("msrp") or 0),2)
             except Exception: msrp=0
             murl=(out.get("msrp_url") or "").strip()[:300]
-            cur_src=r["msrp_source"] or ""
-            replaceable=(not float(r["retail_price"] or 0)) or cur_src.startswith("db:")
-            if web and msrp>0 and murl and replaceable and cur_src!="manual":
+            try: est=round(float(out.get("est_value") or 0),2)
+            except Exception: est=0
+            have=_value_rank(r["msrp_source"], r["retail_price"])
+            if web and msrp>0 and murl.startswith("http") and have<3:
                 c.execute("UPDATE products SET retail_price=?, msrp_source=? WHERE sku=?",(msrp,murl,sku))
+            else:
+                guess=est or (msrp if not (web and murl) else 0)     # no checked source: it is an estimate
+                if 0<guess<100000 and have<2:
+                    c.execute("UPDATE products SET retail_price=?, msrp_source='ai-estimate' WHERE sku=?",(guess,sku))
             nm=str(out.get("name") or "").strip()[:120]
             if nm and (r["name"] or "").startswith("New product"):
                 c.execute("UPDATE products SET name=? WHERE sku=?",(nm,sku))

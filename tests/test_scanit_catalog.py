@@ -119,12 +119,13 @@ def test_store_price_estimate_is_replaced_by_the_brand_msrp(appmod, client, monk
     assert _get(A, p["sku"])["retail_price"] == 140
 
 
-def test_without_web_search_notes_are_marked_unchecked_and_no_price_is_taken(appmod, client, monkeypatch, inline_threads):
+def test_without_web_search_everything_is_labelled_as_unchecked_ai(appmod, client, monkeypatch, inline_threads):
     A = appmod; _as(client, A, "host1", "host")
     monkeypatch.setattr(A, "anthropic_client", FakeAI(FRAG, web_fails=True))
     p = _product(A)
     v = client.get("/api/scanit/scan?code=" + p["barcode"]).get_json()["product"]
-    assert v["notes_source"] == "ai-unchecked" and v["msrp"] == 0
+    assert v["notes_source"] == "ai-unchecked"
+    assert v["msrp"] == 140 and v["msrp_source"] == "ai-estimate"           # never shown as a checked brand price
 
 
 def test_failed_lookup_is_not_retried_on_every_scan(appmod, client, monkeypatch, inline_threads):
@@ -197,3 +198,48 @@ def test_lookup_that_found_nothing_is_not_repeated_on_every_scan(appmod, client,
     for _ in range(3):
         client.get("/api/scanit/scan?code=" + p["barcode"])
     assert len(ai.calls) == 1 and _get(A, p["sku"])["info_status"] == "done"
+
+
+# ── value saved once on the product card ──────────────────────────────────────
+NO_MSRP = dict(FRAG, msrp=0, msrp_url="", est_value=95)
+
+
+def test_ai_value_is_saved_on_the_product_card_and_never_paid_for_again(appmod, client, monkeypatch, inline_threads):
+    A = appmod; hdr = _as(client, A, "host1", "host")
+    ai = FakeAI(NO_MSRP); monkeypatch.setattr(A, "anthropic_client", ai)
+    p = _product(A)
+    for _ in range(3):
+        v = client.get("/api/scanit/scan?code=" + p["barcode"]).get_json()["product"]
+    assert v["msrp"] == 95 and v["msrp_source"] == "ai-estimate" and len(ai.calls) == 1
+    hdr = _as(client, A)
+    res = client.get("/api/products?q=" + p["sku"]).get_json()
+    card = [x for x in (res if isinstance(res, list) else res.get("products", res.get("items", []))) if x["sku"] == p["sku"]][0]
+    assert card["retail_price"] == 95 and card["msrp_source"] == "ai-estimate" and json.loads(card["product_notes"])["top"]
+    # saving the card without touching the price keeps it an AI estimate
+    client.post("/api/products", headers=hdr, json={"sku": p["sku"], "name": p["name"], "barcode": p["barcode"], "retail_price": 95})
+    assert _get(A, p["sku"])["msrp_source"] == "ai-estimate"
+
+
+def test_brand_msrp_beats_an_ai_estimate_but_never_what_the_team_typed(appmod, client, monkeypatch, inline_threads):
+    A = appmod; hdr = _as(client, A)
+    monkeypatch.setattr(A, "anthropic_client", FakeAI(FRAG))
+    est = _product(A, msrp=95, msrp_source="ai-estimate")
+    typed = _product(A, msrp=120, msrp_source="manual")
+    for p in (est, typed):
+        client.post("/api/scanit/item/lookup", headers=hdr, json={"sku": p["sku"]})
+    assert _get(A, est["sku"])["retail_price"] == 140 and _get(A, typed["sku"])["retail_price"] == 120
+    monkeypatch.setattr(A, "anthropic_client", FakeAI(NO_MSRP))
+    client.post("/api/scanit/item/lookup", headers=hdr, json={"sku": est["sku"]})
+    assert _get(A, est["sku"])["retail_price"] == 140                     # an estimate never replaces the brand MSRP
+
+
+def test_a_failing_product_is_tried_at_most_twice(appmod, client, monkeypatch, inline_threads):
+    A = appmod; _as(client, A, "host1", "host")
+    class Broken(FakeAI):
+        def create(self, **kw): self.calls.append(kw); raise RuntimeError("down")
+    ai = Broken({}); monkeypatch.setattr(A, "anthropic_client", ai)
+    p = _product(A)
+    for _ in range(4):
+        client.get("/api/scanit/scan?code=" + p["barcode"])
+        c = A.sdb(A.DEFAULT_ORG); c.execute("UPDATE products SET info_checked_at='2000-01-01' WHERE sku=?", (p["sku"],)); c.commit(); c.close()
+    assert _get(A, p["sku"])["info_attempts"] == 2                        # each attempt = 1 web + 1 fallback call

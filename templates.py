@@ -7646,7 +7646,8 @@ __NAVBAR__
         </div>
         <div class="f adminOnly"><label>Cost price ($)</label><input id="pCost" type="number" step="0.01" placeholder="0.00" style="width:100%"></div>
         <div class="f"><label>Target sell price ($)</label><input id="pTarget" type="number" step="0.01" placeholder="0.00" style="width:100%"></div>
-        <div class="f"><label>Retail price / MSRP ($)</label><input id="pRetail" type="number" step="0.01" placeholder="0.00" style="width:100%"></div>
+        <div class="f"><label>Retail price / MSRP ($)</label><input id="pRetail" type="number" step="0.01" placeholder="0.00" style="width:100%"><div id="pRetailSrc" style="font-size:11px;color:#94a3b8;font-weight:700;margin-top:3px"></div></div>
+        <div class="f" id="pNotesBox" style="display:none;grid-column:1/-1"><label>Notes (saved — used by Scanit)</label><div id="pNotes" style="font-size:13px;font-weight:600;color:#334155;line-height:1.5"></div></div>
         <div class="f adminOnly"><label>Quantity on hand</label><input id="pQty" type="number" placeholder="0" style="width:100%"></div>
         <div class="f"><label>Reorder point (alert when ≤)</label><input id="pReorder" type="number" placeholder="0" style="width:100%"></div>
         <div class="f"><label>Supplier</label><input id="pSupplier" placeholder="Optional" style="width:100%"></div>
@@ -7811,6 +7812,11 @@ function fillP(p){
   document.getElementById('pCost').value=(p.avg_cost!=null?p.avg_cost:'');
   document.getElementById('pTarget').value=(p.target_price||'');
   document.getElementById('pRetail').value=(p.retail_price||'');
+  (function(){var s=p.msrp_source||'',el=document.getElementById('pRetailSrc');
+    el.textContent=!p.retail_price?'':(s==='manual'?'Entered by the team':(s==='ai-estimate'?'AI estimate — saved, not looked up again':(s.indexOf('http')===0?'Found on '+s.replace(/^https?:[/][/](www[.])?/,'').split('/')[0]:(s.indexOf('db:')===0?'Store price from '+s.slice(3):''))));
+    var n={};try{n=JSON.parse(p.product_notes||'{}')||{};}catch(e){}
+    var t=(n.top||n.heart||n.base)?['Top: '+(n.top||'—'),'Heart: '+(n.heart||'—'),'Base: '+(n.base||'—')].join(' · '):(n.points||[]).join(' · ');
+    document.getElementById('pNotesBox').style.display=t?'block':'none';document.getElementById('pNotes').textContent=t;})();
   document.getElementById('pQty').value=(p.on_hand!=null?p.on_hand:'');
   document.getElementById('pReorder').value=(p.reorder_point||'');
   document.getElementById('pSupplier').value=p.supplier||'';
@@ -11914,11 +11920,12 @@ function notesHtml(p){
 function show(p, created){
   CUR=p;
   var img=p.image_url?' style="background-image:url('+encodeURI(p.image_url)+')"':'';
-  var ms=p.msrp?(p.msrp_manual?'Entered by the team':(p.msrp_source?(p.msrp_source.indexOf('http')===0?'From '+esc(host(p.msrp_source)):'Store price · '+esc(p.msrp_source)+' (estimate)'):'')):(p.info_status==='looking'?'Looking up…':'Not known yet');
+  var ms=p.msrp?(p.msrp_manual?'Entered by the team':(p.msrp_source==='ai-estimate'?'AI estimate':(p.msrp_source?(p.msrp_source.indexOf('http')===0?'From '+esc(host(p.msrp_source)):'Store price · '+esc(p.msrp_source)+' (estimate)'):''))):(p.info_status==='looking'?'Looking up…':'Not known yet');
+  var lbl=(p.msrp_source==='ai-estimate'&&!p.msrp_manual)?'Value':'MSRP';
   var h='<div class="prod"><div class="img"'+img+'>'+(p.image_url?'':esc((p.name||'?').trim().charAt(0).toUpperCase()))+'</div><div>'+
     '<div class="name">'+esc(p.name)+'</div><div class="code">'+esc(p.barcode||p.sku)+'</div>'+
     ((created||p.needs_review)?'<div class="badge">New in the catalog — finish it in After-Live Cleanup</div>':'')+
-    '<div class="prices"><div class="pt"><div class="l">MSRP</div><div class="v'+(p.msrp?'':' none')+'">'+(money(p.msrp)||'—')+'</div><div class="s">'+ms+'</div></div>'+
+    '<div class="prices"><div class="pt"><div class="l">'+lbl+'</div><div class="v'+(p.msrp?'':' none')+'">'+(money(p.msrp)||'—')+'</div><div class="s">'+ms+'</div></div>'+
     '<div class="pt t"><div class="l">Target price</div><div class="v'+(p.target_price?'':' none')+'">'+(money(p.target_price)||'—')+'</div><div class="s">'+(p.target_price?'':'Not set')+'</div></div></div>'+
     '<div class="notes"><h3>Notes</h3>'+notesHtml(p)+'</div>'+
     (ADMIN?'<div class="edit"><button class="btn" id="editBtn">✏️ Edit</button> <button class="btn" id="relookBtn">↻ Look up again</button></div>':'')+
