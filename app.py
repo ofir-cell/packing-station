@@ -2634,10 +2634,25 @@ def _cleanout_ensure(c):
         c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('cleanout_backfilled','1')")
         c.commit()
 
+def _show_platform(c, label):
+    """Lowercase platform of a show, by its shipments. '' if unknown, 'mixed' if more
+    than one platform shares the label (rare). Used to scope the table-cleanout gate."""
+    if not label: return ""
+    ps={ (r[0] or "") for r in c.execute(
+        "SELECT DISTINCT LOWER(COALESCE(platform,'')) FROM shipments WHERE import_label=?",(label,)).fetchall() }
+    ps={p for p in ps if p}
+    if not ps: return ""
+    if len(ps)==1: return next(iter(ps))
+    return "mixed"
+
 def _show_needs_cleanout(c, label):
-    """True when this show has orders to pick but the table was never cleaned out for it."""
+    """True when this show has orders to pick but the table was never cleaned out for it.
+    The table-cleanout step is required for TikTok LIVE shows only; Whatnot shows are
+    exempt (no per-show table reset is wanted there)."""
     if not label: return False
     _cleanout_ensure(c)
+    # Whatnot shows are exempt from the mandatory cleanout gate (TikTok-only).
+    if _show_platform(c, label)=="whatnot": return False
     r=c.execute("SELECT cleanout_at FROM show_state WHERE import_label=?",(label,)).fetchone()
     if r and (r["cleanout_at"] or ""): return False   # already cleaned out
     # Only gate shows that actually have pickable work.
@@ -6836,7 +6851,8 @@ def api_shows():
         d["done_by"] = st.get("done_by") if st else None
         d["done_at"] = st.get("done_at") if st else None
         d["cleanout_at"] = (st.get("cleanout_at") if st else None)
-        d["needs_cleanout"] = bool((d.get("pending") or 0) > 0 and not (st and st.get("cleanout_at")))
+        _whatnot_only = ((d.get("platform_count") or 0) == 1 and (d.get("platform") or "").lower() == "whatnot")
+        d["needs_cleanout"] = bool((d.get("pending") or 0) > 0 and not (st and st.get("cleanout_at")) and not _whatnot_only)
         out.append(d)
     return jsonify(out)
 
