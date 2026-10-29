@@ -110,3 +110,38 @@ def test_livevision_accepts_only_the_right_token(tmp_path, monkeypatch):
     assert lv._auth_ok(_Req("s3cret-token")) is True
     assert lv._auth_ok(_Req("wrong")) is False
     assert lv._auth_ok(_Req(None)) is False
+
+
+# ── presigned media links ─────────────────────────────────────────────────────
+def test_presigned_link_life_is_15_minutes_by_default(appmod):
+    # env not set in tests, so this is the code default
+    assert appmod.R2_PRESIGN_TTL == 900
+
+
+# ── TikTok OAuth callback ─────────────────────────────────────────────────────
+def test_tiktok_callback_rejects_missing_state_even_when_logged_in(appmod, admin, monkeypatch):
+    A = appmod
+    called = []
+    monkeypatch.setattr(A, "_tt_token_exchange", lambda code: called.append(code) or {})
+    r = admin.get("/api/tiktok/callback?code=ATTACKER-CODE")
+    assert r.status_code == 400
+    assert called == []                      # never exchanged the attacker's code
+
+
+def test_tiktok_callback_rejects_forged_state(appmod, admin, monkeypatch):
+    A = appmod
+    called = []
+    monkeypatch.setattr(A, "_tt_token_exchange", lambda code: called.append(code) or {})
+    r = admin.get("/api/tiktok/callback?code=X&state=Zm9yZ2VkfDF8MnwzNA==")
+    assert r.status_code == 400 and called == []
+
+
+def test_tiktok_callback_accepts_our_signed_state(appmod, client, monkeypatch):
+    A = appmod
+    called = []
+    def fake_exchange(code):
+        called.append(code); raise RuntimeError("stop after exchange")   # don't store anything
+    monkeypatch.setattr(A, "_tt_token_exchange", fake_exchange)
+    state = A._tt_state(A.DEFAULT_ORG)
+    client.get("/api/tiktok/callback?code=GOOD&state=" + state)
+    assert called == ["GOOD"]                # valid state gets through to the exchange

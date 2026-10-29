@@ -211,7 +211,12 @@ R2_HR_BUCKET=os.environ.get("R2_HR_BUCKET") or R2_BUCKET
 R2_ENDPOINT=os.environ.get("R2_ENDPOINT")
 R2_ACCESS_KEY_ID=os.environ.get("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY=os.environ.get("R2_SECRET_ACCESS_KEY")
-R2_PRESIGN_TTL=int(os.environ.get("R2_PRESIGN_TTL",3600))  # 1 hour
+# 15 minutes. Every media route (/media/video, /media/photo, labels, docs, invoices,
+# product images, ticket files) mints a fresh link on each request and redirects to
+# it, so a short life never breaks normal viewing or downloading; it only limits how
+# long a copied/forwarded link keeps working. The team downloads files rather than
+# sharing links. (Was 1 hour.) Override with R2_PRESIGN_TTL if ever needed.
+R2_PRESIGN_TTL=int(os.environ.get("R2_PRESIGN_TTL",900))
 r2=None
 _r2_vars=[R2_BUCKET,R2_ENDPOINT,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY]
 if any(_r2_vars):
@@ -15422,7 +15427,14 @@ def api_tiktok_connect():
 def api_tiktok_callback():
     code=request.args.get("code") or request.args.get("auth_code") or ""
     state=request.args.get("state") or ""
-    org=_tt_state_org(state) or current_org()
+    # Shops are only ever connected from inside the app ("Connect" → TikTok → back
+    # here), which always carries our signed state. Never fall back to the logged-in
+    # session's org: that let a crafted callback link (attacker's auth code, no/forged
+    # state) attach an attacker-controlled shop to whichever org the victim was in.
+    org=_tt_state_org(state)
+    if not org:
+        _tt_log("callback rejected: missing/invalid/expired state")
+        return _tt_page("Authorization expired","This connection link is no longer valid. Please start the connection again from the TikTok page inside the app."),400
     if not code:
         return _tt_page("Authorization failed","No authorization code was returned by TikTok. Please try connecting again."),400
     if not org:
