@@ -6219,8 +6219,9 @@ def api_shipment_lookup(code):
 # ══════════════════════════════════════════════════════════
 # PACK SCAN — between "start video" (label scan) and "stop video" (box scan) the packer
 # scans each product he puts in the box. The screen guides him in ascending sticker order;
-# any order is accepted. A product never linked to a barcode is linked by its first scan
-# (like Live Match). Stopping early is allowed — the order is flagged with what's missing.
+# any order is accepted. Only items whose sticker is linked to a product (Live Match) can be
+# checked — unlinked ones are shown as "not linked yet" and never block or flag the box.
+# Stopping early is allowed — the order is flagged with the linked items not scanned.
 # ══════════════════════════════════════════════════════════
 def _pack_ensure(c):
     c.execute("""CREATE TABLE IF NOT EXISTS pack_scans(
@@ -6297,7 +6298,7 @@ def api_pack_begin():
 def api_pack_scan():
     """One scan while the video records. Returns what the screen should do:
     ok / learned (counted) · already · wrong · stop (it's this box's label) ·
-    next_label (another box's label: finish this one, start that one) · unknown."""
+    next_label (another box's label: finish this one, start that one). Never links anything."""
     d=request.get_json() or {}
     trk=_normalize_tracking(d.get("tracking") or "")
     raw=(d.get("code") or "").strip()
@@ -6319,7 +6320,7 @@ def api_pack_scan():
                                                           code,psku,result,who,sta,now))
         def count(item, method):
             c.execute("""UPDATE shipment_items SET pack_scanned_qty=COALESCE(pack_scanned_qty,0)+1,
-                         pack_method=CASE WHEN COALESCE(pack_method,'')='learned' THEN 'learned' ELSE ? END,
+                         pack_method=?,
                          pack_scanned_at=? WHERE id=?""",(method,now,item["id"]))
         prod=c.execute("SELECT sku,name,barcode,image_url FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
         if prod:
@@ -6339,36 +6340,10 @@ def api_pack_scan():
             return jsonify({"ok":True,"result":"next_label"})
         if not prod and _looks_like_tracking(code):
             return jsonify({"ok":True,"result":"next_label"})
-        # Teach: ONLY the item the screen is asking for, and only if it has no barcode yet —
-        # an unknown barcode while the screen shows a linked item may be that item in other
-        # packaging, so we never guess another item. Never if this product is already linked
-        # to a different sticker in the same live — then it's simply wrong.
-        unlinked=[it for it in items if not it["product"] and it["scanned"]<it["quantity"]]
-        exp=d.get("expected_item_id")
-        target=next((it for it in unlinked if str(it["id"])==str(exp)), None)
-        if target:
-            taken=prod and c.execute("""SELECT 1 FROM show_product_map WHERE import_label=? AND product_sku=?
-                                        AND NOT (sticker_sku=? AND part=?)""",
-                                     (target["label"],prod["sku"],(target["sku"] or "").strip(),target["part"])).fetchone()
-            if not taken:
-                if not prod:
-                    prod,_created,_src=_resolve_or_create_product_by_barcode(c, code, who=who)
-                if prod:
-                    c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by)
-                                 VALUES(?,?,?,?,0,?,?)
-                                 ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET product_sku=excluded.product_sku,
-                                    mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
-                              (target["label"],(target["sku"] or "").strip(),target["part"],prod["sku"],now,who+" (pack)"))
-                    try: _deplete_show_packed(c, target["label"], (target["sku"] or "").strip())
-                    except Exception as e: print("deplete after pack-link failed:",e,flush=True)
-                    count(target,"learned"); log("learned",target,prod["sku"]); c.commit()
-                    return jsonify({"ok":True,"result":"learned","item_id":target["id"],"product":prod["name"],
-                                    "items":_pack_view(_pack_box(c,row))})
         log("wrong",None,prod["sku"] if prod else None); c.commit()
         expected=[{"sticker":it["sku"],"name":(it["product"] or {}).get("name") or it["product_name"]}
-                  for it in items if it["scanned"]<it["quantity"]]
-        return jsonify({"ok":True,"result":"wrong","product":(prod["name"] if prod else None),"expected":expected[:6],
-                        "unlinked":[it["sku"] for it in unlinked]})
+                  for it in items if it["product"] and it["scanned"]<it["quantity"]]
+        return jsonify({"ok":True,"result":"wrong","product":(prod["name"] if prod else None),"expected":expected[:6]})
     finally:
         c.close()
 
@@ -6376,9 +6351,9 @@ def _pack_finish(c, row, video_file):
     """At upload: record whether every product was scanned into the box (flag if not)."""
     _pack_ensure(c)
     items=_pack_box(c,row)
-    if not items: return None
-    missing=[{"sticker":it["sku"],"name":(it["product"] or {}).get("name") or it["product_name"],
-              "missing":it["quantity"]-min(it["scanned"],it["quantity"])} for it in items if it["scanned"]<it["quantity"]]
+    if not items or not any(it["product"] for it in items): return None   # nothing checkable in this box
+    missing=[{"sticker":it["sku"],"name":(it["product"] or {}).get("name") or it["product_name"]}
+             for it in items if it["product"] and it["scanned"]<it["quantity"]]     # unlinked items can't be checked yet
     chk="missing" if missing else "complete"
     c.execute("UPDATE shipments SET pack_check=?, pack_missing=? WHERE shipment_id=?",
               (chk, json.dumps(missing) if missing else None, row["shipment_id"]))

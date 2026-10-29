@@ -1,7 +1,7 @@
 """Pack scan: between the label scan that starts the video and the box scan that stops it,
 the packer scans each product he puts in the box. Ascending sticker order is a guide, any
-order counts; an unlinked product is linked by its first scan; stopping early is allowed
-and the order is flagged with what's missing."""
+order counts. Only stickers linked to a product (Live Match) are checked — packing never
+links anything. Stopping early is allowed and the order is flagged with what's missing."""
 import io, json, uuid
 
 import pytest
@@ -16,7 +16,7 @@ def _as(client, A, user="worker1", role="worker"):
 
 @pytest.fixture
 def box(appmod, monkeypatch):
-    """Order with stickers 33, 41, 1, 17 (17 twice). 1/17/33 are linked to products with
+    """Order with stickers 33, 41, 1, 17 (all single items). 1/17/33 are linked to products with
     barcodes; 41 was never linked. Another box in the same live has its own label."""
     A = appmod
     t = uuid.uuid4().hex[:6].upper()
@@ -28,7 +28,7 @@ def box(appmod, monkeypatch):
               ("P" + t, trk, "Amy", "pending", label))
     c.execute("INSERT INTO shipments(shipment_id,tracking_code,buyer_name,status,import_label,import_batch) VALUES(?,?,?,?,?,'tiktok-api')",
               ("Q" + t, trk2, "Bob", "pending", label))
-    for st, q in (("33", 1), ("41", 1), ("1", 1), ("17", 2)):
+    for st, q in (("33", 1), ("41", 1), ("1", 1), ("17", 1)):
         c.execute("INSERT INTO shipment_items(shipment_id,order_id,sku,product_name,quantity) VALUES(?,?,?,?,?)",
                   ("P" + t, "O" + t, st, "Peach Live PART 1", q))
     c.execute("INSERT INTO shipment_items(shipment_id,order_id,sku,product_name,quantity) VALUES(?,?,?,?,?)",
@@ -63,16 +63,14 @@ def test_list_is_in_ascending_sticker_order_with_link_status(appmod, client, box
     d = _begin(client, hdr, box["trk"])
     assert d["enabled"] and [i["sticker"] for i in d["items"]] == ["1", "17", "33", "41"]
     assert [i["linked"] for i in d["items"]] == [True, True, True, False]
-    assert d["items"][1]["quantity"] == 2
 
 
-def test_any_order_counts_and_quantity_needs_each_unit(appmod, client, box):
+def test_any_order_counts(appmod, client, box):
     hdr = _as(client, appmod); trk = box["trk"]
     _begin(client, hdr, trk)
     assert _scan(client, hdr, trk, box["bc"]["33"])["result"] == "ok"           # out of order is fine
     r = _scan(client, hdr, trk, box["bc"]["17"])
-    assert r["result"] == "ok" and [i["scanned"] for i in r["items"] if i["sticker"] == "17"] == [1]
-    assert _scan(client, hdr, trk, box["bc"]["17"])["result"] == "ok"           # second unit of 17
+    assert r["result"] == "ok" and [i["done"] for i in r["items"] if i["sticker"] == "17"] == [True]
     assert _scan(client, hdr, trk, box["bc"]["17"])["result"] == "already"
 
 
@@ -81,10 +79,10 @@ def test_wrong_product_is_rejected_and_never_stops_the_video(appmod, client, box
     _begin(client, hdr, trk)
     r = _scan(client, hdr, trk, box["bc"]["5"])                                   # belongs to Bob's order
     assert r["result"] == "wrong" and r["product"] == "Product 5"
-    assert [e["sticker"] for e in r["expected"]] == ["1", "17", "33", "41"]
+    assert [e["sticker"] for e in r["expected"]] == ["1", "17", "33"]
     c = appmod.sdb(appmod.DEFAULT_ORG)
     assert c.execute("SELECT COUNT(*) FROM show_product_map WHERE import_label=? AND sticker_sku='41'", (box["label"],)).fetchone()[0] == 0
-    c.close()                                                                     # and it did NOT teach #41
+    c.close()                                                                     # and nothing got linked to #41
 
 
 def test_box_label_stops_and_another_label_moves_to_the_next_box(appmod, client, box):
@@ -105,27 +103,20 @@ def test_a_product_code_inside_some_tracking_number_is_not_taken_for_a_label(app
     c = appmod.sdb(appmod.DEFAULT_ORG)
     c.execute("INSERT INTO products(sku,name,barcode,on_hand,avg_cost) VALUES(?,?,?,0,0)", ("PX" + box["t"], "Stray", piece))
     c.commit(); c.close()
-    assert _scan(client, hdr, trk, piece)["result"] in ("wrong", "learned")      # never "next_label"
+    assert _scan(client, hdr, trk, piece)["result"] == "wrong"                    # never "next_label"
 
 
-def test_first_scan_links_an_unlinked_product_for_the_whole_live(appmod, client, box):
+def test_packing_never_links_or_creates_products(appmod, client, box):
     A = appmod; hdr = _as(client, A); trk = box["trk"]
     items = _begin(client, hdr, trk)["items"]
     i41 = [i for i in items if i["sticker"] == "41"][0]
-    r = _scan(client, hdr, trk, "0711234" + box["t"], expected=i41["id"])
-    assert r["result"] == "learned" and r["product"] == "Lip Oil Cherry"
-    assert [i for i in r["items"] if i["sticker"] == "41"][0]["done"]
+    code = "0711234" + box["t"]
+    r = _scan(client, hdr, trk, code, expected=i41["id"])
+    assert r["result"] == "wrong" and r["product"] is None
     c = A.sdb(A.DEFAULT_ORG)
-    m = c.execute("SELECT product_sku FROM show_product_map WHERE import_label=? AND sticker_sku='41'", (box["label"],)).fetchone()
+    assert not c.execute("SELECT 1 FROM show_product_map WHERE import_label=? AND sticker_sku='41'", (box["label"],)).fetchone()
+    assert not c.execute("SELECT 1 FROM products WHERE barcode=?", (code,)).fetchone()
     c.close()
-    assert m and m["product_sku"] == "0711234" + box["t"]                         # product created + linked
-
-
-def test_a_product_linked_to_another_sticker_is_never_relinked(appmod, client, box):
-    hdr = _as(client, appmod); trk = box["trk"]
-    items = _begin(client, hdr, trk)["items"]
-    i41 = [i for i in items if i["sticker"] == "41"][0]
-    assert _scan(client, hdr, trk, box["bc"]["5"], expected=i41["id"])["result"] == "wrong"
 
 
 def test_stopping_early_flags_the_order_with_whats_missing(appmod, client, box):
@@ -134,7 +125,7 @@ def test_stopping_early_flags_the_order_with_whats_missing(appmod, client, box):
     _scan(client, hdr, trk, box["bc"]["1"]); _scan(client, hdr, trk, box["bc"]["17"])
     d = _upload(client, hdr, trk)
     assert d["ok"] and d["pack"]["check"] == "missing"
-    assert [(m["sticker"], m["missing"]) for m in d["pack"]["missing"]] == [("17", 1), ("33", 1), ("41", 1)]
+    assert [m["sticker"] for m in d["pack"]["missing"]] == ["33"]             # #41 is not linked: not checked
     hdr = _as(client, A, "admin", "admin")
     rows = client.get("/api/pack/missing").get_json()["rows"]
     assert box["sid"] in [r["shipment_id"] for r in rows]
@@ -144,14 +135,13 @@ def test_stopping_early_flags_the_order_with_whats_missing(appmod, client, box):
 
 def test_everything_scanned_is_complete_and_scans_point_to_the_video(appmod, client, box):
     A = appmod; hdr = _as(client, A); trk = box["trk"]
-    items = _begin(client, hdr, trk)["items"]
-    for st in ("1", "17", "17", "33"):
+    _begin(client, hdr, trk)
+    for st in ("1", "17", "33"):
         _scan(client, hdr, trk, box["bc"][st])
-    _scan(client, hdr, trk, "0711234" + box["t"], expected=[i for i in items if i["sticker"] == "41"][0]["id"])
-    d = _upload(client, hdr, trk)
+    d = _upload(client, hdr, trk)                                                 # unlinked #41 never blocks
     assert d["pack"] == {"check": "complete", "missing": []}
     c = A.sdb(A.DEFAULT_ORG)
-    vids = {r["video_file"] for r in c.execute("SELECT video_file FROM pack_scans WHERE shipment_id=? AND result IN ('ok','learned')", (box["sid"],))}
+    vids = {r["video_file"] for r in c.execute("SELECT video_file FROM pack_scans WHERE shipment_id=? AND result='ok'", (box["sid"],))}
     c.close()
     assert len(vids) == 1 and None not in vids
 
@@ -178,13 +168,9 @@ def test_switching_it_off_goes_back_to_start_stop_only(appmod, client, box):
         client.post("/api/pack/setting", headers=hdr, json={"on": True})
 
 
-def test_unknown_barcode_is_never_linked_to_an_item_the_screen_is_not_asking_for(appmod, client, box):
-    hdr = _as(client, appmod); trk = box["trk"]
-    items = _begin(client, hdr, trk)["items"]
-    i17 = [i for i in items if i["sticker"] == "17"][0]                      # linked item on screen
-    r = _scan(client, hdr, trk, "0999888" + box["t"], expected=i17["id"])
-    assert r["result"] == "wrong" and r["unlinked"] == ["41"]                # tells him to tap #41 to link
-    c = appmod.sdb(appmod.DEFAULT_ORG)
-    assert not c.execute("SELECT 1 FROM show_product_map WHERE import_label=? AND sticker_sku='41'", (box["label"],)).fetchone()
-    assert not c.execute("SELECT 1 FROM products WHERE barcode=?", ("0999888" + box["t"],)).fetchone()
-    c.close()
+def test_a_box_with_nothing_linked_is_never_flagged(appmod, client, box):
+    A = appmod; hdr = _as(client, A)
+    c = A.sdb(A.DEFAULT_ORG); c.execute("DELETE FROM show_product_map WHERE import_label=?", (box["label"],)); c.commit(); c.close()
+    d = _begin(client, hdr, box["trk"])
+    assert d["enabled"] and not any(i["linked"] for i in d["items"])
+    assert _upload(client, hdr, box["trk"])["pack"] is None
