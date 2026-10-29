@@ -16178,6 +16178,484 @@ def api_tiktok_combinable():
         out["raw_first"] = r["raw_first"]
     return jsonify(out)
 
+# ── COMBINE & LABELS — stage B: combine + create TikTok Shipping labels ─────────
+# Everything the team does in Seller Center's "To Ship" screen, from our side:
+#   plan a show  →  manager approves with PIN  →  background run: combine what TikTok
+#   allows, create each label on TikTok (carrier pickup, standard box, TikTok picks the
+#   service), store tracking + label  →  one 4x6 PDF for the whole batch.
+# Safety:
+#   * nothing writes unless TIKTOK_FULFILL_WRITE=1 (off by default)
+#   * every write call lives in the _tt_api_* adapter below; paths are settings
+#   * one label per package, ever: tt_label_jobs is claimed atomically BEFORE TikTok is
+#     called; a crash mid-call leaves 'uncertain', which is never retried blindly — it is
+#     reconciled by READING the package from TikTok first
+#   * runs in a background thread (never inside a web request), resumable after a restart
+TT_PATH_COMBINE = os.environ.get("TIKTOK_PATH_COMBINE", "/fulfillment/{v}/packages/combine").strip()
+TT_PATH_PACKAGE = os.environ.get("TIKTOK_PATH_PACKAGE", "/fulfillment/{v}/packages/{pid}").strip()
+TT_PATH_SLOTS = os.environ.get("TIKTOK_PATH_HANDOVER_SLOTS", "/fulfillment/{v}/packages/{pid}/handover_time_slots").strip()
+TT_PATH_SHIP = os.environ.get("TIKTOK_PATH_SHIP", "/fulfillment/{v}/packages/{pid}/ship").strip()
+TT_PATH_DOC = os.environ.get("TIKTOK_PATH_SHIPPING_DOC", "/fulfillment/{v}/packages/{pid}/shipping_documents").strip()
+TT_SHIP_SEND_BOX = os.environ.get("TIKTOK_SHIP_SEND_BOX", "").strip().lower() in ("1", "true", "yes")
+TT_LABEL_DOC_SIZE = os.environ.get("TIKTOK_LABEL_DOC_SIZE", "A6").strip()   # A6 = 4x6
+TT_DEFAULT_BOX = {"weight_lb": 1.0, "length_in": 9.0, "width_in": 6.0, "height_in": 3.0}
+
+class TTError(Exception):
+    def __init__(self, msg, code=None, sent=False):
+        super().__init__(msg); self.code = code; self.sent = sent
+
+def _tt_shop_call(org, shop_id, method, tmpl, pid="", params=None, body=None):
+    """One signed call for a shop. Raises TTError (sent=True when the request may have
+    reached TikTok, i.e. its outcome is unknown)."""
+    tok = _tt_valid_token(org, shop_id)
+    if not tok or not tok.get("access_token"):
+        raise TTError("No valid TikTok token for shop %s — reconnect it" % shop_id)
+    tok = _tt_ensure_cipher(org, shop_id, tok)
+    p = dict(params or {})
+    if tok.get("shop_cipher"): p["shop_cipher"] = tok["shop_cipher"]
+    path = tmpl.format(v=TIKTOK_API_VERSION, pid=pid)
+    try:
+        res = _tt_request(method, TIKTOK_API_BASE + path, params=p, body=body, signed=True,
+                          access_token=tok["access_token"])
+    except Exception as e:
+        raise TTError("Request to TikTok failed: %s" % str(e)[:200], sent=(method != "GET"))
+    if res.get("code"):
+        raise TTError("TikTok %s: %s" % (res.get("code"), (res.get("message") or "")[:200]), code=res.get("code"))
+    return res.get("data") or {}
+
+# ---- adapter: the only functions that know TikTok's request/response shapes ----
+def _tt_api_combine(org, shop_id, group_id, order_ids):
+    data = _tt_shop_call(org, shop_id, "POST", TT_PATH_COMBINE,
+                         body={"combinable_packages": [{"id": group_id, "order_ids": list(order_ids)}]})
+    errs = data.get("errors") or []
+    if errs:
+        raise TTError("TikTok refused to combine: %s" % str(errs)[:200])
+    pk = (data.get("packages") or [{}])[0]
+    pid = str(pk.get("id") or pk.get("package_id") or data.get("package_id") or "")
+    if not pid: raise TTError("Combine answered without a package id")
+    return pid
+
+def _tt_api_package(org, shop_id, pid):
+    d = _tt_shop_call(org, shop_id, "GET", TT_PATH_PACKAGE, pid=pid)
+    return {"tracking": str(d.get("tracking_number") or ""), "status": str(d.get("package_status") or d.get("status") or ""),
+            "provider": str(d.get("shipping_provider_name") or "")}
+
+def _tt_api_pickup_slot(org, shop_id, pid):
+    try:
+        d = _tt_shop_call(org, shop_id, "GET", TT_PATH_SLOTS, pid=pid, params={"handover_method": "PICKUP"})
+    except TTError:
+        return None
+    for s in (d.get("pickup_slots") or d.get("time_slots") or d.get("handover_time_slots") or []):
+        if s.get("avaliable", s.get("available", True)):
+            return {"start_time": s.get("start_time"), "end_time": s.get("end_time")}
+    return None
+
+def _tt_api_ship(org, shop_id, pid, slot, box):
+    body = {"handover_method": "PICKUP"}
+    if slot: body["pickup_slot"] = slot
+    if TT_SHIP_SEND_BOX:
+        body["weight"] = {"value": str(box["weight_lb"]), "unit": "POUND"}
+        body["dimension"] = {"length": str(box["length_in"]), "width": str(box["width_in"]),
+                             "height": str(box["height_in"]), "unit": "INCH"}
+    _tt_shop_call(org, shop_id, "POST", TT_PATH_SHIP, pid=pid, body=body)
+
+def _tt_api_label(org, shop_id, pid):
+    d = _tt_shop_call(org, shop_id, "GET", TT_PATH_DOC, pid=pid,
+                      params={"document_type": "SHIPPING_LABEL", "document_size": TT_LABEL_DOC_SIZE})
+    url = str(d.get("doc_url") or d.get("url") or "")
+    if not url: raise TTError("TikTok returned no label document")
+    return url
+
+# ---- storage ----
+def _tt_labels_ensure(c):
+    c.execute("""CREATE TABLE IF NOT EXISTS tt_label_jobs(
+        package_id TEXT PRIMARY KEY, shop_id TEXT, batch_id INTEGER, status TEXT,
+        tracking TEXT, doc_url TEXT, label_file TEXT, error TEXT, created_at TEXT, updated_at TEXT)""")
+    try: c.execute("ALTER TABLE tt_label_jobs ADD COLUMN label_file TEXT")
+    except sqlite3.OperationalError: pass
+    c.execute("""CREATE TABLE IF NOT EXISTS tt_batches(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, show TEXT, status TEXT, plan TEXT,
+        total INTEGER DEFAULT 0, done INTEGER DEFAULT 0, failed INTEGER DEFAULT 0, combined INTEGER DEFAULT 0,
+        created_by TEXT, approved_by TEXT, created_at TEXT, started_at TEXT, finished_at TEXT, note TEXT)""")
+
+def _tt_box(org=None):
+    # explicit org: this also runs in the background batch thread (no request context)
+    c = sdb(_org_or_current(org))
+    try:
+        r = c.execute("SELECT value FROM settings WHERE key='tt_box'").fetchone()
+        b = json.loads(r["value"]) if r and r["value"] else {}
+    except Exception:
+        b = {}
+    finally:
+        c.close()
+    out = dict(TT_DEFAULT_BOX); out.update({k: float(v) for k, v in b.items() if k in TT_DEFAULT_BOX})
+    return out
+
+def _tt_shop_for_orders(org, order_ids):
+    if not order_ids: return None
+    c = pdb()
+    try:
+        q = "SELECT shop_id FROM tiktok_orders WHERE org_id=? AND order_id IN (%s) LIMIT 1" % ",".join("?" * len(order_ids))
+        r = c.execute(q, [org] + list(order_ids)).fetchone()
+        return r["shop_id"] if r else None
+    finally:
+        c.close()
+
+def _tt_needs_label(c, label):
+    """API packages of a show that still need a TikTok label: not cancelled/shipped, no
+    tracking yet. {shipment_id: [order_ids]}"""
+    out = {}
+    for r in c.execute("""SELECT s.shipment_id, i.order_id FROM shipments s
+                          JOIN shipment_items i ON i.shipment_id=s.shipment_id
+                          WHERE s.import_label=? AND COALESCE(s.import_batch,'')='tiktok-api'
+                            AND s.status NOT IN ('cancelled','shipped','giveaway')
+                            AND COALESCE(s.tracking_code,'')='' AND COALESCE(i.cancelled,0)=0""", (label,)).fetchall():
+        out.setdefault(r["shipment_id"], set()).add(str(r["order_id"]))
+    return {k: sorted(v) for k, v in out.items()}
+
+def _tt_merge_into_package(c, new_pid, order_ids):
+    """After TikTok combined some orders into package new_pid: move those orders' items into
+    one shipment row keyed new_pid (keeping picked/depletion flags — rows are moved, not
+    rebuilt) and drop the now-empty API-owned rows. Idempotent."""
+    olds = [r["shipment_id"] for r in c.execute(
+        "SELECT DISTINCT shipment_id FROM shipment_items WHERE order_id IN (%s)" % ",".join("?" * len(order_ids)),
+        list(order_ids)).fetchall()]
+    if not olds: return
+    if not c.execute("SELECT 1 FROM shipments WHERE shipment_id=?", (new_pid,)).fetchone():
+        # copy the first package's row; tracking starts empty (the label assigns it) — never
+        # copy it, because tracking_code is unique among non-NULL values
+        cols = [r[1] for r in c.execute("PRAGMA table_info(shipments)").fetchall() if r[1] not in ("shipment_id", "tracking_code")]
+        c.execute("INSERT INTO shipments(shipment_id,tracking_code,%s) SELECT ?,NULL,%s FROM shipments WHERE shipment_id=?"
+                  % (",".join(cols), ",".join(cols)), (new_pid, olds[0]))
+    c.execute("UPDATE shipment_items SET shipment_id=? WHERE order_id IN (%s)" % ",".join("?" * len(order_ids)),
+              [new_pid] + list(order_ids))
+    for o in olds:
+        if o == new_pid: continue
+        if not c.execute("SELECT 1 FROM shipment_items WHERE shipment_id=?", (o,)).fetchone():
+            c.execute("DELETE FROM shipments WHERE shipment_id=? AND COALESCE(import_batch,'')='tiktok-api'", (o,))
+    try: _recompute_shipment_weight(c, new_pid)
+    except Exception: pass
+
+def _tt_store_label_copy(org, data):
+    """Save a label PDF for this tenant (R2 or local) and return its file name. Takes the
+    org explicitly because it runs in the background batch thread."""
+    fn = secrets.token_hex(10) + ".pdf"
+    if r2:
+        try:
+            r2.put_object(Bucket=R2_BUCKET, Key=_r2_media_key("labels", fn, org), Body=data, ContentType="application/pdf")
+            return fn
+        except Exception as e:
+            _tt_log("R2 label put failed: %r" % e)
+    with open(os.path.join(_labels_dir(org), fn), "wb") as fh: fh.write(data)
+    return fn
+
+def _tt_label_one(org, shop_id, pid, batch_id, box):
+    """Create (or recover) the TikTok label for ONE package. Never calls 'ship' twice."""
+    now = lambda: datetime.now().isoformat(timespec="seconds")
+    c = sdb(org); _tt_labels_ensure(c)
+    try:
+        c.execute("""INSERT OR IGNORE INTO tt_label_jobs(package_id,shop_id,batch_id,status,created_at,updated_at)
+                     VALUES(?,?,?,'claimed',?,?)""", (pid, shop_id, batch_id, now(), now()))
+        c.commit()
+        job = dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+        st = job["status"]
+        if st == "labeled":
+            return job
+        if st in ("shipping", "uncertain"):
+            # The ship call may or may not have reached TikTok. READ before doing anything.
+            try:
+                pk = _tt_api_package(org, shop_id, pid)
+            except TTError as e:
+                c.execute("UPDATE tt_label_jobs SET status='uncertain', error=?, updated_at=? WHERE package_id=?", (str(e), now(), pid)); c.commit()
+                return dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+            if pk["tracking"]:
+                st = "shipped"
+            else:
+                c.execute("UPDATE tt_label_jobs SET status='uncertain', error=?, updated_at=? WHERE package_id=?",
+                          ("TikTok shows no label yet — check this package in Seller Center before retrying", now(), pid)); c.commit()
+                return dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+        if st in ("claimed", "error"):
+            # claim the right to call 'ship' (only one caller wins)
+            won = c.execute("UPDATE tt_label_jobs SET status='shipping', batch_id=?, error=NULL, updated_at=? WHERE package_id=? AND status=?",
+                            (batch_id, now(), pid, st)).rowcount
+            c.commit()
+            if not won:
+                return dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+            try:
+                slot = _tt_api_pickup_slot(org, shop_id, pid)
+                _tt_api_ship(org, shop_id, pid, slot, box)
+            except TTError as e:
+                c.execute("UPDATE tt_label_jobs SET status=?, error=?, updated_at=? WHERE package_id=?",
+                          ("uncertain" if e.sent else "error", str(e), now(), pid)); c.commit()
+                return dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+            c.execute("UPDATE tt_label_jobs SET status='shipped', updated_at=? WHERE package_id=?", (now(), pid)); c.commit()
+            st = "shipped"
+        if st == "shipped":
+            try:
+                pk = _tt_api_package(org, shop_id, pid)
+                url = _tt_api_label(org, shop_id, pid)
+            except TTError as e:
+                c.execute("UPDATE tt_label_jobs SET status='shipped', error=?, updated_at=? WHERE package_id=?",
+                          ("Label created on TikTok; download failed: " + str(e), now(), pid)); c.commit()
+                return dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+            # Keep our own copy: TikTok's document link can expire before the batch is printed.
+            fn = None
+            try:
+                data, ct = _fetch_label_bytes(url)
+                fn = _tt_store_label_copy(org, data)
+            except Exception as e:
+                _tt_log("label copy failed %s: %r" % (pid, e))
+            c.execute("UPDATE tt_label_jobs SET status='labeled', tracking=?, doc_url=?, label_file=?, error=NULL, updated_at=? WHERE package_id=?",
+                      (pk["tracking"], url, fn, now(), pid))
+            if pk["tracking"]:
+                c.execute("UPDATE shipments SET tracking_code=? WHERE shipment_id=? AND COALESCE(tracking_code,'')=''", (pk["tracking"], pid))
+            c.commit()
+        return dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+    finally:
+        c.close()
+
+def _tt_batch_plan(org, label):
+    """What a run for this show would do: combines TikTok allows (all orders still needing a
+    label and in this show) + the packages to label afterwards. Read-only."""
+    c = sdb(org); _tt_labels_ensure(c)
+    try:
+        need = _tt_needs_label(c, label)
+        labeled = {r["package_id"] for r in c.execute("SELECT package_id FROM tt_label_jobs WHERE status='labeled'").fetchall()}
+    finally:
+        c.close()
+    need = {k: v for k, v in need.items() if k not in labeled}
+    order_to_pkg = {o: p for p, os_ in need.items() for o in os_}
+    combines = []
+    if len(need) > 1:
+        for g in _tt_fetch_combinable(org)["groups"]:
+            if len(g["order_ids"]) > 1 and all(o in order_to_pkg for o in g["order_ids"]):
+                pk = sorted({order_to_pkg[o] for o in g["order_ids"]})
+                if len(pk) > 1:
+                    combines.append({"id": g["id"], "order_ids": g["order_ids"], "shop_id": g.get("shop_id"), "packages": pk})
+    in_combine = {p for cb in combines for p in cb["packages"]}
+    singles = sorted(p for p in need if p not in in_combine)
+    return {"show": label, "combines": combines, "singles": singles,
+            "labels": len(singles) + len(combines), "packages_before": len(need)}
+
+def _tt_batch_counts(c, bid):
+    rows = c.execute("SELECT status, COUNT(*) n FROM tt_label_jobs WHERE batch_id=? GROUP BY status", (bid,)).fetchall()
+    return {r["status"]: r["n"] for r in rows}
+
+def _tt_run_batch(org, bid):
+    """Background worker for one approved batch. Safe to call again (resume)."""
+    c = sdb(org); _tt_labels_ensure(c)
+    b = dict(c.execute("SELECT * FROM tt_batches WHERE id=?", (bid,)).fetchone())
+    plan = json.loads(b["plan"] or "{}")
+    c.execute("UPDATE tt_batches SET status='running', started_at=COALESCE(started_at,?) WHERE id=?",
+              (datetime.now().isoformat(timespec="seconds"), bid)); c.commit(); c.close()
+    box = _tt_box(org)
+    targets = []   # (shop_id, package_id)
+    combined = 0
+    for cb in plan.get("combines", []):
+        shop = cb.get("shop_id") or _tt_shop_for_orders(org, cb["order_ids"])
+        if cb.get("new_pid"):
+            targets.append((shop, cb["new_pid"])); continue
+        try:
+            new_pid = _tt_api_combine(org, shop, cb["id"], cb["order_ids"])
+        except TTError as e:
+            new_pid = None
+            cb["error"] = str(e)   # keep the packages separate; label them one by one
+            for p in cb["packages"]:
+                targets.append((_tt_shop_for_orders(org, cb["order_ids"]), p))
+        if new_pid:
+            # TikTok has combined them: from here on only the NEW package exists there.
+            cb["new_pid"] = new_pid; combined += 1
+            targets.append((shop, new_pid))
+            c = sdb(org)
+            try:
+                _tt_merge_into_package(c, new_pid, cb["order_ids"]); c.commit()
+            except Exception as e:
+                c.rollback(); cb["merge_error"] = str(e)[:200]
+                _tt_log("merge after combine failed %s: %r" % (new_pid, e))
+            finally:
+                c.close()
+        c = sdb(org); c.execute("UPDATE tt_batches SET plan=?, combined=? WHERE id=?", (json.dumps(plan), combined, bid)); c.commit(); c.close()
+    c = sdb(org)
+    for p in plan.get("singles", []):
+        oids = [r["order_id"] for r in c.execute("SELECT DISTINCT order_id FROM shipment_items WHERE shipment_id=?", (p,)).fetchall()]
+        targets.append((_tt_shop_for_orders(org, oids), p))
+    c.execute("UPDATE tt_batches SET total=? WHERE id=?", (len(targets), bid)); c.commit(); c.close()
+    for shop, pid in targets:
+        if not shop:
+            c = sdb(org); _tt_labels_ensure(c)
+            c.execute("""INSERT INTO tt_label_jobs(package_id,batch_id,status,error,created_at,updated_at) VALUES(?,?,'error','Shop unknown for this package',?,?)
+                         ON CONFLICT(package_id) DO UPDATE SET error=excluded.error""",
+                      (pid, bid, datetime.now().isoformat(timespec="seconds"), datetime.now().isoformat(timespec="seconds")))
+            c.commit(); c.close(); continue
+        try: _tt_label_one(org, shop, pid, bid, box)
+        except Exception as e: _tt_log("label job crashed %s: %r" % (pid, e))
+        c = sdb(org); n = _tt_batch_counts(c, bid)
+        c.execute("UPDATE tt_batches SET done=?, failed=? WHERE id=?",
+                  (n.get("labeled", 0), n.get("error", 0) + n.get("uncertain", 0), bid)); c.commit(); c.close()
+    c = sdb(org); n = _tt_batch_counts(c, bid)
+    bad = n.get("error", 0) + n.get("uncertain", 0) + n.get("shipped", 0) + n.get("shipping", 0) + n.get("claimed", 0)
+    c.execute("UPDATE tt_batches SET status=?, finished_at=?, done=?, failed=? WHERE id=?",
+              ("done" if not bad else "needs_attention", datetime.now().isoformat(timespec="seconds"),
+               n.get("labeled", 0), bad, bid)); c.commit(); c.close()
+
+def _tt_start_batch_thread(org, bid):
+    threading.Thread(target=_tt_run_batch, args=(org, bid), daemon=True, name="tt-batch-%s" % bid).start()
+
+@app.route("/api/tiktok/label-shows")
+@req_role("admin", "cs")
+def api_tiktok_label_shows():
+    """Recent TikTok shows with packages that still need a label (our data only, no TikTok call)."""
+    org = current_org() or DEFAULT_ORG
+    cutoff = (datetime.now() - timedelta(days=14)).isoformat(timespec="seconds")
+    c = sdb(org); _tt_labels_ensure(c)
+    rows = c.execute("""SELECT s.import_label label, COUNT(DISTINCT s.shipment_id) n, MAX(s.imported_at) last
+                        FROM shipments s WHERE COALESCE(s.import_batch,'')='tiktok-api'
+                          AND s.status NOT IN ('cancelled','shipped','giveaway') AND COALESCE(s.tracking_code,'')=''
+                          AND COALESCE(s.imported_at,'')>=? AND COALESCE(s.import_label,'')<>''
+                        GROUP BY s.import_label ORDER BY last DESC LIMIT 40""", (cutoff,)).fetchall()
+    batches = [dict(r) for r in c.execute("SELECT id, show, status, total, done, failed, combined, created_at, finished_at FROM tt_batches ORDER BY id DESC LIMIT 10").fetchall()]
+    c.close()
+    return jsonify({"ok": True, "shows": [dict(r) for r in rows], "batches": batches,
+                    "write_enabled": TT_FULFILL_WRITE, "box": _tt_box(org)})
+
+@app.route("/api/tiktok/box", methods=["POST"])
+@req_role("admin")
+def api_tiktok_box():
+    d = request.get_json() or {}
+    try:
+        box = {k: float(d.get(k)) for k in TT_DEFAULT_BOX}
+    except Exception:
+        return jsonify({"ok": False, "error": "All four values must be numbers"})
+    if not all(0 < v < 200 for v in box.values()):
+        return jsonify({"ok": False, "error": "Values out of range"})
+    _set_setting("tt_box", json.dumps(box))
+    return jsonify({"ok": True, "box": box})
+
+@app.route("/api/tiktok/batch/prepare", methods=["POST"])
+@req_role("admin", "cs")
+def api_tiktok_batch_prepare():
+    """Build the plan for a show (combines + labels) and save it for approval. No writes to TikTok."""
+    org = current_org() or DEFAULT_ORG
+    label = ((request.get_json() or {}).get("show") or "").strip()
+    if not label: return jsonify({"ok": False, "error": "show required"})
+    plan = _tt_batch_plan(org, label)
+    if not plan["labels"]:
+        return jsonify({"ok": False, "error": "Nothing in this show needs a label."})
+    c = sdb(org); _tt_labels_ensure(c)
+    cur = c.execute("INSERT INTO tt_batches(show,status,plan,created_by,created_at) VALUES(?,?,?,?,?)",
+                    (label, "planned", json.dumps(plan), session.get("name", "")[:60], datetime.now().isoformat(timespec="seconds")))
+    bid = cur.lastrowid; c.commit(); c.close()
+    return jsonify({"ok": True, "batch_id": bid, "plan": plan, "write_enabled": TT_FULFILL_WRITE, "box": _tt_box(org)})
+
+def _tt_batch_gate(d):
+    if not TT_FULFILL_WRITE:
+        return jsonify({"ok": False, "error": "Creating TikTok labels is not turned on yet (TIKTOK_FULFILL_WRITE)."}), 403
+    if not _manager_pin_set():
+        return jsonify({"ok": False, "error": "Manager PIN not set yet — set it in Permissions.", "need_pin_setup": True}), 400
+    if not _verify_manager_pin(d.get("pin", "")):
+        return jsonify({"ok": False, "error": "Wrong manager PIN.", "pin_required": True}), 401
+    return None
+
+@app.route("/api/tiktok/batch/<int:bid>/run", methods=["POST"])
+@req_role("admin", "cs")
+def api_tiktok_batch_run(bid):
+    """Manager-approved: start the batch in the background. Runs once; use /resume after."""
+    d = request.get_json() or {}
+    bad = _tt_batch_gate(d)
+    if bad: return bad
+    org = current_org() or DEFAULT_ORG
+    c = sdb(org); _tt_labels_ensure(c)
+    won = c.execute("UPDATE tt_batches SET status='approved', approved_by=? WHERE id=? AND status='planned'",
+                    (session.get("name", "")[:60], bid)).rowcount
+    c.commit(); c.close()
+    if not won:
+        return jsonify({"ok": False, "error": "This batch was already started (or doesn't exist)."}), 409
+    _tt_start_batch_thread(org, bid)
+    return jsonify({"ok": True, "batch_id": bid})
+
+@app.route("/api/tiktok/batch/<int:bid>/resume", methods=["POST"])
+@req_role("admin", "cs")
+def api_tiktok_batch_resume(bid):
+    """Continue a batch after a restart or errors. Packages already labeled are skipped and
+    'uncertain' ones are checked on TikTok before anything else happens."""
+    d = request.get_json() or {}
+    bad = _tt_batch_gate(d)
+    if bad: return bad
+    org = current_org() or DEFAULT_ORG
+    c = sdb(org); _tt_labels_ensure(c)
+    b = c.execute("SELECT status FROM tt_batches WHERE id=?", (bid,)).fetchone()
+    c.close()
+    if not b or b["status"] == "planned":
+        return jsonify({"ok": False, "error": "Start the batch first."}), 409
+    _tt_start_batch_thread(org, bid)
+    return jsonify({"ok": True, "batch_id": bid})
+
+@app.route("/api/tiktok/batch/<int:bid>")
+@req_role("admin", "cs")
+def api_tiktok_batch_status(bid):
+    org = current_org() or DEFAULT_ORG
+    c = sdb(org); _tt_labels_ensure(c)
+    b = c.execute("SELECT * FROM tt_batches WHERE id=?", (bid,)).fetchone()
+    if not b:
+        c.close(); return jsonify({"ok": False, "error": "Not found"}), 404
+    jobs = [dict(r) for r in c.execute("SELECT package_id,status,tracking,error FROM tt_label_jobs WHERE batch_id=? ORDER BY package_id", (bid,)).fetchall()]
+    c.close()
+    b = dict(b); plan = json.loads(b.pop("plan") or "{}")
+    return jsonify({"ok": True, "batch": b, "plan": plan, "jobs": jobs,
+                    "problems": [j for j in jobs if j["status"] != "labeled"]})
+
+@app.route("/api/tiktok/batch/<int:bid>/labels")
+@req_role("admin", "cs", "worker")
+def api_tiktok_batch_labels(bid):
+    """All labels of a batch as one printable 4x6 PDF (?pdf=1) or a print page."""
+    org = current_org() or DEFAULT_ORG
+    c = sdb(org); _tt_labels_ensure(c)
+    rows = [dict(r) for r in c.execute(
+        "SELECT package_id, doc_url, label_file FROM tt_label_jobs WHERE batch_id=? AND status='labeled' ORDER BY package_id",
+        (bid,)).fetchall()]
+    c.close()
+    if not rows: return ("No labels in this batch yet.", 404)
+    if request.args.get("pdf") == "1":
+        blob = _tt_batch_pdf(rows)
+        if not blob: return ("Could not build the labels PDF.", 502)
+        resp = Response(blob, mimetype="application/pdf")
+        resp.headers["Content-Disposition"] = '%s; filename="tiktok-labels-batch-%d.pdf"' % (
+            "attachment" if request.args.get("dl") == "1" else "inline", bid)
+        return resp
+    items = [{"url": r["doc_url"], "name": r["package_id"]} for r in rows]
+    return _labels_page_or_pdf(items, "TikTok labels · batch %d · %d labels" % (bid, len(rows)), "/api/tiktok/batch/%d/labels?pdf=1" % bid)
+
+def _tt_label_file_bytes(fn):
+    fn = secure_filename(fn or "")
+    if not fn: return None
+    if r2:
+        try:
+            return r2.get_object(Bucket=R2_BUCKET, Key=_r2_resolve("labels", fn))["Body"].read()
+        except Exception as e:
+            _tt_log("label read failed %s: %r" % (fn, e))
+    p = os.path.join(_labels_dir(), fn)
+    if os.path.exists(p):
+        with open(p, "rb") as fh: return fh.read()
+    return None
+
+def _tt_batch_pdf(rows):
+    """One PDF with every label of the batch: our stored copy first, TikTok's link as fallback."""
+    from pypdf import PdfWriter, PdfReader
+    import io
+    w = PdfWriter(); ok = 0
+    for r in rows:
+        data = _tt_label_file_bytes(r.get("label_file"))
+        if data is None and r.get("doc_url"):
+            try: data, _ = _fetch_label_bytes(r["doc_url"])
+            except Exception as e: _tt_log("label fetch failed %s: %r" % (r["package_id"], e))
+        if not data: continue
+        try:
+            for pg in PdfReader(io.BytesIO(data)).pages: w.add_page(pg)
+            ok += 1
+        except Exception as e:
+            _tt_log("label pdf unreadable %s: %r" % (r["package_id"], e))
+    if not ok: return None
+    out = io.BytesIO(); w.write(out); return out.getvalue()
+
 def _tt_part_label(name):
     m=re.search(r'part\s*(\d+)', (name or ''), re.I)
     return "Part "+m.group(1) if m else ""
