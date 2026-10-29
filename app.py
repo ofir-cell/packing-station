@@ -16146,6 +16146,8 @@ def _tt_enrich_combine_groups(org, groups):
             g["buyer"] = next(iter(buyers)) if len(buyers) == 1 else ""
             g["already_handled"] = any((o.get("status") or "") in ("picked", "packed", "shipped") for o in orders)
             g["missing_in_app"] = sum(1 for o in orders if not o.get("in_app"))
+            ins = [o for o in orders if o.get("in_app")]
+            g["labeled"] = bool(ins) and all((o.get("tracking_code") or "") for o in ins)
             g["packages"] = sorted({o["shipment_id"] for o in orders if o.get("shipment_id")})
             g["item_count"] = sum(len([i for i in o["items"] if not i["cancelled"]]) for o in orders)
     finally:
@@ -16328,8 +16330,31 @@ def _tt_labels_ensure(c):
         id INTEGER PRIMARY KEY AUTOINCREMENT, show TEXT, status TEXT, plan TEXT,
         total INTEGER DEFAULT 0, done INTEGER DEFAULT 0, failed INTEGER DEFAULT 0, combined INTEGER DEFAULT 0,
         created_by TEXT, approved_by TEXT, created_at TEXT, started_at TEXT, finished_at TEXT, note TEXT)""")
-    try: c.execute("ALTER TABLE tt_batches ADD COLUMN pdf_file TEXT")
-    except sqlite3.OperationalError: pass
+    for col in ("pdf_file", "heartbeat"):
+        try: c.execute("ALTER TABLE tt_batches ADD COLUMN %s TEXT" % col)
+        except sqlite3.OperationalError: pass
+
+TT_BATCH_STALE_SECS = 600   # a 'running' batch that hasn't moved for this long lost its worker
+
+def _tt_hb_cutoff():
+    return (datetime.now() - timedelta(seconds=TT_BATCH_STALE_SECS)).isoformat(timespec="seconds")
+
+def _tt_batch_beat(org, bid):
+    c = sdb(org)
+    try:
+        c.execute("UPDATE tt_batches SET heartbeat=? WHERE id=?", (datetime.now().isoformat(timespec="seconds"), bid)); c.commit()
+    finally:
+        c.close()
+
+def _tt_claim_batch_run(c, bid, from_statuses):
+    """Atomically take the right to run this batch. Only one worker at a time: a batch that is
+    'running' can be taken over only once its heartbeat is stale (its worker died)."""
+    now = datetime.now().isoformat(timespec="seconds")
+    q = ("UPDATE tt_batches SET status='running', heartbeat=?, started_at=COALESCE(started_at,?) WHERE id=? AND "
+         "(status IN (%s) OR (status='running' AND COALESCE(heartbeat,'')<?))" % ",".join("?" * len(from_statuses)))
+    won = c.execute(q, [now, now, bid] + list(from_statuses) + [_tt_hb_cutoff()]).rowcount
+    c.commit()
+    return bool(won)
 
 def _tt_live_folder(show):
     """Folder name for one live's labels: readable + a short hash so two lives never share one."""
@@ -16504,6 +16529,16 @@ def _tt_batch_plan(org, label):
             buyer[pid] = ((r["buyer_username"] or r["buyer_name"] or "") if r else "") or pid
     finally:
         c.close()
+    if fresh:
+        c = sdb(org)
+        try:
+            for pid, os_ in need.items():
+                sts = {statuses.get(o) for o in os_}
+                if len(sts) == 1 and next(iter(sts)):
+                    c.execute("UPDATE shipments SET tt_status=? WHERE shipment_id=?", (next(iter(sts)), pid))
+            c.commit()
+        finally:
+            c.close()
     dead = {pid for pid, os_ in need.items() if all(statuses.get(o) in TT_DEAD_STATUSES for o in os_)}
     need = {k: v for k, v in need.items() if k not in dead}
     not_ready = {pid for pid, os_ in need.items()
@@ -16533,12 +16568,25 @@ def _tt_batch_counts(c, bid):
     return {r["status"]: r["n"] for r in rows}
 
 def _tt_run_batch(org, bid):
-    """Background worker for one approved batch. Safe to call again (resume)."""
+    """Background worker for one batch the caller already claimed (status 'running').
+    Never dies silently: anything unexpected ends the batch as needs_attention."""
+    try:
+        _tt_run_batch_inner(org, bid)
+    except Exception as e:
+        _tt_log("label batch %s crashed: %r" % (bid, e))
+        try:
+            c = sdb(org)
+            c.execute("UPDATE tt_batches SET status='needs_attention', note=?, finished_at=? WHERE id=?",
+                      (("Stopped unexpectedly: %s" % e)[:300], datetime.now().isoformat(timespec="seconds"), bid)); c.commit(); c.close()
+        except Exception:
+            pass
+
+def _tt_run_batch_inner(org, bid):
     c = sdb(org); _tt_labels_ensure(c)
     b = dict(c.execute("SELECT * FROM tt_batches WHERE id=?", (bid,)).fetchone())
     plan = json.loads(b["plan"] or "{}")
-    c.execute("UPDATE tt_batches SET status='running', started_at=COALESCE(started_at,?) WHERE id=?",
-              (datetime.now().isoformat(timespec="seconds"), bid)); c.commit(); c.close()
+    c.close()
+    _tt_batch_beat(org, bid)
     box = _tt_box(org)
     targets = []   # (shop_id, package_id)
     combined = 0
@@ -16551,6 +16599,7 @@ def _tt_run_batch(org, bid):
         c.close()
         all_o = [o for cb in plan.get("combines", []) for o in cb["order_ids"]] + [o for os_ in single_orders.values() for o in os_]
         st, fresh, _err = _tt_live_order_statuses(org, all_o)
+        _tt_batch_beat(org, bid)
         if fresh:
             ok = lambda os_: all(st.get(str(o)) in TT_READY_STATUSES for o in os_)
             skipped = [p for cb in plan.get("combines", []) if not cb.get("new_pid") and not ok(cb["order_ids"]) for p in cb["packages"]]
@@ -16583,7 +16632,8 @@ def _tt_run_batch(org, bid):
                 _tt_log("merge after combine failed %s: %r" % (new_pid, e))
             finally:
                 c.close()
-        c = sdb(org); c.execute("UPDATE tt_batches SET plan=?, combined=? WHERE id=?", (json.dumps(plan), combined, bid)); c.commit(); c.close()
+        c = sdb(org); c.execute("UPDATE tt_batches SET plan=?, combined=?, heartbeat=? WHERE id=?",
+                                (json.dumps(plan), combined, datetime.now().isoformat(timespec="seconds"), bid)); c.commit(); c.close()
     c = sdb(org)
     for p in plan.get("singles", []):
         oids = [r["order_id"] for r in c.execute("SELECT DISTINCT order_id FROM shipment_items WHERE shipment_id=?", (p,)).fetchall()]
@@ -16596,11 +16646,13 @@ def _tt_run_batch(org, bid):
                          ON CONFLICT(package_id) DO UPDATE SET error=excluded.error""",
                       (pid, bid, datetime.now().isoformat(timespec="seconds"), datetime.now().isoformat(timespec="seconds")))
             c.commit(); c.close(); continue
+        _tt_batch_beat(org, bid)
         try: _tt_label_one(org, shop, pid, bid, box)
         except Exception as e: _tt_log("label job crashed %s: %r" % (pid, e))
         c = sdb(org); n = _tt_batch_counts(c, bid)
         c.execute("UPDATE tt_batches SET done=?, failed=? WHERE id=?",
                   (n.get("labeled", 0), n.get("error", 0) + n.get("uncertain", 0), bid)); c.commit(); c.close()
+    _tt_batch_beat(org, bid)
     _tt_save_live_pdfs(org, bid)
     c = sdb(org); n = _tt_batch_counts(c, bid)
     bad = n.get("error", 0) + n.get("uncertain", 0) + n.get("shipped", 0) + n.get("shipping", 0) + n.get("claimed", 0)
@@ -16686,6 +16738,12 @@ def api_tiktok_batch_prepare():
                             "Try again once TikTok moves them to Processing." % plan["waiting_count"]})
         return jsonify({"ok": False, "error": "Nothing in this show needs a label."})
     c = sdb(org); _tt_labels_ensure(c)
+    busy = c.execute("SELECT id FROM tt_batches WHERE show=? AND status='running' AND COALESCE(heartbeat,'')>=?",
+                     (label, _tt_hb_cutoff())).fetchone()
+    if busy:
+        c.close()
+        return jsonify({"ok": False, "error": "Batch #%d for this live is still running — wait for it to finish." % busy["id"]})
+    c.execute("UPDATE tt_batches SET status='superseded' WHERE show=? AND status='planned'", (label,))
     cur = c.execute("INSERT INTO tt_batches(show,status,plan,created_by,created_at) VALUES(?,?,?,?,?)",
                     (label, "planned", json.dumps(plan), session.get("name", "")[:60], datetime.now().isoformat(timespec="seconds")))
     bid = cur.lastrowid; c.commit(); c.close()
@@ -16709,9 +16767,16 @@ def api_tiktok_batch_run(bid):
     if bad: return bad
     org = current_org() or DEFAULT_ORG
     c = sdb(org); _tt_labels_ensure(c)
-    won = c.execute("UPDATE tt_batches SET status='approved', approved_by=? WHERE id=? AND status='planned'",
-                    (session.get("name", "")[:60], bid)).rowcount
-    c.commit(); c.close()
+    b = c.execute("SELECT show FROM tt_batches WHERE id=?", (bid,)).fetchone()
+    busy = b and c.execute("SELECT id FROM tt_batches WHERE show=? AND id<>? AND status='running' AND COALESCE(heartbeat,'')>=?",
+                           (b["show"], bid, _tt_hb_cutoff())).fetchone()
+    if busy:
+        c.close()
+        return jsonify({"ok": False, "error": "Batch #%d for this live is still running — wait for it to finish." % busy["id"]}), 409
+    won = _tt_claim_batch_run(c, bid, ("planned",))
+    if won:
+        c.execute("UPDATE tt_batches SET approved_by=? WHERE id=?", (session.get("name", "")[:60], bid)); c.commit()
+    c.close()
     if not won:
         return jsonify({"ok": False, "error": "This batch was already started (or doesn't exist)."}), 409
     _tt_start_batch_thread(org, bid)
@@ -16728,9 +16793,12 @@ def api_tiktok_batch_resume(bid):
     org = current_org() or DEFAULT_ORG
     c = sdb(org); _tt_labels_ensure(c)
     b = c.execute("SELECT status FROM tt_batches WHERE id=?", (bid,)).fetchone()
+    if not b or b["status"] in ("planned", "superseded"):
+        c.close(); return jsonify({"ok": False, "error": "Start the batch first."}), 409
+    won = _tt_claim_batch_run(c, bid, ("needs_attention", "done", "approved"))
     c.close()
-    if not b or b["status"] == "planned":
-        return jsonify({"ok": False, "error": "Start the batch first."}), 409
+    if not won:
+        return jsonify({"ok": False, "error": "This batch is still running — it can be resumed only if it stops moving for %d minutes." % (TT_BATCH_STALE_SECS // 60)}), 409
     _tt_start_batch_thread(org, bid)
     return jsonify({"ok": True, "batch_id": bid})
 
@@ -16745,6 +16813,7 @@ def api_tiktok_batch_status(bid):
     jobs = [dict(r) for r in c.execute("SELECT package_id,status,tracking,error FROM tt_label_jobs WHERE batch_id=? ORDER BY package_id", (bid,)).fetchall()]
     c.close()
     b = dict(b); plan = json.loads(b.pop("plan") or "{}")
+    b["stale"] = b["status"] == "running" and (b.get("heartbeat") or "") < _tt_hb_cutoff()
     return jsonify({"ok": True, "batch": b, "plan": plan, "jobs": jobs,
                     "problems": [j for j in jobs if j["status"] != "labeled"]})
 

@@ -376,3 +376,81 @@ def test_labels_are_saved_under_their_live_with_one_file_for_the_whole_live(appm
     assert [x["n"] for x in ls if x["label"] == show["label"]] == [3]
     # a different live's folder is untouched
     assert not os.path.exists(os.path.join(A._labels_dir(A.DEFAULT_ORG), "tiktok", A._tt_live_folder("Other " + t)))
+
+
+# ── restarts, double clicks, two batches for one live ────────────────────────
+def _set_batch(A, bid, status, hb_age_secs):
+    from datetime import datetime, timedelta
+    hb = (datetime.now() - timedelta(seconds=hb_age_secs)).isoformat(timespec="seconds")
+    c = A.sdb(A.DEFAULT_ORG); c.execute("UPDATE tt_batches SET status=?, heartbeat=? WHERE id=?", (status, hb, bid)); c.commit(); c.close()
+
+
+def test_resume_is_refused_while_the_batch_is_still_moving(appmod, client, tt, show, write_on):
+    A = appmod; hdr = _as(client, A)
+    bid = _prepare(client, hdr, show["label"])["batch_id"]
+    _set_batch(A, bid, "running", 5)                                      # another worker is on it right now
+    r = client.post("/api/tiktok/batch/%d/resume" % bid, headers=hdr, json={"pin": "4321"})
+    assert r.status_code == 409 and tt.writes() == []
+    assert client.get("/api/tiktok/batch/%d" % bid).get_json()["batch"]["stale"] is False
+
+
+def test_batch_stuck_after_a_server_restart_can_be_resumed_and_finishes(appmod, client, tt, show, write_on):
+    A = appmod; hdr = _as(client, A)
+    bid = _prepare(client, hdr, show["label"])["batch_id"]
+    _set_batch(A, bid, "running", A.TT_BATCH_STALE_SECS + 60)             # worker died mid-batch
+    assert client.get("/api/tiktok/batch/%d" % bid).get_json()["batch"]["stale"] is True
+    assert client.post("/api/tiktok/batch/%d/resume" % bid, headers=hdr, json={"pin": "4321"}).status_code == 200
+    d = client.get("/api/tiktok/batch/%d" % bid).get_json()
+    assert d["batch"]["status"] == "done" and d["batch"]["done"] == 2
+    assert all(n == 1 for n in tt.ship_calls.values())
+
+
+def test_unexpected_crash_ends_as_needs_attention_not_stuck_running(appmod, client, tt, show, write_on, monkeypatch):
+    A = appmod; hdr = _as(client, A)
+    bid = _prepare(client, hdr, show["label"])["batch_id"]
+    monkeypatch.setattr(A, "_tt_box", lambda org=None: 1 / 0)
+    client.post("/api/tiktok/batch/%d/run" % bid, headers=hdr, json={"pin": "4321"})
+    b = client.get("/api/tiktok/batch/%d" % bid).get_json()["batch"]
+    assert b["status"] == "needs_attention" and "Stopped unexpectedly" in b["note"]
+
+
+def test_only_one_active_batch_per_live(appmod, client, tt, show, write_on):
+    A = appmod; hdr = _as(client, A)
+    old = _prepare(client, hdr, show["label"])["batch_id"]               # opened, then the modal was closed
+    new = _prepare(client, hdr, show["label"])["batch_id"]
+    assert client.post("/api/tiktok/batch/%d/run" % old, headers=hdr, json={"pin": "4321"}).status_code == 409   # superseded
+    _set_batch(A, new, "running", 5)
+    d = _prepare(client, hdr, show["label"])
+    assert d["ok"] is False and "still running" in d["error"]
+    assert tt.writes() == []
+
+
+def test_fresh_pending_status_shows_on_the_lives_list_and_labeled_groups_are_marked(appmod, client, tt, show, write_on):
+    A = appmod; hdr = _as(client, A); t = show["t"]
+    tt.order_status["OB1" + t] = "ON_HOLD"
+    bid = _prepare(client, hdr, show["label"])["batch_id"]
+    s = [x for x in client.get("/api/tiktok/label-shows").get_json()["shows"] if x["label"] == show["label"]][0]
+    assert s["pending"] == 1
+    client.post("/api/tiktok/batch/%d/run" % bid, headers=hdr, json={"pin": "4321"})
+    g = [x for x in client.get("/api/tiktok/combinable").get_json()["groups"] if x["id"] == "G" + t][0]
+    assert g["labeled"] is True
+
+
+def test_two_workers_racing_on_one_package_buy_one_label(appmod, client, tt, show, write_on, monkeypatch):
+    import threading
+    A = appmod; t = show["t"]; pid = "PB1" + t
+    c = A.sdb(A.DEFAULT_ORG); A._tt_labels_ensure(c)
+    bid = c.execute("INSERT INTO tt_batches(show,status,plan) VALUES(?, 'running', '{}')", (show["label"],)).lastrowid
+    c.commit(); c.close()
+    orig = tt.request
+    def slow(method, url, params=None, body=None, **kw):
+        if url.endswith("/ship"): time.sleep(0.3)
+        return orig(method, url, params, body, **kw)
+    monkeypatch.setattr(A, "_tt_request", slow)
+    th = [threading.Thread(target=A._tt_label_one, args=(A.DEFAULT_ORG, SHOP, pid, bid, A.TT_DEFAULT_BOX)) for _ in range(4)]
+    for x in th: x.start()
+    for x in th: x.join()
+    assert tt.ship_calls[pid] == 1
+    A._tt_label_one(A.DEFAULT_ORG, SHOP, pid, bid, A.TT_DEFAULT_BOX)       # a later resume settles it
+    c = A.sdb(A.DEFAULT_ORG); st = c.execute("SELECT status FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone()[0]; c.close()
+    assert st == "labeled" and tt.ship_calls[pid] == 1

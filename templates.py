@@ -13060,6 +13060,7 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
 .g-buyer{font-size:18px;font-weight:900;color:#141b26}
 .g-meta{font-size:12px;color:var(--text-muted);margin-top:2px}
 .pill{display:inline-block;font-family:'SF Mono',Menlo,monospace;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;background:rgba(99,102,241,.12);color:#4f46e5;margin:2px 4px 2px 0}
+.g-tag{font-size:12px;font-weight:700;color:#64748b;background:#f1f5f9;border-radius:999px;padding:5px 11px}.g-tag.ok{color:#047857;background:#ecfdf5}
 .note{font-size:12px;font-weight:700;color:#b45309;margin-top:8px}
 .orders{margin-top:10px;display:grid;gap:8px}
 .o{border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:13px;background:#fff}
@@ -13153,11 +13154,11 @@ function card(g){
       '<div class="g-buyer">'+esc(g.buyer||(g.missing_in_app===g.order_ids.length?'Not in our app yet':'Several buyers'))+' — '+g.order_ids.length+' orders → 1 box</div>'+
       '<div class="g-meta">'+g.item_count+' items · '+esc(Object.keys(shows).join(' · ')||'—')+'</div>'+
       '<div>'+g.packages.map(function(p){return '<span class="pill">'+esc(p)+'</span>';}).join('')+'</div></div>'+
-      '<button class="btn primary" disabled title="'+(WRITE?'Coming in the next step':'Locked until the TikTok connection is verified')+'">Combine + label</button></div>'+
+      (g.labeled?'<span class="g-tag ok">Label created ✓</span>':'<span class="g-tag">Use Prepare labels on its live</span>')+'</div>'+
     notes.map(function(n){return '<div class="note">⚠️ '+esc(n)+'</div>';}).join('')+
     '<div class="orders">'+g.orders.map(function(o){
       return '<div class="o"><span class="oid">'+esc(o.order_id)+'</span>'+
-        (o.in_app?'<span class="st" style="color:'+(ST[o.status]||'#64748b')+'">'+esc(o.status)+'</span>':'<span class="st" style="color:#b45309">not in app</span>')+
+        (o.in_app?'<span class="st" style="color:'+(ST[o.status]||'#64748b')+'">'+esc(o.status==='pending'?'to pick':o.status)+'</span>':'<span class="st" style="color:#b45309">not in app</span>')+
         (o.items||[]).map(function(i){return '<div class="it">#'+esc(i.sku)+' · '+esc(i.product_name)+(i.quantity>1?' ×'+i.quantity:'')+(i.cancelled?' · cancelled':'')+'</div>';}).join('')+
       '</div>';
     }).join('')+'</div></div>';
@@ -13250,7 +13251,9 @@ function openBatch(id){
       document.getElementById('pp').innerHTML=d.problems.slice(0,30).map(function(j){return '<div class="prob">⚠️ '+esc(j.package_id)+' — '+esc(j.status)+(j.error?': '+esc(j.error):'')+'</div>';}).join('');
       var prt=document.getElementById('prt');
       if(b.done){prt.style.display='inline-flex';prt.href='/api/tiktok/batch/'+id+'/labels';}
-      document.getElementById('res').style.display=(b.status==='needs_attention'||b.status==='running'&&!POLL)?'inline-block':'none';
+      document.getElementById('res').style.display=(b.status==='needs_attention'||b.stale)?'inline-block':'none';
+      if(b.stale)document.getElementById('pt').textContent+=' · stopped moving (server restart?) — press Resume';
+      if(b.note)document.getElementById('pp').innerHTML+='<div class="prob">⚠️ '+esc(b.note)+'</div>';
       if(b.status==='done'||b.status==='needs_attention'){if(POLL){clearInterval(POLL);POLL=null;}}
     });
   }
