@@ -11819,6 +11819,9 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:var(--bg);color:v
 .scan input::placeholder{color:var(--text-dim);font-weight:600}
 .scan .live{font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:#047857;background:#ecfdf5;border-radius:999px;padding:5px 10px;white-space:nowrap}
 .scan.off{border-color:var(--border);box-shadow:none}.scan.off .live{color:var(--text-dim);background:var(--surface-strong)}
+.scan .live.busy{color:var(--brand-ink);background:var(--brand-glow)}
+.card.fresh{animation:fresh .6s ease-out}
+@keyframes fresh{from{box-shadow:0 0 0 4px var(--brand-glow);border-color:var(--brand)}to{box-shadow:none}}
 .btn{border:1px solid var(--border);background:#fff;border-radius:10px;padding:10px 16px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;color:var(--text);transition:background .15s,border .15s}
 .btn:hover{background:var(--surface-strong)}
 .btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}.btn.primary:hover{background:var(--brand-strong)}
@@ -11878,7 +11881,7 @@ __NAVBAR__
     <div style="display:flex;gap:8px"><button class="btn" id="camBtn" style="display:none">📷 Camera</button><button class="btn" id="fsBtn">⛶ Full screen</button></div>
   </div>
   <div class="sec">Scan product barcode</div>
-  <label class="scan" id="scanBox"><span class="ico">▣</span><input id="code" placeholder="Scan or type a barcode…" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="numeric"><span class="live">Ready to scan</span></label>
+  <label class="scan" id="scanBox"><span class="ico">▣</span><input id="code" placeholder="Scan or type a barcode…" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="numeric"><span class="live" id="scanState">Ready to scan</span></label>
   <div id="card" style="margin-top:14px"><div class="empty"><div class="e">🏷️</div><b>Scan a product to begin</b><div>Its name, MSRP, target price and notes show up here.</div></div></div>
   <div class="sec" id="recentSec" style="display:none">Just scanned</div>
   <div class="recent" id="recent"></div>
@@ -11897,18 +11900,38 @@ function keepFocus(){if(!modalOpen()&&document.activeElement!==inp)inp.focus();}
 setInterval(keepFocus,800);
 inp.addEventListener('focus',function(){document.getElementById('scanBox').classList.remove('off');});
 inp.addEventListener('blur',function(){document.getElementById('scanBox').classList.add('off');});
-inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();var v=inp.value.trim();inp.value='';if(v)scan(v);}});
+// The box is cleared the moment a code arrives, so the next scan can start right away.
+// Most scanners end with Enter; for ones that don't, a burst of very fast keystrokes that
+// then stops is treated as a finished scan (people don't type 8+ digits in a burst).
+var KEYT=[], AUTO=null;
+function submitBox(){clearTimeout(AUTO);var v=inp.value.trim();inp.value='';KEYT=[];if(v)scan(v);}
+inp.addEventListener('keydown',function(e){
+  if(e.key==='Enter'){e.preventDefault();submitBox();return;}
+  if(e.key.length===1)KEYT.push(Date.now());
+});
+inp.addEventListener('input',function(){
+  clearTimeout(AUTO);
+  var v=inp.value.trim();
+  if(v.length<8||KEYT.length<8)return;
+  var t=KEYT.slice(-v.length), gap=(t[t.length-1]-t[0])/Math.max(1,t.length-1);
+  if(gap<35)AUTO=setTimeout(submitBox,140);
+});
+var SEQ=0, BUSY=0;
+function setState(){var el=document.getElementById('scanState');el.textContent=BUSY?'Looking up…':'Ready to scan';el.classList.toggle('busy',BUSY>0);}
 function scan(code){
-  setLooking('Looking up '+esc(code)+'…');
+  var my=++SEQ; BUSY++; setState();
+  if(!CUR)setLooking('Looking up '+esc(code)+'…');      // keep the last product on screen until the new one is here
   fetch('/api/scanit/scan?code='+encodeURIComponent(code)).then(function(r){return r.json();}).then(function(d){
+    BUSY--; setState();
+    if(d.ok&&d.found)addRecent(d.product, my!==SEQ);
+    if(my!==SEQ)return;                                  // a newer scan already took over the screen
     if(!d.ok){showMsg(d.error||'Could not look this up');return;}
     if(!d.found){showMsg('No product found for '+code);return;}
-    show(d.product, d.created);
-    addRecent(d.product);
-  }).catch(function(){showMsg('Network error — scan again');});
+    show(d.product, d.created, true);
+  }).catch(function(){BUSY--;setState();if(my===SEQ)showMsg('Network error — scan again');});
 }
 function setLooking(t){document.getElementById('card').innerHTML='<div class="empty"><div class="spin" style="width:32px;height:32px"></div><div style="margin-top:14px">'+t+'</div></div>';}
-function showMsg(t){document.getElementById('card').innerHTML='<div class="empty"><div class="e">🔎</div><b>'+esc(t)+'</b><div>Try again, or search the barcode in Inventory.</div></div>';}
+function showMsg(t){CUR=null;document.getElementById('card').innerHTML='<div class="empty"><div class="e">🔎</div><b>'+esc(t)+'</b><div>Try again, or search the barcode in Inventory.</div></div>';}
 function notesHtml(p){
   var n=p.notes||{}, h='';
   if(n.top||n.heart||n.base){
@@ -11923,7 +11946,7 @@ function notesHtml(p){
   var s=p.notes_source, sl=s==='manual'?'Entered by the team':(s==='ai-unchecked'?'AI suggestion — not checked':(s&&s!=='web'?'From '+esc(host(s)):'From the web'));
   return h+'<div class="src">'+sl+'</div>';
 }
-function show(p, created){
+function show(p, created, fresh){
   CUR=p;
   var img=p.image_url?' style="background-image:url('+encodeURI(p.image_url)+')"':'';
   var ms=p.msrp?(p.msrp_manual?'Entered by the team':(p.msrp_source==='ai-estimate'?'AI estimate':(p.msrp_source?(p.msrp_source.indexOf('http')===0?'From '+esc(host(p.msrp_source)):'Store price · '+esc(p.msrp_source)+' (estimate)'):''))):(p.info_status==='looking'?'Looking up…':'Not known yet');
@@ -11937,6 +11960,7 @@ function show(p, created){
     (ADMIN?'<div class="edit"><button class="btn" id="editBtn">✏️ Edit</button><button class="btn" id="relookBtn">↻ Look up again</button></div>':'')+
     '</div></div></div>';
   document.getElementById('card').innerHTML=h;
+  if(fresh){var cd=document.querySelector('#card .card');if(cd)cd.classList.add('fresh');}
   if(ADMIN){document.getElementById('editBtn').onclick=openEdit;document.getElementById('relookBtn').onclick=relook;}
   if(POLL){clearTimeout(POLL);POLL=null;}
   if(p.info_status==='looking')poll(p.sku,0);
@@ -11950,7 +11974,11 @@ function poll(sku,n){
     });
   },2000);
 }
-function addRecent(p){RECENT=RECENT.filter(function(x){return x.sku!==p.sku;});RECENT.unshift(p);RECENT=RECENT.slice(0,8);drawRecent();}
+function addRecent(p, behind){
+  RECENT=RECENT.filter(function(x){return x.sku!==p.sku;});
+  if(behind&&RECENT.length)RECENT.splice(1,0,p);else RECENT.unshift(p);   // a late answer goes behind the current product
+  RECENT=RECENT.slice(0,8);drawRecent();
+}
 function updRecent(p){RECENT=RECENT.map(function(x){return x.sku===p.sku?p:x;});drawRecent();}
 function drawRecent(){
   var el=document.getElementById('recent');
