@@ -3873,11 +3873,16 @@ __NAVBAR__
 <script>
 function fmt(n){return n==null?'—':(typeof n==='number'?n.toLocaleString():n)}
 function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function oevTime(at){ // stored as UTC (SQLite CURRENT_TIMESTAMP) -> viewer's local time
+  if(!at)return '';var s=String(at);var d=new Date(/[zZ]|[+-][0-9][0-9]:?[0-9][0-9]$/.test(s)?s:s.replace(' ','T')+'Z');
+  if(isNaN(d))return s.replace('T',' ').slice(0,16);
+  return d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+}
 var OEV_L={opened:'Opened in picker',item_picked:'Ticked item',item_unpicked:'Unticked item',picked:'Completed pick',issue:'Flagged issue',resolved:'Resolved issue',undo:'Undo',pack_started:'Started packing video',packed:'Packed'};
 function shipHistoryHtml(evs){
   if(!evs||!evs.length)return '<div style="color:var(--text-dim);font-size:13px">No worker activity recorded yet.</div>';
   return evs.map(function(e){return '<div style="display:flex;gap:10px;font-size:12.5px;padding:2px 0"><span style="color:var(--text-dim);min-width:112px">'+
-    escapeHtml(String(e.at||'').replace('T',' ').slice(0,16))+'</span><b style="min-width:90px">'+escapeHtml(e.actor||'?')+'</b><span>'+
+    escapeHtml(oevTime(e.at))+'</span><b style="min-width:90px">'+escapeHtml(e.actor||'?')+'</b><span>'+
     escapeHtml(OEV_L[e.action]||e.action)+(e.detail?' <span style="color:var(--text-dim)">· '+escapeHtml(e.detail)+'</span>':'')+'</span></div>'}).join('');
 }
 function fmtWeight(g){if(g==null||g===0)return '—';return g.toFixed(1)+'g'}
@@ -3954,7 +3959,10 @@ function renderTable(){
       '<td>'+escapeHtml(s.buyer_name||s.buyer_username||'?')+'</td>'+
       '<td style="font-weight:700">'+escapeHtml(s.stickers||s.total_items||'')+'</td>'+
       '<td>'+trk+'</td>'+
-      '<td><span class="status-pill st-'+s.status+'">'+s.status.replace('_',' ')+'</span></td>'+
+      '<td>'+((s.status==='pending'&&s.pick_started_by)
+          ? '<span class="status-pill" style="background:#fef3c7;color:#92400e" title="Picking started by '+escapeHtml(s.pick_started_by)+'">picking</span>'+
+            '<div style="font-size:11px;color:#92400e;margin-top:3px;white-space:nowrap">'+(s.picked_count!=null?(s.picked_count+'/'+s.active_count+' · '):'')+escapeHtml(s.pick_started_by)+'</div>'
+          : '<span class="status-pill st-'+s.status+'">'+s.status.replace('_',' ')+'</span>')+'</td>'+
       '<td>'+shipByCell(s)+'</td>'+
       '<td>'+delCell+'</td>'+
       '<td style="color:var(--text-dim)">'+fmtDate(s.show_date||s.imported_at)+'</td>'+
@@ -4316,17 +4324,31 @@ function search(q){
   });
 }
 
+function oevTime(at){ // stored as UTC (SQLite CURRENT_TIMESTAMP) -> viewer's local time
+  if(!at)return '';var s=String(at);var d=new Date(/[zZ]|[+-][0-9][0-9]:?[0-9][0-9]$/.test(s)?s:s.replace(' ','T')+'Z');
+  if(isNaN(d))return s.replace('T',' ').slice(0,16);
+  return d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+}
+function shipStatusPill(s){
+  var act=(s.items||[]).filter(function(it){return !it.cancelled});
+  var got=act.filter(function(it){return it.picked}).length;
+  if(s.status==='pending'&&(s.pick_started_by||got)){
+    return '<span class="ship-status" style="background:#fef3c7;color:#92400e">picking · '+got+'/'+act.length+
+      (s.pick_started_by?(' · '+escapeHtml(s.pick_started_by)):'')+'</span>';
+  }
+  return '<span class="ship-status st-'+s.status+'">'+s.status.replace('_',' ')+'</span>';
+}
 var OEV_LABEL={opened:'Opened in picker',item_picked:'Ticked item',item_unpicked:'Unticked item',picked:'Completed pick',
   issue:'Flagged issue',resolved:'Resolved issue',undo:'Undo',pack_started:'Started packing video',packed:'Packed'};
 function orderHistoryHtml(evs){
   if(!evs||!evs.length)return '<div class="ship-rec" style="color:var(--text-dim)">🕘 No worker activity recorded on this order yet</div>';
   var rows=evs.map(function(e){
     return '<div style="display:flex;gap:10px;padding:3px 0;font-size:12.5px">'+
-      '<span style="color:var(--text-dim);min-width:112px">'+escapeHtml(String(e.at||'').replace('T',' ').slice(0,16))+'</span>'+
+      '<span style="color:var(--text-dim);min-width:112px">'+escapeHtml(oevTime(e.at))+'</span>'+
       '<b style="min-width:90px">'+escapeHtml(e.actor||'?')+'</b>'+
       '<span>'+escapeHtml(OEV_LABEL[e.action]||e.action)+(e.detail?(' <span style="color:var(--text-dim)">· '+escapeHtml(e.detail)+'</span>'):'')+'</span></div>';
   }).join('');
-  return '<details class="ship-rec" style="cursor:pointer"><summary>🕘 Order history ('+evs.length+') · last: <b>'+escapeHtml(evs[0].actor||'?')+'</b> — '+
+  return '<details class="ship-rec" style="cursor:pointer;display:block"><summary>🕘 Order history ('+evs.length+') · last: <b>'+escapeHtml(evs[0].actor||'?')+'</b> — '+
     escapeHtml(OEV_LABEL[evs[0].action]||evs[0].action)+'</summary><div style="padding:6px 0 2px">'+rows+'</div></details>';
 }
 function loadDetail(username,panel){
@@ -4354,13 +4376,13 @@ function loadDetail(username,panel){
           ? '<div class="ship-rec">📹 Packed by <b style="color:var(--text-muted)">'+escapeHtml(recs[0].worker||'?')+'</b> · '+escapeHtml(recs[0].date||'')+' '+escapeHtml(recs[0].time||'')+(vids?(' · '+vids):'')+(photo?(' · '+photo):'')+'</div>'
           : '<div class="ship-rec" style="color:var(--text-dim)">📹 No packing video found for this package</div>';
         var whoHtml='<div class="ship-rec">🧺 Picked by <b style="color:var(--text-muted)">'+escapeHtml(s.picked_by||'—')+'</b>'+
-          (s.picked_at?(' · '+escapeHtml(String(s.picked_at).replace('T',' ').slice(0,16))):'')+
+          (s.picked_at?(' · '+escapeHtml(oevTime(s.picked_at))):'')+
           ' &nbsp;·&nbsp; 📦 Packed by <b style="color:var(--text-muted)">'+escapeHtml(s.packed_by||'—')+'</b></div>';
         recHtml=whoHtml+recHtml+orderHistoryHtml(s.events);
         return '<div class="ship">'+
           '<div class="ship-head">'+
             '<div><span class="ship-id">'+escapeHtml(s.shipment_id)+'</span>'+(trk?(' · '+trk):'')+'</div>'+
-            '<div><span class="ship-status st-'+s.status+'">'+s.status.replace('_',' ')+'</span> '+
+            '<div>'+shipStatusPill(s)+' '+
               '<span class="ship-show-date">'+fmtDate(s.show_date)+'</span></div>'+
           '</div>'+
           '<div class="ship-items"><b style="color:var(--text-muted)">'+s.total_items+' items</b> · '+itemsHtml+'</div>'+

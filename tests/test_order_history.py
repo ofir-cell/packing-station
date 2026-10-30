@@ -70,3 +70,26 @@ def test_issue_and_resolve_are_logged(appmod, client):
     assert client.post("/api/pick/resolve/" + sid, headers=h, json={"action": "retry"}).get_json()["ok"]
     ev = _events(A, sid)
     assert ev[0] == ("worker5", "issue") and ev[1][1] == "resolved"
+
+
+def test_ticking_one_item_marks_the_order_as_picking(appmod, client):
+    A = appmod; sid, user, ids = _mk(A)
+    h = _as(client, A, "worker6", "picker")
+    assert client.post("/api/pick/item/%d/toggle" % ids[0], headers=h).get_json()["ok"]
+    h2 = _as(client, A, "worker2", "picker")
+    assert client.post("/api/pick/item/%d/toggle" % ids[1], headers=h2).get_json()["ok"]
+    _as(client, A, "admin", "admin")
+    row = next(r for r in client.get("/api/shipments/recent?show=Live").get_json() if r["shipment_id"] == sid)
+    assert row["status"] == "pending" and row["pick_started_by"] == "worker6"        # first one who started
+    assert (row["picked_count"], row["active_count"]) == (2, 2)
+    s = client.get("/api/customers/" + user).get_json()["shipments"][0]
+    assert s["pick_started_by"] == "worker6" and sum(i["picked"] for i in s["items"]) == 2
+    q = next(r for r in client.get("/api/pick/queue").get_json() if r["shipment_id"] == sid)
+    assert q["pick_started_by"] == "worker6" and q["picked_count"] == 2
+    # full undo clears the marker
+    h = _as(client, A, "admin", "admin")
+    client.post("/api/pick/complete/" + sid, headers=h, json={})
+    client.post("/api/shipment/%s/revert" % sid, headers=h, json={"to": "pending"})
+    c = A.sdb(A.DEFAULT_ORG)
+    assert c.execute("SELECT pick_started_by FROM shipments WHERE shipment_id=?", (sid,)).fetchone()[0] is None
+    c.close()

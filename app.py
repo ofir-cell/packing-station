@@ -1257,6 +1257,9 @@ def sdb_init(org):
         "ALTER TABLE shipments ADD COLUMN picked_at TEXT",
         "ALTER TABLE shipments ADD COLUMN picked_by TEXT",
         "ALTER TABLE shipments ADD COLUMN packed_by TEXT",
+        # first worker who ticked an item: the order has picking activity even if unfinished
+        "ALTER TABLE shipments ADD COLUMN pick_started_by TEXT",
+        "ALTER TABLE shipments ADD COLUMN pick_started_at TEXT",
         # USPS delivery tracking (statusCategory bucket + last event + timestamps)
         "ALTER TABLE shipments ADD COLUMN delivery_status TEXT",
         "ALTER TABLE shipments ADD COLUMN delivery_detail TEXT",
@@ -6276,7 +6279,8 @@ def api_shipments_recent():
     _cols = ("shipment_id, tracking_code, buyer_username, buyer_name, "
              "total_items, expected_weight_g, actual_weight_g, weight_status, "
              "status, missing_weights, show_date, imported_at, import_label, platform, "
-             "delivery_status, delivery_detail, delivered_at, tracked_at, ship_by")
+             "delivery_status, delivery_detail, delivered_at, tracked_at, ship_by, "
+             "picked_by, packed_by, pick_started_by, pick_started_at")
     if show:
         rows = c.execute("SELECT "+_cols+" FROM shipments WHERE import_label=? ORDER BY imported_at DESC",(show,)).fetchall()
     else:
@@ -6296,8 +6300,16 @@ def api_shipments_recent():
                             "WHERE shipment_id IN ("+qm+") AND COALESCE(cancelled,0)=0", ids).fetchall()
         for ir in irows:
             items_by_ship.setdefault(ir["sid"],[]).append((ir["sku"], ir["product_name"]))
+    _started=[r["shipment_id"] for r in rows if r.get("pick_started_by") and r.get("status")=="pending"]
+    _pc={}
+    for i in range(0, len(_started), 500):
+        part=_started[i:i+500]
+        for pr in c.execute("SELECT shipment_id sid, SUM(COALESCE(picked,0)) p, COUNT(*) n FROM shipment_items "
+                            "WHERE shipment_id IN (%s) AND COALESCE(cancelled,0)=0 GROUP BY shipment_id" % ",".join("?"*len(part)), part):
+            _pc[pr["sid"]]=(pr["p"] or 0, pr["n"])
     for r in rows:
         r["stickers"]=_sticker_display(items_by_ship.get(r["shipment_id"], []))
+        if r["shipment_id"] in _pc: r["picked_count"], r["active_count"] = _pc[r["shipment_id"]]
     c.close()
     return jsonify(rows)
 
@@ -6842,7 +6854,8 @@ def api_customer_detail(username):
     tracking_codes = {s["tracking_code"] for s in ships if s["tracking_code"]}
     ships_out = []
     for s in ships:
-        items = c.execute("""SELECT product_name, quantity, item_weight_g, sku, revenue
+        items = c.execute("""SELECT product_name, quantity, item_weight_g, sku, revenue,
+                                    COALESCE(picked,0) picked, COALESCE(cancelled,0) cancelled
                              FROM shipment_items WHERE shipment_id=?""", (s["shipment_id"],)).fetchall()
         ships_out.append({**dict(s), "items": [dict(i) for i in items],
                           "events": _order_events(c, s["shipment_id"])})
@@ -6906,7 +6919,10 @@ def api_pick_queue():
     q = """SELECT s.shipment_id, s.tracking_code, s.buyer_name, s.buyer_username,
                   s.import_label, s.platform, s.show_date,
                   (SELECT COUNT(*) FROM shipment_items i WHERE i.shipment_id=s.shipment_id
-                   AND COALESCE(i.cancelled,0)=0) AS item_count
+                   AND COALESCE(i.cancelled,0)=0) AS item_count,
+                  s.pick_started_by, s.pick_started_at,
+                  (SELECT COALESCE(SUM(COALESCE(i.picked,0)),0) FROM shipment_items i WHERE i.shipment_id=s.shipment_id
+                   AND COALESCE(i.cancelled,0)=0) AS picked_count
            FROM shipments s
            WHERE s.status='pending'"""
     params = []
@@ -6935,7 +6951,7 @@ def api_pick_get(sid):
                                 picked_at, COALESCE(cancelled,0) AS cancelled
                          FROM shipment_items WHERE shipment_id=?
                          ORDER BY COALESCE(cancelled,0), COALESCE(picked,0), id""", (sid,)).fetchall()
-    _oev(c, sid, "opened", "opened in the picker", dedupe_min=10); c.commit()
+    _oev(c, sid, "opened", "", dedupe_min=10); c.commit()
     c.close()
     # Cleanup gate — if the show has cancelled items still sitting on the table,
     # tell the picker to go clear them first. Admin/CS can override via ?force=1.
@@ -6996,6 +7012,9 @@ def api_pick_item_toggle(item_id):
     new_state = 0 if row["picked"] else 1
     if new_state:
         c.execute("UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
+        _who = (session.get("name") or session.get("user") or "")[:60]
+        c.execute("""UPDATE shipments SET pick_started_by=?, pick_started_at=CURRENT_TIMESTAMP
+                     WHERE shipment_id=? AND COALESCE(pick_started_by,'')=''""", (_who, row["shipment_id"]))
     else:
         c.execute("UPDATE shipment_items SET picked=0, picked_at=NULL WHERE id=?", (item_id,))
     _oev(c, row["shipment_id"], "item_picked" if new_state else "item_unpicked",
@@ -7152,6 +7171,8 @@ def api_pick_complete(sid):
                         "error": "Already picked by " + who})
     c.execute("""UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP
                  WHERE shipment_id=? AND COALESCE(cancelled,0)=0 AND COALESCE(picked,0)=0""", (sid,))
+    c.execute("""UPDATE shipments SET pick_started_by=?, pick_started_at=CURRENT_TIMESTAMP
+                 WHERE shipment_id=? AND COALESCE(pick_started_by,'')=''""", (user, sid))
     _oev(c, sid, "picked", "pick completed", actor=user)
     c.commit(); c.close()
     return jsonify({"ok": True})
@@ -7608,7 +7629,8 @@ def api_shipment_revert(sid):
     else:
         # Full reset: back to the top of the queue, all item ticks cleared.
         c.execute("""UPDATE shipments SET status='pending', packed_at=NULL, packed_by=NULL,
-                        picked_at=NULL, picked_by=NULL WHERE shipment_id=?""",(sid,))
+                        picked_at=NULL, picked_by=NULL, pick_started_by=NULL, pick_started_at=NULL
+                     WHERE shipment_id=?""",(sid,))
         c.execute("UPDATE shipment_items SET picked=0, picked_at=NULL WHERE shipment_id=?",(sid,))
     _oev(c, sid, "undo", "%s → %s%s%s" % (was, to,
          (" (was picked by %s)" % row["picked_by"]) if row["picked_by"] and to=="pending" else "",
