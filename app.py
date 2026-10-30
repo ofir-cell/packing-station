@@ -168,6 +168,7 @@ if len(SECRET_KEY)<32:
 
 PORT=int(os.environ.get("PORT",8080))
 RETENTION_DAYS=int(os.environ.get("RETENTION_DAYS",30))
+TT_DEAUTH_RETENTION_DAYS=int(os.environ.get("TT_DEAUTH_RETENTION_DAYS",RETENTION_DAYS))  # delete a deauthorized shop's data after N days
 
 # ── Recommended hardware (affiliate links) ────────────────────────────────────
 # During sign-up we ask how many packing stations and pullers (parallel pickers) a
@@ -646,6 +647,8 @@ def cleanup_all_orgs():
             r=cleanup_old_files(org)
             total["deleted"]+=r["deleted"]; total["freed_mb"]+=r["freed_mb"]
         except Exception as e: print("Cleanup error for",org,":",e,flush=True)
+    try: total["tiktok_purged_shops"]=_tt_retention_purge()
+    except Exception as e: print("TikTok retention purge error:",e,flush=True)
     return total
 
 def cleanup_loop():
@@ -16227,6 +16230,86 @@ def api_tiktok_callback():
     return _tt_page("✅ TikTok Shop connected",
                     "Connected "+str(len(shops))+" shop(s): "+names+".<br>You can close this window and return to the app.")
 
+def _tt_shops_ensure(c):
+    """Backfill columns older tiktok_shops tables may lack (deauthorized_at)."""
+    try:
+        cols={r[1] for r in c.execute("PRAGMA table_info(tiktok_shops)").fetchall()}
+        if "deauthorized_at" not in cols:
+            c.execute("ALTER TABLE tiktok_shops ADD COLUMN deauthorized_at TEXT")
+    except Exception: pass
+
+def _tt_mark_deauthorized(shop_id, org=None):
+    """Seller deauthorized: stop access IMMEDIATELY (clear stored tokens + cipher) and
+    stamp the time, so the retention job can delete their data after the window."""
+    c=pdb(); _tt_shops_ensure(c)
+    now=datetime.now().isoformat(timespec='seconds')
+    if org:
+        c.execute("""UPDATE tiktok_shops SET active=0, access_token='', refresh_token='', shop_cipher='',
+                     deauthorized_at=COALESCE(NULLIF(deauthorized_at,''),?), updated_at=CURRENT_TIMESTAMP
+                     WHERE org_id=? AND shop_id=?""",(now,org,str(shop_id)))
+    else:
+        c.execute("""UPDATE tiktok_shops SET active=0, access_token='', refresh_token='', shop_cipher='',
+                     deauthorized_at=COALESCE(NULLIF(deauthorized_at,''),?), updated_at=CURRENT_TIMESTAMP
+                     WHERE shop_id=?""",(now,str(shop_id)))
+    c.commit(); c.close()
+    _tt_log("deauthorized shop %s (tokens cleared)"%shop_id)
+
+def _tt_purge_shop_data(org, shop_id, drop_shop=True):
+    """Hard-delete a shop's TikTok data and ANONYMIZE buyer PII in its materialized
+    shipments (keep the operational record). Strictly scoped to this org+shop."""
+    out={"orders":0,"events":0,"anonymized":0}
+    c=pdb()
+    try: out["orders"]=c.execute("DELETE FROM tiktok_orders WHERE org_id=? AND shop_id=?",(org,str(shop_id))).rowcount
+    except Exception: pass
+    try: out["events"]=c.execute("DELETE FROM tiktok_events WHERE org_id=? AND shop_id=?",(org,str(shop_id))).rowcount
+    except Exception: pass
+    try: c.execute("DELETE FROM tiktok_products WHERE org_id=? AND shop_id=?",(org,str(shop_id)))
+    except Exception: pass
+    if drop_shop:
+        try: c.execute("DELETE FROM tiktok_shops WHERE org_id=? AND shop_id=?",(org,str(shop_id)))
+        except Exception: pass
+    c.commit(); c.close()
+    try:
+        sc=sdb(org)
+        out["anonymized"]=sc.execute("""UPDATE shipments SET buyer_username=NULL, buyer_name=NULL,
+                           address_full=NULL, postal_code=NULL
+                           WHERE COALESCE(import_batch,'')='tiktok-api'
+                             AND (buyer_name IS NOT NULL OR address_full IS NOT NULL
+                                  OR buyer_username IS NOT NULL OR postal_code IS NOT NULL)""").rowcount
+        sc.commit(); sc.close()
+    except Exception: pass
+    _tt_log("purged TikTok data for %s/%s: %r"%(org,shop_id,out))
+    return out
+
+def _tt_retention_purge():
+    """Delete data for shops deauthorized longer than TT_DEAUTH_RETENTION_DAYS ago.
+    Called from the hourly cleanup loop (single elected worker)."""
+    try:
+        c=pdb(); _tt_shops_ensure(c)
+        cutoff=(datetime.now()-timedelta(days=TT_DEAUTH_RETENTION_DAYS)).isoformat(timespec='seconds')
+        rows=[(r["org_id"],r["shop_id"]) for r in c.execute(
+            "SELECT org_id, shop_id FROM tiktok_shops WHERE active=0 AND COALESCE(deauthorized_at,'')<>'' AND deauthorized_at<?",
+            (cutoff,)).fetchall()]
+        c.close()
+    except Exception: rows=[]
+    for org, shop_id in rows:
+        try: _tt_purge_shop_data(org, shop_id, drop_shop=True)
+        except Exception as e: _tt_log("retention purge failed %s/%s: %r"%(org,shop_id,e))
+    return len(rows)
+
+@app.route("/api/tiktok/forget", methods=["POST"])
+@req_role("admin")
+def api_tiktok_forget():
+    """Admin-only. Immediately delete a shop's TikTok data for this org (data-subject
+    right to deletion). Body: {"shop_id": "..."}. Anonymizes buyer PII in shipments."""
+    org=current_org() or DEFAULT_ORG
+    d=request.get_json(silent=True) or {}
+    shop_id=str(d.get("shop_id") or "").strip()
+    if not shop_id: return jsonify({"ok":False,"error":"shop_id required"}),400
+    _tt_mark_deauthorized(shop_id, org)
+    counts=_tt_purge_shop_data(org, shop_id, drop_shop=True)
+    return jsonify({"ok":True,"shop_id":shop_id,"purged":counts})
+
 @app.route("/api/tiktok/webhook", methods=["POST","GET"])
 def api_tiktok_webhook():
     global _tt_last_event
@@ -16271,9 +16354,9 @@ def api_tiktok_webhook():
         _tt_log("event log failed: %r"%e)
     # Seller deauthorization (topic 6): mark the shop inactive.
     if ttype==6 and shop_id:
-        try:
-            c=pdb(); c.execute("UPDATE tiktok_shops SET active=0,updated_at=CURRENT_TIMESTAMP WHERE shop_id=?",(shop_id,)); c.commit(); c.close()
-        except Exception: pass
+        # Seller deauthorization: stop access now (clear tokens) + stamp time for retention deletion.
+        try: _tt_mark_deauthorized(shop_id, org)
+        except Exception as e: _tt_log("deauth handling failed %s: %r"%(shop_id,e))
     # Order status change (topic 1): signal live activity so the background poller switches
     # to ~5s fast polling, and fetch this one order right away in the background.
     # Never block the 200 ack: the fetch used to run inline here, and a burst of pushes
