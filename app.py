@@ -41,6 +41,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     SCANIT_HTML, APPLY_HTML, TRACK_HTML, EQUIPMENT_HTML, LIVE_HTML, LIVE_MATCH_HTML,
     PRODUCT_CLEANUP_HTML)
 from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
+from templates import COMBINE_HTML  # Combine & Labels screen
 
 
 # Default (founding) tenant id. Multi-tenancy: every user belongs to an org;
@@ -16274,6 +16275,120 @@ def api_tiktok_live_detail():
     if not room_id: return jsonify({"ok":False,"error":"room_id required"})
     v=(request.args.get("version") or "").strip()
     return jsonify(_tt_live_room_detail(org, room_id, [v] if v else None))
+
+# ── COMBINE & LABELS (TikTok Shipping) — stage A: READ-ONLY ─────────────────────
+# Goal: combine a buyer's packages and create TikTok Shipping labels from inside the app.
+# With TikTok Shipping the label is created on TikTok's side, which assigns the tracking
+# number and updates the orders itself — nothing has to be pushed back.
+# Stage A only READS: it lists what TikTok says can be combined, next to our own pick/pack
+# status, and shows the raw response so the exact API paths/fields can be verified against
+# the live shop before any write exists. The paths are settings (env) so a correction is a
+# Railway variable change, not a deploy. Stage B (combine / create label) will be gated by
+# TIKTOK_FULFILL_WRITE (off by default) plus manager approval per batch.
+TT_PATH_COMBINABLE = os.environ.get("TIKTOK_PATH_COMBINABLE", "/fulfillment/{v}/combinable_packages/search").strip()
+TT_FULFILL_WRITE = os.environ.get("TIKTOK_FULFILL_WRITE", "").strip().lower() in ("1", "true", "yes")
+
+def _tt_combinable_groups(res):
+    """Normalize a combinable-packages response into [{id, order_ids}] — defensive about the
+    exact field names until they are verified against the live API."""
+    data = (res or {}).get("data") or {}
+    rows = data.get("combinable_packages") or data.get("packages") or data.get("combinable_package_list") or []
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict): continue
+        gid = str(r.get("id") or r.get("combinable_package_id") or r.get("package_id") or "")
+        oids = r.get("order_ids") or [o.get("id") or o.get("order_id") for o in (r.get("orders") or []) if isinstance(o, dict)]
+        oids = [str(x) for x in (oids or []) if x]
+        if oids: out.append({"id": gid, "order_ids": oids})
+    return out, (data.get("next_page_token") or "")
+
+def _tt_fetch_combinable(org, max_pages=10):
+    """GET combinable packages for every active shop of this org. Read-only."""
+    c = pdb()
+    shops = [dict(r) for r in c.execute(
+        "SELECT shop_id, shop_name, granted_scopes FROM tiktok_shops WHERE org_id=? AND active=1", (org,)).fetchall()]
+    c.close()
+    result = {"shops": [], "groups": [], "raw_first": None, "path": TT_PATH_COMBINABLE.format(v=TIKTOK_API_VERSION)}
+    for sh in shops:
+        scopes = sh.get("granted_scopes") or ""
+        info = {"shop_id": sh["shop_id"], "shop_name": sh.get("shop_name") or "",
+                "has_fulfillment_scope": "fulfillment" in scopes.lower(), "scopes": scopes, "error": None}
+        result["shops"].append(info)
+        tok = _tt_valid_token(org, sh["shop_id"])
+        if not tok or not tok.get("access_token"):
+            info["error"] = "No valid access token — reconnect the shop"; continue
+        tok = _tt_ensure_cipher(org, sh["shop_id"], tok)
+        token, pages = "", 0
+        while pages < max_pages:
+            params = {"page_size": 50}
+            if tok.get("shop_cipher"): params["shop_cipher"] = tok["shop_cipher"]
+            if token: params["page_token"] = token
+            try:
+                res = _tt_request("GET", TIKTOK_API_BASE + result["path"], params=params, signed=True,
+                                  access_token=tok["access_token"])
+            except Exception as e:
+                info["error"] = "Request failed: %s" % str(e)[:150]; break
+            if result["raw_first"] is None: result["raw_first"] = res
+            if res.get("code"):
+                info["error"] = "TikTok %s: %s" % (res.get("code"), (res.get("message") or "")[:150]); break
+            groups, token = _tt_combinable_groups(res)
+            for g in groups: g["shop_id"] = sh["shop_id"]
+            result["groups"].extend(groups)
+            pages += 1
+            if not token: break
+    return result
+
+def _tt_enrich_combine_groups(org, groups):
+    """Attach our own view of each order: package, buyer, show, items, pick/pack status."""
+    c = sdb(org)
+    try:
+        for g in groups:
+            orders = []
+            for oid in g["order_ids"]:
+                r = c.execute("""SELECT s.shipment_id, s.status, s.buyer_name, s.buyer_username, s.import_label,
+                                        s.tracking_code
+                                 FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                                 WHERE i.order_id=? LIMIT 1""", (oid,)).fetchone()
+                items = [dict(x) for x in c.execute(
+                    """SELECT sku, product_name, quantity, COALESCE(picked,0) picked, COALESCE(cancelled,0) cancelled
+                       FROM shipment_items WHERE order_id=? ORDER BY id""", (oid,)).fetchall()]
+                orders.append({"order_id": oid, "in_app": bool(r), **(dict(r) if r else {}), "items": items})
+            g["orders"] = orders
+            buyers = {(o.get("buyer_username") or o.get("buyer_name") or "") for o in orders if o.get("in_app")}
+            g["buyer"] = next(iter(buyers)) if len(buyers) == 1 else ""
+            g["already_handled"] = any((o.get("status") or "") in ("picked", "packed", "shipped") for o in orders)
+            g["missing_in_app"] = sum(1 for o in orders if not o.get("in_app"))
+            g["packages"] = sorted({o["shipment_id"] for o in orders if o.get("shipment_id")})
+            g["item_count"] = sum(len([i for i in o["items"] if not i["cancelled"]]) for o in orders)
+    finally:
+        c.close()
+    return groups
+
+@app.route("/admin/combine")
+@req_role("admin", "cs")
+def combine_page():
+    return (COMBINE_HTML
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("combine"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/tiktok/combinable")
+@req_role("admin", "cs")
+def api_tiktok_combinable():
+    """Read-only: what TikTok says can be combined, joined with our pick/pack status.
+    ?raw=1 (admin) also returns TikTok's first raw response, to verify paths and fields."""
+    org = current_org() or DEFAULT_ORG
+    if not _tiktok_ready():
+        return jsonify({"ok": False, "error": "TikTok isn't configured for this workspace."})
+    r = _tt_fetch_combinable(org)
+    groups = _tt_enrich_combine_groups(org, r["groups"])
+    groups.sort(key=lambda g: (g["already_handled"], -len(g["order_ids"])))
+    out = {"ok": True, "path": r["path"], "shops": r["shops"], "groups": groups,
+           "count": len(groups), "orders": sum(len(g["order_ids"]) for g in groups),
+           "write_enabled": TT_FULFILL_WRITE}
+    if session.get("role") == "admin" and request.args.get("raw") == "1":
+        out["raw_first"] = r["raw_first"]
+    return jsonify(out)
 
 def _tt_part_label(name):
     m=re.search(r'part\s*(\d+)', (name or ''), re.I)
