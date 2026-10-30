@@ -1201,7 +1201,8 @@ function doSearch(){
             var v=d.videos[i],p=d.photos[i]||null,l=d.log[i]||null;
             h+='<div class="rc"><div class="rc-h"><span class="rc-t"><a href="https://tools.usps.com/go/TrackConfirmAction?tLabels='+encodeURIComponent(d.tracking)+'" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline" title="Track on USPS.com">'+d.tracking+' ↗</a></span><div class="rc-m">';
             if(l){h+='<span>'+l.date+'</span><span>'+l.duration_seconds+'s</span>'}
-            if(l&&l.worker)h+='<span>👤 '+l.worker+'</span>';
+            if(l&&l.worker)h+='<span>📦 Packed by '+l.worker+'</span>';
+            if(d.pick)h+='<span>🧺 Picked by '+String(d.pick.picked_by||(d.pick.pick_started_by?(d.pick.pick_started_by+' (in progress)'):'—')).replace(/</g,'&lt;')+'</span>';
             h+='<span class="tag tag-s">'+v.station+'</span><span class="tag tag-g">✓ Found</span>';
             h+='</div></div><div class="rc-b"><div class="mb"><video controls preload="metadata"><source src="'+v.url+'" type="video/webm"></video><div class="ml"><span>🎥 Video'+(v.size_mb?(' · '+v.size_mb+' MB'):'')+'</span><a href="'+v.url+'" download class="dl-btn">⬇ Download</a></div></div>';
             if(p)h+='<div class="mb"><img src="'+p.url+'"><div class="ml">📸 Photo</div></div>';
@@ -2575,7 +2576,7 @@ function fmtDur(s){if(!s||s==='0')return '—';var n=parseFloat(s);return isNaN(
       if(res.status===409 && res.j && res.j.need_org_confirm){
         btn.disabled=false; btn.textContent='Delete my account';
         var m=(res.j.message||'You are the last admin — this will also delete your organization’s data.')
-              +'\n\nDelete the entire organization and all its data?';
+              +'\\n\\nDelete the entire organization and all its data?';
         if(!confirm(m)) return;
         return callDelete(true).then(function(r2){
           if(r2.j && r2.j.ok){ finish('Your account and organization data have been deleted.'); }
@@ -3873,6 +3874,18 @@ __NAVBAR__
 <script>
 function fmt(n){return n==null?'—':(typeof n==='number'?n.toLocaleString():n)}
 function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function oevTime(at){ // stored as UTC (SQLite CURRENT_TIMESTAMP) -> viewer's local time
+  if(!at)return '';var s=String(at);var d=new Date(/[zZ]|[+-][0-9][0-9]:?[0-9][0-9]$/.test(s)?s:s.replace(' ','T')+'Z');
+  if(isNaN(d))return s.replace('T',' ').slice(0,16);
+  return d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+}
+var OEV_L={opened:'Opened in picker',item_picked:'Ticked item',item_unpicked:'Unticked item',picked:'Completed pick',issue:'Flagged issue',resolved:'Resolved issue',undo:'Undo',pack_started:'Started packing video',packed:'Packed'};
+function shipHistoryHtml(evs){
+  if(!evs||!evs.length)return '<div style="color:var(--text-dim);font-size:13px">No worker activity recorded yet.</div>';
+  return evs.map(function(e){return '<div style="display:flex;gap:10px;font-size:12.5px;padding:2px 0"><span style="color:var(--text-dim);min-width:112px">'+
+    escapeHtml(oevTime(e.at))+'</span><b style="min-width:90px">'+escapeHtml(e.actor||'?')+'</b><span>'+
+    escapeHtml(OEV_L[e.action]||e.action)+(e.detail?' <span style="color:var(--text-dim)">· '+escapeHtml(e.detail)+'</span>':'')+'</span></div>'}).join('');
+}
 function fmtWeight(g){if(g==null||g===0)return '—';return g.toFixed(1)+'g'}
 function fmtDate(s){if(!s)return '—';try{return new Date(s).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'2-digit'})}catch(e){return s.slice(0,10)}}
 
@@ -3947,7 +3960,10 @@ function renderTable(){
       '<td>'+escapeHtml(s.buyer_name||s.buyer_username||'?')+'</td>'+
       '<td style="font-weight:700">'+escapeHtml(s.stickers||s.total_items||'')+'</td>'+
       '<td>'+trk+'</td>'+
-      '<td><span class="status-pill st-'+s.status+'">'+s.status.replace('_',' ')+'</span></td>'+
+      '<td>'+((s.status==='pending'&&s.pick_started_by)
+          ? '<span class="status-pill" style="background:#fef3c7;color:#92400e" title="Picking started by '+escapeHtml(s.pick_started_by)+'">picking</span>'+
+            '<div style="font-size:11px;color:#92400e;margin-top:3px;white-space:nowrap">'+(s.picked_count!=null?(s.picked_count+'/'+s.active_count+' · '):'')+escapeHtml(s.pick_started_by)+'</div>'
+          : '<span class="status-pill st-'+s.status+'">'+s.status.replace('_',' ')+'</span>')+'</td>'+
       '<td>'+shipByCell(s)+'</td>'+
       '<td>'+delCell+'</td>'+
       '<td style="color:var(--text-dim)">'+fmtDate(s.show_date||s.imported_at)+'</td>'+
@@ -4012,7 +4028,8 @@ function renderTable(){
         }
         box.innerHTML='<h4>Address</h4><div style="color:var(--text);margin-bottom:14px">'+escapeHtml(addr)+'</div>'+
           (d.shipment.delivery_detail?'<h4>USPS status</h4><div style="margin-bottom:14px;color:var(--text)">'+escapeHtml(d.shipment.delivery_detail)+'</div>':'')+
-          '<h4>Items ('+d.items.length+')</h4><div class="items-grid">'+itemsHtml+'</div>'+undo;
+          '<h4>Items ('+d.items.length+')</h4><div class="items-grid">'+itemsHtml+'</div>'+
+          '<h4 style="margin-top:18px">Order history</h4>'+shipHistoryHtml(d.events)+undo;
         box.querySelectorAll('button[data-rev]').forEach(function(b){
           b.addEventListener('click',function(){revertShipment(b.dataset.sid,b.dataset.rev,b)});
         });
@@ -4308,6 +4325,33 @@ function search(q){
   });
 }
 
+function oevTime(at){ // stored as UTC (SQLite CURRENT_TIMESTAMP) -> viewer's local time
+  if(!at)return '';var s=String(at);var d=new Date(/[zZ]|[+-][0-9][0-9]:?[0-9][0-9]$/.test(s)?s:s.replace(' ','T')+'Z');
+  if(isNaN(d))return s.replace('T',' ').slice(0,16);
+  return d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+}
+function shipStatusPill(s){
+  var act=(s.items||[]).filter(function(it){return !it.cancelled});
+  var got=act.filter(function(it){return it.picked}).length;
+  if(s.status==='pending'&&(s.pick_started_by||got)){
+    return '<span class="ship-status" style="background:#fef3c7;color:#92400e">picking · '+got+'/'+act.length+
+      (s.pick_started_by?(' · '+escapeHtml(s.pick_started_by)):'')+'</span>';
+  }
+  return '<span class="ship-status st-'+s.status+'">'+s.status.replace('_',' ')+'</span>';
+}
+var OEV_LABEL={opened:'Opened in picker',item_picked:'Ticked item',item_unpicked:'Unticked item',picked:'Completed pick',
+  issue:'Flagged issue',resolved:'Resolved issue',undo:'Undo',pack_started:'Started packing video',packed:'Packed'};
+function orderHistoryHtml(evs){
+  if(!evs||!evs.length)return '<div class="ship-rec" style="color:var(--text-dim)">🕘 No worker activity recorded on this order yet</div>';
+  var rows=evs.map(function(e){
+    return '<div style="display:flex;gap:10px;padding:3px 0;font-size:12.5px">'+
+      '<span style="color:var(--text-dim);min-width:112px">'+escapeHtml(oevTime(e.at))+'</span>'+
+      '<b style="min-width:90px">'+escapeHtml(e.actor||'?')+'</b>'+
+      '<span>'+escapeHtml(OEV_LABEL[e.action]||e.action)+(e.detail?(' <span style="color:var(--text-dim)">· '+escapeHtml(e.detail)+'</span>'):'')+'</span></div>';
+  }).join('');
+  return '<details class="ship-rec" style="cursor:pointer;display:block"><summary>🕘 Order history ('+evs.length+') · last: <b>'+escapeHtml(evs[0].actor||'?')+'</b> — '+
+    escapeHtml(OEV_LABEL[evs[0].action]||evs[0].action)+'</summary><div style="padding:6px 0 2px">'+rows+'</div></details>';
+}
 function loadDetail(username,panel){
   panel.innerHTML='<div class="loading">Loading…</div>';
   fetch('/api/customers/'+encodeURIComponent(username)).then(function(r){return r.json()}).then(function(d){
@@ -4332,10 +4376,14 @@ function loadDetail(username,panel){
         var recHtml = recs.length
           ? '<div class="ship-rec">📹 Packed by <b style="color:var(--text-muted)">'+escapeHtml(recs[0].worker||'?')+'</b> · '+escapeHtml(recs[0].date||'')+' '+escapeHtml(recs[0].time||'')+(vids?(' · '+vids):'')+(photo?(' · '+photo):'')+'</div>'
           : '<div class="ship-rec" style="color:var(--text-dim)">📹 No packing video found for this package</div>';
+        var whoHtml='<div class="ship-rec">🧺 Picked by <b style="color:var(--text-muted)">'+escapeHtml(s.picked_by||'—')+'</b>'+
+          (s.picked_at?(' · '+escapeHtml(oevTime(s.picked_at))):'')+
+          ' &nbsp;·&nbsp; 📦 Packed by <b style="color:var(--text-muted)">'+escapeHtml(s.packed_by||(recs[0]&&recs[0].worker)||'—')+'</b></div>';
+        recHtml=whoHtml+recHtml+orderHistoryHtml(s.events);
         return '<div class="ship">'+
           '<div class="ship-head">'+
             '<div><span class="ship-id">'+escapeHtml(s.shipment_id)+'</span>'+(trk?(' · '+trk):'')+'</div>'+
-            '<div><span class="ship-status st-'+s.status+'">'+s.status.replace('_',' ')+'</span> '+
+            '<div>'+shipStatusPill(s)+' '+
               '<span class="ship-show-date">'+fmtDate(s.show_date)+'</span></div>'+
           '</div>'+
           '<div class="ship-items"><b style="color:var(--text-muted)">'+s.total_items+' items</b> · '+itemsHtml+'</div>'+
@@ -5899,7 +5947,7 @@ function loadPackMissing(){
         el.innerHTML='<div class="pm-head">📦 Packed without scanning every product · last 14 days ('+d.rows.length+')</div>'+
           d.rows.map(function(r){
             return '<div class="pm" data-sid="'+escapeHtml(r.shipment_id)+'"><div class="who"><b>'+escapeHtml(r.buyer_name||r.buyer_username||r.shipment_id)+'</b>'+
-              '<div>'+escapeHtml(r.import_label||'')+' · packed by '+escapeHtml(r.packed_by||'?')+' · '+escapeHtml((r.packed_at||'').replace('T',' ').slice(0,16))+' · '+escapeHtml(r.tracking_code||'')+'</div></div>'+
+              '<div>'+escapeHtml(r.import_label||'')+' · picked by '+escapeHtml(r.picked_by||'—')+' · packed by '+escapeHtml(r.packed_by||'?')+' · '+escapeHtml((r.packed_at||'').replace('T',' ').slice(0,16))+' · '+escapeHtml(r.tracking_code||'')+'</div></div>'+
               '<div class="miss">'+r.missing.map(function(m){return '<span class="item-tag"><span class="sku">#'+escapeHtml(m.sticker)+'</span><span class="name">'+escapeHtml(m.name||'')+'</span>'+'</span>';}).join('')+'</div>'+
               '<button data-chk="'+escapeHtml(r.shipment_id)+'">✓ Checked the video</button></div>';
           }).join('');
@@ -12657,6 +12705,7 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:var(--bg,#fff);co
 .r-meta b{color:var(--text,#1a2130)}
 .r-status{display:inline-block;font-size:12px;font-weight:800;text-transform:uppercase;padding:4px 12px;border-radius:20px;letter-spacing:.5px}
 .st-pending{background:rgba(245,158,11,.15);color:#b45309}
+.st-picking{background:#fef3c7;color:#92400e}
 .st-picked{background:rgba(99,102,241,.15);color:#4f46e5}
 .st-packed,.st-shipped,.st-delivered{background:rgba(52,211,153,.18);color:#059669}
 .st-cancelled{background:rgba(244,63,94,.12);color:#e11d48}
@@ -12686,7 +12735,7 @@ __NAVBAR__
   <div id="logWrap" style="display:none">
     <div class="tally">By show <button class="clearlog" id="clearLog">Clear list</button></div>
     <div id="tally"></div>
-    <table class="log"><thead><tr><th>Tracking</th><th>Show</th><th>Buyer</th><th>Status</th></tr></thead><tbody id="logBody"></tbody></table>
+    <table class="log"><thead><tr><th>Tracking</th><th>Show</th><th>Buyer</th><th>Picked by</th><th>Packed by</th><th>Status</th></tr></thead><tbody id="logBody"></tbody></table>
   </div>
 </div>
 <script>
@@ -12714,23 +12763,37 @@ function lookup(){
         '<div class="r-meta">'+
           '<span>👤 <b>'+esc(s.buyer_name||s.buyer_username||'—')+'</b>'+(s.buyer_username?' <span style="color:#94a3b8">@'+esc(s.buyer_username)+'</span>':'')+'</span>'+
           (s.platform?'<span>🛒 <b>'+esc(s.platform)+'</b></span>':'')+
-          '<span class="r-status '+statusCls(s.status)+'">'+esc(s.status||'pending')+'</span>'+
+          '<span class="r-status '+statusCls(s.status)+'">'+esc(trkStatus(s))+'</span>'+
         '</div>'+
-        '<div class="r-items"><b style="color:#1a2130">Items</b>'+items+'</div>';
-      addLog(s.tracking_code||code,show,s.buyer_name||s.buyer_username||'—',s.status||'pending');
+        '<div class="r-meta" style="margin-top:6px">'+
+          '<span>🧺 Picked by <b>'+esc(trkPicker(s))+'</b>'+(s.picked_at?' <span style="color:#94a3b8">'+esc(trkTime(s.picked_at))+'</span>':'')+'</span>'+
+          '<span>📦 Packed by <b>'+esc(s.packed_by||'—')+'</b>'+(s.packed_at?' <span style="color:#94a3b8">'+esc(trkTime(s.packed_at))+'</span>':'')+'</span>'+
+        '</div>'+
+        '<div class="r-items"><b style="color:#1a2130">Items</b>'+items+'</div>'+trkHistory(d.events);
+      addLog(s.tracking_code||code,show,s.buyer_name||s.buyer_username||'—',trkStatus(s),trkPicker(s),s.packed_by||'—');
     }
     qEl.value='';qEl.focus();
   }).catch(function(){resEl.className='result show err';resEl.innerHTML='<b style="color:#e11d48">Request failed</b>';});
 }
-function addLog(track,show,buyer,status){
-  LOG.unshift({track:track,show:show,buyer:buyer,status:status});
+function trkTime(at){if(!at)return '';var x=String(at);var d=new Date(/[zZ]|[+-][0-9][0-9]:?[0-9][0-9]$/.test(x)?x:x.replace(' ','T')+'Z');
+  return isNaN(d)?x.replace('T',' ').slice(0,16):d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});}
+function trkPicker(s){return s.picked_by||(s.pick_started_by?(s.pick_started_by+' (in progress)'):'—');}
+function trkStatus(s){return (s.status==='pending'&&s.pick_started_by)?'picking':(s.status||'pending');}
+var TRK_EV={opened:'Opened in picker',item_picked:'Ticked item',item_unpicked:'Unticked item',picked:'Completed pick',issue:'Flagged issue',resolved:'Resolved issue',undo:'Undo',pack_started:'Started packing video',packed:'Packed'};
+function trkHistory(evs){
+  if(!evs||!evs.length)return '';
+  return '<details style="margin-top:10px;font-size:13px"><summary style="cursor:pointer;color:#586274">🕘 Order history ('+evs.length+')</summary>'+
+    evs.map(function(e){return '<div style="display:flex;gap:10px;padding:2px 0"><span style="color:#94a3b8;min-width:110px">'+esc(trkTime(e.at))+'</span><b style="min-width:80px">'+esc(e.actor||'?')+'</b><span>'+esc(TRK_EV[e.action]||e.action)+(e.detail?' <span style="color:#94a3b8">· '+esc(e.detail)+'</span>':'')+'</span></div>'}).join('')+'</details>';
+}
+function addLog(track,show,buyer,status,picker,packer){
+  LOG.unshift({track:track,show:show,buyer:buyer,status:status,picker:picker||'—',packer:packer||'—'});
   renderLog();
 }
 function renderLog(){
   if(!LOG.length){document.getElementById('logWrap').style.display='none';return;}
   document.getElementById('logWrap').style.display='block';
   document.getElementById('logBody').innerHTML=LOG.map(function(r){
-    return '<tr><td class="tr-track">'+esc(r.track)+'</td><td>'+esc(r.show)+'</td><td>'+esc(r.buyer)+'</td><td><span class="r-status '+statusCls(r.status)+'">'+esc(r.status)+'</span></td></tr>';
+    return '<tr><td class="tr-track">'+esc(r.track)+'</td><td>'+esc(r.show)+'</td><td>'+esc(r.buyer)+'</td><td>'+esc(r.picker||'—')+'</td><td>'+esc(r.packer||'—')+'</td><td><span class="r-status '+statusCls(r.status)+'">'+esc(r.status)+'</span></td></tr>';
   }).join('');
   var byShow={};LOG.forEach(function(r){if(r.show&&r.show!=='—'){byShow[r.show]=(byShow[r.show]||0)+1}});
   document.getElementById('tally').innerHTML=Object.keys(byShow).sort(function(a,b){return byShow[b]-byShow[a]}).map(function(sh){
@@ -13386,7 +13449,7 @@ function render(items){
   if(r.video_url)acts+='<a class="v" href="'+esc(r.video_url)+'" target="_blank">🎥 Watch'+(dur?(' ('+dur+')'):'')+'</a>';
   if(r.photo_url)acts+='<a class="p" href="'+esc(r.photo_url)+'" target="_blank">📷 Photo</a>';
   if(!acts)acts='<span class="none">No media file saved</span>';
-  return '<div class="rec"><div class="mn"><div class="t">'+esc(r.tracking||'')+'</div><div class="m">Packed by <b>'+esc(r.worker||'?')+'</b> · '+esc(r.date||'')+' '+esc(r.time||'')+(r.station?(' · '+esc(r.station)):'')+'</div></div><div class="acts">'+acts+'</div></div>';
+  return '<div class="rec"><div class="mn"><div class="t">'+esc(r.tracking||'')+'</div><div class="m">Packed by <b>'+esc(r.worker||'?')+'</b> · Picked by <b>'+esc(r.picked_by||(r.pick_started_by?(r.pick_started_by+' (in progress)'):'—'))+'</b> · '+esc(r.date||'')+' '+esc(r.time||'')+(r.station?(' · '+esc(r.station)):'')+'</div></div><div class="acts">'+acts+'</div></div>';
  }).join('');
 }
 function run(q){fetch('/api/recordings?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){if((inp.value||'').trim()!==q)return;render((d&&d.items)||[]);}).catch(function(){});}

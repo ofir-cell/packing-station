@@ -593,6 +593,43 @@ def plog(actor,action,org_id="",detail=""):
     except Exception as e:
         print("plog error:",e,flush=True)
 
+def _order_events_ensure(c):
+    c.execute("""CREATE TABLE IF NOT EXISTS order_events(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id TEXT NOT NULL,
+        at TEXT DEFAULT CURRENT_TIMESTAMP, actor TEXT, action TEXT, detail TEXT)""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_order_events_sid ON order_events(shipment_id, id)")
+
+def _oev(c, sid, action, detail="", actor=None, dedupe_min=0):
+    """Order history: WHO did WHAT to this order and when (opened in the picker,
+    ticked an item, completed the pick, flagged, undid, packed). Answers 'which worker
+    touched this order' even when nobody finished it. Best-effort, never breaks the request.
+    dedupe_min: skip if the same person logged the same action on this order that recently."""
+    try:
+        if actor is None:
+            try: actor=session.get("name") or session.get("user") or ""
+            except Exception: actor=""
+        actor=(actor or "")[:60]
+        if dedupe_min:
+            if c.execute("""SELECT 1 FROM order_events WHERE shipment_id=? AND actor=? AND action=?
+                            AND at >= datetime('now', ?) LIMIT 1""",
+                         (sid, actor, action, "-%d minutes" % int(dedupe_min))).fetchone():
+                return
+        c.execute("INSERT INTO order_events(shipment_id, actor, action, detail) VALUES(?,?,?,?)",
+                  (sid, actor, action, str(detail or "")[:300]))
+    except Exception as e:
+        try:
+            if "no such table" in str(e):
+                _order_events_ensure(c); return _oev(c, sid, action, detail, actor, dedupe_min)
+        except Exception: pass
+        print("order event failed for", sid, ":", e, flush=True)
+
+def _order_events(c, sid, limit=40):
+    try:
+        return [dict(r) for r in c.execute("""SELECT at, actor, action, detail FROM order_events
+                   WHERE shipment_id=? ORDER BY id DESC LIMIT ?""", (sid, limit))]
+    except Exception:
+        return []
+
 def alog(action,detail=""):
     """Append to the CURRENT tenant's audit trail (sensitive staff actions).
     Best-effort — never breaks the request. Called from within request handlers."""
@@ -1211,6 +1248,7 @@ def sdb_init(org):
         cancel_reason TEXT,
         FOREIGN KEY (shipment_id) REFERENCES shipments(shipment_id) ON DELETE CASCADE
     )""")
+    _order_events_ensure(c)
     # Backward-compatible migrations — add columns if older DBs are missing them.
     for stmt in (
         "ALTER TABLE shipments ADD COLUMN platform TEXT DEFAULT 'whatnot'",
@@ -1219,6 +1257,9 @@ def sdb_init(org):
         "ALTER TABLE shipments ADD COLUMN picked_at TEXT",
         "ALTER TABLE shipments ADD COLUMN picked_by TEXT",
         "ALTER TABLE shipments ADD COLUMN packed_by TEXT",
+        # first worker who ticked an item: the order has picking activity even if unfinished
+        "ALTER TABLE shipments ADD COLUMN pick_started_by TEXT",
+        "ALTER TABLE shipments ADD COLUMN pick_started_at TEXT",
         # USPS delivery tracking (statusCategory bucket + last event + timestamps)
         "ALTER TABLE shipments ADD COLUMN delivery_status TEXT",
         "ALTER TABLE shipments ADD COLUMN delivery_detail TEXT",
@@ -4836,6 +4877,7 @@ def api_upload():
             c.execute("""UPDATE shipments
                          SET status='packed', packed_at=CURRENT_TIMESTAMP, packed_by=?
                          WHERE shipment_id=?""", (wrk, row["shipment_id"]))
+            _oev(c, row["shipment_id"], "packed", "packing video saved", actor=wrk)
             if _get_setting("pack_scan_items","0")=="1":
                 try: pack_res=_pack_finish(c, row, vn)
                 except Exception as e: print("pack check failed for", trk, ":", e, flush=True)
@@ -4916,6 +4958,29 @@ def api_backfill_packed():
                     "skipped": skipped})
 
 
+def _pick_info(codes):
+    """tracking code / shipment id -> who picked & packed it (and whether picking has
+    started). Lets every order-info screen show 'Picked by / Packed by'. Best-effort."""
+    codes=[x for x in {(x or "").strip() for x in codes} if x]
+    out={}
+    if not codes: return out
+    try:
+        c=sdb()
+        try:
+            for i in range(0,len(codes),400):
+                part=codes[i:i+400]; qm=",".join("?"*len(part))
+                for r in c.execute("""SELECT shipment_id, tracking_code, status, picked_by, picked_at, packed_by, packed_at,
+                                             pick_started_by, pick_started_at FROM shipments
+                                      WHERE tracking_code IN (%s) OR shipment_id IN (%s)""" % (qm,qm), part+part):
+                    d=dict(r)
+                    for k in (r["tracking_code"], r["shipment_id"]):
+                        if k: out[k]=d
+        finally:
+            c.close()
+    except Exception as e:
+        print("pick info failed:", e, flush=True)
+    return out
+
 @app.route("/api/search/<trk>")
 @req_role("admin","cs")
 def api_search(trk):
@@ -4938,6 +5003,14 @@ def api_search(trk):
                         seen_p.add(pf)
                         s=pf.split("_")[0] if "_" in pf else "?"
                         r["photos"].append({"filename":pf,"url":"/media/photo/"+pf,"station":s})
+    _codes=[row.get("tracking_number","") for row in r["log"]]+[trk]
+    _pi=_pick_info(_codes)
+    r["pick"]=next((_pi[k] for k in _codes if k in _pi), None)
+    if r["pick"] is None:
+        try:
+            _c=sdb(); _row=_resolve_shipment_by_code(_c, _normalize_tracking(trk)); _c.close()
+            if _row: r["pick"]=_pick_info([_row["shipment_id"]]).get(_row["shipment_id"])
+        except Exception: pass
     return jsonify(r)
 
 @app.route("/api/recent")
@@ -4980,6 +5053,10 @@ def api_recordings():
                     "video_url":("/media/video/"+vf) if vf and vf!="None" else "",
                     "photo_url":("/media/photo/"+pf) if pf and pf!="None" else ""})
     items.reverse()
+    _pi=_pick_info([i["tracking"] for i in items[:2000]])
+    for i in items:
+        p=_pi.get(i["tracking"])
+        if p: i["picked_by"]=p["picked_by"]; i["pick_started_by"]=p["pick_started_by"]; i["status"]=p["status"]
     return jsonify({"ok":True,"worker":worker,"date":date,"count":len(items),"items":items})
 
 @app.route("/api/stats")
@@ -6237,7 +6314,8 @@ def api_shipments_recent():
     _cols = ("shipment_id, tracking_code, buyer_username, buyer_name, "
              "total_items, expected_weight_g, actual_weight_g, weight_status, "
              "status, missing_weights, show_date, imported_at, import_label, platform, "
-             "delivery_status, delivery_detail, delivered_at, tracked_at, ship_by")
+             "delivery_status, delivery_detail, delivered_at, tracked_at, ship_by, "
+             "picked_by, packed_by, pick_started_by, pick_started_at")
     if show:
         rows = c.execute("SELECT "+_cols+" FROM shipments WHERE import_label=? ORDER BY imported_at DESC",(show,)).fetchall()
     else:
@@ -6257,8 +6335,16 @@ def api_shipments_recent():
                             "WHERE shipment_id IN ("+qm+") AND COALESCE(cancelled,0)=0", ids).fetchall()
         for ir in irows:
             items_by_ship.setdefault(ir["sid"],[]).append((ir["sku"], ir["product_name"]))
+    _started=[r["shipment_id"] for r in rows if r.get("pick_started_by") and r.get("status")=="pending"]
+    _pc={}
+    for i in range(0, len(_started), 500):
+        part=_started[i:i+500]
+        for pr in c.execute("SELECT shipment_id sid, SUM(COALESCE(picked,0)) p, COUNT(*) n FROM shipment_items "
+                            "WHERE shipment_id IN (%s) AND COALESCE(cancelled,0)=0 GROUP BY shipment_id" % ",".join("?"*len(part)), part):
+            _pc[pr["sid"]]=(pr["p"] or 0, pr["n"])
     for r in rows:
         r["stickers"]=_sticker_display(items_by_ship.get(r["shipment_id"], []))
+        if r["shipment_id"] in _pc: r["picked_count"], r["active_count"] = _pc[r["shipment_id"]]
     c.close()
     return jsonify(rows)
 
@@ -6341,10 +6427,11 @@ def api_shipment_lookup(code):
             for g in _pending_giveaways_for(sid2, trk):
                 if g not in gvs: gvs.append(g)
     cfg = c.execute("SELECT * FROM weight_config WHERE id=1").fetchone()
+    _evs=_order_events(c, row["shipment_id"])
     c.close()
     return jsonify({
         "ok": True,
-        "shipment": dict(row),
+        "shipment": dict(row), "events": _evs,
         "items": items,
         "config": dict(cfg) if cfg else {},
         "giveaways": gvs,
@@ -6423,6 +6510,7 @@ def api_pack_begin():
                 c.execute("UPDATE shipment_items SET pack_scanned_qty=0, pack_method=NULL, pack_scanned_at=NULL WHERE id IN (%s)"
                           % ",".join("?"*len(ids)), ids)
                 c.commit()
+        _oev(c, row["shipment_id"], "pack_started", "packing video started"); c.commit()
         items=_pack_box(c,row)
         on=_get_setting("pack_scan_items","0")=="1" and (row["status"] or "")!="cancelled"
         return jsonify({"ok":True,"enabled":on,"shipment_id":row["shipment_id"],"items":_pack_view(items)})
@@ -6523,7 +6611,7 @@ def api_pack_missing():
     days=max(1,min(60,int(request.args.get("days") or 14)))
     cutoff=(datetime.now()-timedelta(days=days)).strftime("%Y-%m-%d")
     c=sdb()
-    rows=[dict(r) for r in c.execute("""SELECT shipment_id,tracking_code,buyer_name,buyer_username,import_label,packed_at,packed_by,pack_missing
+    rows=[dict(r) for r in c.execute("""SELECT shipment_id,tracking_code,buyer_name,buyer_username,import_label,packed_at,packed_by,pack_missing,picked_by
                                         FROM shipments WHERE pack_check='missing' AND COALESCE(packed_at,'')>=?
                                         ORDER BY packed_at DESC LIMIT 300""",(cutoff,)).fetchall()]
     c.close()
@@ -6801,9 +6889,11 @@ def api_customer_detail(username):
     tracking_codes = {s["tracking_code"] for s in ships if s["tracking_code"]}
     ships_out = []
     for s in ships:
-        items = c.execute("""SELECT product_name, quantity, item_weight_g, sku, revenue
+        items = c.execute("""SELECT product_name, quantity, item_weight_g, sku, revenue,
+                                    COALESCE(picked,0) picked, COALESCE(cancelled,0) cancelled
                              FROM shipment_items WHERE shipment_id=?""", (s["shipment_id"],)).fetchall()
-        ships_out.append({**dict(s), "items": [dict(i) for i in items]})
+        ships_out.append({**dict(s), "items": [dict(i) for i in items],
+                          "events": _order_events(c, s["shipment_id"])})
     c.close()
     # Cross-reference with packing_log.csv to find recordings
     recordings = []
@@ -6864,7 +6954,10 @@ def api_pick_queue():
     q = """SELECT s.shipment_id, s.tracking_code, s.buyer_name, s.buyer_username,
                   s.import_label, s.platform, s.show_date,
                   (SELECT COUNT(*) FROM shipment_items i WHERE i.shipment_id=s.shipment_id
-                   AND COALESCE(i.cancelled,0)=0) AS item_count
+                   AND COALESCE(i.cancelled,0)=0) AS item_count,
+                  s.pick_started_by, s.pick_started_at,
+                  (SELECT COALESCE(SUM(COALESCE(i.picked,0)),0) FROM shipment_items i WHERE i.shipment_id=s.shipment_id
+                   AND COALESCE(i.cancelled,0)=0) AS picked_count
            FROM shipments s
            WHERE s.status='pending'"""
     params = []
@@ -6893,6 +6986,7 @@ def api_pick_get(sid):
                                 picked_at, COALESCE(cancelled,0) AS cancelled
                          FROM shipment_items WHERE shipment_id=?
                          ORDER BY COALESCE(cancelled,0), COALESCE(picked,0), id""", (sid,)).fetchall()
+    _oev(c, sid, "opened", "", dedupe_min=10); c.commit()
     c.close()
     # Cleanup gate — if the show has cancelled items still sitting on the table,
     # tell the picker to go clear them first. Admin/CS can override via ?force=1.
@@ -6941,7 +7035,7 @@ def api_pick_get(sid):
 @req_role("picker", "worker", "admin", "cs")
 def api_pick_item_toggle(item_id):
     c = sdb()
-    row = c.execute("""SELECT i.id, COALESCE(i.picked,0) AS picked, s.status AS ship_status
+    row = c.execute("""SELECT i.id, i.shipment_id, i.sku, i.product_name, COALESCE(i.picked,0) AS picked, s.status AS ship_status
                        FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
                        WHERE i.id=?""", (item_id,)).fetchone()
     if not row:
@@ -6953,8 +7047,13 @@ def api_pick_item_toggle(item_id):
     new_state = 0 if row["picked"] else 1
     if new_state:
         c.execute("UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
+        _who = (session.get("name") or session.get("user") or "")[:60]
+        c.execute("""UPDATE shipments SET pick_started_by=?, pick_started_at=CURRENT_TIMESTAMP
+                     WHERE shipment_id=? AND COALESCE(pick_started_by,'')=''""", (_who, row["shipment_id"]))
     else:
         c.execute("UPDATE shipment_items SET picked=0, picked_at=NULL WHERE id=?", (item_id,))
+    _oev(c, row["shipment_id"], "item_picked" if new_state else "item_unpicked",
+         ("#" + row["sku"] + " " if row["sku"] else "") + (row["product_name"] or ""))
     c.commit(); c.close()
     return jsonify({"ok": True, "picked": new_state})
 
@@ -7007,6 +7106,7 @@ def api_pick_issue(sid):
         return jsonify({"ok": False, "error": "Order is cancelled — nothing to flag"})
     c.execute("""UPDATE shipments SET status='issue', flag_reason=?, flag_resolved_at=NULL,
                  flag_resolved_by=NULL WHERE shipment_id=?""", (stamped, sid))
+    _oev(c, sid, "issue", reason)
     c.commit(); c.close()
     return jsonify({"ok": True})
 
@@ -7058,6 +7158,7 @@ def api_pick_resolve(sid):
     else:
         c.execute("""UPDATE shipments SET status='cancelled', flag_resolved_at=CURRENT_TIMESTAMP,
                      flag_resolved_by=? WHERE shipment_id=? AND status='issue'""", (resolver, sid))
+    _oev(c, sid, "resolved", "issue → " + ("back to pick queue" if action == "retry" else "cancelled"), actor=resolver)
     c.commit(); c.close()
     return jsonify({"ok": True})
 
@@ -7105,6 +7206,9 @@ def api_pick_complete(sid):
                         "error": "Already picked by " + who})
     c.execute("""UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP
                  WHERE shipment_id=? AND COALESCE(cancelled,0)=0 AND COALESCE(picked,0)=0""", (sid,))
+    c.execute("""UPDATE shipments SET pick_started_by=?, pick_started_at=CURRENT_TIMESTAMP
+                 WHERE shipment_id=? AND COALESCE(pick_started_by,'')=''""", (user, sid))
+    _oev(c, sid, "picked", "pick completed", actor=user)
     c.commit(); c.close()
     return jsonify({"ok": True})
 
@@ -7560,8 +7664,12 @@ def api_shipment_revert(sid):
     else:
         # Full reset: back to the top of the queue, all item ticks cleared.
         c.execute("""UPDATE shipments SET status='pending', packed_at=NULL, packed_by=NULL,
-                        picked_at=NULL, picked_by=NULL WHERE shipment_id=?""",(sid,))
+                        picked_at=NULL, picked_by=NULL, pick_started_by=NULL, pick_started_at=NULL
+                     WHERE shipment_id=?""",(sid,))
         c.execute("UPDATE shipment_items SET picked=0, picked_at=NULL WHERE shipment_id=?",(sid,))
+    _oev(c, sid, "undo", "%s → %s%s%s" % (was, to,
+         (" (was picked by %s)" % row["picked_by"]) if row["picked_by"] and to=="pending" else "",
+         (" (was packed by %s)" % row["packed_by"]) if row["packed_by"] else ""))
     c.commit(); c.close()
     # Any prize attached to this order goes back to "waiting to be added" too.
     try:
@@ -7571,7 +7679,8 @@ def api_shipment_revert(sid):
         g.commit(); g.close()
     except Exception as e:
         print("giveaway revert failed for",sid,":",e,flush=True)
-    alog("shipment.revert","%s: %s → %s%s"%(sid,was,to,
+    alog("shipment.revert","%s: %s → %s%s%s"%(sid,was,to,
+         (" (was picked by %s)"%row["picked_by"]) if row["picked_by"] and to=="pending" else "",
          (" (was packed by %s)"%row["packed_by"]) if row["packed_by"] else ""))
     return jsonify({"ok":True,"shipment_id":sid,"was":was,"now":to})
 
