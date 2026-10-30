@@ -12128,7 +12128,6 @@ showTab('scan');
 </script></body></html>'''
 
 
-
 # ── Combine & Labels (TikTok Shipping) — stage A, read-only ───────────────────
 COMBINE_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -12158,6 +12157,7 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
 .g-buyer{font-size:18px;font-weight:900;color:#141b26}
 .g-meta{font-size:12px;color:var(--text-muted);margin-top:2px}
 .pill{display:inline-block;font-family:'SF Mono',Menlo,monospace;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;background:rgba(99,102,241,.12);color:#4f46e5;margin:2px 4px 2px 0}
+.g-tag{font-size:12px;font-weight:700;color:#64748b;background:#f1f5f9;border-radius:999px;padding:5px 11px}.g-tag.ok{color:#047857;background:#ecfdf5}
 .note{font-size:12px;font-weight:700;color:#b45309;margin-top:8px}
 .orders{margin-top:10px;display:grid;gap:8px}
 .o{border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:13px;background:#fff}
@@ -12165,6 +12165,26 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
 .o .st{font-size:11px;font-weight:800;text-transform:uppercase;margin-left:6px}
 .it{font-size:12px;color:var(--text-muted);margin-top:3px}
 .empty{padding:40px;text-align:center;color:var(--text-muted);border:1px dashed var(--border);border-radius:16px}
+.sec{font-size:13px;font-weight:900;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin:22px 0 10px}
+.card2{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 14px}
+.boxrow{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.boxrow label{display:block;font-size:11px;font-weight:800;color:var(--text-muted);text-transform:uppercase;margin-bottom:3px}
+.boxrow input{width:90px;padding:8px 9px;border:1px solid var(--border);border-radius:9px;font-size:14px;font-family:inherit}
+.srow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;background:#fff;margin-bottom:8px;flex-wrap:wrap}
+.srow .nm{font-weight:800}
+.srow .ct{font-size:12px;color:var(--text-muted)}
+.brow{font-size:13px;padding:8px 0;border-bottom:1px solid var(--border);display:flex;gap:10px;justify-content:space-between;flex-wrap:wrap}
+.modal{position:fixed;inset:0;background:rgba(15,23,42,.55);display:none;align-items:center;justify-content:center;z-index:200;padding:16px}
+.modal.on{display:flex}
+.mcard{background:#fff;border-radius:18px;padding:22px;max-width:520px;width:100%;max-height:90vh;overflow:auto}
+.mcard h3{font-size:20px;font-weight:900;margin-bottom:10px}
+.kv{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:14px}
+.kv b{font-weight:900}
+.pin{width:100%;padding:12px;border:1px solid var(--border);border-radius:10px;font-size:18px;letter-spacing:4px;text-align:center;margin:14px 0 8px;font-family:inherit}
+.merr{color:#e11d48;font-size:13px;font-weight:700;min-height:18px}
+.prog{height:12px;background:rgba(17,24,39,.08);border-radius:999px;overflow:hidden;margin:12px 0 6px}
+.prog i{display:block;height:100%;width:0;background:#10b981;transition:width .4s}
+.prob{font-size:12px;color:#b45309;margin-top:4px}
 pre.raw{white-space:pre-wrap;word-break:break-all;font-size:11px;background:#0f172a;color:#e2e8f0;border-radius:12px;padding:14px;margin-top:16px;max-height:420px;overflow:auto;display:none}
 </style></head><body>
 __NAVBAR__
@@ -12176,9 +12196,27 @@ __NAVBAR__
   <div class="page-sub">Packages TikTok allows to ship together, next to where each order is in our warehouse. With TikTok Shipping the label is created on TikTok, which sets the tracking number and updates the orders itself.</div>
   <div class="lock" id="lock" style="display:none"><span>🔒</span><span><b>Read-only for now.</b> This screen only reads from TikTok. Combining and creating labels unlock after the TikTok connection is verified and turned on (TIKTOK_FULFILL_WRITE), and each batch will need manager approval.</span></div>
   <div class="shops" id="shops"></div>
+  <div class="card2" id="boxCard" style="display:none">
+    <div class="boxrow">
+      <div><label>Box weight (lb)</label><input id="bw" inputmode="decimal"></div>
+      <div><label>Length (in)</label><input id="bl" inputmode="decimal"></div>
+      <div><label>Width (in)</label><input id="bwd" inputmode="decimal"></div>
+      <div><label>Height (in)</label><input id="bh" inputmode="decimal"></div>
+      <button class="btn" id="boxSave">Save standard box</button>
+      <span class="ct" id="boxMsg" style="font-size:12px;color:var(--text-muted)">Carrier pickup · TikTok picks the service</span>
+    </div>
+  </div>
+  <div class="sec">Shows that need labels</div>
+  <div id="needShows"><div class="empty">Loading…</div></div>
+  <div class="sec" id="labeledTitle" style="display:none">Lives with labels</div>
+  <div id="labeledShows"></div>
+  <div class="sec" id="batchesTitle" style="display:none">Recent label batches</div>
+  <div id="batches"></div>
+  <div class="sec">Can be combined (from TikTok)</div>
   <div id="main"><div class="empty">Loading from TikTok…</div></div>
   <pre class="raw" id="raw"></pre>
 </div>
+<div class="modal" id="modal"><div class="mcard" id="mbody"></div></div>
 <script>
 var ROLE='__ROLE__', WRITE=false;
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
@@ -12213,16 +12251,126 @@ function card(g){
       '<div class="g-buyer">'+esc(g.buyer||(g.missing_in_app===g.order_ids.length?'Not in our app yet':'Several buyers'))+' — '+g.order_ids.length+' orders → 1 box</div>'+
       '<div class="g-meta">'+g.item_count+' items · '+esc(Object.keys(shows).join(' · ')||'—')+'</div>'+
       '<div>'+g.packages.map(function(p){return '<span class="pill">'+esc(p)+'</span>';}).join('')+'</div></div>'+
-      '<button class="btn primary" disabled title="'+(WRITE?'Coming in the next step':'Locked until the TikTok connection is verified')+'">Combine + label</button></div>'+
+      (g.labeled?'<span class="g-tag ok">Label created ✓</span>':'<span class="g-tag">Use Prepare labels on its live</span>')+'</div>'+
     notes.map(function(n){return '<div class="note">⚠️ '+esc(n)+'</div>';}).join('')+
     '<div class="orders">'+g.orders.map(function(o){
       return '<div class="o"><span class="oid">'+esc(o.order_id)+'</span>'+
-        (o.in_app?'<span class="st" style="color:'+(ST[o.status]||'#64748b')+'">'+esc(o.status)+'</span>':'<span class="st" style="color:#b45309">not in app</span>')+
+        (o.in_app?'<span class="st" style="color:'+(ST[o.status]||'#64748b')+'">'+esc(o.status==='pending'?'to pick':o.status)+'</span>':'<span class="st" style="color:#b45309">not in app</span>')+
         (o.items||[]).map(function(i){return '<div class="it">#'+esc(i.sku)+' · '+esc(i.product_name)+(i.quantity>1?' ×'+i.quantity:'')+(i.cancelled?' · cancelled':'')+'</div>';}).join('')+
       '</div>';
     }).join('')+'</div></div>';
 }
-document.getElementById('refresh').addEventListener('click',function(){load(false);});
+// ─── Labels by show (stage B) ───
+var BOX=null, BATCH=null, POLL=null;
+function loadShows(){
+  fetch('/api/tiktok/label-shows').then(function(r){return r.json();}).then(function(d){
+    if(!d.ok)return;
+    WRITE=!!d.write_enabled; BOX=d.box;
+    if(ROLE==='admin'){document.getElementById('boxCard').style.display='block';
+      document.getElementById('bw').value=d.box.weight_lb;document.getElementById('bl').value=d.box.length_in;
+      document.getElementById('bwd').value=d.box.width_in;document.getElementById('bh').value=d.box.height_in;}
+    var el=document.getElementById('needShows');
+    el.innerHTML=d.shows.length?d.shows.map(function(s,i){
+      return '<div class="srow"><div><div class="nm">'+esc(s.label)+'</div><div class="ct">'+s.n+' package'+(s.n===1?'':'s')+' without a label'+(s.pending?' · <b>'+(s.ready||0)+' ready</b> · <span style="color:#b45309">'+s.pending+' still Pending at TikTok</span>':'')+'</div></div>'+
+        '<button class="btn primary" data-i="'+i+'">Prepare labels</button></div>';
+    }).join(''):'<div class="empty">Every TikTok package from the last 2 weeks has a label.</div>';
+    Array.prototype.forEach.call(el.querySelectorAll('button[data-i]'),function(b){
+      b.addEventListener('click',function(){prepare(d.shows[+b.getAttribute('data-i')].label);});
+    });
+    var ls=d.labeled_shows||[];
+    document.getElementById('labeledTitle').style.display=ls.length?'block':'none';
+    document.getElementById('labeledShows').innerHTML=ls.map(function(s){
+      var q=encodeURIComponent(s.label);
+      return '<div class="srow"><div><div class="nm">'+esc(s.label)+'</div><div class="ct">'+s.n+' label'+(s.n===1?'':'s')+' saved for this live</div></div>'+
+        '<span><a class="btn" href="/api/tiktok/live-labels?show='+q+'" target="_blank">Print all</a> <a class="btn" href="/api/tiktok/live-labels?show='+q+'&pdf=1&dl=1">Download PDF</a></span></div>';
+    }).join('');
+    document.getElementById('batchesTitle').style.display=d.batches.length?'block':'none';
+    document.getElementById('batches').innerHTML=d.batches.map(function(b){
+      return '<div class="brow"><span>#'+b.id+' · '+esc(b.show)+'</span><span>'+esc(b.status)+' · '+b.done+'/'+b.total+' labels'+(b.failed?' · '+b.failed+' need attention':'')+'</span>'+
+        '<span><a href="#" data-b="'+b.id+'">Open</a>'+(b.done?' · <a href="/api/tiktok/batch/'+b.id+'/labels" target="_blank">Print</a>':'')+'</span></div>';
+    }).join('');
+    Array.prototype.forEach.call(document.querySelectorAll('#batches a[data-b]'),function(a){
+      a.addEventListener('click',function(e){e.preventDefault();openBatch(+a.getAttribute('data-b'));});
+    });
+  });
+}
+function modal(html){document.getElementById('mbody').innerHTML=html;document.getElementById('modal').classList.add('on');}
+function closeModal(){document.getElementById('modal').classList.remove('on');if(POLL){clearInterval(POLL);POLL=null;}loadShows();}
+function prepare(label){
+  modal('<h3>Preparing…</h3><div class="ct">Checking with TikTok what can be combined.</div>');
+  fetch('/api/tiktok/batch/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:label})})
+  .then(function(r){return r.json();}).then(function(d){
+    if(!d.ok){modal('<h3>'+(d.plan&&d.plan.waiting_count?'Not ready yet':'Nothing to do')+'</h3><div class="merr">'+esc(d.error)+'</div><button class="btn" id="mx">Close</button>');document.getElementById('mx').onclick=closeModal;return;}
+    BATCH=d.batch_id; var p=d.plan, b=d.box;
+    var saved=p.packages_before-p.labels;
+    modal('<h3>Create TikTok labels</h3><div class="ct" style="margin-bottom:8px">'+esc(p.show)+'</div>'+
+      '<div class="kv"><span>Ready (Processing at TikTok)</span><b>'+p.packages_before+'</b></div>'+
+      (p.waiting_count?'<div class="kv"><span>Waiting (a buyer still has a Pending order)</span><b style="color:#b45309">'+p.waiting_count+'</b></div>':'')+
+      '<div class="kv"><span>Combines (TikTok-approved)</span><b>'+p.combines.length+(saved?' · saves '+saved+' box'+(saved===1?'':'es'):'')+'</b></div>'+
+      '<div class="kv"><span>Labels to create</span><b>'+p.labels+'</b></div>'+
+      '<div class="kv"><span>Box</span><b>'+b.weight_lb+' lb · '+b.length_in+'×'+b.width_in+'×'+b.height_in+' in</b></div>'+
+      '<div class="kv"><span>Handover</span><b>Carrier pickup</b></div>'+
+      (p.waiting_count?'<div class="ct" style="margin-top:8px">Waiting packages are left for a later batch, so a buyer with several orders still gets one box. This live will show up again once they move to Processing.</div>':'')+
+      (p.status_fresh===false?'<div class="merr">Could not get the latest status from TikTok, so this uses the last synced status. It is checked again right before buying.</div>':'')+
+      (WRITE?'<input class="pin" id="pin" type="password" inputmode="numeric" placeholder="Manager PIN" autocomplete="off">':
+        '<div class="lock" style="margin-top:14px"><span>🔒</span><span>Label creation is not turned on yet. This is what the batch would do.</span></div>')+
+      '<div class="merr" id="merr"></div><div style="display:flex;gap:8px;margin-top:8px">'+
+      '<button class="btn primary" id="go"'+(WRITE?'':' disabled')+'>Approve &amp; create '+p.labels+' label'+(p.labels===1?'':'s')+'</button><button class="btn" id="mx">Cancel</button></div>');
+    document.getElementById('mx').onclick=closeModal;
+    var go=document.getElementById('go');
+    go.onclick=function(){
+      var pin=(document.getElementById('pin')||{}).value||'';
+      go.disabled=true;
+      fetch('/api/tiktok/batch/'+BATCH+'/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin})})
+      .then(function(r){return r.json();}).then(function(x){
+        if(!x.ok){go.disabled=false;document.getElementById('merr').textContent=x.error||'Could not start';return;}
+        openBatch(BATCH);
+      });
+    };
+  });
+}
+function openBatch(id){
+  BATCH=id;
+  modal('<h3>Label batch #'+id+'</h3><div class="prog"><i id="pf"></i></div><div class="ct" id="pt">Starting…</div><div id="pp"></div>'+
+    '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap"><a class="btn primary" id="prt" target="_blank" style="display:none;text-decoration:none">🖨️ Print labels</a>'+
+    '<button class="btn" id="res" style="display:none">Resume</button><button class="btn" id="mx">Close</button></div>');
+  document.getElementById('mx').onclick=closeModal;
+  document.getElementById('res').onclick=function(){
+    var pin=prompt('Manager PIN');if(pin===null)return;
+    fetch('/api/tiktok/batch/'+id+'/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin})})
+    .then(function(r){return r.json();}).then(function(x){if(!x.ok)alert(x.error);});
+  };
+  function tick(){
+    fetch('/api/tiktok/batch/'+id).then(function(r){return r.json();}).then(function(d){
+      if(!d.ok)return; var b=d.batch, tot=b.total||d.plan.labels||0, pct=tot?Math.round(100*b.done/tot):0;
+      document.getElementById('pf').style.width=pct+'%';
+      document.getElementById('pt').textContent=b.done+' of '+tot+' labels · '+b.status.replace('_',' ')+(b.combined?' · '+b.combined+' combined':'');
+      document.getElementById('pp').innerHTML=d.problems.slice(0,30).map(function(j){return '<div class="prob">⚠️ '+esc(j.package_id)+' — '+esc(j.status)+(j.error?': '+esc(j.error):'')+
+        (j.status==='uncertain'?' <a href="#" class="rel" data-p="'+esc(j.package_id)+'">I checked — no label there, allow retry</a>':'')+'</div>';}).join('')+
+        ((d.skipped||[]).length?'<div class="ct">'+d.skipped.length+' cancelled at TikTok — no label bought.</div>':'')+
+        (d.plan.combines||[]).filter(function(x){return x.combine_error||x.merge_error;}).map(function(x){return '<div class="prob">⚠️ Combine '+esc(x.packages.join(' + '))+': '+esc(x.combine_error||('saved on TikTok, not yet in our app: '+x.merge_error))+'</div>';}).join('');
+      Array.prototype.forEach.call(document.querySelectorAll('#pp a.rel'),function(a){a.onclick=function(e){e.preventDefault();
+        var pin=prompt('Manager PIN — confirm you checked Seller Center and this package has NO label');if(pin===null)return;
+        fetch('/api/tiktok/label-job/'+encodeURIComponent(a.getAttribute('data-p'))+'/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin})})
+        .then(function(r){return r.json();}).then(function(x){if(!x.ok)alert(x.error);else tick();});};});
+      var prt=document.getElementById('prt');
+      if(b.done){prt.style.display='inline-flex';prt.href='/api/tiktok/batch/'+id+'/labels';}
+      document.getElementById('res').style.display=(b.status==='needs_attention'||b.stale)?'inline-block':'none';
+      if(b.stale)document.getElementById('pt').textContent+=' · stopped moving (server restart?) — press Resume';
+      if(b.note)document.getElementById('pp').innerHTML+='<div class="prob">⚠️ '+esc(b.note)+'</div>';
+      if(b.status==='done'||b.status==='needs_attention'){if(POLL){clearInterval(POLL);POLL=null;}}
+    });
+  }
+  tick(); if(POLL)clearInterval(POLL); POLL=setInterval(tick,2000);
+}
+document.getElementById('boxSave').addEventListener('click',function(){
+  var body={weight_lb:document.getElementById('bw').value,length_in:document.getElementById('bl').value,
+            width_in:document.getElementById('bwd').value,height_in:document.getElementById('bh').value};
+  fetch('/api/tiktok/box',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  .then(function(r){return r.json();}).then(function(d){document.getElementById('boxMsg').textContent=d.ok?'Saved ✓':(d.error||'Could not save');});
+});
+loadShows();
+document.getElementById('refresh').addEventListener('click',function(){load(false);loadShows();});
 document.getElementById('rawBtn').addEventListener('click',function(){load(true);});
 load(false);
 </script>
