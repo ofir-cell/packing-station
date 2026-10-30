@@ -14,6 +14,7 @@ Endpoints:
   POST /api/shows/<id>/match_orders     multipart: file (orders CSV) -> enriched CSV
 """
 import csv
+import hmac
 import io
 import json
 import os
@@ -104,7 +105,12 @@ def build_segments(show_id):
 # ---------------- API ----------------
 
 def _auth_ok(req):
-    return not API_TOKEN or req.headers.get("X-Agent-Token") == API_TOKEN
+    # Fail closed: with no AGENT_TOKEN configured nobody may write. (It used to allow
+    # everyone, so a deploy that forgot the variable was an open API.) Constant-time
+    # comparison so the token can't be learned from response timing.
+    if not API_TOKEN:
+        return False
+    return hmac.compare_digest(req.headers.get("X-Agent-Token", ""), API_TOKEN)
 
 
 @app.post("/api/shows")

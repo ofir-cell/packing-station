@@ -38,8 +38,10 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML,
-    SCANIT_HTML, APPLY_HTML, TRACK_HTML, EQUIPMENT_HTML, LIVE_HTML, LIVE_MATCH_HTML)
+    SCANIT_HTML, APPLY_HTML, TRACK_HTML, EQUIPMENT_HTML, LIVE_HTML, LIVE_MATCH_HTML,
+    PRODUCT_CLEANUP_HTML)
 from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
+from templates import COMBINE_HTML  # Combine & Labels screen
 
 
 # Default (founding) tenant id. Multi-tenancy: every user belongs to an org;
@@ -211,7 +213,12 @@ R2_HR_BUCKET=os.environ.get("R2_HR_BUCKET") or R2_BUCKET
 R2_ENDPOINT=os.environ.get("R2_ENDPOINT")
 R2_ACCESS_KEY_ID=os.environ.get("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY=os.environ.get("R2_SECRET_ACCESS_KEY")
-R2_PRESIGN_TTL=int(os.environ.get("R2_PRESIGN_TTL",3600))  # 1 hour
+# 15 minutes. Every media route (/media/video, /media/photo, labels, docs, invoices,
+# product images, ticket files) mints a fresh link on each request and redirects to
+# it, so a short life never breaks normal viewing or downloading; it only limits how
+# long a copied/forwarded link keeps working. The team downloads files rather than
+# sharing links. (Was 1 hour.) Override with R2_PRESIGN_TTL if ever needed.
+R2_PRESIGN_TTL=int(os.environ.get("R2_PRESIGN_TTL",900))
 r2=None
 _r2_vars=[R2_BUCKET,R2_ENDPOINT,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY]
 if any(_r2_vars):
@@ -780,12 +787,15 @@ def _rate_ok(key, limit=5, window=3600):
             _hits[key]=arr; return False
         arr.append(now); _hits[key]=arr; return True
 
-def _login_rate_check(ip,user):
+BADGE_MAX_FAILS=40      # failed badge scans allowed per IP per LOGIN_WINDOW (see api_badge_login)
+
+def _login_rate_check(ip,user,limit=None):
     """Return (ok, limited). limited=True means block this attempt."""
     now=time.time();key=_rate_key(ip,user)
+    limit=LOGIN_MAX_FAILS if limit is None else limit
     with _flock("login_attempts"):
         rec=_rate_load().get(key)
-    limited=bool(rec and rec.get("count",0)>=LOGIN_MAX_FAILS and now-rec.get("first",0)<LOGIN_WINDOW)
+    limited=bool(rec and rec.get("count",0)>=limit and now-rec.get("first",0)<LOGIN_WINDOW)
     return (not limited,limited)
 
 def _login_rate_fail(ip,user):
@@ -1255,6 +1265,13 @@ def sdb_init(org):
         # Product page: target sell price + uploaded image storage key.
         "ALTER TABLE products ADD COLUMN target_price REAL DEFAULT 0",
         "ALTER TABLE products ADD COLUMN retail_price REAL DEFAULT 0",
+        # Scanit (host product screen) reads the ONE catalog: MSRP = retail_price, plus notes
+        "ALTER TABLE products ADD COLUMN msrp_source TEXT",
+        "ALTER TABLE products ADD COLUMN product_notes TEXT",
+        "ALTER TABLE products ADD COLUMN notes_source TEXT",
+        "ALTER TABLE products ADD COLUMN info_status TEXT",
+        "ALTER TABLE products ADD COLUMN info_checked_at TEXT",
+        "ALTER TABLE products ADD COLUMN info_attempts INTEGER DEFAULT 0",
         "ALTER TABLE products ADD COLUMN image_key TEXT",
         "ALTER TABLE products ADD COLUMN supplier TEXT",
         "ALTER TABLE products ADD COLUMN reorder_point INTEGER DEFAULT 0",
@@ -1433,6 +1450,7 @@ def sdb_init(org):
         supplier TEXT,
         avg_cost REAL DEFAULT 0,
         target_price REAL DEFAULT 0,
+        retail_price REAL DEFAULT 0,
         reorder_point INTEGER DEFAULT 0,
         on_hand INTEGER DEFAULT 0,
         parent_sku TEXT,
@@ -7702,7 +7720,10 @@ def api_product_save():
     if "retail_price" in d:
         try: _rp=float(d.get("retail_price") or 0)
         except Exception: _rp=0
+        _old=c.execute("SELECT retail_price FROM products WHERE sku=?",(sku,)).fetchone()
         c.execute("UPDATE products SET retail_price=? WHERE sku=?",(_rp,sku))
+        if not _old or float(_old["retail_price"] or 0)!=_rp:
+            c.execute("UPDATE products SET msrp_source='manual' WHERE sku=?",(sku,))
     if "supplier" in d:
         c.execute("UPDATE products SET supplier=? WHERE sku=?",((d.get("supplier") or "").strip() or None,sku))
     if "reorder_point" in d:
@@ -7831,6 +7852,7 @@ def _resolve_or_create_product_by_barcode(c, code, who=""):
                      ON CONFLICT(sku) DO UPDATE SET name=COALESCE(NULLIF(products.name,''),excluded.name),
                        barcode=excluded.barcode, updated_at=excluded.updated_at""",
                   (code, name, code, img, cat, retail, now, now))
+        if retail: c.execute("UPDATE products SET msrp_source=COALESCE(msrp_source,?) WHERE sku=?",("db:"+src, code))
         c.commit()
     except Exception as e:
         print("auto-create product failed:",e,flush=True)
@@ -8785,6 +8807,123 @@ def api_live_match():
     pr=dict(prod); c.close()
     return jsonify({"ok":True,"sticker":sticker,"auto_created":auto_created,
                     "product":{"sku":pr["sku"],"name":pr["name"],"image_url":pr.get("image_url")}})
+
+# ── AFTER-LIVE PRODUCT CLEANUP ────────────────────────────────────────────────
+# During a live the assistant scans each sold product; an unknown barcode becomes a
+# stub product ("New product • <barcode>", category "Needs review", no prices). After
+# the live someone has to give those products a real name and prices. This screen lists,
+# per show, every product the live touched (Live Match or Live Scan) with what it still
+# lacks. Saving reuses POST /api/products and /api/product/<sku>/image, so permissions
+# stay exactly as they are (cost is admin-only).
+_PLACEHOLDER_NAME = "New product • "
+PRODUCT_CLEANUP_DAYS = 21
+
+def _product_gaps(p, is_admin):
+    """What a product still needs before it is usable. Required gaps decide 'done';
+    a missing photo is reported separately (helpful for pickers, not blocking)."""
+    gaps = []
+    nm = (p.get("name") or "").strip()
+    if not nm or nm.startswith(_PLACEHOLDER_NAME): gaps.append("name")
+    if (p.get("category") or "") == "Needs review": gaps.append("review")
+    if not (p.get("target_price") or 0): gaps.append("target_price")
+    if is_admin and not (p.get("avg_cost") or 0): gaps.append("cost")
+    return gaps
+
+def _show_live_products(c, label):
+    """Every product linked to a show during the live: {sku: {"stickers": [...], "units",
+    "sold_total"}}. Stickers come from Live Match/Live Scan bindings; units and sale price
+    from Live Scan rows when present, otherwise from the show's sold items."""
+    out = {}
+    for m in c.execute("""SELECT sticker_sku, part, product_sku FROM show_product_map
+                          WHERE import_label=? AND COALESCE(product_sku,'')<>''""", (label,)).fetchall():
+        e = out.setdefault(m["product_sku"], {"stickers": [], "units": 0, "sold_total": 0.0, "_keys": set()})
+        e["stickers"].append(("P%s #%s" % (m["part"], m["sticker_sku"])) if m["part"] else ("#%s" % m["sticker_sku"]))
+        e["_keys"].add((str(m["sticker_sku"]), int(m["part"] or 0)))
+    live = c.execute("""SELECT product_sku, SUM(qty) u, SUM(qty*COALESCE(unit_price,0)) t
+                        FROM live_sales WHERE import_label=? GROUP BY product_sku""", (label,)).fetchall()
+    for r in live:
+        e = out.setdefault(r["product_sku"], {"stickers": [], "units": 0, "sold_total": 0.0, "_keys": set()})
+        e["units"] = int(r["u"] or 0); e["sold_total"] = float(r["t"] or 0)
+    # Products bound by Live Match only (no live_sales rows): count from the sold items.
+    need = {sku for sku, e in out.items() if not e["units"]}
+    if need:
+        by_key = {}
+        for sku in need:
+            for k in out[sku]["_keys"]: by_key[k] = sku
+        for it in c.execute("""SELECT i.sku, i.product_name, i.quantity, COALESCE(i.revenue,0) rev
+                               FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                               WHERE s.import_label=? AND COALESCE(i.cancelled,0)=0""", (label,)).fetchall():
+            k = (str(it["sku"] or ""), int(_sticker_part(it["product_name"]) or 0))
+            sku = by_key.get(k)
+            if sku:
+                out[sku]["units"] += int(it["quantity"] or 1); out[sku]["sold_total"] += float(it["rev"] or 0)
+    for e in out.values():
+        e.pop("_keys", None)
+        e["stickers"] = sorted(set(e["stickers"]))
+        e["avg_sold"] = round(e["sold_total"] / e["units"], 2) if e["units"] else None
+        e["sold_total"] = round(e["sold_total"], 2)
+    return out
+
+@app.route("/admin/product-cleanup")
+@req_role("admin", "cs")
+def product_cleanup_page():
+    return (PRODUCT_CLEANUP_HTML
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("productcleanup"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/product-cleanup/shows")
+@req_role("admin", "cs")
+def api_product_cleanup_shows():
+    """Recent shows that had products scanned during the live, with how many of those
+    products still need work. Newest live first."""
+    is_admin = session.get("role") == "admin"
+    cutoff = (datetime.now() - timedelta(days=PRODUCT_CLEANUP_DAYS)).isoformat(timespec="seconds")
+    c = sdb()
+    rows = c.execute("""SELECT import_label, MAX(at) last_at FROM (
+                            SELECT import_label, mapped_at at FROM show_product_map
+                             WHERE COALESCE(product_sku,'')<>'' AND COALESCE(mapped_at,'')>=?
+                            UNION ALL
+                            SELECT import_label, sold_at at FROM live_sales WHERE COALESCE(sold_at,'')>=?)
+                        WHERE COALESCE(import_label,'')<>''
+                        GROUP BY import_label ORDER BY last_at DESC LIMIT 60""", (cutoff, cutoff)).fetchall()
+    shows = []
+    for r in rows:
+        prods = _show_live_products(c, r["import_label"])
+        todo = 0
+        for sku in prods:
+            p = c.execute("SELECT * FROM products WHERE sku=?", (sku,)).fetchone()
+            if p and _product_gaps(dict(p), is_admin): todo += 1
+        shows.append({"label": r["import_label"], "last_at": r["last_at"],
+                      "products": len(prods), "todo": todo})
+    c.close()
+    return jsonify({"ok": True, "shows": shows})
+
+@app.route("/api/product-cleanup")
+@req_role("admin", "cs")
+def api_product_cleanup():
+    """Products a show's live touched, with their gaps. ?show=<label> (a query param,
+    because show names can contain '/'). Products needing work come first."""
+    label = (request.args.get("show") or "").strip()
+    if not label: return jsonify({"ok": False, "error": "show required"})
+    is_admin = session.get("role") == "admin"
+    c = sdb()
+    prods = _show_live_products(c, label)
+    items = []
+    for sku, info in prods.items():
+        p = c.execute("SELECT * FROM products WHERE sku=?", (sku,)).fetchone()
+        if not p: continue
+        d = dict(p)
+        if not is_admin: d.pop("avg_cost", None)
+        gaps = _product_gaps(dict(p), is_admin)
+        items.append({**d, **info, "gaps": gaps, "done": not gaps,
+                      "missing_photo": not (d.get("image_url") or ""),
+                      "placeholder_name": (d.get("name") or "").startswith(_PLACEHOLDER_NAME)})
+    c.close()
+    items.sort(key=lambda x: (x["done"], -(x["units"] or 0), x.get("name") or ""))
+    done = sum(1 for x in items if x["done"])
+    return jsonify({"ok": True, "show": label, "is_admin": is_admin, "items": items,
+                    "total": len(items), "done": done, "todo": len(items) - done})
 
 # ── LIVE MODE — deplete stock in real time as the show sells ───────────────────
 def _show_is_live(c, label):
@@ -10488,8 +10627,12 @@ def api_public_hire_get(token):
         lang = "en"
     steps = _hire_steps_with_progress(h["id"], h["workflow_id"], lang=lang) if h["workflow_id"] else []
     done, total, pct = _hire_completion_pct(h["id"], h["workflow_id"]) if h["workflow_id"] else (0, 0, 0)
-    h.pop("invite_token", None)
-    return jsonify({"ok": True, "hire": h, "lang": lang, "steps": steps,
+    # Public (token-only) endpoint: return only what the hire's own onboarding page may
+    # show. Internal fields (notes, created_by, tenant id, account details, contact info)
+    # stay behind the authenticated /api/hires/<id>. The onboarding page itself reads
+    # only lang/steps/progress.
+    pub = {k: h.get(k) for k in ("full_name", "role_target", "status", "preferred_language")}
+    return jsonify({"ok": True, "hire": pub, "lang": lang, "steps": steps,
                     "progress": {"done": done, "total": total, "pct": pct}})
 
 @app.route("/api/hire/<token>/lang", methods=["POST"])
@@ -11457,7 +11600,16 @@ def api_badge_login():
     """Log in a worker by scanning their badge. No auth required (the token IS the auth)."""
     d=request.get_json() or {}
     token=(d.get("token") or "").strip().upper()
+    # Per-IP failure limit. Deliberately generous: every station in the warehouse usually
+    # shares ONE public IP, and a scanner that reads a shipping label on the badge screen
+    # counts as a failure, so a tight limit would lock the whole floor out. 40 failures in
+    # 5 minutes is far beyond any real mis-scan pattern and still stops brute force.
+    ip=request.remote_addr
+    ok,_limited=_login_rate_check(ip,"__badge__",limit=BADGE_MAX_FAILS)
+    if not ok:
+        return jsonify({"ok":False,"error":"Too many unrecognized badges from this network. Wait a few minutes and try again."}),429
     if not token or not re.match(r'^[A-Z0-9\-]{8,32}$',token):
+        _login_rate_fail(ip,"__badge__")
         return jsonify({"ok":False,"error":"Invalid badge"})
     users=ldj(USERS_FILE)
     matched_u=None
@@ -11467,6 +11619,7 @@ def api_badge_login():
             matched_u=u;break
     if not matched_u:
         # Brief delay to slow down brute force attempts
+        _login_rate_fail(ip,"__badge__")
         time.sleep(0.5)
         return jsonify({"ok":False,"error":"Badge not recognized"})
     user=users[matched_u]
@@ -11478,6 +11631,7 @@ def api_badge_login():
     session["org"]=user.get("org",DEFAULT_ORG)
     session["brand"]=brand_for_session(session["org"])
     _touch_last_login(matched_u)
+    _login_rate_clear(ip,"__badge__")   # a real badge resets the floor's mis-scan count
     return jsonify({"ok":True,"role":user["role"],"name":user["name"]})
 
 @app.route("/badge-login")
@@ -14545,11 +14699,307 @@ def _scanit_row(r):
     return d
 
 @app.route("/scanit")
-@req_role("admin","cs","host")
+@req_role("admin","cs","host","manager")
 def scanit_page():
+    org=current_org() or DEFAULT_ORG
+    try: _scanit_migrate_to_catalog(org)
+    except Exception as e: print("scanit migrate failed:",e,flush=True)
     return SCANIT_HTML.replace("__NAME__",esc(session.get("name","")))\
         .replace("__NAVBAR__",_navbar("scanit")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)\
-        .replace("__ISADMIN__","1" if session.get("role") in ("admin","cs") else "0")
+        .replace("__ISADMIN__","1" if session.get("role") in ("admin","cs","manager") else "0")
+
+# ── Scanit on the ONE catalog ─────────────────────────────────────────────────
+# The host keeps a screen open beside her and scans each product: name, MSRP, our target
+# price and the product's notes, all from `products` (the same catalog Live Mode, picking
+# and inventory use). Notes/MSRP missing? They're looked up once in the background and
+# cached on the product, with the source shown.
+SCANIT_AI_MODEL=os.environ.get("SCANIT_AI_MODEL","claude-haiku-4-5-20251001").strip()
+_SCANIT_LOOKUP_SEM=threading.Semaphore(2)
+
+def _scanit_migrate_to_catalog(org):
+    """One time per workspace: bring products entered in the old Scanit table into the
+    catalog (matched by barcode). Fills only what the catalog doesn't have yet."""
+    c=sdb(org)
+    try:
+        if c.execute("SELECT 1 FROM settings WHERE key='scanit_migrated'").fetchone(): return 0
+        n=0
+        try: rows=[dict(r) for r in c.execute("SELECT * FROM scanit_products WHERE active=1").fetchall()]
+        except sqlite3.OperationalError: rows=[]
+        now=datetime.now().isoformat(timespec="seconds")
+        for r in rows:
+            codes=[re.sub(r'[\s\-]','',r.get("upc") or "")]
+            try: codes+=[x["upc"] for x in c.execute("SELECT upc FROM scanit_barcodes WHERE product_id=?",(r["id"],)).fetchall()]
+            except sqlite3.OperationalError: pass
+            codes=[x for x in dict.fromkeys(codes) if x]
+            prod=None
+            for cd in codes:
+                prod=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(cd,cd)).fetchone()
+                if prod: break
+            name=" ".join(x for x in (r.get("brand"),r.get("product_name"),r.get("variant"),
+                          (str(r.get("size") or "")+(r.get("size_unit") or "")).strip() or None) if x).strip()
+            notes={}
+            for k_new,k_old in (("top","notes_top"),("heart","notes_heart"),("base","notes_base")):
+                if r.get(k_old): notes[k_new]=r[k_old]
+            try: pts=json.loads(r.get("benefits") or "[]")+json.loads(r.get("key_points") or "[]")
+            except Exception: pts=[]
+            if pts: notes["points"]=[str(x) for x in pts][:6]
+            if not prod:
+                sku=codes[0] if codes else "SCANIT-%d"%r["id"]
+                c.execute("""INSERT OR IGNORE INTO products(sku,name,barcode,image_url,category,on_hand,avg_cost,created_at,updated_at)
+                             VALUES(?,?,?,?,?,0,0,?,?)""",(sku,name or sku,(codes[0] if codes else None),r.get("image_url"),r.get("category"),now,now))
+                prod=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()
+            sku=prod["sku"]
+            if r.get("msrp") and not float(prod["retail_price"] or 0):
+                verified=(r.get("verification_status") or "")=="verified"
+                src=(r.get("msrp_url") or "manual") if verified else "db:legacy"   # unverified: lowest rank, a lookup may improve it
+                c.execute("UPDATE products SET retail_price=?, msrp_source=? WHERE sku=?", (r["msrp"], src, sku))
+            if r.get("target_price") and not float(prod["target_price"] or 0):
+                c.execute("UPDATE products SET target_price=? WHERE sku=?",(r["target_price"],sku))
+            if notes and not (prod["product_notes"] or ""):
+                c.execute("UPDATE products SET product_notes=?, notes_source='manual' WHERE sku=?",(json.dumps(notes),sku))
+            if r.get("image_url") and not (prod["image_url"] or ""):
+                c.execute("UPDATE products SET image_url=? WHERE sku=?",(r["image_url"],sku))
+            n+=1
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('scanit_migrated',?)",(json.dumps({"at":now,"n":n}),))
+        c.commit()
+        return n
+    finally:
+        c.close()
+
+def _scanit_view(r):
+    """What the host screen shows for one catalog product."""
+    if not r: return None
+    d=dict(r)
+    try: notes=json.loads(d.get("product_notes") or "{}") or {}
+    except Exception: notes={}
+    ms=(d.get("msrp_source") or "")
+    return {"sku":d["sku"],"name":d.get("name") or d["sku"],"barcode":d.get("barcode") or "",
+            "image_url":d.get("image_url") or "","category":d.get("category") or "",
+            "msrp":float(d.get("retail_price") or 0),
+            "msrp_source":("" if ms=="manual" else ms.replace("db:","")),"msrp_manual":ms=="manual",
+            "target_price":float(d.get("target_price") or 0),
+            "notes":notes,"notes_source":d.get("notes_source") or "",
+            "info_status":d.get("info_status") or "",
+            "needs_review":(d.get("category") or "")=="Needs review"}
+
+SCANIT_LOOKING_STALE_MIN=10
+def _scanit_stale_cutoff():
+    return (datetime.now()-timedelta(minutes=SCANIT_LOOKING_STALE_MIN)).isoformat(timespec="seconds")
+
+def _scanit_wants_lookup(r):
+    """Look up once per product: when notes or a real MSRP are missing. A failed lookup is
+    retried after a day; 'done' is final (an admin can force a new lookup). A 'looking' that
+    is older than 10 minutes lost its worker (restart/deploy) and counts as failed."""
+    if not anthropic_client or not r: return False
+    st=r["info_status"] or ""
+    if st=="looking" and (r["info_checked_at"] or "")<_scanit_stale_cutoff(): st="failed_stale"
+    if st=="failed_stale": return int(r["info_attempts"] or 0)<2
+    if st in ("looking","done"): return False
+    if st=="failed" and (int(r["info_attempts"] or 0)>=2 or
+            (r["info_checked_at"] or "")>(datetime.now()-timedelta(days=1)).isoformat(timespec="seconds")):
+        return False
+    has_notes=bool((r["product_notes"] or "").strip("{} "))
+    msrp_ok=float(r["retail_price"] or 0)>0 and not (r["msrp_source"] or "").startswith("db:")
+    return not (has_notes and msrp_ok)
+
+# Which value source wins: what the team typed > brand MSRP found on the web > AI estimate >
+# a store price from the barcode databases. A lower one never replaces a higher one.
+def _value_rank(src, price):
+    if not float(price or 0): return 0
+    s=src or ""
+    if s=="manual": return 4
+    if s.startswith("http"): return 3
+    if s=="ai-estimate": return 2
+    return 1
+
+def _scanit_start_lookup(org, sku, force=False):
+    """Claim the lookup for this product (one at a time) and run it in the background."""
+    c=sdb(org)
+    try:
+        stale=_scanit_stale_cutoff()
+        q=("UPDATE products SET info_status='looking', info_checked_at=? WHERE sku=? AND (COALESCE(info_status,'')<>'looking' OR COALESCE(info_checked_at,'')<?)"
+           if force else
+           "UPDATE products SET info_status='looking', info_checked_at=? WHERE sku=? AND (COALESCE(info_status,'') IN ('','failed') OR (info_status='looking' AND COALESCE(info_checked_at,'')<?))")
+        won=c.execute(q,(datetime.now().isoformat(timespec="seconds"),sku,stale)).rowcount
+        if won: c.execute("UPDATE products SET info_attempts=COALESCE(info_attempts,0)+1 WHERE sku=?",(sku,))
+        c.commit()
+    finally:
+        c.close()
+    if won: threading.Thread(target=_scanit_lookup_info,args=(org,sku),daemon=True,name="scanit-"+sku[:20]).start()
+    return bool(won)
+
+def _scanit_ai_json(prompt, use_web):
+    kw={"model":SCANIT_AI_MODEL,"max_tokens":1200,"messages":[{"role":"user","content":prompt}]}
+    if use_web: kw["tools"]=[{"type":"web_search_20250305","name":"web_search","max_uses":3}]
+    msg=anthropic_client.messages.create(**kw)
+    txt="".join(getattr(b,"text","") or "" for b in msg.content if getattr(b,"type","")=="text").strip()
+    m=re.search(r"\{.*\}",txt,re.S)
+    if not m: raise ValueError("no JSON in answer")
+    return json.loads(m.group(0))
+
+def _scanit_lookup_info(org, sku):
+    """Background lookup; never leaves the product stuck at 'looking'."""
+    try:
+        _scanit_lookup_info_inner(org, sku)
+    except Exception as e:
+        print("scanit lookup crashed %s: %r"%(sku,e),flush=True)
+        try:
+            c=sdb(org)
+            c.execute("UPDATE products SET info_status='failed', info_checked_at=? WHERE sku=? AND info_status='looking'",
+                      (datetime.now().isoformat(timespec="seconds"),sku)); c.commit(); c.close()
+        except Exception: pass
+
+def _scanit_lookup_info_inner(org, sku):
+    """Find the product's notes (fragrance top/heart/base, or 3 short key points) and its
+    US MSRP. Web search first so facts come with a source; without web search the notes
+    are marked as unchecked and no price is taken."""
+    with _SCANIT_LOOKUP_SEM:
+        c=sdb(org)
+        try: r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()
+        finally: c.close()
+        if not r: return
+        name=r["name"] or ""; code=r["barcode"] or ""
+        ask=("Product: %s\nBarcode (UPC/EAN): %s\n\n"
+             "Identify this beauty product. If it is a fragrance give its official fragrance notes "
+             "(top, heart, base). Otherwise give up to 3 very short key points a live seller would say "
+             "(what it is, finish/benefit, who it's for). Also give the brand's US retail price (MSRP) "
+             "with the page you found it on. If you cannot find an official MSRP, give est_value: your best "
+             "estimate of its typical US retail value in dollars (0 if you really have no idea). "
+             "Never guess notes: leave a field empty if you are not sure.\n"
+             "Answer ONLY with JSON: {\"name\":\"<brand + product + size>\",\"kind\":\"fragrance|other\","
+             "\"top\":\"\",\"heart\":\"\",\"base\":\"\",\"points\":[],\"msrp\":0,\"msrp_url\":\"\",\"est_value\":0,\"source_url\":\"\"}"
+             )%(name if not name.startswith("New product") else "(unknown — use the barcode)", code)
+        out=None; web=True; err=""
+        try: out=_scanit_ai_json(ask, True)
+        except Exception as e:
+            err=str(e)[:200]; web=False
+            try: out=_scanit_ai_json(ask, False)
+            except Exception as e2: err=str(e2)[:200]
+        now=datetime.now().isoformat(timespec="seconds")
+        c=sdb(org)
+        try:
+            if not out:
+                c.execute("UPDATE products SET info_status='failed', info_checked_at=? WHERE sku=?",(now,sku)); c.commit()
+                print("scanit lookup failed %s: %s"%(sku,err),flush=True); return
+            notes={}
+            for k in ("top","heart","base"):
+                v=str(out.get(k) or "").strip()
+                if v: notes[k]=v[:200]
+            pts=[str(x).strip()[:120] for x in (out.get("points") or []) if str(x).strip()][:3]
+            if pts and not notes: notes["points"]=pts
+            src=(out.get("source_url") or "").strip()[:300]
+            r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()
+            if notes and (r["notes_source"] or "")!="manual":
+                c.execute("UPDATE products SET product_notes=?, notes_source=? WHERE sku=?",
+                          (json.dumps(notes), (src or "web") if web else "ai-unchecked", sku))
+            try: msrp=round(float(out.get("msrp") or 0),2)
+            except Exception: msrp=0
+            murl=(out.get("msrp_url") or "").strip()[:300]
+            try: est=round(float(out.get("est_value") or 0),2)
+            except Exception: est=0
+            have=_value_rank(r["msrp_source"], r["retail_price"])
+            if web and msrp>0 and murl.startswith("http") and have<3:
+                c.execute("UPDATE products SET retail_price=?, msrp_source=? WHERE sku=?",(msrp,murl,sku))
+            else:
+                guess=est or (msrp if not (web and murl) else 0)     # no checked source: it is an estimate
+                if 0<guess<100000 and have<2:
+                    c.execute("UPDATE products SET retail_price=?, msrp_source='ai-estimate' WHERE sku=?",(guess,sku))
+            nm=str(out.get("name") or "").strip()[:120]
+            if nm and (r["name"] or "").startswith("New product"):
+                c.execute("UPDATE products SET name=? WHERE sku=?",(nm,sku))
+            c.execute("UPDATE products SET info_status='done', info_checked_at=? WHERE sku=?",(now,sku)); c.commit()
+        finally:
+            c.close()
+
+@app.route("/api/scanit/scan")
+@req_role("admin","cs","host","manager")
+def api_scanit_scan():
+    """Host scanned a code: the catalog product (created from the online barcode databases
+    if we've never seen it — never a dead end). No stock is touched."""
+    org=current_org() or DEFAULT_ORG
+    code=re.sub(r'[\s\-]','',(request.args.get("code") or "")).strip()
+    if not code: return jsonify({"ok":False,"error":"No barcode"})
+    c=sdb(org)
+    try:
+        r=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
+        created=False; src=""
+        # only a real product barcode (UPC/EAN: 8–14 digits) may add a product to the catalog —
+        # never a shipping label, a QR link or stray typing
+        if not r and re.fullmatch(r"\d{8,14}", code):
+            r,created,src=_resolve_or_create_product_by_barcode(c, code, who=session.get("name",""))
+        if not r: return jsonify({"ok":True,"found":False,"code":code})
+        c.execute("""CREATE TABLE IF NOT EXISTS scanit_scans(id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     username TEXT, sku TEXT, scanned_at TEXT)""")
+        c.execute("INSERT INTO scanit_scans(username,sku,scanned_at) VALUES(?,?,?)",
+                  (session.get("name",""),r["sku"],datetime.now().isoformat(timespec="seconds")))
+        c.commit()
+        want=_scanit_wants_lookup(r)
+    finally:
+        c.close()
+    if want: _scanit_start_lookup(org, r["sku"])
+    c=sdb(org); r=c.execute("SELECT * FROM products WHERE sku=?",(r["sku"],)).fetchone(); c.close()
+    return jsonify({"ok":True,"found":True,"created":created,"created_source":src,"product":_scanit_view(r)})
+
+@app.route("/api/scanit/item")
+@req_role("admin","cs","host","manager")
+def api_scanit_item():
+    sku=(request.args.get("sku") or "").strip()
+    c=sdb(); r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone(); c.close()
+    if not r: return jsonify({"ok":False,"error":"Not found"}),404
+    return jsonify({"ok":True,"product":_scanit_view(r)})
+
+@app.route("/api/scanit/item",methods=["POST"])
+@req_role("admin","cs","manager")
+def api_scanit_item_save():
+    """Quick fix from the host screen: name, MSRP, target price, notes. Typed values are
+    marked manual so a later lookup never overwrites them."""
+    d=request.get_json() or {}
+    sku=(d.get("sku") or "").strip()
+    c=sdb()
+    try:
+        r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()
+        if not r: return jsonify({"ok":False,"error":"Not found"}),404
+        def num(k):
+            v=d.get(k)
+            if v in (None,""): return 0.0
+            v=float(v)
+            if v<0 or v>100000: raise ValueError(k)
+            return round(v,2)
+        try:
+            if "name" in d and (d.get("name") or "").strip():
+                c.execute("UPDATE products SET name=? WHERE sku=?",(d["name"].strip()[:160],sku))
+            if "msrp" in d:
+                m=num("msrp")
+                if m!=float(r["retail_price"] or 0):
+                    c.execute("UPDATE products SET retail_price=?, msrp_source='manual' WHERE sku=?",(m,sku))
+            if "target_price" in d:
+                c.execute("UPDATE products SET target_price=? WHERE sku=?",(num("target_price"),sku))
+        except ValueError:
+            return jsonify({"ok":False,"error":"Prices must be numbers"})
+        if "notes" in d:
+            n=d.get("notes") or {}
+            clean={k:str(n.get(k) or "").strip()[:200] for k in ("top","heart","base") if str(n.get(k) or "").strip()}
+            pts=[str(x).strip()[:120] for x in (n.get("points") or []) if str(x).strip()][:6]
+            if pts: clean["points"]=pts
+            try: old=json.loads(r["product_notes"] or "{}") or {}
+            except Exception: old={}
+            if clean!=old:
+                c.execute("UPDATE products SET product_notes=?, notes_source='manual' WHERE sku=?",(json.dumps(clean) if clean else None,sku))
+        c.execute("UPDATE products SET updated_at=? WHERE sku=?",(datetime.now().isoformat(timespec="seconds"),sku))
+        c.commit()
+        r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()
+    finally:
+        c.close()
+    alog("scanit.item_save",sku)
+    return jsonify({"ok":True,"product":_scanit_view(r)})
+
+@app.route("/api/scanit/item/lookup",methods=["POST"])
+@req_role("admin","cs","manager")
+def api_scanit_item_lookup():
+    sku=((request.get_json() or {}).get("sku") or "").strip()
+    if not anthropic_client: return jsonify({"ok":False,"error":"Lookup isn't set up (ANTHROPIC_API_KEY)."})
+    org=current_org() or DEFAULT_ORG
+    return jsonify({"ok":True,"started":_scanit_start_lookup(org, sku, force=True)})
 
 @app.route("/api/scanit/lookup")
 @req_role("admin","cs","host")
@@ -15474,7 +15924,68 @@ def _tt_ensure_cipher(org, shop_id, tok):
         _tt_log("ensure cipher failed: %r"%e)
     return tok
 
-_tt_last_event = 0   # unix time of the last order webhook — drives fast "live" polling
+_tt_last_event = 0   # unix time of the last order webhook seen by THIS worker process
+
+# The "a live is selling right now" signal must be shared by all gunicorn workers: the
+# webhook can land on any of them, but only the one worker holding the sweep lock runs
+# _tt_sweep_loop. A per-process global alone meant the sweep usually never saw the
+# signal and stayed on ~30s idle polling during a live. The mtime of this marker file
+# on the shared volume is the cross-process signal.
+_TT_LIVE_MARK = os.path.join(DATA_DIR, ".tt_live_event")
+
+def _tt_mark_live():
+    try:
+        with open(_TT_LIVE_MARK, "a"): pass
+        os.utime(_TT_LIVE_MARK, None)
+    except Exception as e:
+        _tt_log("live mark failed: %r"%e)
+
+def _tt_last_live_event():
+    """Most recent order-webhook time across ALL workers (unix seconds, 0 if none)."""
+    try: shared=os.path.getmtime(_TT_LIVE_MARK)
+    except Exception: shared=0
+    return max(shared, _tt_last_event)
+
+# Background ingest: the webhook acks TikTok immediately and hands the order fetch to
+# one daemon thread per worker. Duplicate pushes for an order already waiting in the
+# queue are collapsed (a push that arrives while the order is being fetched is queued
+# again, so the newest status always wins). A full queue or a crashed process loses
+# nothing: the event is logged and the live sweep re-reads recent orders.
+import queue as _queue
+_tt_ingest_q = _queue.Queue(maxsize=5000)
+_tt_ingest_pending = set()
+_tt_ingest_lock = threading.Lock()
+_tt_ingest_thread = None
+
+def _tt_ingest_worker():
+    while True:
+        org, shop_id, order_id = _tt_ingest_q.get()
+        with _tt_ingest_lock:
+            _tt_ingest_pending.discard((org, order_id))
+        try:
+            _tt_ingest_order(org, shop_id, order_id)
+        except Exception as e:
+            _tt_log("ingest failed %s: %r"%(order_id, e))
+        finally:
+            _tt_ingest_q.task_done()
+
+def _tt_enqueue_ingest(org, shop_id, order_id):
+    """Queue one order for background fetch. Returns True if queued, False if it was
+    already waiting or the queue is full (the sweep will catch it)."""
+    global _tt_ingest_thread
+    key=(org, str(order_id))
+    with _tt_ingest_lock:
+        if key in _tt_ingest_pending: return False
+        if _tt_ingest_thread is None or not _tt_ingest_thread.is_alive():
+            _tt_ingest_thread=threading.Thread(target=_tt_ingest_worker, daemon=True, name="tt-ingest")
+            _tt_ingest_thread.start()
+        try:
+            _tt_ingest_q.put_nowait((org, str(shop_id), str(order_id)))
+        except _queue.Full:
+            _tt_log("ingest queue full; %s left for the sweep"%order_id)
+            return False
+        _tt_ingest_pending.add(key)
+    return True
 
 def _tt_sweep_once(window_sec=7200):
     """Poll each connected shop for orders updated in the last window_sec and ingest them.
@@ -15539,7 +16050,7 @@ def _tt_sweep_loop():
     while True:
         time.sleep(5)
         now=time.time()
-        active = (now - _tt_last_event) < 420   # a sale came in within the last 7 minutes
+        active = (now - _tt_last_live_event()) < 420   # a sale came in within the last 7 minutes (any worker)
         try:
             if now - last_wide >= 300:
                 last_wide=now; _tt_sweep_once(window_sec=7200)   # wide safety every ~5 min
@@ -15615,7 +16126,14 @@ def api_tiktok_connect():
 def api_tiktok_callback():
     code=request.args.get("code") or request.args.get("auth_code") or ""
     state=request.args.get("state") or ""
-    org=_tt_state_org(state) or current_org()
+    # Shops are only ever connected from inside the app ("Connect" → TikTok → back
+    # here), which always carries our signed state. Never fall back to the logged-in
+    # session's org: that let a crafted callback link (attacker's auth code, no/forged
+    # state) attach an attacker-controlled shop to whichever org the victim was in.
+    org=_tt_state_org(state)
+    if not org:
+        _tt_log("callback rejected: missing/invalid/expired state")
+        return _tt_page("Authorization expired","This connection link is no longer valid. Please start the connection again from the TikTok page inside the app."),400
     if not code:
         return _tt_page("Authorization failed","No authorization code was returned by TikTok. Please try connecting again."),400
     if not org:
@@ -15675,9 +16193,8 @@ def api_tiktok_webhook():
     if not verified:
         org=_tt_org_for_shop_exact(shop_id)
         if ttype==1 and order_id and org:
-            _tt_last_event=time.time()
-            try: _tt_ingest_order(org, shop_id, order_id)
-            except Exception as e: _tt_log("ingest (unsigned hint) failed %s: %r"%(order_id,e))
+            _tt_last_event=time.time(); _tt_mark_live()
+            _tt_enqueue_ingest(org, shop_id, order_id)
         return jsonify({"code":0,"message":"success"})
     org=_tt_org_for_shop(shop_id)
     try:
@@ -15693,12 +16210,15 @@ def api_tiktok_webhook():
             c=pdb(); c.execute("UPDATE tiktok_shops SET active=0,updated_at=CURRENT_TIMESTAMP WHERE shop_id=?",(shop_id,)); c.commit(); c.close()
         except Exception: pass
     # Order status change (topic 1): signal live activity so the background poller switches
-    # to ~5s fast polling, and best-effort fetch this one order now. Never block the 200 ack.
+    # to ~5s fast polling, and fetch this one order right away in the background.
+    # Never block the 200 ack: the fetch used to run inline here, and a burst of pushes
+    # during a live held every gunicorn worker for 20-36s (stations froze). Now it is
+    # queued to this worker's ingest thread; if the process dies before it runs, the
+    # event row above is logged and the 5s live sweep picks the order up anyway.
     if ttype==1:
-        _tt_last_event=time.time()
+        _tt_last_event=time.time(); _tt_mark_live()
         if order_id and org:
-            try: _tt_ingest_order(org, shop_id, order_id)
-            except Exception as e: _tt_log("ingest failed %s: %r"%(order_id,e))
+            _tt_enqueue_ingest(org, shop_id, order_id)
     return jsonify({"code":0,"message":"success"})
 
 @app.route("/api/tiktok/status")
@@ -16274,6 +16794,994 @@ def api_tiktok_live_detail():
     v=(request.args.get("version") or "").strip()
     return jsonify(_tt_live_room_detail(org, room_id, [v] if v else None))
 
+# ── COMBINE & LABELS (TikTok Shipping) — stage A: READ-ONLY ─────────────────────
+# Goal: combine a buyer's packages and create TikTok Shipping labels from inside the app.
+# With TikTok Shipping the label is created on TikTok's side, which assigns the tracking
+# number and updates the orders itself — nothing has to be pushed back.
+# Stage A only READS: it lists what TikTok says can be combined, next to our own pick/pack
+# status, and shows the raw response so the exact API paths/fields can be verified against
+# the live shop before any write exists. The paths are settings (env) so a correction is a
+# Railway variable change, not a deploy. Stage B (combine / create label) will be gated by
+# TIKTOK_FULFILL_WRITE (off by default) plus manager approval per batch.
+TT_PATH_COMBINABLE = os.environ.get("TIKTOK_PATH_COMBINABLE", "/fulfillment/{v}/combinable_packages/search").strip()
+TT_FULFILL_WRITE = os.environ.get("TIKTOK_FULFILL_WRITE", "").strip().lower() in ("1", "true", "yes")
+
+def _tt_combinable_groups(res):
+    """Normalize a combinable-packages response into [{id, order_ids}] — defensive about the
+    exact field names until they are verified against the live API."""
+    data = (res or {}).get("data") or {}
+    rows = data.get("combinable_packages") or data.get("packages") or data.get("combinable_package_list") or []
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict): continue
+        gid = str(r.get("id") or r.get("combinable_package_id") or r.get("package_id") or "")
+        oids = r.get("order_ids") or [o.get("id") or o.get("order_id") for o in (r.get("orders") or []) if isinstance(o, dict)]
+        oids = [str(x) for x in (oids or []) if x]
+        if oids: out.append({"id": gid, "order_ids": oids})
+    return out, (data.get("next_page_token") or "")
+
+def _tt_fetch_combinable(org, max_pages=10):
+    """GET combinable packages for every active shop of this org. Read-only."""
+    c = pdb()
+    shops = [dict(r) for r in c.execute(
+        "SELECT shop_id, shop_name, granted_scopes FROM tiktok_shops WHERE org_id=? AND active=1", (org,)).fetchall()]
+    c.close()
+    result = {"shops": [], "groups": [], "raw_first": None, "path": TT_PATH_COMBINABLE.format(v=TIKTOK_API_VERSION)}
+    for sh in shops:
+        scopes = sh.get("granted_scopes") or ""
+        info = {"shop_id": sh["shop_id"], "shop_name": sh.get("shop_name") or "",
+                "has_fulfillment_scope": "fulfillment" in scopes.lower(), "scopes": scopes, "error": None}
+        result["shops"].append(info)
+        tok = _tt_valid_token(org, sh["shop_id"])
+        if not tok or not tok.get("access_token"):
+            info["error"] = "No valid access token — reconnect the shop"; continue
+        tok = _tt_ensure_cipher(org, sh["shop_id"], tok)
+        token, pages = "", 0
+        while pages < max_pages:
+            params = {"page_size": 50}
+            if tok.get("shop_cipher"): params["shop_cipher"] = tok["shop_cipher"]
+            if token: params["page_token"] = token
+            try:
+                res = _tt_request("GET", TIKTOK_API_BASE + result["path"], params=params, signed=True,
+                                  access_token=tok["access_token"])
+            except Exception as e:
+                info["error"] = "Request failed: %s" % str(e)[:150]; break
+            if result["raw_first"] is None: result["raw_first"] = res
+            if res.get("code"):
+                info["error"] = "TikTok %s: %s" % (res.get("code"), (res.get("message") or "")[:150]); break
+            groups, token = _tt_combinable_groups(res)
+            for g in groups: g["shop_id"] = sh["shop_id"]
+            result["groups"].extend(groups)
+            pages += 1
+            if not token: break
+    return result
+
+def _tt_enrich_combine_groups(org, groups):
+    """Attach our own view of each order: package, buyer, show, items, pick/pack status."""
+    c = sdb(org)
+    try:
+        for g in groups:
+            orders = []
+            for oid in g["order_ids"]:
+                r = c.execute("""SELECT s.shipment_id, s.status, s.buyer_name, s.buyer_username, s.import_label,
+                                        s.tracking_code
+                                 FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                                 WHERE i.order_id=? LIMIT 1""", (oid,)).fetchone()
+                items = [dict(x) for x in c.execute(
+                    """SELECT sku, product_name, quantity, COALESCE(picked,0) picked, COALESCE(cancelled,0) cancelled
+                       FROM shipment_items WHERE order_id=? ORDER BY id""", (oid,)).fetchall()]
+                orders.append({"order_id": oid, "in_app": bool(r), **(dict(r) if r else {}), "items": items})
+            g["orders"] = orders
+            buyers = {(o.get("buyer_username") or o.get("buyer_name") or "") for o in orders if o.get("in_app")}
+            g["buyer"] = next(iter(buyers)) if len(buyers) == 1 else ""
+            g["already_handled"] = any((o.get("status") or "") in ("picked", "packed", "shipped") for o in orders)
+            g["missing_in_app"] = sum(1 for o in orders if not o.get("in_app"))
+            ins = [o for o in orders if o.get("in_app")]
+            g["labeled"] = bool(ins) and all((o.get("tracking_code") or "") for o in ins)
+            g["packages"] = sorted({o["shipment_id"] for o in orders if o.get("shipment_id")})
+            g["item_count"] = sum(len([i for i in o["items"] if not i["cancelled"]]) for o in orders)
+    finally:
+        c.close()
+    return groups
+
+@app.route("/admin/combine")
+@req_role("admin", "cs")
+def combine_page():
+    return (COMBINE_HTML
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("combine"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/tiktok/combinable")
+@req_role("admin", "cs")
+def api_tiktok_combinable():
+    """Read-only: what TikTok says can be combined, joined with our pick/pack status.
+    ?raw=1 (admin) also returns TikTok's first raw response, to verify paths and fields."""
+    org = current_org() or DEFAULT_ORG
+    if not _tiktok_ready():
+        return jsonify({"ok": False, "error": "TikTok isn't configured for this workspace."})
+    r = _tt_fetch_combinable(org)
+    groups = _tt_enrich_combine_groups(org, r["groups"])
+    groups.sort(key=lambda g: (g["already_handled"], -len(g["order_ids"])))
+    out = {"ok": True, "path": r["path"], "shops": r["shops"], "groups": groups,
+           "count": len(groups), "orders": sum(len(g["order_ids"]) for g in groups),
+           "write_enabled": TT_FULFILL_WRITE}
+    if session.get("role") == "admin" and request.args.get("raw") == "1":
+        out["raw_first"] = r["raw_first"]
+    return jsonify(out)
+
+# ── COMBINE & LABELS — stage B: combine + create TikTok Shipping labels ─────────
+# Everything the team does in Seller Center's "To Ship" screen, from our side:
+#   plan a show  →  manager approves with PIN  →  background run: combine what TikTok
+#   allows, create each label on TikTok (carrier pickup, standard box, TikTok picks the
+#   service), store tracking + label  →  one 4x6 PDF for the whole batch.
+# Safety:
+#   * nothing writes unless TIKTOK_FULFILL_WRITE=1 (off by default)
+#   * every write call lives in the _tt_api_* adapter below; paths are settings
+#   * one label per package, ever: tt_label_jobs is claimed atomically BEFORE TikTok is
+#     called; a crash mid-call leaves 'uncertain', which is never retried blindly — it is
+#     reconciled by READING the package from TikTok first
+#   * runs in a background thread (never inside a web request), resumable after a restart
+TT_PATH_COMBINE = os.environ.get("TIKTOK_PATH_COMBINE", "/fulfillment/{v}/packages/combine").strip()
+TT_PATH_PACKAGE = os.environ.get("TIKTOK_PATH_PACKAGE", "/fulfillment/{v}/packages/{pid}").strip()
+TT_PATH_SLOTS = os.environ.get("TIKTOK_PATH_HANDOVER_SLOTS", "/fulfillment/{v}/packages/{pid}/handover_time_slots").strip()
+TT_PATH_SHIP = os.environ.get("TIKTOK_PATH_SHIP", "/fulfillment/{v}/packages/{pid}/ship").strip()
+TT_PATH_DOC = os.environ.get("TIKTOK_PATH_SHIPPING_DOC", "/fulfillment/{v}/packages/{pid}/shipping_documents").strip()
+TT_PATH_ORDERS = os.environ.get("TIKTOK_PATH_ORDER_DETAIL", "/order/{v}/orders").strip()
+# An order is ready for a label only once TikTok moved it from Pending (ON_HOLD / UNPAID) to
+# Processing (AWAITING_SHIPMENT). Anything else that isn't final just waits for a later batch.
+TT_READY_STATUSES = {"AWAITING_SHIPMENT"}
+TT_DEAD_STATUSES = {"CANCELLED"}
+TT_SHIP_SEND_BOX = os.environ.get("TIKTOK_SHIP_SEND_BOX", "").strip().lower() in ("1", "true", "yes")
+TT_LABEL_DOC_SIZE = os.environ.get("TIKTOK_LABEL_DOC_SIZE", "A6").strip()   # A6 = 4x6
+TT_DEFAULT_BOX = {"weight_lb": 1.0, "length_in": 9.0, "width_in": 6.0, "height_in": 3.0}
+
+class TTError(Exception):
+    def __init__(self, msg, code=None, sent=False):
+        super().__init__(msg); self.code = code; self.sent = sent
+
+def _tt_shop_call(org, shop_id, method, tmpl, pid="", params=None, body=None):
+    """One signed call for a shop. Raises TTError (sent=True when the request may have
+    reached TikTok, i.e. its outcome is unknown)."""
+    tok = _tt_valid_token(org, shop_id)
+    if not tok or not tok.get("access_token"):
+        raise TTError("No valid TikTok token for shop %s — reconnect it" % shop_id)
+    tok = _tt_ensure_cipher(org, shop_id, tok)
+    p = dict(params or {})
+    if tok.get("shop_cipher"): p["shop_cipher"] = tok["shop_cipher"]
+    path = tmpl.format(v=TIKTOK_API_VERSION, pid=pid)
+    try:
+        res = _tt_request(method, TIKTOK_API_BASE + path, params=p, body=body, signed=True,
+                          access_token=tok["access_token"])
+    except Exception as e:
+        raise TTError("Request to TikTok failed: %s" % str(e)[:200], sent=(method != "GET"))
+    if res.get("code"):
+        raise TTError("TikTok %s: %s" % (res.get("code"), (res.get("message") or "")[:200]), code=res.get("code"))
+    return res.get("data") or {}
+
+# ---- adapter: the only functions that know TikTok's request/response shapes ----
+def _tt_api_combine(org, shop_id, group_id, order_ids):
+    data = _tt_shop_call(org, shop_id, "POST", TT_PATH_COMBINE,
+                         body={"combinable_packages": [{"id": group_id, "order_ids": list(order_ids)}]})
+    errs = data.get("errors") or []
+    if errs:
+        raise TTError("TikTok refused to combine: %s" % str(errs)[:200])
+    pk = (data.get("packages") or [{}])[0]
+    pid = str(pk.get("id") or pk.get("package_id") or data.get("package_id") or "")
+    if not pid: raise TTError("Combine answered without a package id")
+    return pid
+
+def _tt_api_package(org, shop_id, pid):
+    d = _tt_shop_call(org, shop_id, "GET", TT_PATH_PACKAGE, pid=pid)
+    return {"tracking": str(d.get("tracking_number") or ""), "status": str(d.get("package_status") or d.get("status") or ""),
+            "provider": str(d.get("shipping_provider_name") or "")}
+
+def _tt_api_pickup_slot(org, shop_id, pid):
+    try:
+        d = _tt_shop_call(org, shop_id, "GET", TT_PATH_SLOTS, pid=pid, params={"handover_method": "PICKUP"})
+    except TTError:
+        return None
+    for s in (d.get("pickup_slots") or d.get("time_slots") or d.get("handover_time_slots") or []):
+        if s.get("avaliable", s.get("available", True)):
+            return {"start_time": s.get("start_time"), "end_time": s.get("end_time")}
+    return None
+
+def _tt_api_ship(org, shop_id, pid, slot, box):
+    body = {"handover_method": "PICKUP"}
+    if slot: body["pickup_slot"] = slot
+    if TT_SHIP_SEND_BOX:
+        body["weight"] = {"value": str(box["weight_lb"]), "unit": "POUND"}
+        body["dimension"] = {"length": str(box["length_in"]), "width": str(box["width_in"]),
+                             "height": str(box["height_in"]), "unit": "INCH"}
+    _tt_shop_call(org, shop_id, "POST", TT_PATH_SHIP, pid=pid, body=body)
+
+def _tt_api_label(org, shop_id, pid):
+    d = _tt_shop_call(org, shop_id, "GET", TT_PATH_DOC, pid=pid,
+                      params={"document_type": "SHIPPING_LABEL", "document_size": TT_LABEL_DOC_SIZE})
+    url = str(d.get("doc_url") or d.get("url") or "")
+    if not url: raise TTError("TikTok returned no label document")
+    return url
+
+def _tt_api_order_packages(org, shop_id, order_ids):
+    """{order_id: [package_id, ...]} from TikTok's order detail (read-only)."""
+    out = {}
+    ids = [str(o) for o in order_ids]
+    for i in range(0, len(ids), 50):
+        d = _tt_shop_call(org, shop_id, "GET", TT_PATH_ORDERS, params={"ids": ",".join(ids[i:i + 50])})
+        for o in d.get("orders") or []:
+            oid = str(o.get("id") or "")
+            pk = [str(p.get("id") or "") for p in (o.get("packages") or []) if p.get("id")]
+            if not pk:
+                pk = sorted({str(li.get("package_id")) for li in (o.get("line_items") or []) if li.get("package_id")})
+            if oid: out[oid] = pk
+    return out
+
+def _tt_api_order_statuses(org, shop_id, order_ids):
+    """{order_id: STATUS} straight from TikTok (read-only, 50 ids per call)."""
+    out = {}
+    ids = [str(o) for o in order_ids]
+    for i in range(0, len(ids), 50):
+        d = _tt_shop_call(org, shop_id, "GET", TT_PATH_ORDERS, params={"ids": ",".join(ids[i:i + 50])})
+        for o in d.get("orders") or []:
+            oid = str(o.get("id") or "")
+            if oid: out[oid] = str(o.get("status") or o.get("order_status") or "").upper()
+    return out
+
+def _tt_fresh_order_statuses(org, order_ids):
+    """Only what TikTok answered just now: ({order_id: STATUS}, error)."""
+    st, _fresh, err = _tt_live_order_statuses(org, order_ids, _fresh_only=True)
+    return st, err
+
+def _tt_live_order_statuses(org, order_ids, _fresh_only=False):
+    """Current TikTok status of these orders. Asks TikTok first (and saves what it says);
+    if TikTok can't be reached, falls back to the last status our sync stored.
+    Returns (statuses, fresh, error)."""
+    org = _org_or_current(org)
+    ids = sorted({str(o) for o in order_ids})
+    if not ids: return {}, True, None
+    p = pdb()
+    try:
+        q = "SELECT order_id, shop_id, status FROM tiktok_orders WHERE org_id=? AND order_id IN (%s)" % ",".join("?" * len(ids))
+        rows = [dict(r) for r in p.execute(q, [org] + ids).fetchall()]
+    finally:
+        p.close()
+    stored = {str(r["order_id"]): (r["status"] or "").upper() for r in rows}
+    by_shop = {}
+    for r in rows: by_shop.setdefault(r["shop_id"] or "", []).append(str(r["order_id"]))
+    fresh, err = {}, None
+    for shop, oids in by_shop.items():
+        if not shop: continue
+        try:
+            fresh.update(_tt_api_order_statuses(org, shop, oids))
+        except TTError as e:
+            err = str(e)
+    if fresh:
+        now = datetime.now().isoformat(timespec="seconds")
+        p = pdb()
+        try:
+            for oid, st in fresh.items():
+                if st: p.execute("UPDATE tiktok_orders SET status=?, updated_at=? WHERE org_id=? AND order_id=?", (st, now, org, oid))
+            p.commit()
+        finally:
+            p.close()
+    if _fresh_only:
+        return {o: fresh[o] for o in ids if fresh.get(o)}, None, err
+    out = {o: (fresh.get(o) or stored.get(o) or "") for o in ids}
+    return out, (err is None and all(o in fresh for o in ids)), err
+
+# ---- storage ----
+def _tt_labels_ensure(c):
+    c.execute("""CREATE TABLE IF NOT EXISTS tt_label_jobs(
+        package_id TEXT PRIMARY KEY, shop_id TEXT, batch_id INTEGER, status TEXT,
+        tracking TEXT, doc_url TEXT, label_file TEXT, error TEXT, created_at TEXT, updated_at TEXT)""")
+    for col in ("label_file", "show"):
+        try: c.execute("ALTER TABLE tt_label_jobs ADD COLUMN %s TEXT" % col)
+        except sqlite3.OperationalError: pass
+    c.execute("""CREATE TABLE IF NOT EXISTS tt_batches(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, show TEXT, status TEXT, plan TEXT,
+        total INTEGER DEFAULT 0, done INTEGER DEFAULT 0, failed INTEGER DEFAULT 0, combined INTEGER DEFAULT 0,
+        created_by TEXT, approved_by TEXT, created_at TEXT, started_at TEXT, finished_at TEXT, note TEXT)""")
+    for col in ("pdf_file", "heartbeat"):
+        try: c.execute("ALTER TABLE tt_batches ADD COLUMN %s TEXT" % col)
+        except sqlite3.OperationalError: pass
+
+TT_BATCH_STALE_SECS = 600   # a 'running' batch that hasn't moved for this long lost its worker
+
+def _tt_hb_cutoff():
+    return (datetime.now() - timedelta(seconds=TT_BATCH_STALE_SECS)).isoformat(timespec="seconds")
+
+def _tt_batch_beat(org, bid):
+    c = sdb(org)
+    try:
+        c.execute("UPDATE tt_batches SET heartbeat=? WHERE id=?", (datetime.now().isoformat(timespec="seconds"), bid)); c.commit()
+    finally:
+        c.close()
+
+def _tt_claim_batch_run(c, bid, from_statuses):
+    """Atomically take the right to run this batch. Only one worker at a time: a batch that is
+    'running' can be taken over only once its heartbeat is stale (its worker died)."""
+    now = datetime.now().isoformat(timespec="seconds")
+    q = ("UPDATE tt_batches SET status='running', heartbeat=?, started_at=COALESCE(started_at,?) WHERE id=? AND "
+         "(status IN (%s) OR (status='running' AND COALESCE(heartbeat,'')<?))" % ",".join("?" * len(from_statuses)))
+    won = c.execute(q, [now, now, bid] + list(from_statuses) + [_tt_hb_cutoff()]).rowcount
+    c.commit()
+    return bool(won)
+
+def _tt_live_folder(show):
+    """Folder name for one live's labels: readable + a short hash so two lives never share one."""
+    base = re.sub(r"[^A-Za-z0-9]+", "-", show or "").strip("-")[:70] or "live"
+    return "%s-%s" % (base, hashlib.sha1((show or "").encode("utf-8")).hexdigest()[:6])
+
+def _tt_safe_rel(rel):
+    """'tiktok/<live>/<file>.pdf' with every part sanitized (no path tricks)."""
+    parts = [secure_filename(x) for x in str(rel or "").split("/")]
+    return "/".join(x for x in parts if x)
+
+def _tt_box(org=None):
+    # explicit org: this also runs in the background batch thread (no request context)
+    c = sdb(_org_or_current(org))
+    try:
+        r = c.execute("SELECT value FROM settings WHERE key='tt_box'").fetchone()
+        b = json.loads(r["value"]) if r and r["value"] else {}
+    except Exception:
+        b = {}
+    finally:
+        c.close()
+    out = dict(TT_DEFAULT_BOX); out.update({k: float(v) for k, v in b.items() if k in TT_DEFAULT_BOX})
+    return out
+
+def _tt_shop_for_orders(org, order_ids):
+    if not order_ids: return None
+    c = pdb()
+    try:
+        q = "SELECT shop_id FROM tiktok_orders WHERE org_id=? AND order_id IN (%s) LIMIT 1" % ",".join("?" * len(order_ids))
+        r = c.execute(q, [org] + list(order_ids)).fetchone()
+        return r["shop_id"] if r else None
+    finally:
+        c.close()
+
+def _tt_needs_label(c, label):
+    """API packages of a show that still need a TikTok label: not cancelled/shipped, no
+    tracking yet. {shipment_id: [order_ids]}"""
+    out = {}
+    for r in c.execute("""SELECT s.shipment_id, i.order_id FROM shipments s
+                          JOIN shipment_items i ON i.shipment_id=s.shipment_id
+                          WHERE s.import_label=? AND COALESCE(s.import_batch,'')='tiktok-api'
+                            AND s.status NOT IN ('cancelled','shipped','giveaway')
+                            AND COALESCE(s.tracking_code,'')='' AND COALESCE(i.cancelled,0)=0""", (label,)).fetchall():
+        out.setdefault(r["shipment_id"], set()).add(str(r["order_id"]))
+    return {k: sorted(v) for k, v in out.items()}
+
+_TT_STAGE_RANK = {"pending": 0, "picked": 1, "packed": 2}
+
+def _tt_merge_into_package(c, new_pid, order_ids, packages=None):
+    """After TikTok combined some orders into package new_pid: move those orders' items into
+    one shipment row keyed new_pid (keeping picked/depletion flags — rows are moved, not
+    rebuilt) and drop the now-empty API-owned rows. Touches ONLY the combine's own TikTok
+    packages (never a CSV/manual row that happens to share an order id). Idempotent."""
+    scope = list(packages or []) + [new_pid]
+    olds = [r["shipment_id"] for r in c.execute(
+        "SELECT DISTINCT i.shipment_id FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id "
+        "WHERE i.order_id IN (%s) AND i.shipment_id IN (%s) AND COALESCE(s.import_batch,'')='tiktok-api'"
+        % (",".join("?" * len(order_ids)), ",".join("?" * len(scope))),
+        list(order_ids) + scope).fetchall()]
+    if not olds: return
+    # the combined box is only as far along as its least-advanced part
+    sts = [(r["status"] or "pending") for r in c.execute(
+        "SELECT status FROM shipments WHERE shipment_id IN (%s)" % ",".join("?" * len(olds)), olds).fetchall()]
+    merged_status = min(sts, key=lambda x: _TT_STAGE_RANK.get(x, 0)) if sts else "pending"
+    if not c.execute("SELECT 1 FROM shipments WHERE shipment_id=?", (new_pid,)).fetchone():
+        # copy the first package's row; tracking starts empty (the label assigns it) — never
+        # copy it, because tracking_code is unique among non-NULL values
+        cols = [r[1] for r in c.execute("PRAGMA table_info(shipments)").fetchall() if r[1] not in ("shipment_id", "tracking_code")]
+        c.execute("INSERT INTO shipments(shipment_id,tracking_code,%s) SELECT ?,NULL,%s FROM shipments WHERE shipment_id=?"
+                  % (",".join(cols), ",".join(cols)), (new_pid, olds[0]))
+    c.execute("UPDATE shipment_items SET shipment_id=? WHERE order_id IN (%s) AND shipment_id IN (%s)"
+              % (",".join("?" * len(order_ids)), ",".join("?" * len(olds))), [new_pid] + list(order_ids) + olds)
+    c.execute("UPDATE shipments SET status=? WHERE shipment_id=?", (merged_status, new_pid))
+    for o in olds:
+        if o == new_pid: continue
+        if not c.execute("SELECT 1 FROM shipment_items WHERE shipment_id=?", (o,)).fetchone():
+            c.execute("DELETE FROM shipments WHERE shipment_id=? AND COALESCE(import_batch,'')='tiktok-api'", (o,))
+    try: _recompute_shipment_weight(c, new_pid)
+    except Exception: pass
+
+def _tt_store_label_copy(org, data, show=None, name=None):
+    """Save a label PDF for this tenant (R2 or local) under its live's folder —
+    labels/tiktok/<live>/<name>.pdf — and return that relative name. Takes the org
+    explicitly because it runs in the background batch thread."""
+    fn = _tt_safe_rel("tiktok/%s/%s.pdf" % (_tt_live_folder(show), name or secrets.token_hex(10)))
+    if r2:
+        try:
+            r2.put_object(Bucket=R2_BUCKET, Key=_r2_media_key("labels", fn, org), Body=data, ContentType="application/pdf")
+            return fn
+        except Exception as e:
+            _tt_log("R2 label put failed: %r" % e)
+    path = os.path.join(_labels_dir(org), *fn.split("/"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as fh: fh.write(data)
+    return fn
+
+def _tt_label_one(org, shop_id, pid, batch_id, box):
+    """Create (or recover) the TikTok label for ONE package. Never calls 'ship' twice."""
+    now = lambda: datetime.now().isoformat(timespec="seconds")
+    c = sdb(org); _tt_labels_ensure(c)
+    try:
+        br = c.execute("SELECT show FROM tt_batches WHERE id=?", (batch_id,)).fetchone()
+        show = br["show"] if br else ""
+        c.execute("""INSERT OR IGNORE INTO tt_label_jobs(package_id,shop_id,batch_id,status,show,created_at,updated_at)
+                     VALUES(?,?,?,'claimed',?,?,?)""", (pid, shop_id, batch_id, show, now(), now()))
+        c.commit()
+        job = dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+        st = job["status"]
+        if st == "labeled":
+            return job
+        if job.get("batch_id") != batch_id:     # finishing it here: it belongs to this batch now
+            c.execute("UPDATE tt_label_jobs SET batch_id=? WHERE package_id=?", (batch_id, pid)); c.commit()
+        if st == "skipped":
+            st = "claimed"
+            c.execute("UPDATE tt_label_jobs SET status='claimed' WHERE package_id=? AND status='skipped'", (pid,)); c.commit()
+        if st in ("shipping", "uncertain"):
+            # The ship call may or may not have reached TikTok. READ before doing anything.
+            try:
+                pk = _tt_api_package(org, shop_id, pid)
+            except TTError as e:
+                c.execute("UPDATE tt_label_jobs SET status='uncertain', error=?, updated_at=? WHERE package_id=?", (str(e), now(), pid)); c.commit()
+                return dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+            if pk["tracking"]:
+                st = "shipped"
+            else:
+                c.execute("UPDATE tt_label_jobs SET status='uncertain', error=?, updated_at=? WHERE package_id=?",
+                          ("TikTok shows no label yet — check this package in Seller Center before retrying", now(), pid)); c.commit()
+                return dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+        if st in ("claimed", "error"):
+            # claim the right to call 'ship' (only one caller wins)
+            won = c.execute("UPDATE tt_label_jobs SET status='shipping', batch_id=?, error=NULL, updated_at=? WHERE package_id=? AND status=?",
+                            (batch_id, now(), pid, st)).rowcount
+            c.commit()
+            if not won:
+                return dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+            try:
+                slot = _tt_api_pickup_slot(org, shop_id, pid)
+                _tt_api_ship(org, shop_id, pid, slot, box)
+            except TTError as e:
+                c.execute("UPDATE tt_label_jobs SET status=?, error=?, updated_at=? WHERE package_id=?",
+                          ("uncertain" if e.sent else "error", str(e), now(), pid)); c.commit()
+                return dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+            c.execute("UPDATE tt_label_jobs SET status='shipped', updated_at=? WHERE package_id=?", (now(), pid)); c.commit()
+            st = "shipped"
+        if st == "shipped":
+            try:
+                pk = _tt_api_package(org, shop_id, pid)
+                url = _tt_api_label(org, shop_id, pid)
+            except TTError as e:
+                c.execute("UPDATE tt_label_jobs SET status='shipped', error=?, updated_at=? WHERE package_id=?",
+                          ("Label created on TikTok; download failed: " + str(e), now(), pid)); c.commit()
+                return dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+            # Keep our own copy: TikTok's document link can expire before the batch is printed.
+            fn = None
+            try:
+                data, ct = _fetch_label_bytes(url)
+                fn = _tt_store_label_copy(org, data, show=job.get("show") or show, name=pid)
+            except Exception as e:
+                _tt_log("label copy failed %s: %r" % (pid, e))
+            c.execute("UPDATE tt_label_jobs SET status='labeled', tracking=?, doc_url=?, label_file=?, error=NULL, updated_at=? WHERE package_id=?",
+                      (pk["tracking"], url, fn, now(), pid))
+            if pk["tracking"]:
+                n = c.execute("UPDATE shipments SET tracking_code=? WHERE shipment_id=? AND COALESCE(tracking_code,'')=''", (pk["tracking"], pid)).rowcount
+                if not n and not c.execute("SELECT 1 FROM shipments WHERE tracking_code=?", (pk["tracking"],)).fetchone():
+                    c.execute("UPDATE tt_label_jobs SET error=? WHERE package_id=?",
+                              ("Label bought, but our package row is missing — tracking not saved yet", pid))
+            c.commit()
+        return dict(c.execute("SELECT * FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone())
+    finally:
+        c.close()
+
+def _tt_batch_plan(org, label):
+    """What a run for this show would do: combines TikTok allows (all orders still needing a
+    label and in this show) + the packages to label afterwards. Read-only."""
+    c = sdb(org); _tt_labels_ensure(c)
+    try:
+        need = _tt_needs_label(c, label)
+        labeled = {r["package_id"] for r in c.execute("SELECT package_id FROM tt_label_jobs WHERE status='labeled'").fetchall()}
+    finally:
+        c.close()
+    need = {k: v for k, v in need.items() if k not in labeled}
+    # Only orders TikTok already moved to Processing get a label. If one of a buyer's
+    # orders in this live is still Pending, hold ALL that buyer's packages so they can still
+    # be combined into one box once it clears.
+    statuses, fresh, st_err = _tt_live_order_statuses(org, [o for os_ in need.values() for o in os_])
+    c = sdb(org)
+    try:
+        buyer = {}
+        for pid in need:
+            r = c.execute("SELECT buyer_username, buyer_name FROM shipments WHERE shipment_id=?", (pid,)).fetchone()
+            buyer[pid] = ((r["buyer_username"] or r["buyer_name"] or "") if r else "") or pid
+    finally:
+        c.close()
+    if fresh:
+        c = sdb(org)
+        try:
+            for pid, os_ in need.items():
+                sts = {statuses.get(o) for o in os_}
+                if len(sts) == 1 and next(iter(sts)):
+                    c.execute("UPDATE shipments SET tt_status=? WHERE shipment_id=?", (next(iter(sts)), pid))
+            c.commit()
+        finally:
+            c.close()
+    dead = {pid for pid, os_ in need.items() if all(statuses.get(o) in TT_DEAD_STATUSES for o in os_)}
+    need = {k: v for k, v in need.items() if k not in dead}
+    not_ready = {pid for pid, os_ in need.items()
+                 if any(statuses.get(o) not in TT_READY_STATUSES and statuses.get(o) not in TT_DEAD_STATUSES for o in os_)}
+    held_buyers = {buyer[p] for p in not_ready}
+    waiting = [{"package": p, "buyer": buyer[p], "pending": p in not_ready,
+                "statuses": sorted({statuses.get(o) or "UNKNOWN" for o in need[p]})}
+               for p in sorted(need) if buyer[p] in held_buyers]
+    need = {k: v for k, v in need.items() if buyer[k] not in held_buyers}
+    # package ids an earlier batch already combined away on TikTok no longer exist there
+    c = sdb(org)
+    try:
+        dead_ids = set()
+        for r in c.execute("SELECT plan FROM tt_batches WHERE status NOT IN ('planned','superseded')").fetchall():
+            for cb in (json.loads(r["plan"] or "{}").get("combines") or []):
+                if cb.get("new_pid"): dead_ids.update(p for p in cb.get("packages", []) if p != cb["new_pid"])
+        stage = {pid: (c.execute("SELECT status FROM shipments WHERE shipment_id=?", (pid,)).fetchone() or {"status": ""})["status"] or ""
+                 for pid in need}
+    finally:
+        c.close()
+    need = {k: v for k, v in need.items() if k not in dead_ids}
+    order_to_pkg = {o: p for p, os_ in need.items() for o in os_}
+    combines = []
+    if len(need) > 1:
+        for g in _tt_fetch_combinable(org)["groups"]:
+            if len(g["order_ids"]) > 1 and all(o in order_to_pkg for o in g["order_ids"]):
+                pk = sorted({order_to_pkg[o] for o in g["order_ids"]})
+                whole = set(g["order_ids"]) == {o for p in pk for o in need[p]}     # no order left behind
+                packed = any(stage.get(p) == "packed" for p in pk)                  # never re-open a packed box
+                if len(pk) > 1 and whole and not packed:
+                    combines.append({"id": g["id"], "order_ids": g["order_ids"], "shop_id": g.get("shop_id"), "packages": pk})
+    in_combine = {p for cb in combines for p in cb["packages"]}
+    singles = sorted(p for p in need if p not in in_combine)
+    return {"show": label, "combines": combines, "singles": singles,
+            "labels": len(singles) + len(combines), "packages_before": len(need),
+            "waiting": waiting, "waiting_count": len(waiting), "cancelled_at_tiktok": len(dead),
+            "status_fresh": fresh, "status_error": st_err}
+
+def _tt_batch_counts(c, bid):
+    rows = c.execute("SELECT status, COUNT(*) n FROM tt_label_jobs WHERE batch_id=? GROUP BY status", (bid,)).fetchall()
+    return {r["status"]: r["n"] for r in rows}
+
+def _tt_run_batch(org, bid):
+    """Background worker for one batch the caller already claimed (status 'running').
+    Never dies silently: anything unexpected ends the batch as needs_attention."""
+    try:
+        _tt_run_batch_inner(org, bid)
+    except Exception as e:
+        _tt_log("label batch %s crashed: %r" % (bid, e))
+        try:
+            c = sdb(org)
+            c.execute("UPDATE tt_batches SET status='needs_attention', note=?, finished_at=? WHERE id=?",
+                      (("Stopped unexpectedly: %s" % e)[:300], datetime.now().isoformat(timespec="seconds"), bid)); c.commit(); c.close()
+        except Exception:
+            pass
+
+def _tt_pkg_orders(org, pid):
+    c = sdb(org)
+    try:
+        return [str(r["order_id"]) for r in c.execute("SELECT DISTINCT order_id FROM shipment_items WHERE shipment_id=?", (pid,)).fetchall()]
+    finally:
+        c.close()
+
+def _tt_job_status(org, pid):
+    c = sdb(org); _tt_labels_ensure(c)
+    try:
+        r = c.execute("SELECT status FROM tt_label_jobs WHERE package_id=?", (pid,)).fetchone()
+        return r["status"] if r else None
+    finally:
+        c.close()
+
+def _tt_job_note(org, pid, bid, status, error):
+    now = datetime.now().isoformat(timespec="seconds")
+    c = sdb(org); _tt_labels_ensure(c)
+    try:
+        c.execute("""INSERT INTO tt_label_jobs(package_id,batch_id,status,error,created_at,updated_at) VALUES(?,?,?,?,?,?)
+                     ON CONFLICT(package_id) DO UPDATE SET batch_id=excluded.batch_id, status=excluded.status,
+                       error=excluded.error, updated_at=excluded.updated_at
+                     WHERE tt_label_jobs.status IN ('claimed','error','skipped')""", (pid, bid, status, error, now, now))
+        c.commit()
+    finally:
+        c.close()
+
+def _tt_try_merge(org, cb):
+    c = sdb(org)
+    try:
+        _tt_merge_into_package(c, cb["new_pid"], cb["order_ids"], cb.get("packages"))
+        _tt_labels_ensure(c)
+        j = c.execute("SELECT tracking FROM tt_label_jobs WHERE package_id=? AND status='labeled'", (cb["new_pid"],)).fetchone()
+        if j and j["tracking"]:   # the label was bought before our merge caught up: attach its tracking now
+            c.execute("UPDATE shipments SET tracking_code=? WHERE shipment_id=? AND COALESCE(tracking_code,'')=''", (j["tracking"], cb["new_pid"]))
+            c.execute("UPDATE tt_label_jobs SET error=NULL WHERE package_id=?", (cb["new_pid"],))
+        c.commit()
+        cb["merged"] = True; cb.pop("merge_error", None)
+    except Exception as e:
+        c.rollback(); cb["merged"] = False; cb["merge_error"] = str(e)[:200]
+        _tt_log("merge after combine failed %s: %r" % (cb["new_pid"], e))
+    finally:
+        c.close()
+
+def _tt_run_batch_inner(org, bid):
+    c = sdb(org); _tt_labels_ensure(c)
+    b = dict(c.execute("SELECT * FROM tt_batches WHERE id=?", (bid,)).fetchone())
+    plan = json.loads(b["plan"] or "{}")
+    c.close()
+    _tt_batch_beat(org, bid)
+    box = _tt_box(org)
+    combines = plan.get("combines", [])
+
+    def save_plan():
+        c = sdb(org)
+        c.execute("UPDATE tt_batches SET plan=?, combined=?, heartbeat=? WHERE id=?",
+                  (json.dumps(plan), sum(1 for x in combines if x.get("new_pid")),
+                   datetime.now().isoformat(timespec="seconds"), bid))
+        c.commit(); c.close()
+
+    # 1) Combines whose result was unclear last time: ask TikTok where the orders are now.
+    for cb in combines:
+        if not cb.get("combine_uncertain"): continue
+        shop = cb.get("shop_id") or _tt_shop_for_orders(org, cb["order_ids"])
+        try:
+            where = _tt_api_order_packages(org, shop, cb["order_ids"])
+        except TTError as e:
+            cb["combine_error"] = "Still can't tell if TikTok combined these: %s" % e; continue
+        pk = {p for o in cb["order_ids"] for p in where.get(str(o), [])}
+        if len(pk) == 1 and next(iter(pk)) not in cb["packages"]:
+            cb["new_pid"] = next(iter(pk)); cb.pop("combine_uncertain", None); cb.pop("combine_error", None)
+        elif pk and pk <= set(cb["packages"]) and len(pk) == len(cb["packages"]):
+            cb.pop("combine_uncertain", None); cb.pop("combine_error", None)       # it never happened: may retry
+        else:
+            cb["combine_error"] = "TikTok shows these orders in packages %s — check Seller Center" % sorted(pk)
+    save_plan()
+
+    # 2) What still has to be bought, and which orders it carries.
+    c = sdb(org)
+    single_orders = {p: [str(r["order_id"]) for r in c.execute(
+        "SELECT DISTINCT order_id FROM shipment_items WHERE shipment_id=?", (p,)).fetchall()] for p in plan.get("singles", [])}
+    c.close()
+    to_buy = lambda pid: _tt_job_status(org, pid) in (None, "claimed", "error", "skipped")
+    # already sent to TikTok earlier (ship may have happened): recover by READING, no status gate
+    recover = []
+    units = []     # (kind, ref, order_ids)
+    for cb in combines:
+        if cb.get("combine_uncertain"): continue
+        shop_cb = cb.get("shop_id") or _tt_shop_for_orders(org, cb["order_ids"])
+        if cb.get("new_pid"):
+            if to_buy(cb["new_pid"]): units.append(("combined", cb, cb["order_ids"]))
+            elif _tt_job_status(org, cb["new_pid"]) != "labeled": recover.append((shop_cb, cb["new_pid"]))
+        elif cb.get("error"):    # refused earlier -> its packages are labeled one by one
+            for p in cb["packages"]:
+                if to_buy(p): units.append(("single", p, _tt_pkg_orders(org, p) or cb["order_ids"]))
+                elif _tt_job_status(org, p) != "labeled": recover.append((shop_cb, p))
+        else:
+            units.append(("combine", cb, cb["order_ids"]))
+    for p, os_ in single_orders.items():
+        if to_buy(p): units.append(("single", p, os_))
+        elif _tt_job_status(org, p) != "labeled": recover.append((_tt_shop_for_orders(org, os_), p))
+
+    # 3) Re-check TikTok on EVERY run (also on Resume, days later): only orders TikTok confirms
+    #    right now as Processing get a label. Cancelled -> skipped for good; anything we can't
+    #    confirm -> waits (error), never bought blind.
+    st, st_err = _tt_fresh_order_statuses(org, [o for _k, _r, os_ in units for o in os_])
+    _tt_batch_beat(org, bid)
+    skipped = set(plan.get("skipped") or [])
+    targets = list(recover)   # (shop_id, package_id)
+    for kind, ref, os_ in units:
+        pids = [ref["new_pid"]] if kind == "combined" else (ref["packages"] if kind == "combine" else [ref])
+        vals = [st.get(str(o)) for o in os_]
+        if any(v in TT_DEAD_STATUSES for v in vals):
+            for p in pids: _tt_job_note(org, p, bid, "skipped", "Cancelled at TikTok — no label bought")
+            skipped.update(pids); continue
+        if not all(v in TT_READY_STATUSES for v in vals):
+            why = ("Could not confirm the order status with TikTok (%s) — Resume to try again" % (st_err or "no answer")
+                   if any(v is None for v in vals) else
+                   "Order is not in Processing at TikTok (%s) — Resume once it is" % ", ".join(sorted({v for v in vals if v})))
+            for p in pids: _tt_job_note(org, p, bid, "error", why)
+            continue
+        shop = (ref.get("shop_id") if isinstance(ref, dict) else None) or _tt_shop_for_orders(org, os_)
+        if kind == "single":
+            targets.append((shop, ref)); continue
+        cb = ref
+        if kind == "combine":
+            try:
+                cb["new_pid"] = _tt_api_combine(org, shop, cb["id"], cb["order_ids"])
+            except TTError as e:
+                if e.sent:
+                    # it may have happened on TikTok: buy nothing for these until we know
+                    cb["combine_uncertain"] = True; cb["combine_error"] = str(e)
+                    save_plan(); continue
+                cb["error"] = str(e)     # refused: label the packages one by one
+                targets.extend((shop, p) for p in cb["packages"])
+                save_plan(); continue
+        if not cb.get("merged"):
+            _tt_try_merge(org, cb)
+        targets.append((shop, cb["new_pid"]))
+        save_plan()
+    # combines merged earlier but not yet in our DB (merge failed last time) — retry
+    for cb in combines:
+        if cb.get("new_pid") and not cb.get("merged"):
+            _tt_try_merge(org, cb)
+    plan["skipped"] = sorted(skipped)
+    save_plan()
+
+    c = sdb(org)
+    c.execute("UPDATE tt_batches SET total=? WHERE id=?", (max(len(targets), b.get("total") or 0), bid)); c.commit(); c.close()
+    for shop, pid in targets:
+        if not shop:
+            _tt_job_note(org, pid, bid, "error", "Shop unknown for this package"); continue
+        _tt_batch_beat(org, bid)
+        try: _tt_label_one(org, shop, pid, bid, box)
+        except Exception as e: _tt_log("label job crashed %s: %r" % (pid, e))
+        c = sdb(org); n = _tt_batch_counts(c, bid)
+        c.execute("UPDATE tt_batches SET done=?, failed=? WHERE id=?",
+                  (n.get("labeled", 0), n.get("error", 0) + n.get("uncertain", 0), bid)); c.commit(); c.close()
+    _tt_batch_beat(org, bid)
+    _tt_save_live_pdfs(org, bid)
+    c = sdb(org); n = _tt_batch_counts(c, bid)
+    bad = n.get("error", 0) + n.get("uncertain", 0) + n.get("shipped", 0) + n.get("shipping", 0) + n.get("claimed", 0)
+    bad += sum(1 for cb in combines if cb.get("combine_uncertain") or (cb.get("new_pid") and not cb.get("merged")))
+    c.execute("UPDATE tt_batches SET status=?, finished_at=?, done=?, failed=? WHERE id=?",
+              ("done" if not bad else "needs_attention", datetime.now().isoformat(timespec="seconds"),
+               n.get("labeled", 0), bad, bid)); c.commit(); c.close()
+
+def _tt_live_label_rows(c, show):
+    return [dict(r) for r in c.execute(
+        "SELECT package_id, doc_url, label_file FROM tt_label_jobs WHERE show=? AND status='labeled' ORDER BY batch_id, package_id",
+        (show,)).fetchall()]
+
+def _tt_save_live_pdfs(org, bid):
+    """Archive in the live's folder: this batch's PDF, and ALL-labels.pdf with every label of
+    the live so far (rewritten after each batch, so late orders are included)."""
+    try:
+        c = sdb(org); _tt_labels_ensure(c)
+        b = c.execute("SELECT show FROM tt_batches WHERE id=?", (bid,)).fetchone()
+        show = b["show"] if b else ""
+        brows = [dict(r) for r in c.execute(
+            "SELECT package_id, doc_url, label_file FROM tt_label_jobs WHERE batch_id=? AND status='labeled' ORDER BY package_id", (bid,)).fetchall()]
+        lrows = _tt_live_label_rows(c, show)
+        c.close()
+        if not brows: return
+        hb = lambda: _tt_batch_beat(org, bid)
+        blob = _tt_batch_pdf(brows, org, hb)
+        if blob:
+            fn = _tt_store_label_copy(org, blob, show=show, name="batch-%d" % bid)
+            c = sdb(org); c.execute("UPDATE tt_batches SET pdf_file=? WHERE id=?", (fn, bid)); c.commit(); c.close()
+        blob = _tt_batch_pdf(lrows, org, hb)
+        if blob: _tt_store_label_copy(org, blob, show=show, name="ALL-labels")
+    except Exception as e:
+        _tt_log("saving live label PDFs failed (batch %s): %r" % (bid, e))
+
+def _tt_start_batch_thread(org, bid):
+    threading.Thread(target=_tt_run_batch, args=(org, bid), daemon=True, name="tt-batch-%s" % bid).start()
+
+@app.route("/api/tiktok/label-shows")
+@req_role("admin", "cs")
+def api_tiktok_label_shows():
+    """Recent TikTok shows with packages that still need a label (our data only, no TikTok call)."""
+    org = current_org() or DEFAULT_ORG
+    cutoff = (datetime.now() - timedelta(days=14)).isoformat(timespec="seconds")
+    c = sdb(org); _tt_labels_ensure(c)
+    rows = c.execute("""SELECT s.import_label label, COUNT(DISTINCT s.shipment_id) n, MAX(s.imported_at) last,
+                               SUM(CASE WHEN UPPER(COALESCE(s.tt_status,''))='AWAITING_SHIPMENT' THEN 1 ELSE 0 END) ready,
+                               SUM(CASE WHEN UPPER(COALESCE(s.tt_status,'')) IN ('ON_HOLD','UNPAID') THEN 1 ELSE 0 END) pending
+                        FROM shipments s WHERE COALESCE(s.import_batch,'')='tiktok-api'
+                          AND s.status NOT IN ('cancelled','shipped','giveaway') AND COALESCE(s.tracking_code,'')=''
+                          AND COALESCE(s.imported_at,'')>=? AND COALESCE(s.import_label,'')<>''
+                        GROUP BY s.import_label ORDER BY last DESC LIMIT 40""", (cutoff,)).fetchall()
+    batches = [dict(r) for r in c.execute("SELECT id, show, status, total, done, failed, combined, created_at, finished_at FROM tt_batches ORDER BY id DESC LIMIT 10").fetchall()]
+    labeled = [dict(r) for r in c.execute("""SELECT show label, COUNT(*) n, MAX(updated_at) last FROM tt_label_jobs
+                                             WHERE status='labeled' AND COALESCE(show,'')<>'' AND COALESCE(updated_at,'')>=?
+                                             GROUP BY show ORDER BY last DESC LIMIT 40""", (cutoff,)).fetchall()]
+    c.close()
+    return jsonify({"ok": True, "shows": [dict(r) for r in rows], "batches": batches, "labeled_shows": labeled,
+                    "write_enabled": TT_FULFILL_WRITE, "box": _tt_box(org)})
+
+@app.route("/api/tiktok/box", methods=["POST"])
+@req_role("admin")
+def api_tiktok_box():
+    d = request.get_json() or {}
+    try:
+        box = {k: float(d.get(k)) for k in TT_DEFAULT_BOX}
+    except Exception:
+        return jsonify({"ok": False, "error": "All four values must be numbers"})
+    if not all(0 < v < 200 for v in box.values()):
+        return jsonify({"ok": False, "error": "Values out of range"})
+    _set_setting("tt_box", json.dumps(box))
+    return jsonify({"ok": True, "box": box})
+
+@app.route("/api/tiktok/batch/prepare", methods=["POST"])
+@req_role("admin", "cs")
+def api_tiktok_batch_prepare():
+    """Build the plan for a show (combines + labels) and save it for approval. No writes to TikTok."""
+    org = current_org() or DEFAULT_ORG
+    label = ((request.get_json() or {}).get("show") or "").strip()
+    if not label: return jsonify({"ok": False, "error": "show required"})
+    plan = _tt_batch_plan(org, label)
+    if not plan["labels"]:
+        if plan.get("waiting_count"):
+            return jsonify({"ok": False, "plan": plan, "error": "All %d packages are still Pending at TikTok. "
+                            "Try again once TikTok moves them to Processing." % plan["waiting_count"]})
+        return jsonify({"ok": False, "error": "Nothing in this show needs a label."})
+    c = sdb(org); _tt_labels_ensure(c)
+    busy = c.execute("SELECT id FROM tt_batches WHERE show=? AND status='running' AND COALESCE(heartbeat,'')>=?",
+                     (label, _tt_hb_cutoff())).fetchone()
+    if busy:
+        c.close()
+        return jsonify({"ok": False, "error": "Batch #%d for this live is still running — wait for it to finish." % busy["id"]})
+    c.execute("UPDATE tt_batches SET status='superseded' WHERE show=? AND status='planned'", (label,))
+    cur = c.execute("INSERT INTO tt_batches(show,status,plan,created_by,created_at) VALUES(?,?,?,?,?)",
+                    (label, "planned", json.dumps(plan), session.get("name", "")[:60], datetime.now().isoformat(timespec="seconds")))
+    bid = cur.lastrowid; c.commit(); c.close()
+    return jsonify({"ok": True, "batch_id": bid, "plan": plan, "write_enabled": TT_FULFILL_WRITE, "box": _tt_box(org)})
+
+def _tt_batch_gate(d):
+    if not TT_FULFILL_WRITE:
+        return jsonify({"ok": False, "error": "Creating TikTok labels is not turned on yet (TIKTOK_FULFILL_WRITE)."}), 403
+    if not _manager_pin_set():
+        return jsonify({"ok": False, "error": "Manager PIN not set yet — set it in Permissions.", "need_pin_setup": True}), 400
+    if not _verify_manager_pin(d.get("pin", "")):
+        return jsonify({"ok": False, "error": "Wrong manager PIN.", "pin_required": True}), 401
+    return None
+
+@app.route("/api/tiktok/batch/<int:bid>/run", methods=["POST"])
+@req_role("admin", "cs")
+def api_tiktok_batch_run(bid):
+    """Manager-approved: start the batch in the background. Runs once; use /resume after."""
+    d = request.get_json() or {}
+    bad = _tt_batch_gate(d)
+    if bad: return bad
+    org = current_org() or DEFAULT_ORG
+    c = sdb(org); _tt_labels_ensure(c)
+    b = c.execute("SELECT show FROM tt_batches WHERE id=?", (bid,)).fetchone()
+    busy = b and c.execute("SELECT id FROM tt_batches WHERE show=? AND id<>? AND status='running' AND COALESCE(heartbeat,'')>=?",
+                           (b["show"], bid, _tt_hb_cutoff())).fetchone()
+    if busy:
+        c.close()
+        return jsonify({"ok": False, "error": "Batch #%d for this live is still running — wait for it to finish." % busy["id"]}), 409
+    won = _tt_claim_batch_run(c, bid, ("planned",))
+    if won:
+        c.execute("UPDATE tt_batches SET approved_by=? WHERE id=?", (session.get("name", "")[:60], bid)); c.commit()
+    c.close()
+    if not won:
+        return jsonify({"ok": False, "error": "This batch was already started (or doesn't exist)."}), 409
+    _tt_start_batch_thread(org, bid)
+    return jsonify({"ok": True, "batch_id": bid})
+
+@app.route("/api/tiktok/batch/<int:bid>/resume", methods=["POST"])
+@req_role("admin", "cs")
+def api_tiktok_batch_resume(bid):
+    """Continue a batch after a restart or errors. Packages already labeled are skipped and
+    'uncertain' ones are checked on TikTok before anything else happens."""
+    d = request.get_json() or {}
+    bad = _tt_batch_gate(d)
+    if bad: return bad
+    org = current_org() or DEFAULT_ORG
+    c = sdb(org); _tt_labels_ensure(c)
+    b = c.execute("SELECT status FROM tt_batches WHERE id=?", (bid,)).fetchone()
+    if not b or b["status"] in ("planned", "superseded"):
+        c.close(); return jsonify({"ok": False, "error": "Start the batch first."}), 409
+    won = _tt_claim_batch_run(c, bid, ("needs_attention", "done", "approved"))
+    c.close()
+    if not won:
+        return jsonify({"ok": False, "error": "This batch is still running — it can be resumed only if it stops moving for %d minutes." % (TT_BATCH_STALE_SECS // 60)}), 409
+    _tt_start_batch_thread(org, bid)
+    return jsonify({"ok": True, "batch_id": bid})
+
+@app.route("/api/tiktok/label-job/<path:pid>/release", methods=["POST"])
+@req_role("admin", "cs")
+def api_tiktok_label_job_release(pid):
+    """A person checked Seller Center and confirmed there is NO label for this package:
+    allow the next Resume to try it again. Manager PIN, uncertain jobs only."""
+    d = request.get_json() or {}
+    bad = _tt_batch_gate(d)
+    if bad: return bad
+    org = current_org() or DEFAULT_ORG
+    c = sdb(org); _tt_labels_ensure(c)
+    n = c.execute("UPDATE tt_label_jobs SET status='error', error=?, updated_at=? WHERE package_id=? AND status='uncertain'",
+                  ("Checked in Seller Center by %s — no label there; retry allowed" % session.get("name", "")[:40],
+                   datetime.now().isoformat(timespec="seconds"), pid)).rowcount
+    c.commit(); c.close()
+    if not n: return jsonify({"ok": False, "error": "This package is not waiting for a check."}), 409
+    return jsonify({"ok": True})
+
+@app.route("/api/tiktok/batch/<int:bid>")
+@req_role("admin", "cs")
+def api_tiktok_batch_status(bid):
+    org = current_org() or DEFAULT_ORG
+    c = sdb(org); _tt_labels_ensure(c)
+    b = c.execute("SELECT * FROM tt_batches WHERE id=?", (bid,)).fetchone()
+    if not b:
+        c.close(); return jsonify({"ok": False, "error": "Not found"}), 404
+    jobs = [dict(r) for r in c.execute("SELECT package_id,status,tracking,error FROM tt_label_jobs WHERE batch_id=? ORDER BY package_id", (bid,)).fetchall()]
+    c.close()
+    b = dict(b); plan = json.loads(b.pop("plan") or "{}")
+    b["stale"] = b["status"] == "running" and (b.get("heartbeat") or "") < _tt_hb_cutoff()
+    return jsonify({"ok": True, "batch": b, "plan": plan, "jobs": jobs,
+                    "problems": [j for j in jobs if j["status"] not in ("labeled", "skipped")],
+                    "skipped": [j for j in jobs if j["status"] == "skipped"]})
+
+@app.route("/api/tiktok/batch/<int:bid>/labels")
+@req_role("admin", "cs", "worker")
+def api_tiktok_batch_labels(bid):
+    """All labels of a batch as one printable 4x6 PDF (?pdf=1) or a print page."""
+    org = current_org() or DEFAULT_ORG
+    c = sdb(org); _tt_labels_ensure(c)
+    rows = [dict(r) for r in c.execute(
+        "SELECT package_id, doc_url, label_file FROM tt_label_jobs WHERE batch_id=? AND status='labeled' ORDER BY package_id",
+        (bid,)).fetchall()]
+    c.close()
+    if not rows: return ("No labels in this batch yet.", 404)
+    if request.args.get("pdf") == "1":
+        blob = _tt_batch_pdf(rows, org)
+        if not blob: return ("Could not build the labels PDF.", 502)
+        resp = Response(blob, mimetype="application/pdf")
+        resp.headers["Content-Disposition"] = '%s; filename="tiktok-labels-batch-%d.pdf"' % (
+            "attachment" if request.args.get("dl") == "1" else "inline", bid)
+        return resp
+    items = [{"url": r["doc_url"], "name": r["package_id"]} for r in rows]
+    return _labels_page_or_pdf(items, "TikTok labels · batch %d · %d labels" % (bid, len(rows)), "/api/tiktok/batch/%d/labels?pdf=1" % bid)
+
+@app.route("/api/tiktok/live-labels")
+@req_role("admin", "cs", "worker")
+def api_tiktok_live_labels():
+    """Every label created for one live, across all its batches: print page or one PDF (?pdf=1)."""
+    org = current_org() or DEFAULT_ORG
+    show = (request.args.get("show") or "").strip()
+    if not show: return ("show required", 400)
+    c = sdb(org); _tt_labels_ensure(c); rows = _tt_live_label_rows(c, show); c.close()
+    if not rows: return ("No labels for this live yet.", 404)
+    if request.args.get("pdf") == "1":
+        blob = _tt_batch_pdf(rows, org)
+        if not blob: return ("Could not build the labels PDF.", 502)
+        resp = Response(blob, mimetype="application/pdf")
+        resp.headers["Content-Disposition"] = '%s; filename="%s-labels.pdf"' % (
+            "attachment" if request.args.get("dl") == "1" else "inline", _tt_live_folder(show))
+        return resp
+    items = [{"url": r["doc_url"], "name": r["package_id"]} for r in rows]
+    return _labels_page_or_pdf(items, "TikTok labels · %s · %d labels" % (show, len(rows)),
+                               "/api/tiktok/live-labels?show=%s&pdf=1" % _urlparse.quote(show))
+
+def _tt_label_file_bytes(fn, org=None):
+    fn = _tt_safe_rel(fn)
+    if not fn: return None
+    if r2:
+        try:
+            return r2.get_object(Bucket=R2_BUCKET, Key=_r2_resolve("labels", fn, org))["Body"].read()
+        except Exception as e:
+            _tt_log("label read failed %s: %r" % (fn, e))
+    p = os.path.join(_labels_dir(org), *fn.split("/"))
+    if os.path.exists(p):
+        with open(p, "rb") as fh: return fh.read()
+    return None
+
+def _tt_batch_pdf(rows, org=None, beat=None):
+    """One PDF with every label of the batch: our stored copy first, TikTok's link as fallback."""
+    from pypdf import PdfWriter, PdfReader
+    import io
+    w = PdfWriter(); ok = 0
+    for k, r in enumerate(rows):
+        if beat and k % 10 == 0: beat()
+        data = _tt_label_file_bytes(r.get("label_file"), org)
+        if data is None and r.get("doc_url"):
+            try: data, _ = _fetch_label_bytes(r["doc_url"])
+            except Exception as e: _tt_log("label fetch failed %s: %r" % (r["package_id"], e))
+        if not data: continue
+        try:
+            for pg in PdfReader(io.BytesIO(data)).pages: w.add_page(pg)
+            ok += 1
+        except Exception as e:
+            _tt_log("label pdf unreadable %s: %r" % (r["package_id"], e))
+    if not ok: return None
+    out = io.BytesIO(); w.write(out); return out.getvalue()
+
 def _tt_part_label(name):
     m=re.search(r'part\s*(\d+)', (name or ''), re.I)
     return "Part "+m.group(1) if m else ""
@@ -16807,6 +18315,5 @@ if __name__=="__main__":
         import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.connect(("8.8.8.8",80))
         print("Net: http://"+s.getsockname()[0]+":"+str(PORT));s.close()
     except:pass
-    print("Admin: admin/admin123  CS: cs1/cs123  Workers: worker1-6/pack1-6")
     print("="*50)
     app.run(host="0.0.0.0",port=PORT,debug=False,threaded=True)
