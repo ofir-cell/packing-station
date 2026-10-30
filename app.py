@@ -593,6 +593,43 @@ def plog(actor,action,org_id="",detail=""):
     except Exception as e:
         print("plog error:",e,flush=True)
 
+def _order_events_ensure(c):
+    c.execute("""CREATE TABLE IF NOT EXISTS order_events(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id TEXT NOT NULL,
+        at TEXT DEFAULT CURRENT_TIMESTAMP, actor TEXT, action TEXT, detail TEXT)""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_order_events_sid ON order_events(shipment_id, id)")
+
+def _oev(c, sid, action, detail="", actor=None, dedupe_min=0):
+    """Order history: WHO did WHAT to this order and when (opened in the picker,
+    ticked an item, completed the pick, flagged, undid, packed). Answers 'which worker
+    touched this order' even when nobody finished it. Best-effort, never breaks the request.
+    dedupe_min: skip if the same person logged the same action on this order that recently."""
+    try:
+        if actor is None:
+            try: actor=session.get("name") or session.get("user") or ""
+            except Exception: actor=""
+        actor=(actor or "")[:60]
+        if dedupe_min:
+            if c.execute("""SELECT 1 FROM order_events WHERE shipment_id=? AND actor=? AND action=?
+                            AND at >= datetime('now', ?) LIMIT 1""",
+                         (sid, actor, action, "-%d minutes" % int(dedupe_min))).fetchone():
+                return
+        c.execute("INSERT INTO order_events(shipment_id, actor, action, detail) VALUES(?,?,?,?)",
+                  (sid, actor, action, str(detail or "")[:300]))
+    except Exception as e:
+        try:
+            if "no such table" in str(e):
+                _order_events_ensure(c); return _oev(c, sid, action, detail, actor, dedupe_min)
+        except Exception: pass
+        print("order event failed for", sid, ":", e, flush=True)
+
+def _order_events(c, sid, limit=40):
+    try:
+        return [dict(r) for r in c.execute("""SELECT at, actor, action, detail FROM order_events
+                   WHERE shipment_id=? ORDER BY id DESC LIMIT ?""", (sid, limit))]
+    except Exception:
+        return []
+
 def alog(action,detail=""):
     """Append to the CURRENT tenant's audit trail (sensitive staff actions).
     Best-effort — never breaks the request. Called from within request handlers."""
@@ -1211,6 +1248,7 @@ def sdb_init(org):
         cancel_reason TEXT,
         FOREIGN KEY (shipment_id) REFERENCES shipments(shipment_id) ON DELETE CASCADE
     )""")
+    _order_events_ensure(c)
     # Backward-compatible migrations — add columns if older DBs are missing them.
     for stmt in (
         "ALTER TABLE shipments ADD COLUMN platform TEXT DEFAULT 'whatnot'",
@@ -4836,6 +4874,7 @@ def api_upload():
             c.execute("""UPDATE shipments
                          SET status='packed', packed_at=CURRENT_TIMESTAMP, packed_by=?
                          WHERE shipment_id=?""", (wrk, row["shipment_id"]))
+            _oev(c, row["shipment_id"], "packed", "packing video saved", actor=wrk)
             if _get_setting("pack_scan_items","0")=="1":
                 try: pack_res=_pack_finish(c, row, vn)
                 except Exception as e: print("pack check failed for", trk, ":", e, flush=True)
@@ -6341,10 +6380,11 @@ def api_shipment_lookup(code):
             for g in _pending_giveaways_for(sid2, trk):
                 if g not in gvs: gvs.append(g)
     cfg = c.execute("SELECT * FROM weight_config WHERE id=1").fetchone()
+    _evs=_order_events(c, row["shipment_id"])
     c.close()
     return jsonify({
         "ok": True,
-        "shipment": dict(row),
+        "shipment": dict(row), "events": _evs,
         "items": items,
         "config": dict(cfg) if cfg else {},
         "giveaways": gvs,
@@ -6423,6 +6463,7 @@ def api_pack_begin():
                 c.execute("UPDATE shipment_items SET pack_scanned_qty=0, pack_method=NULL, pack_scanned_at=NULL WHERE id IN (%s)"
                           % ",".join("?"*len(ids)), ids)
                 c.commit()
+        _oev(c, row["shipment_id"], "pack_started", "packing video started"); c.commit()
         items=_pack_box(c,row)
         on=_get_setting("pack_scan_items","0")=="1" and (row["status"] or "")!="cancelled"
         return jsonify({"ok":True,"enabled":on,"shipment_id":row["shipment_id"],"items":_pack_view(items)})
@@ -6803,7 +6844,8 @@ def api_customer_detail(username):
     for s in ships:
         items = c.execute("""SELECT product_name, quantity, item_weight_g, sku, revenue
                              FROM shipment_items WHERE shipment_id=?""", (s["shipment_id"],)).fetchall()
-        ships_out.append({**dict(s), "items": [dict(i) for i in items]})
+        ships_out.append({**dict(s), "items": [dict(i) for i in items],
+                          "events": _order_events(c, s["shipment_id"])})
     c.close()
     # Cross-reference with packing_log.csv to find recordings
     recordings = []
@@ -6893,6 +6935,7 @@ def api_pick_get(sid):
                                 picked_at, COALESCE(cancelled,0) AS cancelled
                          FROM shipment_items WHERE shipment_id=?
                          ORDER BY COALESCE(cancelled,0), COALESCE(picked,0), id""", (sid,)).fetchall()
+    _oev(c, sid, "opened", "opened in the picker", dedupe_min=10); c.commit()
     c.close()
     # Cleanup gate — if the show has cancelled items still sitting on the table,
     # tell the picker to go clear them first. Admin/CS can override via ?force=1.
@@ -6941,7 +6984,7 @@ def api_pick_get(sid):
 @req_role("picker", "worker", "admin", "cs")
 def api_pick_item_toggle(item_id):
     c = sdb()
-    row = c.execute("""SELECT i.id, COALESCE(i.picked,0) AS picked, s.status AS ship_status
+    row = c.execute("""SELECT i.id, i.shipment_id, i.sku, i.product_name, COALESCE(i.picked,0) AS picked, s.status AS ship_status
                        FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
                        WHERE i.id=?""", (item_id,)).fetchone()
     if not row:
@@ -6955,6 +6998,8 @@ def api_pick_item_toggle(item_id):
         c.execute("UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP WHERE id=?", (item_id,))
     else:
         c.execute("UPDATE shipment_items SET picked=0, picked_at=NULL WHERE id=?", (item_id,))
+    _oev(c, row["shipment_id"], "item_picked" if new_state else "item_unpicked",
+         ("#" + row["sku"] + " " if row["sku"] else "") + (row["product_name"] or ""))
     c.commit(); c.close()
     return jsonify({"ok": True, "picked": new_state})
 
@@ -7007,6 +7052,7 @@ def api_pick_issue(sid):
         return jsonify({"ok": False, "error": "Order is cancelled — nothing to flag"})
     c.execute("""UPDATE shipments SET status='issue', flag_reason=?, flag_resolved_at=NULL,
                  flag_resolved_by=NULL WHERE shipment_id=?""", (stamped, sid))
+    _oev(c, sid, "issue", reason)
     c.commit(); c.close()
     return jsonify({"ok": True})
 
@@ -7058,6 +7104,7 @@ def api_pick_resolve(sid):
     else:
         c.execute("""UPDATE shipments SET status='cancelled', flag_resolved_at=CURRENT_TIMESTAMP,
                      flag_resolved_by=? WHERE shipment_id=? AND status='issue'""", (resolver, sid))
+    _oev(c, sid, "resolved", "issue → " + ("back to pick queue" if action == "retry" else "cancelled"), actor=resolver)
     c.commit(); c.close()
     return jsonify({"ok": True})
 
@@ -7105,6 +7152,7 @@ def api_pick_complete(sid):
                         "error": "Already picked by " + who})
     c.execute("""UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP
                  WHERE shipment_id=? AND COALESCE(cancelled,0)=0 AND COALESCE(picked,0)=0""", (sid,))
+    _oev(c, sid, "picked", "pick completed", actor=user)
     c.commit(); c.close()
     return jsonify({"ok": True})
 
@@ -7562,6 +7610,9 @@ def api_shipment_revert(sid):
         c.execute("""UPDATE shipments SET status='pending', packed_at=NULL, packed_by=NULL,
                         picked_at=NULL, picked_by=NULL WHERE shipment_id=?""",(sid,))
         c.execute("UPDATE shipment_items SET picked=0, picked_at=NULL WHERE shipment_id=?",(sid,))
+    _oev(c, sid, "undo", "%s → %s%s%s" % (was, to,
+         (" (was picked by %s)" % row["picked_by"]) if row["picked_by"] and to=="pending" else "",
+         (" (was packed by %s)" % row["packed_by"]) if row["packed_by"] else ""))
     c.commit(); c.close()
     # Any prize attached to this order goes back to "waiting to be added" too.
     try:
@@ -7571,7 +7622,8 @@ def api_shipment_revert(sid):
         g.commit(); g.close()
     except Exception as e:
         print("giveaway revert failed for",sid,":",e,flush=True)
-    alog("shipment.revert","%s: %s → %s%s"%(sid,was,to,
+    alog("shipment.revert","%s: %s → %s%s%s"%(sid,was,to,
+         (" (was picked by %s)"%row["picked_by"]) if row["picked_by"] and to=="pending" else "",
          (" (was packed by %s)"%row["packed_by"]) if row["packed_by"] else ""))
     return jsonify({"ok":True,"shipment_id":sid,"was":was,"now":to})
 

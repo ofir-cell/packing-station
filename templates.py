@@ -2575,7 +2575,7 @@ function fmtDur(s){if(!s||s==='0')return '—';var n=parseFloat(s);return isNaN(
       if(res.status===409 && res.j && res.j.need_org_confirm){
         btn.disabled=false; btn.textContent='Delete my account';
         var m=(res.j.message||'You are the last admin — this will also delete your organization’s data.')
-              +'\n\nDelete the entire organization and all its data?';
+              +'\\n\\nDelete the entire organization and all its data?';
         if(!confirm(m)) return;
         return callDelete(true).then(function(r2){
           if(r2.j && r2.j.ok){ finish('Your account and organization data have been deleted.'); }
@@ -3873,6 +3873,13 @@ __NAVBAR__
 <script>
 function fmt(n){return n==null?'—':(typeof n==='number'?n.toLocaleString():n)}
 function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+var OEV_L={opened:'Opened in picker',item_picked:'Ticked item',item_unpicked:'Unticked item',picked:'Completed pick',issue:'Flagged issue',resolved:'Resolved issue',undo:'Undo',pack_started:'Started packing video',packed:'Packed'};
+function shipHistoryHtml(evs){
+  if(!evs||!evs.length)return '<div style="color:var(--text-dim);font-size:13px">No worker activity recorded yet.</div>';
+  return evs.map(function(e){return '<div style="display:flex;gap:10px;font-size:12.5px;padding:2px 0"><span style="color:var(--text-dim);min-width:112px">'+
+    escapeHtml(String(e.at||'').replace('T',' ').slice(0,16))+'</span><b style="min-width:90px">'+escapeHtml(e.actor||'?')+'</b><span>'+
+    escapeHtml(OEV_L[e.action]||e.action)+(e.detail?' <span style="color:var(--text-dim)">· '+escapeHtml(e.detail)+'</span>':'')+'</span></div>'}).join('');
+}
 function fmtWeight(g){if(g==null||g===0)return '—';return g.toFixed(1)+'g'}
 function fmtDate(s){if(!s)return '—';try{return new Date(s).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'2-digit'})}catch(e){return s.slice(0,10)}}
 
@@ -4012,7 +4019,8 @@ function renderTable(){
         }
         box.innerHTML='<h4>Address</h4><div style="color:var(--text);margin-bottom:14px">'+escapeHtml(addr)+'</div>'+
           (d.shipment.delivery_detail?'<h4>USPS status</h4><div style="margin-bottom:14px;color:var(--text)">'+escapeHtml(d.shipment.delivery_detail)+'</div>':'')+
-          '<h4>Items ('+d.items.length+')</h4><div class="items-grid">'+itemsHtml+'</div>'+undo;
+          '<h4>Items ('+d.items.length+')</h4><div class="items-grid">'+itemsHtml+'</div>'+
+          '<h4 style="margin-top:18px">Order history</h4>'+shipHistoryHtml(d.events)+undo;
         box.querySelectorAll('button[data-rev]').forEach(function(b){
           b.addEventListener('click',function(){revertShipment(b.dataset.sid,b.dataset.rev,b)});
         });
@@ -4308,6 +4316,19 @@ function search(q){
   });
 }
 
+var OEV_LABEL={opened:'Opened in picker',item_picked:'Ticked item',item_unpicked:'Unticked item',picked:'Completed pick',
+  issue:'Flagged issue',resolved:'Resolved issue',undo:'Undo',pack_started:'Started packing video',packed:'Packed'};
+function orderHistoryHtml(evs){
+  if(!evs||!evs.length)return '<div class="ship-rec" style="color:var(--text-dim)">🕘 No worker activity recorded on this order yet</div>';
+  var rows=evs.map(function(e){
+    return '<div style="display:flex;gap:10px;padding:3px 0;font-size:12.5px">'+
+      '<span style="color:var(--text-dim);min-width:112px">'+escapeHtml(String(e.at||'').replace('T',' ').slice(0,16))+'</span>'+
+      '<b style="min-width:90px">'+escapeHtml(e.actor||'?')+'</b>'+
+      '<span>'+escapeHtml(OEV_LABEL[e.action]||e.action)+(e.detail?(' <span style="color:var(--text-dim)">· '+escapeHtml(e.detail)+'</span>'):'')+'</span></div>';
+  }).join('');
+  return '<details class="ship-rec" style="cursor:pointer"><summary>🕘 Order history ('+evs.length+') · last: <b>'+escapeHtml(evs[0].actor||'?')+'</b> — '+
+    escapeHtml(OEV_LABEL[evs[0].action]||evs[0].action)+'</summary><div style="padding:6px 0 2px">'+rows+'</div></details>';
+}
 function loadDetail(username,panel){
   panel.innerHTML='<div class="loading">Loading…</div>';
   fetch('/api/customers/'+encodeURIComponent(username)).then(function(r){return r.json()}).then(function(d){
@@ -4332,6 +4353,10 @@ function loadDetail(username,panel){
         var recHtml = recs.length
           ? '<div class="ship-rec">📹 Packed by <b style="color:var(--text-muted)">'+escapeHtml(recs[0].worker||'?')+'</b> · '+escapeHtml(recs[0].date||'')+' '+escapeHtml(recs[0].time||'')+(vids?(' · '+vids):'')+(photo?(' · '+photo):'')+'</div>'
           : '<div class="ship-rec" style="color:var(--text-dim)">📹 No packing video found for this package</div>';
+        var whoHtml='<div class="ship-rec">🧺 Picked by <b style="color:var(--text-muted)">'+escapeHtml(s.picked_by||'—')+'</b>'+
+          (s.picked_at?(' · '+escapeHtml(String(s.picked_at).replace('T',' ').slice(0,16))):'')+
+          ' &nbsp;·&nbsp; 📦 Packed by <b style="color:var(--text-muted)">'+escapeHtml(s.packed_by||'—')+'</b></div>';
+        recHtml=whoHtml+recHtml+orderHistoryHtml(s.events);
         return '<div class="ship">'+
           '<div class="ship-head">'+
             '<div><span class="ship-id">'+escapeHtml(s.shipment_id)+'</span>'+(trk?(' · '+trk):'')+'</div>'+
