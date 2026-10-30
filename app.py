@@ -4958,6 +4958,29 @@ def api_backfill_packed():
                     "skipped": skipped})
 
 
+def _pick_info(codes):
+    """tracking code / shipment id -> who picked & packed it (and whether picking has
+    started). Lets every order-info screen show 'Picked by / Packed by'. Best-effort."""
+    codes=[x for x in {(x or "").strip() for x in codes} if x]
+    out={}
+    if not codes: return out
+    try:
+        c=sdb()
+        try:
+            for i in range(0,len(codes),400):
+                part=codes[i:i+400]; qm=",".join("?"*len(part))
+                for r in c.execute("""SELECT shipment_id, tracking_code, status, picked_by, picked_at, packed_by, packed_at,
+                                             pick_started_by, pick_started_at FROM shipments
+                                      WHERE tracking_code IN (%s) OR shipment_id IN (%s)""" % (qm,qm), part+part):
+                    d=dict(r)
+                    for k in (r["tracking_code"], r["shipment_id"]):
+                        if k: out[k]=d
+        finally:
+            c.close()
+    except Exception as e:
+        print("pick info failed:", e, flush=True)
+    return out
+
 @app.route("/api/search/<trk>")
 @req_role("admin","cs")
 def api_search(trk):
@@ -4980,6 +5003,14 @@ def api_search(trk):
                         seen_p.add(pf)
                         s=pf.split("_")[0] if "_" in pf else "?"
                         r["photos"].append({"filename":pf,"url":"/media/photo/"+pf,"station":s})
+    _codes=[row.get("tracking_number","") for row in r["log"]]+[trk]
+    _pi=_pick_info(_codes)
+    r["pick"]=next((_pi[k] for k in _codes if k in _pi), None)
+    if r["pick"] is None:
+        try:
+            _c=sdb(); _row=_resolve_shipment_by_code(_c, _normalize_tracking(trk)); _c.close()
+            if _row: r["pick"]=_pick_info([_row["shipment_id"]]).get(_row["shipment_id"])
+        except Exception: pass
     return jsonify(r)
 
 @app.route("/api/recent")
@@ -5022,6 +5053,10 @@ def api_recordings():
                     "video_url":("/media/video/"+vf) if vf and vf!="None" else "",
                     "photo_url":("/media/photo/"+pf) if pf and pf!="None" else ""})
     items.reverse()
+    _pi=_pick_info([i["tracking"] for i in items[:2000]])
+    for i in items:
+        p=_pi.get(i["tracking"])
+        if p: i["picked_by"]=p["picked_by"]; i["pick_started_by"]=p["pick_started_by"]; i["status"]=p["status"]
     return jsonify({"ok":True,"worker":worker,"date":date,"count":len(items),"items":items})
 
 @app.route("/api/stats")
@@ -6576,7 +6611,7 @@ def api_pack_missing():
     days=max(1,min(60,int(request.args.get("days") or 14)))
     cutoff=(datetime.now()-timedelta(days=days)).strftime("%Y-%m-%d")
     c=sdb()
-    rows=[dict(r) for r in c.execute("""SELECT shipment_id,tracking_code,buyer_name,buyer_username,import_label,packed_at,packed_by,pack_missing
+    rows=[dict(r) for r in c.execute("""SELECT shipment_id,tracking_code,buyer_name,buyer_username,import_label,packed_at,packed_by,pack_missing,picked_by
                                         FROM shipments WHERE pack_check='missing' AND COALESCE(packed_at,'')>=?
                                         ORDER BY packed_at DESC LIMIT 300""",(cutoff,)).fetchall()]
     c.close()

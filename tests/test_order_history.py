@@ -93,3 +93,32 @@ def test_ticking_one_item_marks_the_order_as_picking(appmod, client):
     c = A.sdb(A.DEFAULT_ORG)
     assert c.execute("SELECT pick_started_by FROM shipments WHERE shipment_id=?", (sid,)).fetchone()[0] is None
     c.close()
+
+
+def test_picker_shows_on_track_videos_search_and_issues(appmod, client):
+    A = appmod; sid, user, ids = _mk(A)
+    h = _as(client, A, "worker4", "picker")
+    client.post("/api/pick/complete/" + sid, headers=h, json={})
+    c = A.sdb(A.DEFAULT_ORG)
+    trk = c.execute("SELECT tracking_code FROM shipments WHERE shipment_id=?", (sid,)).fetchone()[0]
+    c.execute("UPDATE shipments SET status='packed', packed_by='Tomi', packed_at=datetime('now'), pack_check='missing', pack_missing='[]' WHERE shipment_id=?", (sid,))
+    c.commit(); c.close()
+    with A.app.test_request_context():
+        from flask import session as _s
+        _s["org"] = A.DEFAULT_ORG
+        lf = A.log_file()
+    with open(lf, "a") as f:
+        import csv
+        w = csv.writer(f)
+        if f.tell() == 0:
+            w.writerow(["tracking_number", "station", "date", "time", "duration_seconds", "video_file", "photo_file", "worker"])
+        w.writerow([trk, "S1", "2026-10-30", "10:00:00", "40", "", "", "Tomi"])
+    _as(client, A, "admin", "admin")
+    d = client.get("/api/shipment/" + trk).get_json()
+    assert d["shipment"]["picked_by"] == "worker4" and d["shipment"]["packed_by"] == "Tomi"
+    v = client.get("/api/recordings?q=" + trk).get_json()["items"][0]
+    assert v["picked_by"] == "worker4"
+    s = client.get("/api/search/" + trk).get_json()
+    assert s["pick"]["picked_by"] == "worker4"
+    m = [r for r in client.get("/api/pack/missing").get_json()["rows"] if r["shipment_id"] == sid]
+    assert m and m[0]["picked_by"] == "worker4"
