@@ -1,0 +1,8 @@
+Dockerfile
+.dockerignore
+*.md
+film_clips/
+real_screens/
+download_clips.html
+film_clips.html
+film_frames.html

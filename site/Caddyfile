@@ -1,0 +1,11 @@
+{
+	admin off
+	persist_config off
+}
+
+:{$PORT:80} {
+	root * /srv
+	encode gzip
+	try_files {path} {path}.html {path}/
+	file_server
+}
