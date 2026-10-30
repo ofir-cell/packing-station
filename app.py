@@ -211,7 +211,12 @@ R2_HR_BUCKET=os.environ.get("R2_HR_BUCKET") or R2_BUCKET
 R2_ENDPOINT=os.environ.get("R2_ENDPOINT")
 R2_ACCESS_KEY_ID=os.environ.get("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY=os.environ.get("R2_SECRET_ACCESS_KEY")
-R2_PRESIGN_TTL=int(os.environ.get("R2_PRESIGN_TTL",3600))  # 1 hour
+# 15 minutes. Every media route (/media/video, /media/photo, labels, docs, invoices,
+# product images, ticket files) mints a fresh link on each request and redirects to
+# it, so a short life never breaks normal viewing or downloading; it only limits how
+# long a copied/forwarded link keeps working. The team downloads files rather than
+# sharing links. (Was 1 hour.) Override with R2_PRESIGN_TTL if ever needed.
+R2_PRESIGN_TTL=int(os.environ.get("R2_PRESIGN_TTL",900))
 r2=None
 _r2_vars=[R2_BUCKET,R2_ENDPOINT,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY]
 if any(_r2_vars):
@@ -780,12 +785,15 @@ def _rate_ok(key, limit=5, window=3600):
             _hits[key]=arr; return False
         arr.append(now); _hits[key]=arr; return True
 
-def _login_rate_check(ip,user):
+BADGE_MAX_FAILS=40      # failed badge scans allowed per IP per LOGIN_WINDOW (see api_badge_login)
+
+def _login_rate_check(ip,user,limit=None):
     """Return (ok, limited). limited=True means block this attempt."""
     now=time.time();key=_rate_key(ip,user)
+    limit=LOGIN_MAX_FAILS if limit is None else limit
     with _flock("login_attempts"):
         rec=_rate_load().get(key)
-    limited=bool(rec and rec.get("count",0)>=LOGIN_MAX_FAILS and now-rec.get("first",0)<LOGIN_WINDOW)
+    limited=bool(rec and rec.get("count",0)>=limit and now-rec.get("first",0)<LOGIN_WINDOW)
     return (not limited,limited)
 
 def _login_rate_fail(ip,user):
@@ -10278,8 +10286,12 @@ def api_public_hire_get(token):
         lang = "en"
     steps = _hire_steps_with_progress(h["id"], h["workflow_id"], lang=lang) if h["workflow_id"] else []
     done, total, pct = _hire_completion_pct(h["id"], h["workflow_id"]) if h["workflow_id"] else (0, 0, 0)
-    h.pop("invite_token", None)
-    return jsonify({"ok": True, "hire": h, "lang": lang, "steps": steps,
+    # Public (token-only) endpoint: return only what the hire's own onboarding page may
+    # show. Internal fields (notes, created_by, tenant id, account details, contact info)
+    # stay behind the authenticated /api/hires/<id>. The onboarding page itself reads
+    # only lang/steps/progress.
+    pub = {k: h.get(k) for k in ("full_name", "role_target", "status", "preferred_language")}
+    return jsonify({"ok": True, "hire": pub, "lang": lang, "steps": steps,
                     "progress": {"done": done, "total": total, "pct": pct}})
 
 @app.route("/api/hire/<token>/lang", methods=["POST"])
@@ -11247,7 +11259,16 @@ def api_badge_login():
     """Log in a worker by scanning their badge. No auth required (the token IS the auth)."""
     d=request.get_json() or {}
     token=(d.get("token") or "").strip().upper()
+    # Per-IP failure limit. Deliberately generous: every station in the warehouse usually
+    # shares ONE public IP, and a scanner that reads a shipping label on the badge screen
+    # counts as a failure, so a tight limit would lock the whole floor out. 40 failures in
+    # 5 minutes is far beyond any real mis-scan pattern and still stops brute force.
+    ip=request.remote_addr
+    ok,_limited=_login_rate_check(ip,"__badge__",limit=BADGE_MAX_FAILS)
+    if not ok:
+        return jsonify({"ok":False,"error":"Too many unrecognized badges from this network. Wait a few minutes and try again."}),429
     if not token or not re.match(r'^[A-Z0-9\-]{8,32}$',token):
+        _login_rate_fail(ip,"__badge__")
         return jsonify({"ok":False,"error":"Invalid badge"})
     users=ldj(USERS_FILE)
     matched_u=None
@@ -11257,6 +11278,7 @@ def api_badge_login():
             matched_u=u;break
     if not matched_u:
         # Brief delay to slow down brute force attempts
+        _login_rate_fail(ip,"__badge__")
         time.sleep(0.5)
         return jsonify({"ok":False,"error":"Badge not recognized"})
     user=users[matched_u]
@@ -11268,6 +11290,7 @@ def api_badge_login():
     session["org"]=user.get("org",DEFAULT_ORG)
     session["brand"]=brand_for_session(session["org"])
     _touch_last_login(matched_u)
+    _login_rate_clear(ip,"__badge__")   # a real badge resets the floor's mis-scan count
     return jsonify({"ok":True,"role":user["role"],"name":user["name"]})
 
 @app.route("/badge-login")
@@ -15466,7 +15489,14 @@ def api_tiktok_connect():
 def api_tiktok_callback():
     code=request.args.get("code") or request.args.get("auth_code") or ""
     state=request.args.get("state") or ""
-    org=_tt_state_org(state) or current_org()
+    # Shops are only ever connected from inside the app ("Connect" → TikTok → back
+    # here), which always carries our signed state. Never fall back to the logged-in
+    # session's org: that let a crafted callback link (attacker's auth code, no/forged
+    # state) attach an attacker-controlled shop to whichever org the victim was in.
+    org=_tt_state_org(state)
+    if not org:
+        _tt_log("callback rejected: missing/invalid/expired state")
+        return _tt_page("Authorization expired","This connection link is no longer valid. Please start the connection again from the TikTok page inside the app."),400
     if not code:
         return _tt_page("Authorization failed","No authorization code was returned by TikTok. Please try connecting again."),400
     if not org:
@@ -16660,6 +16690,5 @@ if __name__=="__main__":
         import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.connect(("8.8.8.8",80))
         print("Net: http://"+s.getsockname()[0]+":"+str(PORT));s.close()
     except:pass
-    print("Admin: admin/admin123  CS: cs1/cs123  Workers: worker1-6/pack1-6")
     print("="*50)
     app.run(host="0.0.0.0",port=PORT,debug=False,threaded=True)

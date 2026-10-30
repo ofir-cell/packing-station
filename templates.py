@@ -811,9 +811,9 @@ var countTimer=null;
 
 function renderProductNameHtml(s){
     var safe=(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    var m=safe.match(/(Part\s*\d+)/i);
+    var m=safe.match(/(Part\\s*\\d+)/i);
     if(!m)return safe;
-    var stripped=safe.replace(/[\s·,—–-]*Part\s*\d+[\s·,—–-]*/i,' ').replace(/\s{2,}/g,' ').trim();
+    var stripped=safe.replace(/[\\s·,—–-]*Part\\s*\\d+[\\s·,—–-]*/i,' ').replace(/\\s{2,}/g,' ').trim();
     return '<span class="part-tag">'+m[1].toUpperCase()+'</span>'+stripped;
 }
 
@@ -980,7 +980,7 @@ else{go('e');setTimeout(function(){go('r')},2500)}}).catch(function(){go('e');se
 // USPS labels carry "service + ZIP + tracking" in the barcode (up to ~33 digits)
 // but humans only see the 22-digit tracking. Strip the prefix on entry so the
 // recording, the upload payload, and the CSV log all carry the clean 22-digit code.
-function normTrk(s){s=(s||'').trim();if(/^\d{23,40}$/.test(s))return s.slice(-22);return s}
+function normTrk(s){s=(s||'').trim();if(/^\\d{23,40}$/.test(s))return s.slice(-22);return s}
 mi.addEventListener('keydown',function(e){if(e.key==='Enter'){var t=normTrk(mi.value);if(t)startRec(t)}});
 ri.addEventListener('keydown',function(e){if(e.key!=='Enter')return;var t=normTrk(ri.value);if(!t)return;stopTmr();
 hideReminder();
@@ -4285,7 +4285,7 @@ function fmtDate(s){if(!s)return '';try{return new Date(s).toLocaleDateString(un
 // Highlight "Part N" pattern in product names — bold and colored, just like SKU numbers
 function highlightPart(s){
   if(!s)return s;
-  return s.replace(/(Part\s*\d+)/gi,'<b style="color:var(--brand);font-weight:800">$1</b>');
+  return s.replace(/(Part\\s*\\d+)/gi,'<b style="color:var(--brand);font-weight:800">$1</b>');
 }
 
 // Load shows (grouped — one row per show name across all CSVs)
@@ -5098,9 +5098,9 @@ function escapeHtml(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')
 // next to the SKU number (critical for TikTok shows where Part 1/2/3 distinguishes items).
 function renderProductName(s){
     var safe=escapeHtml(s||'');
-    var m=safe.match(/(Part\s*\d+)/i);
+    var m=safe.match(/(Part\\s*\\d+)/i);
     if(!m)return safe;
-    var stripped=safe.replace(/[\s·,—–-]*Part\s*\d+[\s·,—–-]*/i,' ').replace(/\s{2,}/g,' ').trim();
+    var stripped=safe.replace(/[\\s·,—–-]*Part\\s*\\d+[\\s·,—–-]*/i,' ').replace(/\\s{2,}/g,' ').trim();
     return '<span class="part-tag">'+m[1].toUpperCase()+'</span>'+stripped;
 }
 
@@ -5224,7 +5224,7 @@ function loadShows(){
 function normalizeTracking(s){
     s=(s||'').trim();
     // 23-40 all-digit string = USPS barcode with prefix → take the last 22 digits
-    if(/^\d{23,40}$/.test(s)) return s.slice(-22);
+    if(/^\\d{23,40}$/.test(s)) return s.slice(-22);
     return s;
 }
 
@@ -5316,13 +5316,13 @@ function openDetail(sid){
 // pick list follows the warehouse flow: show by date → Part 1→2→3 → SKU ascending.
 function _showOf(name){
     name=name||'';
-    var base=name.replace(/\s*Part\s*\d+.*$/i,'').trim();
-    var dm=name.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+    var base=name.replace(/\\s*Part\\s*\\d+.*$/i,'').trim();
+    var dm=name.match(/(\\d{1,2})\\/(\\d{1,2})\\/(\\d{2,4})/);
     var dnum=dm?(parseInt(dm[3].length===2?'20'+dm[3]:dm[3])*10000+parseInt(dm[1])*100+parseInt(dm[2])):99999999;
     return {base:base||'Show', date:dnum};
 }
-function _partOf(name){var m=(name||'').match(/Part\s*(\d+)/i);return m?parseInt(m[1]):9999}
-function _skuNum(s){var m=(s||'').toString().match(/\d+/);return m?parseInt(m[0]):999999}
+function _partOf(name){var m=(name||'').match(/Part\\s*(\\d+)/i);return m?parseInt(m[1]):9999}
+function _skuNum(s){var m=(s||'').toString().match(/\\d+/);return m?parseInt(m[0]):999999}
 function renderItems(){
     var active=currentItems.filter(function(i){return !i.cancelled});
     var gvs=currentGiveaways||[];
