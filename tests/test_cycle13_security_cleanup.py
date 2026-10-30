@@ -86,6 +86,7 @@ def _load_livevision(tmp_path, monkeypatch, token):
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     srv = os.path.join(here, "live-vision", "server")
     monkeypatch.setenv("LIVEVISION_DB", str(tmp_path / "lv.db"))
+    monkeypatch.setenv("FRAMES_DIR", str(tmp_path / "frames"))   # /data exists only in production
     if token is None: monkeypatch.delenv("AGENT_TOKEN", raising=False)
     else: monkeypatch.setenv("AGENT_TOKEN", token)
     monkeypatch.syspath_prepend(srv)
