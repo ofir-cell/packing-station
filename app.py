@@ -3763,7 +3763,7 @@ def _csrf_protect():
 # blocked except logging out, the billing screen, and the public/lead pages. The
 # platform owner (super-admin) is never gated.
 _BILLING_OPEN_PATHS={"/login","/logout","/billing","/api/billing/status","/healthz",
-                     "/demo","/api/lead","/favicon.ico"}
+                     "/demo","/api/lead","/favicon.ico","/api/account/delete"}
 _BILLING_OPEN_PREFIXES=("/static/","/api/billing/","/guide-asset/")
 
 @app.before_request
@@ -4624,6 +4624,56 @@ def login_page():
     if "user" in session:
         return redirect("/")
     return LOGIN_HTML
+
+def _delete_org_data(org):
+    """Permanently delete a tenant: its data folder, its organizations row, and its
+    users.json entries. Used when the last admin self-deletes their account. Guarded
+    so it can only remove a folder INSIDE the orgs directory."""
+    if not org: return
+    import shutil
+    try:
+        d=org_path(org)
+        if os.path.isdir(d) and os.path.abspath(d).startswith(os.path.abspath(ORGS_DIR)+os.sep):
+            shutil.rmtree(d, ignore_errors=True)
+    except Exception: pass
+    try:
+        c=pdb(); c.execute("DELETE FROM organizations WHERE org_id=?",(org,)); c.commit(); c.close()
+    except Exception: pass
+    try:
+        with update_json(USERS_FILE) as users:
+            for k in [k for k,v in list(users.items()) if (v.get("org") or DEFAULT_ORG)==org]:
+                del users[k]
+    except Exception: pass
+
+@app.route("/api/account/delete", methods=["POST"])
+@req_login
+def api_account_delete():
+    """Self-serve account deletion (Apple App Store requirement + data-subject right to
+    deletion). Deletes the signed-in user's own account. If they are the last admin of
+    their org, requires wipe_org=true to also delete the org's data, then does so."""
+    u=session.get("user")
+    if not u: return jsonify({"ok":False,"error":"not signed in"}),401
+    d=request.get_json(silent=True) or {}
+    wipe_org=bool(d.get("wipe_org"))
+    _org=None; last_admin=False
+    with update_json(USERS_FILE) as users:
+        if u not in users:
+            return jsonify({"ok":False,"error":"account not found"}),404
+        _org=users[u].get("org") or DEFAULT_ORG
+        admins=[k for k,v in users.items() if v.get("role")=="admin" and (v.get("org") or DEFAULT_ORG)==_org]
+        last_admin=(users[u].get("role")=="admin" and all(k==u for k in admins))
+        if last_admin and not wipe_org:
+            return jsonify({"ok":False,"need_org_confirm":True,
+                "message":"You're the last admin — deleting your account will delete this organization's data. Resend with wipe_org=true to confirm."}),409
+        del users[u]
+    org_deleted=False
+    if last_admin and wipe_org:
+        try: _delete_org_data(_org); org_deleted=True
+        except Exception: pass
+    try: alog("account.delete","user=%s org_deleted=%s"%(u,org_deleted))
+    except Exception: pass
+    session.clear()
+    return jsonify({"ok":True,"deleted_user":u,"org_deleted":org_deleted})
 
 @app.route("/logout")
 def logout(): session.clear(); return redirect("/")
