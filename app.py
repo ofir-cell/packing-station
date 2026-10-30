@@ -5923,6 +5923,10 @@ def api_shipments_import():
         _cx_matched = _cx_inserted = 0
         if cancelled_inline:
             _cx_matched, _cx_inserted, _cx_aff = _apply_cancel_rows(c, cancelled_inline, platform, label, import_batch)
+        # A box this file lists as To Ship has active products: if an earlier (buggy) partial
+        # cancellation flipped it to 'cancelled', put it back so the packer can pack it.
+        for _pid in by_pkg:
+            _unflip_cancelled_shipment(c, _pid)
         c.commit()
     finally:
         c.close()
@@ -5993,11 +5997,31 @@ def api_shipments_import():
     })
 
 
-def _apply_cancel_rows(c, norm_rows, source, label, import_batch):
-    """Apply cancelled rows on an OPEN connection. (a) mark matching existing shipment
-    items cancelled, (b) insert synthetic cancelled shipments for orders we've never seen,
-    so the cleanup / reconciliation screens find them. Idempotent. Returns
-    (matched_existing, inserted_new, affected_ship_ids)."""
+def _unflip_cancelled_shipment(c, sid):
+    """A shipment that has active lines again must not stay 'cancelled' (the packer would get
+    DO NOT PACK). Put back the status its floor progress shows, and re-take its stock if it
+    was already packed. Only API-agnostic local data is used."""
+    row=c.execute("SELECT status, packed_at FROM shipments WHERE shipment_id=?",(sid,)).fetchone()
+    if not row or (row["status"] or "")!="cancelled": return False
+    active=c.execute("SELECT COUNT(*) n, SUM(COALESCE(picked,0)) p FROM shipment_items WHERE shipment_id=? AND COALESCE(cancelled,0)=0",(sid,)).fetchone()
+    if not active["n"]: return False
+    st="packed" if row["packed_at"] else ("picked" if (active["p"] or 0)>=active["n"] else "pending")
+    c.execute("UPDATE shipments SET status=? WHERE shipment_id=?",(st,sid))
+    if st=="packed":
+        try: _deplete_stock_for(c, sid)
+        except Exception as e: print("re-deplete after un-cancel failed for",sid,":",e,flush=True)
+    return True
+
+def _apply_cancel_rows(c, norm_rows, source, label, import_batch, authoritative=False):
+    """Apply cancelled rows on an OPEN connection. (a) mark the matching existing LINES
+    cancelled — only the product on the cancelled row, never the rest of the order (a
+    partial cancellation used to cancel every product in the order, so sold products
+    showed up on the cleanup screen and the box could flip to 'cancelled'), (b) insert
+    synthetic cancelled shipments for orders we've never seen, so the cleanup /
+    reconciliation screens find them. Idempotent.
+    authoritative=True (a cancellations file): for the orders it lists, a line it does NOT
+    list is not cancelled — lines wrongly cancelled earlier are restored.
+    Returns (matched_existing, inserted_new, affected_ship_ids)."""
     matched_existing = 0
     inserted_new = 0
     affected_ships = set()
@@ -6005,16 +6029,51 @@ def _apply_cancel_rows(c, norm_rows, source, label, import_batch):
     for n in norm_rows:
         if not n.get("order_id"): continue
         by_order.setdefault(n["order_id"], []).append(n)
+    key = lambda sku, name: ((sku or "").strip(), (name or "").strip())
     for oid, group in by_order.items():
         first = group[0]
         reason = first.get("cancel_reason") or "cancelled"
         # Path A: already in our shipments (was in a previous To-Ship / the same upload)
-        existing = c.execute("SELECT DISTINCT shipment_id FROM shipment_items WHERE order_id=?", (oid,)).fetchall()
-        if existing:
-            c.execute("""UPDATE shipment_items SET cancelled=1, cancel_reason=?
-                         WHERE order_id=? AND COALESCE(cancelled,0)=0""", (reason, oid))
+        lines = c.execute("SELECT id, shipment_id, sku, product_name, COALESCE(cancelled,0) cancelled FROM shipment_items WHERE order_id=?", (oid,)).fetchall()
+        if lines:
+            listed = {}
+            for n in group:
+                k = key(n.get("sku"), n.get("product_name"))
+                listed[k] = listed.get(k, 0) + 1
+            home = lines[0]["shipment_id"]
+            whole = any(key(n.get("sku"), n.get("product_name")) == ("", "") for n in group)
+            if whole:   # a row naming no product = the whole order is cancelled
+                for l in lines:
+                    if not l["cancelled"]:
+                        c.execute("UPDATE shipment_items SET cancelled=1, cancel_reason=? WHERE id=?", (reason, l["id"]))
+                    affected_ships.add(l["shipment_id"])
+                matched_existing += 1
+                continue
+            for n in group:
+                k = key(n.get("sku"), n.get("product_name"))
+                hit = next((l for l in lines if key(l["sku"], l["product_name"]) == k and not l["cancelled"]), None)
+                if hit is None:   # same sticker, product name written differently
+                    hit = next((l for l in lines if (l["sku"] or "").strip() == k[0] and k[0] and not l["cancelled"]), None)
+                if hit is not None:
+                    c.execute("UPDATE shipment_items SET cancelled=1, cancel_reason=? WHERE id=?", (reason, hit["id"]))
+                    lines = [dict(l, cancelled=1) if l["id"] == hit["id"] else l for l in lines]
+                    affected_ships.add(hit["shipment_id"])
+                elif not any(key(l["sku"], l["product_name"]) == k for l in lines):
+                    # the cancelled product isn't in the box at all (a To-Ship file leaves
+                    # cancelled rows out): add it as a cancelled line so cleanup shows the
+                    # RIGHT product to take off the table
+                    c.execute("""INSERT INTO shipment_items (shipment_id, order_id, sku, product_name, quantity,
+                                 item_weight_g, cancelled, cancel_reason) VALUES (?,?,?,?,?,?,1,?)""",
+                              (home, oid, n.get("sku"), n.get("product_name"), n.get("quantity") or 1,
+                               n.get("weight_g") or None, reason))
+                    affected_ships.add(home)
+            if authoritative:
+                for l in lines:
+                    if l["cancelled"] and key(l["sku"], l["product_name"]) not in listed and not any(
+                            (l["sku"] or "").strip() == lk[0] and lk[0] for lk in listed):
+                        c.execute("UPDATE shipment_items SET cancelled=0, cancel_reason=NULL WHERE id=?", (l["id"],))
+                        affected_ships.add(l["shipment_id"])
             matched_existing += 1
-            for r in existing: affected_ships.add(r["shipment_id"])
             continue
 
         # Path B: never seen — insert a synthetic shipment so cleanup can find it
@@ -6047,6 +6106,8 @@ def _apply_cancel_rows(c, norm_rows, source, label, import_batch):
         if remaining == 0:
             c.execute("""UPDATE shipments SET status='cancelled', stock_depleted=0
                          WHERE shipment_id=? AND status NOT IN ('shipped','cancelled')""", (sid,))
+        else:
+            _unflip_cancelled_shipment(c, sid)   # active lines again (repair): never leave it 'cancelled'
         _recompute_shipment_weight(c, sid)
     return matched_existing, inserted_new, affected_ships
 
@@ -6075,7 +6136,7 @@ def _process_cancel_file(norm_rows, source, label):
     reconciliation screen can find them. Both code paths are idempotent."""
     c = sdb()
     import_batch = "cancel_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-    matched_existing, inserted_new, affected_ships = _apply_cancel_rows(c, norm_rows, source, label, import_batch)
+    matched_existing, inserted_new, affected_ships = _apply_cancel_rows(c, norm_rows, source, label, import_batch, authoritative=True)
     c.commit(); c.close()
     return jsonify({
         "ok": True,
