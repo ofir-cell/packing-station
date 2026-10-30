@@ -52,3 +52,16 @@ def test_last_admin_wipe_org(appmod, client):
 def test_delete_requires_login(appmod, client):
     r = client.post("/api/account/delete", json={})
     assert r.status_code in (301, 302, 401, 403)
+
+
+def test_me_page_renders_delete_control(appmod, client):
+    """The /me profile page must expose the self-serve delete control and
+    post to /api/account/delete (completes the Apple in-app deletion loop)."""
+    uname = "tmpu_" + uuid.uuid4().hex[:6]; _add_user(appmod, uname, "worker")
+    _sess(client, appmod, uname, "worker")
+    r = client.get("/me")
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert 'id="delBtn"' in html
+    assert "/api/account/delete" in html
+    assert "delete=1" in html          # mobile deep-link handler present

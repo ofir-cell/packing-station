@@ -2492,6 +2492,14 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:#1a
 .recent-table td.muted{color:#586274}
 .recent-table td.mono{font-family:'SF Mono',Menlo,monospace;font-size:12px}
 .empty{text-align:center;padding:40px;color:#6b7280;font-size:14px;background:rgba(17,24,39,0.032);border:1px dashed rgba(17,24,39,0.128);border-radius:14px}
+.danger{background:#fff;border:1px solid #fecaca;border-radius:14px;padding:22px;margin-top:8px}
+.danger h3{font-size:16px;font-weight:800;color:#b91c1c;margin-bottom:6px}
+.danger p{font-size:13px;color:#586274;line-height:1.55;margin-bottom:14px;max-width:620px}
+.danger a{color:#4f46e5;text-decoration:underline}
+.btn-danger{background:#fff;color:#dc2626;border:1px solid #fecaca;border-radius:10px;padding:11px 18px;font-size:14px;font-weight:700;font-family:inherit;cursor:pointer}
+.btn-danger:hover{background:#fef2f2}
+.del-note{font-size:12px;color:#9ca3af;margin-top:10px}
+.del-ok{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:16px;margin-top:12px;color:#166534;font-size:14px;display:none}
 @media(max-width:700px){
 .grid-4{grid-template-columns:repeat(2,1fr)}
 .hero{flex-wrap:wrap}
@@ -2527,10 +2535,66 @@ __NAVBAR__
 
   <div class="section-title">Recent packages</div>
   <div id="recentWrap"></div>
+
+  <div class="section-title" style="margin-top:40px">Account &amp; privacy</div>
+  <div class="danger" id="dangerZone">
+    <h3>Delete my account</h3>
+    <p>Permanently delete your Live&nbsp;Ops&nbsp;Hub account. We stop all data access immediately
+       and delete or anonymize your personal data within 30 days, as described in our
+       <a href="https://liveopshub.com/privacy" target="_blank" rel="noopener">Privacy Policy</a>.
+       This can’t be undone.</p>
+    <button class="btn-danger" id="delBtn">Delete my account</button>
+    <div class="del-note">You’ll be signed out immediately after deletion.</div>
+    <div class="del-ok" id="delOk"></div>
+  </div>
 </div>
 
 <script>
 function fmtDur(s){if(!s||s==='0')return '—';var n=parseFloat(s);return isNaN(n)?'—':n.toFixed(1)+'s avg'}
+// ── Self-serve account deletion (Apple App Store 5.1.1(v) + data-subject right) ──
+(function(){
+  var btn=document.getElementById('delBtn');
+  var ok=document.getElementById('delOk');
+  if(!btn) return;
+  function finish(msg){
+    ok.textContent=msg+' Signing you out…';
+    ok.style.display='block';
+    setTimeout(function(){location.href='/logout';},2200);
+  }
+  function callDelete(wipe){
+    btn.disabled=true; btn.textContent='Deleting…';
+    return fetch('/api/account/delete',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(wipe?{wipe_org:true}:{})
+    }).then(function(r){return r.json().then(function(j){return {status:r.status,j:j};});});
+  }
+  btn.addEventListener('click',function(){
+    if(!confirm('Permanently delete your account? This can’t be undone.')) return;
+    callDelete(false).then(function(res){
+      if(res.status===409 && res.j && res.j.need_org_confirm){
+        btn.disabled=false; btn.textContent='Delete my account';
+        var m=(res.j.message||'You are the last admin — this will also delete your organization’s data.')
+              +'\n\nDelete the entire organization and all its data?';
+        if(!confirm(m)) return;
+        return callDelete(true).then(function(r2){
+          if(r2.j && r2.j.ok){ finish('Your account and organization data have been deleted.'); }
+          else { btn.disabled=false; btn.textContent='Delete my account'; alert((r2.j&&(r2.j.message||r2.j.error))||'Deletion failed. Please try again.'); }
+        });
+      }
+      if(res.j && res.j.ok){ finish('Your account has been deleted.'); return; }
+      btn.disabled=false; btn.textContent='Delete my account';
+      alert((res.j&&(res.j.message||res.j.error))||'Deletion failed. Please try again.');
+    }).catch(function(){ btn.disabled=false; btn.textContent='Delete my account'; alert('Network error. Please try again.'); });
+  });
+  // Deep link from the mobile app: /me?delete=1 scrolls to and highlights the delete control.
+  if(/[?&]delete=1(&|$)/.test(location.search)){
+    var dz=document.getElementById('dangerZone');
+    if(dz){ dz.scrollIntoView({behavior:'smooth',block:'center'});
+      dz.style.boxShadow='0 0 0 3px rgba(220,38,38,.25)';
+      setTimeout(function(){dz.style.boxShadow='none';},2600); }
+  }
+})();
 fetch('/api/me/stats').then(function(r){return r.json()}).then(function(d){
   document.getElementById('name').textContent=d.name||'Unknown';
   document.getElementById('avatar').textContent=(d.name||'?').charAt(0).toUpperCase();
