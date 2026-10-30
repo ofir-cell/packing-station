@@ -1459,6 +1459,8 @@ def sdb_init(org):
         updated_at TEXT
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)")
+    try: c.execute("CREATE INDEX IF NOT EXISTS idx_ship_buyer ON shipments(buyer_username)")
+    except sqlite3.OperationalError: pass
     # Columns added after `products` was first released. They are ALSO in the big ALTER list
     # above, but that list runs before this CREATE on a brand-new database — so add them
     # here too, or a new workspace would lack them until its second boot.
@@ -4506,13 +4508,15 @@ def api_today():
             money["sold_today"]=m["orders"] or 0; money["revenue_today"]=round(m["rev"] or 0,2)
         except Exception: pass
         try:
+            # today's buyers who also bought before today. EXISTS stops at the first earlier
+            # order and uses idx_ship_buyer (the old COUNT(*) subquery rescanned every order
+            # for every buyer: ~7 s on an evening with 1,500 orders).
             rb=c.execute("""SELECT COUNT(*) n FROM (
-                             SELECT buyer_username FROM shipments
-                             WHERE substr(COALESCE(show_date,''),1,10)=? AND COALESCE(buyer_username,'')!=''
-                             GROUP BY buyer_username
-                             HAVING (SELECT COUNT(*) FROM shipments s2
-                                WHERE s2.buyer_username=shipments.buyer_username
-                                  AND substr(COALESCE(s2.show_date,''),1,10)<?)>0)""",(today,today)).fetchone()
+                             SELECT DISTINCT t.buyer_username FROM shipments t
+                             WHERE substr(COALESCE(t.show_date,''),1,10)=? AND COALESCE(t.buyer_username,'')!=''
+                               AND EXISTS (SELECT 1 FROM shipments s2
+                                           WHERE s2.buyer_username=t.buyer_username
+                                             AND substr(COALESCE(s2.show_date,''),1,10)<?))""",(today,today)).fetchone()
             money["repeat_buyers"]=rb["n"] or 0
         except Exception: pass
         out["money"]=money
