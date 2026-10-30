@@ -40,6 +40,9 @@ def box(appmod, monkeypatch):
         c.execute("INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku) VALUES(?,?,1,?)", (label, st, sku))
         prods[st] = bc
     c.commit(); c.close()
+    c2 = A.sdb(A.DEFAULT_ORG)                                                  # the feature is off by default: turn it on
+    c2.execute("INSERT INTO settings(key,value) VALUES('pack_scan_items','1') ON CONFLICT(key) DO UPDATE SET value='1'")
+    c2.commit(); c2.close()
     monkeypatch.setattr(A, "_barcode_lookup_online", lambda code: {"code": code, "name": "Lip Oil Cherry", "brand": "", "category": "",
                                                                    "image": "", "price": 0, "source": "test"})
     return {"t": t, "label": label, "trk": trk, "trk2": trk2, "bc": prods, "sid": "P" + t}
@@ -206,3 +209,16 @@ def test_a_duplicate_barcode_in_the_catalog_still_matches_the_linked_product(app
     c.commit(); c.close()
     _begin(client, hdr, box["trk"])
     assert _scan(client, hdr, box["trk"], box["bc"]["1"])["result"] == "ok"
+
+
+def test_pack_scan_is_off_until_an_admin_turns_it_on(appmod, client, box):
+    A = appmod
+    c = A.sdb(A.DEFAULT_ORG); c.execute("DELETE FROM settings WHERE key='pack_scan_items'"); c.commit(); c.close()
+    try:
+        hdr = _as(client, A)
+        assert _begin(client, hdr, box["trk"])["enabled"] is False
+        assert _upload(client, hdr, box["trk"])["pack"] is None
+        hdr = _as(client, A, "admin", "admin")
+        assert client.get("/api/pack/setting").get_json()["on"] is False
+    finally:
+        c = A.sdb(A.DEFAULT_ORG); c.execute("INSERT INTO settings(key,value) VALUES('pack_scan_items','1') ON CONFLICT(key) DO UPDATE SET value='1'"); c.commit(); c.close()

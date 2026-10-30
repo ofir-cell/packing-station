@@ -4779,7 +4779,7 @@ def api_upload():
             c.execute("""UPDATE shipments
                          SET status='packed', packed_at=CURRENT_TIMESTAMP, packed_by=?
                          WHERE shipment_id=?""", (wrk, row["shipment_id"]))
-            if _get_setting("pack_scan_items","1")!="0":
+            if _get_setting("pack_scan_items","0")=="1":
                 try: pack_res=_pack_finish(c, row, vn)
                 except Exception as e: print("pack check failed for", trk, ":", e, flush=True)
             # Deplete inventory for the items in this shipment (once per shipment).
@@ -6306,7 +6306,7 @@ def api_pack_begin():
                           % ",".join("?"*len(ids)), ids)
                 c.commit()
         items=_pack_box(c,row)
-        on=_get_setting("pack_scan_items","1")!="0" and (row["status"] or "")!="cancelled"
+        on=_get_setting("pack_scan_items","0")=="1" and (row["status"] or "")!="cancelled"
         return jsonify({"ok":True,"enabled":on,"shipment_id":row["shipment_id"],"items":_pack_view(items)})
     finally:
         c.close()
@@ -6396,7 +6396,7 @@ def api_pack_setting():
         on=bool((request.get_json() or {}).get("on"))
         _set_setting("pack_scan_items","1" if on else "0"); alog("pack.scan_setting","on" if on else "off")
         return jsonify({"ok":True,"on":on})
-    return jsonify({"ok":True,"on":_get_setting("pack_scan_items","1")!="0"})
+    return jsonify({"ok":True,"on":_get_setting("pack_scan_items","0")=="1"})
 
 @app.route("/api/pack/missing")
 @req_role("admin","cs")

@@ -9865,7 +9865,7 @@ __NAVBAR__
 </div>
 <div class="card">
   <h2>🎥 Packing — scan each product into the box</h2>
-  <div class="desc">While the video records, the packer scans every product he puts in the box (the screen guides him in ascending sticker order). Only stickers linked to a product in Live Match are checked. Boxes finished without scanning everything are listed on Picking / Packing Issues. Turn off to go back to scan-to-start / scan-to-stop only.</div>
+  <div class="desc">While the video records, the packer scans every product he puts in the box (the screen guides him in ascending sticker order). Only stickers linked to a product in Live Match are checked. Boxes finished without scanning everything are listed on Picking / Packing Issues. Off by default; when off, the station is plain scan-to-start / scan-to-stop.</div>
   <label style="display:flex;align-items:center;gap:10px;font-weight:700;cursor:pointer"><input type="checkbox" id="packScanOn" style="width:20px;height:20px"> Ask packers to scan each product</label>
   <div id="packScanMsg" style="font-size:12px;color:var(--text-muted);margin-top:6px;min-height:14px"></div>
 </div>
