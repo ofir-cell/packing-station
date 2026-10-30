@@ -15264,7 +15264,68 @@ def _tt_ensure_cipher(org, shop_id, tok):
         _tt_log("ensure cipher failed: %r"%e)
     return tok
 
-_tt_last_event = 0   # unix time of the last order webhook — drives fast "live" polling
+_tt_last_event = 0   # unix time of the last order webhook seen by THIS worker process
+
+# The "a live is selling right now" signal must be shared by all gunicorn workers: the
+# webhook can land on any of them, but only the one worker holding the sweep lock runs
+# _tt_sweep_loop. A per-process global alone meant the sweep usually never saw the
+# signal and stayed on ~30s idle polling during a live. The mtime of this marker file
+# on the shared volume is the cross-process signal.
+_TT_LIVE_MARK = os.path.join(DATA_DIR, ".tt_live_event")
+
+def _tt_mark_live():
+    try:
+        with open(_TT_LIVE_MARK, "a"): pass
+        os.utime(_TT_LIVE_MARK, None)
+    except Exception as e:
+        _tt_log("live mark failed: %r"%e)
+
+def _tt_last_live_event():
+    """Most recent order-webhook time across ALL workers (unix seconds, 0 if none)."""
+    try: shared=os.path.getmtime(_TT_LIVE_MARK)
+    except Exception: shared=0
+    return max(shared, _tt_last_event)
+
+# Background ingest: the webhook acks TikTok immediately and hands the order fetch to
+# one daemon thread per worker. Duplicate pushes for an order already waiting in the
+# queue are collapsed (a push that arrives while the order is being fetched is queued
+# again, so the newest status always wins). A full queue or a crashed process loses
+# nothing: the event is logged and the live sweep re-reads recent orders.
+import queue as _queue
+_tt_ingest_q = _queue.Queue(maxsize=5000)
+_tt_ingest_pending = set()
+_tt_ingest_lock = threading.Lock()
+_tt_ingest_thread = None
+
+def _tt_ingest_worker():
+    while True:
+        org, shop_id, order_id = _tt_ingest_q.get()
+        with _tt_ingest_lock:
+            _tt_ingest_pending.discard((org, order_id))
+        try:
+            _tt_ingest_order(org, shop_id, order_id)
+        except Exception as e:
+            _tt_log("ingest failed %s: %r"%(order_id, e))
+        finally:
+            _tt_ingest_q.task_done()
+
+def _tt_enqueue_ingest(org, shop_id, order_id):
+    """Queue one order for background fetch. Returns True if queued, False if it was
+    already waiting or the queue is full (the sweep will catch it)."""
+    global _tt_ingest_thread
+    key=(org, str(order_id))
+    with _tt_ingest_lock:
+        if key in _tt_ingest_pending: return False
+        if _tt_ingest_thread is None or not _tt_ingest_thread.is_alive():
+            _tt_ingest_thread=threading.Thread(target=_tt_ingest_worker, daemon=True, name="tt-ingest")
+            _tt_ingest_thread.start()
+        try:
+            _tt_ingest_q.put_nowait((org, str(shop_id), str(order_id)))
+        except _queue.Full:
+            _tt_log("ingest queue full; %s left for the sweep"%order_id)
+            return False
+        _tt_ingest_pending.add(key)
+    return True
 
 def _tt_sweep_once(window_sec=7200):
     """Poll each connected shop for orders updated in the last window_sec and ingest them.
@@ -15329,7 +15390,7 @@ def _tt_sweep_loop():
     while True:
         time.sleep(5)
         now=time.time()
-        active = (now - _tt_last_event) < 420   # a sale came in within the last 7 minutes
+        active = (now - _tt_last_live_event()) < 420   # a sale came in within the last 7 minutes (any worker)
         try:
             if now - last_wide >= 300:
                 last_wide=now; _tt_sweep_once(window_sec=7200)   # wide safety every ~5 min
@@ -15465,9 +15526,8 @@ def api_tiktok_webhook():
     if not verified:
         org=_tt_org_for_shop_exact(shop_id)
         if ttype==1 and order_id and org:
-            _tt_last_event=time.time()
-            try: _tt_ingest_order(org, shop_id, order_id)
-            except Exception as e: _tt_log("ingest (unsigned hint) failed %s: %r"%(order_id,e))
+            _tt_last_event=time.time(); _tt_mark_live()
+            _tt_enqueue_ingest(org, shop_id, order_id)
         return jsonify({"code":0,"message":"success"})
     org=_tt_org_for_shop(shop_id)
     try:
@@ -15483,12 +15543,15 @@ def api_tiktok_webhook():
             c=pdb(); c.execute("UPDATE tiktok_shops SET active=0,updated_at=CURRENT_TIMESTAMP WHERE shop_id=?",(shop_id,)); c.commit(); c.close()
         except Exception: pass
     # Order status change (topic 1): signal live activity so the background poller switches
-    # to ~5s fast polling, and best-effort fetch this one order now. Never block the 200 ack.
+    # to ~5s fast polling, and fetch this one order right away in the background.
+    # Never block the 200 ack: the fetch used to run inline here, and a burst of pushes
+    # during a live held every gunicorn worker for 20-36s (stations froze). Now it is
+    # queued to this worker's ingest thread; if the process dies before it runs, the
+    # event row above is logged and the 5s live sweep picks the order up anyway.
     if ttype==1:
-        _tt_last_event=time.time()
+        _tt_last_event=time.time(); _tt_mark_live()
         if order_id and org:
-            try: _tt_ingest_order(org, shop_id, order_id)
-            except Exception as e: _tt_log("ingest failed %s: %r"%(order_id,e))
+            _tt_enqueue_ingest(org, shop_id, order_id)
     return jsonify({"code":0,"message":"success"})
 
 @app.route("/api/tiktok/status")
