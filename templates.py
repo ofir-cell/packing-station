@@ -1083,8 +1083,10 @@ if(!d.ok&&moved()){psFb(t('uploadfailed')||'Previous upload failed','bad');retur
 if(d.ok){n++;document.getElementById('cn').textContent=n;document.getElementById('dkk').textContent=my;
 var miss=(d.pack&&d.pack.check==='missing')?d.pack.missing.map(function(m){return '#'+m.sticker}).join(', '):'';
 document.getElementById('ddd').innerHTML='Duration: '+dur+'s'+(miss?'<div style="margin-top:10px;background:#fef3c7;color:#92400e;border-radius:12px;padding:8px 14px;font-weight:800">⚠ '+pt('missing')+' '+pesc(miss)+'</div>':'');
-PS=null;document.body.classList.remove('packscan');loadMyStats();go('d');setTimeout(function(){go('r')},miss?4500:3000)}
-else{go('e');setTimeout(function(){go('r')},2500)}}).catch(function(){if(moved())return;go('e');setTimeout(function(){go('r')},2500)})}
+PS=null;document.body.classList.remove('packscan');loadMyStats();go('d');setTimeout(function(){if(st==='d')go('r')},miss?4500:3000)}
+else{go('e');setTimeout(function(){if(st==='e')go('r')},2500)}}).catch(function(){if(moved())return;go('e');setTimeout(function(){if(st==='e')go('r')},2500)})}
+// (the delayed return to "ready" only fires if nothing else happened meanwhile — a next box that
+//  started recording during the done/error screen must never be reset to "ready")
 // USPS labels carry "service + ZIP + tracking" in the barcode (up to ~33 digits)
 // but humans only see the 22-digit tracking. Strip the prefix on entry so the
 // recording, the upload payload, and the CSV log all carry the clean 22-digit code.
