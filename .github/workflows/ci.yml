@@ -34,7 +34,13 @@ jobs:
           pip install -r requirements.txt pytest pytest-timeout
 
       - name: Tests
-        run: python -m pytest -q --timeout=600 tests
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -q --timeout=600 tests -rfE 2>&1 | tee out.txt
+          code=${PIPESTATUS[0]}
+          grep -E "^(FAILED|ERROR)|^E  " out.txt | head -25 | while IFS= read -r l; do echo "::error::${l:0:300}"; done
+          exit $code
 
       - name: Inline JS syntax check
         run: python check_js.py
