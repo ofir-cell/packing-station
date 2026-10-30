@@ -123,6 +123,7 @@ def _navbar(active_page=""):
           ])),
           ("Inventory", "📥", _vis([
             ("inventory", "/admin/inventory", "Inventory") if has("admin","cs") else None,
+            ("productcleanup", "/admin/product-cleanup", "After-Live Cleanup") if has("admin","cs") else None,
             ("purchasing", "/admin/purchasing", "Purchasing") if has("admin") else None,
             ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation") if has("admin","cs") else None,
             ("stocktake", "/admin/stocktake", "Stock Take") if has("admin","cs") else None,
@@ -13026,5 +13027,164 @@ function render(items){
 function run(q){fetch('/api/recordings?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){if((inp.value||'').trim()!==q)return;render((d&&d.items)||[]);}).catch(function(){});}
 inp.addEventListener('input',function(){var q=inp.value.trim();clearTimeout(t);if(q.length<3){res.innerHTML='';return;}t=setTimeout(function(){run(q);},250);});
 inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();var q=inp.value.trim();if(q)run(q);}});
+</script>
+</body></html>'''
+
+
+# ── After-Live Product Cleanup ─────────────────────────────────────────────────
+# Products the assistant scanned during a live, with what each still needs (a real
+# name, prices, cost, a photo). Saves through POST /api/products + /api/product/<sku>/image.
+PRODUCT_CLEANUP_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>After-Live Cleanup — __BRANDMARK__</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var(--text);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1100px;margin:0 auto;padding:32px 20px 0}
+.page-title{font-size:30px;font-weight:900;color:#141b26;letter-spacing:-.5px}
+.page-sub{color:var(--text-muted);margin:8px 0 22px;font-size:14px;line-height:1.5}
+.shows{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;margin-bottom:20px}
+.show{flex:0 0 auto;min-width:200px;max-width:280px;text-align:left;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 14px;cursor:pointer;font-family:inherit;color:var(--text)}
+.show.on{border-color:#4f46e5;box-shadow:0 0 0 3px rgba(79,70,229,.15)}
+.show .nm{font-weight:800;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.show .meta{font-size:12px;color:var(--text-muted);margin-top:4px}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800}
+.b-todo{background:rgba(244,63,94,.12);color:#e11d48}
+.b-done{background:rgba(16,185,129,.14);color:#059669}
+.bar-row{display:flex;align-items:center;gap:14px;margin-bottom:16px;flex-wrap:wrap}
+.bar{flex:1;min-width:180px;height:10px;background:rgba(17,24,39,.08);border-radius:999px;overflow:hidden}
+.bar i{display:block;height:100%;background:#10b981;width:0;transition:width .3s}
+.bar-txt{font-size:13px;font-weight:700;color:var(--text-muted)}
+.tgl{font-size:13px;color:var(--text-muted);display:flex;align-items:center;gap:6px;cursor:pointer}
+.list{display:flex;flex-direction:column;gap:12px}
+.card{display:grid;grid-template-columns:96px 1fr;gap:16px;background:var(--surface);border:1px solid var(--border);border-left:4px solid #f59e0b;border-radius:16px;padding:14px}
+.card.done{border-left-color:#10b981;opacity:.8}
+.ph{width:96px;height:96px;border-radius:12px;background:rgba(17,24,39,.06);display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative;cursor:pointer;font-size:12px;color:var(--text-muted);text-align:center}
+.ph img{width:100%;height:100%;object-fit:cover}
+.ph input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.top{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+.chip{font-family:'SF Mono',Menlo,monospace;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;background:rgba(217,116,143,.12);color:#d9748f}
+.bc{font-family:'SF Mono',Menlo,monospace;font-size:11px;color:var(--text-muted)}
+.sold{font-size:12px;color:var(--text-muted)}
+.gap{font-size:11px;font-weight:800;padding:2px 7px;border-radius:6px;background:rgba(245,158,11,.14);color:#b45309}
+.fields{display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr;gap:8px;align-items:end}
+.f label{display:block;font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:3px;text-transform:uppercase;letter-spacing:.3px}
+.f input{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:9px;font-size:14px;font-family:inherit;background:#fff;color:var(--text)}
+.f input.miss{border-color:#f59e0b;background:rgba(245,158,11,.05)}
+.save{background:#4f46e5;color:#fff;border:0;border-radius:10px;padding:10px 16px;font-weight:800;font-size:14px;cursor:pointer;font-family:inherit}
+.save:disabled{opacity:.5}
+.msg{font-size:12px;margin-top:6px;min-height:16px}
+.msg.ok{color:#059669}.msg.err{color:#e11d48}
+.empty{padding:40px;text-align:center;color:var(--text-muted);border:1px dashed var(--border);border-radius:16px}
+@media (max-width:760px){.card{grid-template-columns:72px 1fr}.ph{width:72px;height:72px}.fields{grid-template-columns:1fr 1fr}.fields .f.name{grid-column:1/-1}.save{width:100%;padding:13px}}
+</style></head><body>
+__NAVBAR__
+<div class="wrap">
+  <div class="page-title">After-Live Cleanup</div>
+  <div class="page-sub">Products scanned during a live that still need a real name and prices. Fix them here after the show. Saving updates the product everywhere (Inventory, ScanIt, picking).</div>
+  <div class="shows" id="shows"></div>
+  <div id="main"></div>
+</div>
+<script>
+var ROLE='__ROLE__', SHOW=null, DATA=null, ONLY_TODO=true;
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function money(v){return (v==null||v==='')?'':Number(v).toFixed(2);}
+var GAP_TXT={name:'needs a name',review:'needs review',target_price:'needs target price',cost:'needs cost'};
+
+function loadShows(){
+  fetch('/api/product-cleanup/shows').then(function(r){return r.json();}).then(function(d){
+    var el=document.getElementById('shows');
+    if(!d.ok||!d.shows.length){el.innerHTML='';document.getElementById('main').innerHTML='<div class="empty">No products were scanned in a live in the last 3 weeks.</div>';return;}
+    el.innerHTML=d.shows.map(function(s,i){
+      return '<button class="show'+(s.label===SHOW?' on':'')+'" data-i="'+i+'"><div class="nm">'+esc(s.label)+'</div>'+
+        '<div class="meta">'+(s.todo?'<span class="badge b-todo">'+s.todo+' to do</span>':'<span class="badge b-done">all done</span>')+
+        ' &middot; '+s.products+' products</div></button>';
+    }).join('');
+    Array.prototype.forEach.call(el.querySelectorAll('.show'),function(b){
+      b.addEventListener('click',function(){pick(d.shows[+b.getAttribute('data-i')].label);});
+    });
+    if(!SHOW){var first=d.shows.filter(function(s){return s.todo;})[0]||d.shows[0];pick(first.label);}
+  });
+}
+function pick(label){
+  SHOW=label;
+  Array.prototype.forEach.call(document.querySelectorAll('.show'),function(b){b.classList.toggle('on',b.querySelector('.nm').textContent===label);});
+  fetch('/api/product-cleanup?show='+encodeURIComponent(label)).then(function(r){return r.json();}).then(function(d){DATA=d;render();});
+}
+function render(){
+  var d=DATA, m=document.getElementById('main');
+  if(!d||!d.ok){m.innerHTML='<div class="empty">Could not load this show.</div>';return;}
+  var pct=d.total?Math.round(100*d.done/d.total):100;
+  var rows=d.items.filter(function(x){return !ONLY_TODO||!x.done;});
+  m.innerHTML='<div class="bar-row"><div class="bar"><i style="width:'+pct+'%"></i></div>'+
+    '<div class="bar-txt" id="bartxt">'+d.done+' of '+d.total+' done</div>'+
+    '<label class="tgl"><input type="checkbox" id="onlytodo"'+(ONLY_TODO?' checked':'')+'> Only what needs work</label></div>'+
+    (rows.length?'<div class="list">'+rows.map(card).join('')+'</div>':'<div class="empty">Everything from this live is done.</div>');
+  document.getElementById('onlytodo').addEventListener('change',function(e){ONLY_TODO=e.target.checked;render();});
+  Array.prototype.forEach.call(m.querySelectorAll('.card'),wire);
+}
+function card(x){
+  var nm=x.placeholder_name?'':(x.name||'');
+  var cat=(x.category==='Needs review')?'':(x.category||'');
+  var miss=function(g){return x.gaps.indexOf(g)>=0?' miss':'';};
+  var sold=x.units?(x.units+' sold'+(x.avg_sold!=null?' &middot; avg $'+money(x.avg_sold):'')):'';
+  return '<div class="card'+(x.done?' done':'')+'" data-sku="'+esc(x.sku)+'">'+
+    '<label class="ph">'+(x.image_url?'<img src="'+esc(x.image_url)+'" alt="">':'&#128247;<br>Add photo')+
+      '<input type="file" accept="image/*" capture="environment" class="photo"></label>'+
+    '<div><div class="top">'+x.stickers.map(function(s){return '<span class="chip">'+esc(s)+'</span>';}).join('')+
+      '<span class="bc">'+esc(x.barcode||x.sku)+'</span><span class="sold">'+sold+'</span>'+
+      x.gaps.map(function(g){return '<span class="gap">'+GAP_TXT[g]+'</span>';}).join('')+
+      (x.done?'<span class="badge b-done">done</span>':'')+'</div>'+
+    '<div class="fields">'+
+      '<div class="f name"><label>Name</label><input class="i-name'+miss('name')+'" value="'+esc(nm)+'" placeholder="e.g. Rare Beauty Blush - Joy"></div>'+
+      '<div class="f"><label>Category</label><input class="i-cat'+miss('review')+'" value="'+esc(cat)+'" placeholder="e.g. Blush"></div>'+
+      '<div class="f"><label>Target $</label><input class="i-tp'+miss('target_price')+'" inputmode="decimal" value="'+money(x.target_price||'')+'"></div>'+
+      '<div class="f"><label>MSRP $</label><input class="i-rp" inputmode="decimal" value="'+money(x.retail_price||'')+'"></div>'+
+      (d_isAdmin()?'<div class="f"><label>Cost $</label><input class="i-cost'+miss('cost')+'" inputmode="decimal" value="'+money(x.avg_cost||'')+'"></div>':'<div class="f"></div>')+
+    '</div><div style="display:flex;align-items:center;gap:12px;margin-top:10px"><button class="save">Save</button><div class="msg"></div></div></div></div>';
+}
+function d_isAdmin(){return !!(DATA&&DATA.is_admin);}
+function item(sku){return DATA.items.filter(function(x){return x.sku===sku;})[0];}
+function wire(el){
+  var sku=el.getAttribute('data-sku'), x=item(sku), msg=el.querySelector('.msg'), btn=el.querySelector('.save');
+  function say(t,ok){msg.textContent=t;msg.className='msg '+(ok?'ok':'err');}
+  el.querySelectorAll('input:not(.photo)').forEach(function(i){
+    i.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();btn.click();}});
+  });
+  btn.addEventListener('click',function(){
+    var name=el.querySelector('.i-name').value.trim();
+    if(!name){say('Give it a name first',false);el.querySelector('.i-name').focus();return;}
+    var body={sku:sku,name:name,barcode:x.barcode||'',category:el.querySelector('.i-cat').value.trim(),
+              target_price:el.querySelector('.i-tp').value.trim()||0,retail_price:el.querySelector('.i-rp').value.trim()||0};
+    var c=el.querySelector('.i-cost'); if(c&&c.value.trim()!=='')body.cost=c.value.trim();
+    btn.disabled=true;say('Saving…',true);
+    fetch('/api/products',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+      .then(function(r){return r.json();}).then(function(d){
+        btn.disabled=false;
+        if(!d.ok){say(d.error||'Could not save',false);return;}
+        say('Saved',true);
+        fetch('/api/product-cleanup?show='+encodeURIComponent(SHOW)).then(function(r){return r.json();}).then(function(n){
+          DATA=n; var nx=item(sku);
+          document.getElementById('bartxt').textContent=n.done+' of '+n.total+' done';
+          document.querySelector('.bar i').style.width=(n.total?Math.round(100*n.done/n.total):100)+'%';
+          if(nx&&nx.done){el.classList.add('done');setTimeout(function(){if(ONLY_TODO)render();},700);}
+          loadShows();
+        });
+      }).catch(function(){btn.disabled=false;say('Network error — try again',false);});
+  });
+  el.querySelector('.photo').addEventListener('change',function(e){
+    var f=e.target.files&&e.target.files[0]; if(!f)return;
+    var fd=new FormData(); fd.append('file',f);
+    say('Uploading photo…',true);
+    fetch('/api/product/'+encodeURIComponent(sku)+'/image',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(d){
+      if(!d.ok){say(d.error||'Photo upload failed',false);return;}
+      el.querySelector('.ph').innerHTML='<img src="'+esc(d.image_url)+'" alt=""><input type="file" accept="image/*" capture="environment" class="photo">';
+      x.image_url=d.image_url; say('Photo saved',true); wire(el);
+    }).catch(function(){say('Network error — try again',false);});
+  });
+}
+loadShows();
 </script>
 </body></html>'''

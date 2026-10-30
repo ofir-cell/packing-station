@@ -38,7 +38,8 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML,
-    SCANIT_HTML, APPLY_HTML, TRACK_HTML, EQUIPMENT_HTML, LIVE_HTML, LIVE_MATCH_HTML)
+    SCANIT_HTML, APPLY_HTML, TRACK_HTML, EQUIPMENT_HTML, LIVE_HTML, LIVE_MATCH_HTML,
+    PRODUCT_CLEANUP_HTML)
 from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
 
 
@@ -8583,6 +8584,123 @@ def api_live_match():
     pr=dict(prod); c.close()
     return jsonify({"ok":True,"sticker":sticker,"auto_created":auto_created,
                     "product":{"sku":pr["sku"],"name":pr["name"],"image_url":pr.get("image_url")}})
+
+# ── AFTER-LIVE PRODUCT CLEANUP ────────────────────────────────────────────────
+# During a live the assistant scans each sold product; an unknown barcode becomes a
+# stub product ("New product • <barcode>", category "Needs review", no prices). After
+# the live someone has to give those products a real name and prices. This screen lists,
+# per show, every product the live touched (Live Match or Live Scan) with what it still
+# lacks. Saving reuses POST /api/products and /api/product/<sku>/image, so permissions
+# stay exactly as they are (cost is admin-only).
+_PLACEHOLDER_NAME = "New product • "
+PRODUCT_CLEANUP_DAYS = 21
+
+def _product_gaps(p, is_admin):
+    """What a product still needs before it is usable. Required gaps decide 'done';
+    a missing photo is reported separately (helpful for pickers, not blocking)."""
+    gaps = []
+    nm = (p.get("name") or "").strip()
+    if not nm or nm.startswith(_PLACEHOLDER_NAME): gaps.append("name")
+    if (p.get("category") or "") == "Needs review": gaps.append("review")
+    if not (p.get("target_price") or 0): gaps.append("target_price")
+    if is_admin and not (p.get("avg_cost") or 0): gaps.append("cost")
+    return gaps
+
+def _show_live_products(c, label):
+    """Every product linked to a show during the live: {sku: {"stickers": [...], "units",
+    "sold_total"}}. Stickers come from Live Match/Live Scan bindings; units and sale price
+    from Live Scan rows when present, otherwise from the show's sold items."""
+    out = {}
+    for m in c.execute("""SELECT sticker_sku, part, product_sku FROM show_product_map
+                          WHERE import_label=? AND COALESCE(product_sku,'')<>''""", (label,)).fetchall():
+        e = out.setdefault(m["product_sku"], {"stickers": [], "units": 0, "sold_total": 0.0, "_keys": set()})
+        e["stickers"].append(("P%s #%s" % (m["part"], m["sticker_sku"])) if m["part"] else ("#%s" % m["sticker_sku"]))
+        e["_keys"].add((str(m["sticker_sku"]), int(m["part"] or 0)))
+    live = c.execute("""SELECT product_sku, SUM(qty) u, SUM(qty*COALESCE(unit_price,0)) t
+                        FROM live_sales WHERE import_label=? GROUP BY product_sku""", (label,)).fetchall()
+    for r in live:
+        e = out.setdefault(r["product_sku"], {"stickers": [], "units": 0, "sold_total": 0.0, "_keys": set()})
+        e["units"] = int(r["u"] or 0); e["sold_total"] = float(r["t"] or 0)
+    # Products bound by Live Match only (no live_sales rows): count from the sold items.
+    need = {sku for sku, e in out.items() if not e["units"]}
+    if need:
+        by_key = {}
+        for sku in need:
+            for k in out[sku]["_keys"]: by_key[k] = sku
+        for it in c.execute("""SELECT i.sku, i.product_name, i.quantity, COALESCE(i.revenue,0) rev
+                               FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                               WHERE s.import_label=? AND COALESCE(i.cancelled,0)=0""", (label,)).fetchall():
+            k = (str(it["sku"] or ""), int(_sticker_part(it["product_name"]) or 0))
+            sku = by_key.get(k)
+            if sku:
+                out[sku]["units"] += int(it["quantity"] or 1); out[sku]["sold_total"] += float(it["rev"] or 0)
+    for e in out.values():
+        e.pop("_keys", None)
+        e["stickers"] = sorted(set(e["stickers"]))
+        e["avg_sold"] = round(e["sold_total"] / e["units"], 2) if e["units"] else None
+        e["sold_total"] = round(e["sold_total"], 2)
+    return out
+
+@app.route("/admin/product-cleanup")
+@req_role("admin", "cs")
+def product_cleanup_page():
+    return (PRODUCT_CLEANUP_HTML
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("productcleanup"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/product-cleanup/shows")
+@req_role("admin", "cs")
+def api_product_cleanup_shows():
+    """Recent shows that had products scanned during the live, with how many of those
+    products still need work. Newest live first."""
+    is_admin = session.get("role") == "admin"
+    cutoff = (datetime.now() - timedelta(days=PRODUCT_CLEANUP_DAYS)).isoformat(timespec="seconds")
+    c = sdb()
+    rows = c.execute("""SELECT import_label, MAX(at) last_at FROM (
+                            SELECT import_label, mapped_at at FROM show_product_map
+                             WHERE COALESCE(product_sku,'')<>'' AND COALESCE(mapped_at,'')>=?
+                            UNION ALL
+                            SELECT import_label, sold_at at FROM live_sales WHERE COALESCE(sold_at,'')>=?)
+                        WHERE COALESCE(import_label,'')<>''
+                        GROUP BY import_label ORDER BY last_at DESC LIMIT 60""", (cutoff, cutoff)).fetchall()
+    shows = []
+    for r in rows:
+        prods = _show_live_products(c, r["import_label"])
+        todo = 0
+        for sku in prods:
+            p = c.execute("SELECT * FROM products WHERE sku=?", (sku,)).fetchone()
+            if p and _product_gaps(dict(p), is_admin): todo += 1
+        shows.append({"label": r["import_label"], "last_at": r["last_at"],
+                      "products": len(prods), "todo": todo})
+    c.close()
+    return jsonify({"ok": True, "shows": shows})
+
+@app.route("/api/product-cleanup")
+@req_role("admin", "cs")
+def api_product_cleanup():
+    """Products a show's live touched, with their gaps. ?show=<label> (a query param,
+    because show names can contain '/'). Products needing work come first."""
+    label = (request.args.get("show") or "").strip()
+    if not label: return jsonify({"ok": False, "error": "show required"})
+    is_admin = session.get("role") == "admin"
+    c = sdb()
+    prods = _show_live_products(c, label)
+    items = []
+    for sku, info in prods.items():
+        p = c.execute("SELECT * FROM products WHERE sku=?", (sku,)).fetchone()
+        if not p: continue
+        d = dict(p)
+        if not is_admin: d.pop("avg_cost", None)
+        gaps = _product_gaps(dict(p), is_admin)
+        items.append({**d, **info, "gaps": gaps, "done": not gaps,
+                      "missing_photo": not (d.get("image_url") or ""),
+                      "placeholder_name": (d.get("name") or "").startswith(_PLACEHOLDER_NAME)})
+    c.close()
+    items.sort(key=lambda x: (x["done"], -(x["units"] or 0), x.get("name") or ""))
+    done = sum(1 for x in items if x["done"])
+    return jsonify({"ok": True, "show": label, "is_admin": is_admin, "items": items,
+                    "total": len(items), "done": done, "todo": len(items) - done})
 
 # ── LIVE MODE — deplete stock in real time as the show sells ───────────────────
 def _show_is_live(c, label):
