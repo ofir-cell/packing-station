@@ -6986,7 +6986,20 @@ def api_pick_get(sid):
                                 picked_at, COALESCE(cancelled,0) AS cancelled
                          FROM shipment_items WHERE shipment_id=?
                          ORDER BY COALESCE(cancelled,0), COALESCE(picked,0), id""", (sid,)).fetchall()
-    _oev(c, sid, "opened", "", dedupe_min=10); c.commit()
+    _oev(c, sid, "opened", "", dedupe_min=10)
+    # Attribute the pull the MOMENT a floor worker opens a still-pickable order — so an
+    # order that gets pulled off the shelf and abandoned (even with zero item ticks) still
+    # shows who took it. First open wins (COALESCE guard); admin/CS inspecting never claims
+    # it, and an already-handled order (picked/packed/shipped) is never re-attributed.
+    _role = session.get("role", "")
+    _claimed_by = s["pick_started_by"]
+    if (s["status"] or "").lower() == "pending" and not s["picked_at"] and _role in ("picker", "worker") and not _claimed_by:
+        _who = (session.get("name") or session.get("user") or "")[:60]
+        if c.execute("""UPDATE shipments SET pick_started_by=?, pick_started_at=CURRENT_TIMESTAMP
+                        WHERE shipment_id=? AND COALESCE(pick_started_by,'')='' AND status='pending'""",
+                     (_who, sid)).rowcount:
+            _claimed_by = _who   # the 'opened' event above already records who touched it
+    c.commit()
     c.close()
     # Cleanup gate — if the show has cancelled items still sitting on the table,
     # tell the picker to go clear them first. Admin/CS can override via ?force=1.
@@ -7028,6 +7041,7 @@ def api_pick_get(sid):
         "already_picked": already_picked,
         "picked_by": s["picked_by"],
         "picked_at": s["picked_at"],
+        "pick_started_by": _claimed_by,
         "giveaways": _pending_giveaways_for(s["shipment_id"], s["tracking_code"]),
     })
 
