@@ -109,16 +109,20 @@ def test_a_product_code_inside_some_tracking_number_is_not_taken_for_a_label(app
     assert _scan(client, hdr, trk, piece)["result"] == "wrong"                    # never "next_label"
 
 
-def test_packing_never_links_or_creates_products(appmod, client, box):
+def test_packing_learns_unknown_barcode_onto_expected_item(appmod, client, box):
+    """New (cycle-17): scanning an unknown barcode against the expected item LEARNS it —
+    binds the barcode to a product (pulling name/image), links the sticker, and counts it,
+    so the same barcode is recognized normally next time."""
     A = appmod; hdr = _as(client, A); trk = box["trk"]
     items = _begin(client, hdr, trk)["items"]
-    i41 = [i for i in items if i["sticker"] == "41"][0]
+    i41 = [i for i in items if i["sticker"] == "41"][0]          # sticker 41 was never linked
     code = "0711234" + box["t"]
     r = _scan(client, hdr, trk, code, expected=i41["id"])
-    assert r["result"] == "wrong" and r["product"] is None
+    assert r["result"] == "learned"
     c = A.sdb(A.DEFAULT_ORG)
-    assert not c.execute("SELECT 1 FROM show_product_map WHERE import_label=? AND sticker_sku='41'", (box["label"],)).fetchone()
-    assert not c.execute("SELECT 1 FROM products WHERE barcode=?", (code,)).fetchone()
+    assert c.execute("SELECT 1 FROM products WHERE barcode=?", (code,)).fetchone()                       # product now carries the barcode
+    assert c.execute("SELECT 1 FROM show_product_map WHERE import_label=? AND sticker_sku='41'", (box["label"],)).fetchone()  # sticker linked
+    assert c.execute("SELECT pack_scanned_qty FROM shipment_items WHERE shipment_id=? AND sku='41'", (box["sid"],)).fetchone()[0] == 1
     c.close()
 
 

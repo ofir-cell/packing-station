@@ -1062,7 +1062,7 @@ function packScan(raw,t){
     var r=d.result;
     if(r==='stop'){finishBox();return}
     if(r==='next_label'){nextBox(t);return}
-    if(r==='ok'){if(d.items){if(!PS){PS={items:[]};document.body.classList.add('packscan');}PS.items=d.items;}psDraw();psFb(pt(r)+(d.product?' · '+d.product:''),'ok');psFlash(true);beep(true);return}
+    if(r==='ok'||r==='learned'){if(d.items){if(!PS){PS={items:[]};document.body.classList.add('packscan');}PS.items=d.items;}psDraw();psFb((r==='learned'?'✓ added':pt('ok'))+(d.product?' · '+d.product:''),'ok');psFlash(true);beep(true);return}
     if(r==='already'){psFb(pt('already')+(d.product?' · '+d.product:''),'mid');beep(false);return}
     var exp=(d.expected||[]).map(function(x){return '#'+x.sticker}).join(', ');
     psFb((d.product?pt('wrong')+' ('+d.product+')':pt('unknown'))+(exp?' — '+pt('wrongexp')+' '+exp:''),'bad');psFlash(false);beep(false);
