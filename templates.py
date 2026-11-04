@@ -13149,7 +13149,9 @@ select{padding:10px 12px;border:1.5px solid #e4e7ec;border-radius:10px;font-size
 .alldone{text-align:center;padding:30px;color:#166534;font-weight:700}
 .partbadge{display:inline-block;margin-left:12px;background:#e0e7ff;color:#3730a3;border-radius:9px;padding:6px 12px;font-size:16px;font-weight:900;vertical-align:middle;letter-spacing:.5px}
 .wrow .pb{display:inline-block;margin-right:6px;background:#e0e7ff;color:#3730a3;border-radius:6px;padding:1px 6px;font-size:11px;font-weight:800}
-#partSel{padding:7px 10px;border:1.5px solid var(--border,#e5e7eb);border-radius:9px;font-size:13px;font-weight:700}
+#partSel,#secDir{padding:7px 10px;border:1.5px solid var(--border,#e5e7eb);border-radius:9px;font-size:13px;font-weight:700}
+.secinp{width:92px;padding:7px 10px;border:1.5px solid #e5e7eb;border-radius:9px;font-size:13px;font-weight:700;font-family:inherit;outline:none}
+.secinp:focus{border-color:#4338ca}
 </style></head><body>
 __NAVBAR__
 <div class="wrap">
@@ -13159,6 +13161,17 @@ __NAVBAR__
     <label style="margin-left:10px">Part:</label>
     <select id="partSel"><option value="">All / newest</option></select>
     <button class="bulk" id="bulkBtn">⇄ Bulk range</button>
+  </div>
+
+  <div class="toprow" id="secRow" style="margin-top:8px">
+    <label>My section:</label>
+    <input id="secFrom" type="number" inputmode="numeric" placeholder="from #" class="secinp">
+    <span style="color:#9aa1ab">→</span>
+    <input id="secTo" type="number" inputmode="numeric" placeholder="to #" class="secinp">
+    <select id="secDir"><option value="desc">High → Low</option><option value="asc">Low → High</option></select>
+    <button class="bulk" id="secApply">Start here</button>
+    <button class="bulk" id="secClear" style="background:#fff;color:#6b7280;border-color:#e5e7eb">Clear</button>
+    <span id="secInfo" style="color:#4338ca;font-weight:800;font-size:13px;margin-left:4px"></span>
   </div>
 
   <div class="card">
@@ -13204,6 +13217,21 @@ function numOf(s){var n=parseInt(s,10);return isNaN(n)?-1:n;}
 function keyOf(w){return (w.part||0)*10000000+Math.max(0,numOf(w.sticker));}
 function partLbl(p){return p?('PART '+p):'No part';}
 var SHOW='',CUR=null,WAIT=[],busy=false,frontier=-1,partFilter=null;
+// "My section": a worker picks a sticker range + direction and the screen walks THAT
+// sequence (auto-advancing to the next sold sticker in it), so several people can split
+// the table — each takes a range and never fights over the same number.
+var secFrom=null,secTo=null,secDir='desc';
+function secKey(){return 'lm_sec_'+SHOW;}
+function secLoad(){try{var r=JSON.parse(localStorage.getItem(secKey())||'null');if(r){secFrom=r.f;secTo=r.t;secDir=r.d||'desc';}else{secFrom=secTo=null;secDir='desc';}}catch(e){secFrom=secTo=null;secDir='desc';}
+  var ff=document.getElementById('secFrom'),tt=document.getElementById('secTo'),dd=document.getElementById('secDir');
+  if(ff)ff.value=(secFrom==null?'':secFrom); if(tt)tt.value=(secTo==null?'':secTo); if(dd)dd.value=secDir;}
+function secSave(){try{localStorage.setItem(secKey(),JSON.stringify({f:secFrom,t:secTo,d:secDir}));}catch(e){}}
+function secActive(){return secFrom!=null||secTo!=null||secDir==='asc';}
+function applyPool(pool){
+  if(secFrom!=null||secTo!=null){pool=pool.filter(function(w){var x=numOf(w.sticker);return (secFrom==null||x>=secFrom)&&(secTo==null||x<=secTo);});}
+  pool=pool.slice().sort(function(a,b){return secDir==='asc'?(keyOf(a)-keyOf(b)):(keyOf(b)-keyOf(a));});
+  return pool;
+}
 var scan=document.getElementById('scan');
 function focusScan(){try{scan.focus()}catch(e){}}
 var autoShow=true;  // follow the newest active live automatically until the user picks one
@@ -13215,8 +13243,9 @@ function loadShows(){
     // The list is newest-active first. Auto-follow it unless the user chose a show manually.
     if(autoShow && names[0]!==SHOW){ SHOW=names[0]; CUR=null; frontier=-1; }
     else if(!SHOW){ SHOW=names[0]; }
+    if(window._secShow!==SHOW){ window._secShow=SHOW; secLoad(); }   // restore this show's saved section
     sel.value=SHOW; document.getElementById('shName').textContent=SHOW;
-    sel.onchange=function(){autoShow=false;SHOW=sel.value;CUR=null;frontier=-1;document.getElementById('shName').textContent=SHOW;load();};
+    sel.onchange=function(){autoShow=false;SHOW=sel.value;CUR=null;frontier=-1;window._secShow=SHOW;secLoad();document.getElementById('shName').textContent=SHOW;load();};
     load();
   });
 }
@@ -13253,14 +13282,18 @@ function load(){
       return '<option value="'+p+'"'+(want===String(p)?' selected':'')+'>PART '+p+'</option>';}).join('');
     psel.style.display=parts.length>1?'':'none';
     var multi=parts.length>1;
-    // Pool = everything, or just the chosen part. Sorted newest-first by (part, number).
+    // Pool = everything, or just the chosen part. Then narrow to "my section" range + order.
     var pool=(partFilter==null)?WAIT:WAIT.filter(function(w){return (w.part||0)===partFilter;});
+    pool=applyPool(pool);
     var top=pool.length?pool[0]:null;
     var keep=CUR&&pool.some(function(w){return sameEntry(w,CUR);});
     var curSt;
     if(keep){ curSt=pool.filter(function(w){return sameEntry(w,CUR);})[0]; }
-    else if(top && keyOf(top)>frontier){ curSt=top; frontier=keyOf(top); }  // a new (higher part/number) sale
+    else if(secActive()){ curSt=top; }                                     // walk my section in order (next unmatched)
+    else if(top && keyOf(top)>frontier){ curSt=top; frontier=keyOf(top); }  // default live: a new (higher) sale
     else { curSt=null; }
+    var si=document.getElementById('secInfo');
+    if(si) si.textContent=secActive()?((secFrom!=null||secTo!=null)?('Section '+(secFrom!=null?secFrom:'start')+'–'+(secTo!=null?secTo:'end')+' '+(secDir==='asc'?'↑':'↓')+' · '+pool.length+' left'):('Order: Low→High · '+pool.length+' left')):'';
     var rest=pool.filter(function(w){return !curSt||!sameEntry(w,curSt);}).slice(0,6);
     var wd=document.getElementById('waiting');
     wd.innerHTML=rest.length?rest.map(function(w){
@@ -13306,6 +13339,23 @@ document.getElementById('backBtn').onclick=function(){
 // Manual part override: jump to a specific part (or back to auto/newest).
 document.getElementById('partSel').onchange=function(){
   var v=this.value; partFilter=(v===''?null:parseInt(v,10)); frontier=-1; CUR=null; load();
+};
+// My section: pick a start/end + direction and walk that sequence.
+function secApply(){
+  var f=document.getElementById('secFrom').value.trim(),t=document.getElementById('secTo').value.trim();
+  secFrom=(f===''?null:parseInt(f,10)); secTo=(t===''?null:parseInt(t,10));
+  if(secFrom!=null&&secTo!=null&&secTo<secFrom){var x=secFrom;secFrom=secTo;secTo=x;document.getElementById('secFrom').value=secFrom;document.getElementById('secTo').value=secTo;}
+  secDir=document.getElementById('secDir').value||'desc';
+  secSave(); CUR=null; frontier=-1; load(); focusScan();
+}
+document.getElementById('secApply').onclick=secApply;
+document.getElementById('secDir').onchange=secApply;
+document.getElementById('secTo').addEventListener('keydown',function(e){if(e.key==='Enter')secApply();});
+document.getElementById('secFrom').addEventListener('keydown',function(e){if(e.key==='Enter')secApply();});
+document.getElementById('secClear').onclick=function(){
+  secFrom=secTo=null;secDir='desc';
+  document.getElementById('secFrom').value='';document.getElementById('secTo').value='';document.getElementById('secDir').value='desc';
+  secSave(); CUR=null; frontier=-1; load(); focusScan();
 };
 document.getElementById('bulkBtn').onclick=function(){
   if(!SHOW){alert('Pick a live first');return;}
