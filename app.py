@@ -7760,6 +7760,12 @@ def _deplete_stock_for(c, shipment_id):
     for it in c.execute("""SELECT id,sku,product_name,quantity,COALESCE(depleted_qty,0) dq,depleted_sku
                            FROM shipment_items WHERE shipment_id=? AND COALESCE(cancelled,0)=0""",(shipment_id,)).fetchall():
         st=(it["sku"] or "").strip(); qty=it["quantity"] or 1
+        # Bundle: this sticker is physically several products — take EVERY component off
+        # stock (idempotent), not just the primary. Routes around the single-product path.
+        kit=_sticker_kit(c, label, st, _part_num(it["product_name"]))
+        if kit:
+            if _deplete_kit_item(c, it, kit, qty, label, now, who): any_dep=True
+            continue
         psku=_resolve_item_product(exact,by_st,st,it["product_name"])
         dq=it["dq"] or 0; dsku=it["depleted_sku"]
         if psku and dq>0 and dsku==psku:
@@ -7799,6 +7805,15 @@ def _undeplete_stock_for(c, shipment_id):
     for it in c.execute("""SELECT id,COALESCE(depleted_qty,0) dq,depleted_sku FROM shipment_items
                            WHERE shipment_id=? AND COALESCE(depleted_qty,0)>0""",(shipment_id,)).fetchall():
         if not it["depleted_sku"]: continue
+        if it["depleted_sku"]=="**KIT**":                 # bundle: restore every component
+            _kit_ensure(c)
+            for r in c.execute("SELECT sku,qty FROM item_kit_depletions WHERE item_id=?",(it["id"],)).fetchall():
+                c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(r["qty"],r["sku"]))
+                c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
+                          (r["sku"],r["qty"],"unpacked — bundle stock restored ("+label+")",now,who))
+            c.execute("DELETE FROM item_kit_depletions WHERE item_id=?",(it["id"],))
+            c.execute("UPDATE shipment_items SET depleted_qty=0, depleted_sku=NULL WHERE id=?",(it["id"],))
+            continue
         c.execute("UPDATE products SET on_hand=on_hand+? WHERE sku=?",(it["dq"],it["depleted_sku"]))
         c.execute("INSERT INTO stock_moves(sku,qty,note,moved_at,moved_by) VALUES(?,?,?,?,?)",
                   (it["depleted_sku"],it["dq"],"unpacked — stock restored ("+label+")",now,who))
@@ -9048,6 +9063,123 @@ def api_live_match():
     pr=dict(prod); c.close()
     return jsonify({"ok":True,"sticker":sticker,"auto_created":auto_created,
                     "product":{"sku":pr["sku"],"name":pr["name"],"image_url":pr.get("image_url")}})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# KITS / BUNDLES — one sold sticker that is physically several products. The sticker
+# keeps its one primary product (show_product_map); its EXTRA components live in show_kit,
+# keyed by the sold unit (label, sticker, part). Used so inventory comes off EVERY component
+# and COGS sums them — and (stage B) so pick/pack expand to a line per component. Segment
+# 'parts' and kit components are kept separate so they never collide.
+# ══════════════════════════════════════════════════════════════════════════════
+def _kit_ensure(c):
+    c.execute("""CREATE TABLE IF NOT EXISTS show_kit(
+        import_label TEXT, sticker_sku TEXT, part INTEGER DEFAULT 0,
+        component_sku TEXT, qty INTEGER DEFAULT 1, added_by TEXT,
+        added_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(import_label, sticker_sku, part, component_sku))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS item_kit_depletions(
+        item_id INTEGER, sku TEXT, qty INTEGER, PRIMARY KEY(item_id, sku))""")
+
+def _sticker_kit(c, label, sticker, part=0):
+    """Components of the bundle sold under this (label, sticker, part), or [] if it's a
+    plain single-product sticker. [{sku, qty}]."""
+    if not label: return []
+    try:
+        _kit_ensure(c)
+        return [{"sku": r["component_sku"], "qty": int(r["qty"] or 1)}
+                for r in c.execute("""SELECT component_sku, qty FROM show_kit
+                                      WHERE import_label=? AND sticker_sku=? AND part=?
+                                      ORDER BY added_at""",
+                                   (label, str(sticker), int(part or 0))).fetchall()]
+    except Exception:
+        return []
+
+def _deplete_kit_item(c, it, kit, base_qty, label, now, who):
+    """Take EVERY component of a bundle item off stock, once each. Idempotent via
+    item_kit_depletions (one row per item+component), so re-runs never double-deduct.
+    Marks the item depleted with a '**KIT**' sentinel so the single-product path and the
+    'already depleted' fast-path both leave it alone. Returns True (the item is a kit)."""
+    _kit_ensure(c); iid=it["id"]
+    for comp in kit:
+        csku=comp["sku"]; need=(base_qty or 1)*(comp.get("qty") or 1)
+        c.execute("SAVEPOINT dep_kit")
+        try:
+            claimed=c.execute("INSERT OR IGNORE INTO item_kit_depletions(item_id,sku,qty) VALUES(?,?,?)",
+                              (iid,csku,need)).rowcount
+            if claimed:
+                c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(need,csku))
+                _ac=c.execute("SELECT avg_cost FROM products WHERE sku=?",(csku,)).fetchone()
+                _record_stock_move(c, csku, -need, (_ac["avg_cost"] if _ac else 0) or 0,
+                                   "bundle sale packed ("+label+")", now, who)
+            c.execute("RELEASE dep_kit")
+        except Exception:
+            try: c.execute("ROLLBACK TO dep_kit"); c.execute("RELEASE dep_kit")
+            except Exception: pass
+    c.execute("UPDATE shipment_items SET depleted_qty=?, depleted_sku='**KIT**' WHERE id=? AND COALESCE(depleted_qty,0)=0",
+              (base_qty or 1, iid))
+    return True
+
+@app.route("/api/live/kit", methods=["GET"])
+@req_role("admin","cs","worker","picker","host")
+def api_live_kit_get():
+    show=(request.args.get("show") or "").strip(); sticker=(request.args.get("sticker") or "").strip()
+    try: part=int(request.args.get("part") or 0)
+    except Exception: part=0
+    if not show or not sticker: return jsonify({"ok":False,"error":"show and sticker required"})
+    c=sdb(); _kit_ensure(c)
+    rows=c.execute("""SELECT k.component_sku sku, k.qty, p.name, p.image_url, p.barcode
+                      FROM show_kit k LEFT JOIN products p ON p.sku=k.component_sku
+                      WHERE k.import_label=? AND k.sticker_sku=? AND k.part=? ORDER BY k.added_at""",
+                   (show,sticker,part)).fetchall()
+    c.close()
+    return jsonify({"ok":True,"components":[dict(r) for r in rows]})
+
+@app.route("/api/live/kit/add", methods=["POST"])
+@req_role("admin","cs","worker","picker","host")
+def api_live_kit_add():
+    """Add a component product to a sticker's bundle (scan its barcode; unknown codes are
+    auto-created from the online DBs, like matching). Then back-deplete any already-packed
+    boxes with that sticker so the new component comes off stock too."""
+    d=request.get_json() or {}
+    show=(d.get("show") or "").strip(); sticker=(d.get("sticker") or "").strip()
+    try: part=int(d.get("part") or 0)
+    except Exception: part=0
+    try: qty=max(1,int(d.get("qty") or 1))
+    except Exception: qty=1
+    code=(d.get("code") or "").strip(); product_sku=(d.get("product_sku") or "").strip()
+    if not show or not sticker: return jsonify({"ok":False,"error":"show and sticker required"})
+    c=sdb(); _kit_ensure(c)
+    prod=None
+    if product_sku:
+        prod=c.execute("SELECT * FROM products WHERE sku=?",(product_sku,)).fetchone()
+    elif code:
+        prod=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
+        if not prod: prod,_cr,_src=_resolve_or_create_product_by_barcode(c, code, who=session.get("name",""))
+    if not prod: c.close(); return jsonify({"ok":False,"error":"Scan a product barcode","not_found":True})
+    c.execute("""INSERT INTO show_kit(import_label,sticker_sku,part,component_sku,qty,added_by)
+                 VALUES(?,?,?,?,?,?)
+                 ON CONFLICT(import_label,sticker_sku,part,component_sku) DO UPDATE SET qty=excluded.qty""",
+              (show,sticker,part,prod["sku"],qty,session.get("name","")[:60]))
+    c.commit()
+    try: _deplete_show_packed(c, show, sticker); c.commit()
+    except Exception: pass
+    comps=_sticker_kit(c, show, sticker, part); pr=dict(prod); c.close()
+    return jsonify({"ok":True,"component":{"sku":pr["sku"],"name":pr["name"],"image_url":pr.get("image_url")},"components":comps})
+
+@app.route("/api/live/kit/remove", methods=["POST"])
+@req_role("admin","cs","worker","host")
+def api_live_kit_remove():
+    d=request.get_json() or {}
+    show=(d.get("show") or "").strip(); sticker=(d.get("sticker") or "").strip()
+    try: part=int(d.get("part") or 0)
+    except Exception: part=0
+    csku=(d.get("component_sku") or "").strip()
+    if not show or not sticker or not csku: return jsonify({"ok":False,"error":"show, sticker, component_sku required"})
+    c=sdb(); _kit_ensure(c)
+    c.execute("DELETE FROM show_kit WHERE import_label=? AND sticker_sku=? AND part=? AND component_sku=?",
+              (show,sticker,part,csku))
+    c.commit(); comps=_sticker_kit(c, show, sticker, part); c.close()
+    return jsonify({"ok":True,"components":comps})
 
 # ── AFTER-LIVE PRODUCT CLEANUP ────────────────────────────────────────────────
 # During a live the assistant scans each sold product; an unknown barcode becomes a
