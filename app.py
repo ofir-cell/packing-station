@@ -6517,12 +6517,62 @@ def api_pack_begin():
     finally:
         c.close()
 
+def _pack_learn(c, row, it, code, who, sta, now, trk):
+    """Learn a freshly-scanned barcode during packing: bind it to the expected item's
+    product (pulling the product's name + image), creating the product if the sticker isn't
+    linked to one yet, and count the item packed. After this, the same barcode is recognized
+    normally on the next scan. Returns {sku,name,image_url} or None if there's no usable SKU."""
+    prod = it.get("product") or {}
+    sku = ((prod.get("sku") or it.get("sku")) or "").strip()
+    if not sku:
+        return None
+    name = (prod.get("name") or it.get("product_name") or "").strip()
+    image = prod.get("image_url")
+    # When we don't have a real name yet (the sticker was never linked to a product), try to
+    # pull the name + image from the online barcode databases. Best-effort; never blocks the
+    # scan if the lookup is slow or finds nothing.
+    if not name or not image:
+        try:
+            info = _barcode_lookup_online(code) or {}
+            if info.get("name") and not name: name = info["name"].strip()
+            if info.get("image") and not image: image = info["image"]
+        except Exception: pass
+    # Upsert the catalog product with the learned barcode + name/image. Never clobber an
+    # existing name or image we already have — only fill them in.
+    c.execute("""INSERT INTO products(sku,name,barcode,image_url,updated_at)
+                 VALUES(?,?,?,?,?)
+                 ON CONFLICT(sku) DO UPDATE SET
+                   barcode=excluded.barcode,
+                   name=CASE WHEN COALESCE(NULLIF(products.name,''),'')='' THEN excluded.name ELSE products.name END,
+                   image_url=COALESCE(products.image_url, excluded.image_url),
+                   updated_at=excluded.updated_at""", (sku, name, code, image, now))
+    # Link the sticker to this product for the show, so the SAME item is recognized normally
+    # (not re-learned) on the next scan, and so "what was packed" resolves to a real product.
+    lbl = it.get("label")
+    if lbl and it.get("sku"):
+        try:
+            c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,mapped_by)
+                         VALUES(?,?,?,?,?)
+                         ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET product_sku=excluded.product_sku""",
+                      (lbl, it.get("sku"), it.get("part") or 0, sku, who))
+        except Exception: pass
+    c.execute("""UPDATE shipment_items SET pack_scanned_qty=COALESCE(pack_scanned_qty,0)+1,
+                 pack_method='learn', pack_scanned_at=? WHERE id=? AND COALESCE(pack_scanned_qty,0)<?""",
+              (now, it["id"], it["quantity"]))
+    c.execute("""INSERT INTO pack_scans(shipment_id,tracking,item_id,sticker,code,product_sku,result,worker,station,scanned_at)
+                 VALUES(?,?,?,?,?,?,?,?,?,?)""",
+              (row["shipment_id"], trk, it["id"], it.get("sku"), code, sku, "learned", who, sta, now))
+    c.commit()
+    try: _oev(c, it["shipment_id"], "pack_learned", "#%s → %s" % (it.get("sku") or "", name), actor=who)
+    except Exception: pass
+    return {"sku": sku, "name": name, "image_url": image}
+
 @app.route("/api/pack/scan", methods=["POST"])
 @req_login
 def api_pack_scan():
     """One scan while the video records. Returns what the screen should do:
-    ok / learned (counted) · already · wrong · stop (it's this box's label) ·
-    next_label (another box's label: finish this one, start that one). Never links anything."""
+    ok / learned (counted + barcode learned) · already · wrong · stop (it's this box's
+    label) · next_label (another box's label: finish this one, start that one)."""
     d=request.get_json() or {}
     trk=_normalize_tracking(d.get("tracking") or "")
     raw=(d.get("code") or "").strip()
@@ -6572,6 +6622,27 @@ def api_pack_scan():
             return jsonify({"ok":True,"result":"next_label"})
         if not prod and _looks_like_tracking(code):
             return jsonify({"ok":True,"result":"next_label"})
+        # LEARN-ON-SCAN — the barcode isn't in the catalog yet. The screen points the packer
+        # at a specific expected item (expected_item_id); bind this barcode to that item's
+        # product (or create it from the sticker), pulling the name + image, and count it.
+        # Eligible targets are unscanned items that can't already match a barcode: unlinked
+        # items, or linked ones whose product has no barcode. A linked item that already has a
+        # (different) barcode is a genuine mismatch -> 'wrong', never silently re-learned.
+        if not prod:
+            def _eligible(x):
+                return x["scanned"]<x["quantity"] and not ((x["product"] or {}).get("barcode"))
+            it=None
+            exp_id=d.get("expected_item_id")
+            if exp_id:
+                it=next((x for x in items if x["id"]==exp_id and _eligible(x)), None)
+            if it is None:
+                cand=[x for x in items if _eligible(x)]
+                if len(cand)==1: it=cand[0]          # unambiguous: one thing left to pack
+            if it is not None:
+                learned=_pack_learn(c, row, it, code, who, sta, now, trk)
+                if learned:
+                    return jsonify({"ok":True,"result":"learned","item_id":it["id"],
+                                    "product":learned.get("name"),"items":_pack_view(_pack_box(c,row))})
         log("wrong",None,prod["sku"] if prod else None); c.commit()
         expected=[{"sticker":it["sku"],"name":(it["product"] or {}).get("name") or it["product_name"]}
                   for it in items if it["product"] and it["scanned"]<it["quantity"]]
