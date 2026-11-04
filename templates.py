@@ -13195,6 +13195,14 @@ __NAVBAR__
           <div class="scanrow"><span style="font-size:20px">🔳</span><input id="scan" placeholder="Waiting for scan…" autocomplete="off"></div>
           <div class="ok" id="okBox"><div class="im"><img id="okImg" src="" alt=""></div><div><div class="mt" id="okMt"></div><div class="nm" id="okNm"></div></div><span class="ck">✓</span></div>
           <div class="err" id="errBox"></div>
+          <div id="kitBox" style="margin-top:14px">
+            <button class="bulk" id="kitBtn" style="margin-left:0">🧩 This sticker is a bundle (scan several)</button>
+            <div id="kitWrap" style="display:none;margin-top:10px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:12px;padding:12px">
+              <div style="font-size:13px;color:#6b21a8;font-weight:800;margin-bottom:8px">Scan each product in this bundle — same sticker:</div>
+              <div class="mchips" id="kitChips"><div class="empty">—</div></div>
+              <button class="bulk" id="kitDone" style="margin-left:0;margin-top:10px;background:#ecfdf5;color:#065f46;border-color:#a7f3d0">✓ Done — next sticker</button>
+            </div>
+          </div>
         </div>
         <div class="alldone" id="allDone" style="display:none">🎉 All sold stickers matched. New sales appear automatically.</div>
       </div>
@@ -13250,6 +13258,7 @@ function loadShows(){
   });
 }
 function setCur(st){
+  if(typeof kitMode!=='undefined'&&kitMode&&(!st||!CUR||!sameEntry(st,CUR)))kitExit();   // leave bundle mode only when the sticker really changes
   CUR=st;document.getElementById('okBox').className='ok';document.getElementById('errBox').style.display='none';
   var cw=document.getElementById('curWrap'),dn=document.getElementById('allDone');
   if(!st){
@@ -13331,7 +13340,48 @@ function doMatch(code){
      ob.className='ok show';CUR=null;load();
    }).catch(function(){busy=false;err.textContent='Network error';err.style.display='block';focusScan();});
 }
-scan.addEventListener('keydown',function(e){if(e.key==='Enter'){var v=scan.value.trim();if(v)doMatch(v);}});
+scan.addEventListener('keydown',function(e){if(e.key==='Enter'){var v=scan.value.trim();if(!v)return;if(kitMode)kitAdd(v);else doMatch(v);}});
+// ── Bundle mode: one sticker that is physically several products. Scans add components to
+//    this sticker (show_kit) instead of re-matching; inventory/pack then cover every part. ──
+var kitMode=false;
+function kitRender(comps){
+  var el=document.getElementById('kitChips');
+  if(!comps||!comps.length){el.innerHTML='<div class="empty">Scan the first product…</div>';return;}
+  el.innerHTML=comps.map(function(c){
+    return '<span class="mchip" data-sku="'+esc(c.sku)+'"><b>'+esc(c.name||c.sku)+'</b> ✕</span>';}).join('');
+  el.querySelectorAll('.mchip').forEach(function(x){x.onclick=function(){kitRemove(x.getAttribute('data-sku'));};});
+}
+function kitLoad(){
+  if(!CUR)return;
+  fetch('/api/live/kit?show='+encodeURIComponent(SHOW)+'&sticker='+encodeURIComponent(CUR.sticker)+'&part='+(CUR.part||0))
+   .then(function(r){return r.json()}).then(function(d){if(d.ok)kitRender(d.components);}).catch(function(){});
+}
+function kitAdd(code){
+  if(!CUR)return;scan.value='';
+  fetch('/api/live/kit/add',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({show:SHOW,sticker:CUR.sticker,part:(CUR.part||0),code:code})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(!d.ok){var e=document.getElementById('errBox');e.textContent='⚠️ '+(d.error||'Not added');e.style.display='block';focusScan();return;}
+     kitRender(d.components);focusScan();
+   }).catch(function(){focusScan();});
+}
+function kitRemove(sku){
+  if(!CUR)return;
+  fetch('/api/live/kit/remove',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({show:SHOW,sticker:CUR.sticker,part:(CUR.part||0),component_sku:sku})})
+   .then(function(r){return r.json()}).then(function(d){if(d.ok)kitRender(d.components);});
+}
+function kitExit(){kitMode=false;document.getElementById('kitWrap').style.display='none';
+  document.getElementById('kitBtn').textContent='🧩 This sticker is a bundle (scan several)';}
+document.getElementById('kitBtn').onclick=function(){
+  if(!CUR){return;}
+  kitMode=!kitMode;
+  document.getElementById('kitWrap').style.display=kitMode?'block':'none';
+  this.textContent=kitMode?'🧩 Bundle mode ON — scanning adds products':'🧩 This sticker is a bundle (scan several)';
+  if(kitMode)kitLoad();
+  focusScan();
+};
+document.getElementById('kitDone').onclick=function(){kitExit();if(CUR){var i=WAIT.findIndex(function(w){return sameEntry(w,CUR);});}load();focusScan();};
 document.getElementById('backBtn').onclick=function(){
   if(!CUR||!WAIT.length)return;var i=WAIT.findIndex(function(w){return sameEntry(w,CUR);});
   if(i>0)setCur(WAIT[i-1]);
