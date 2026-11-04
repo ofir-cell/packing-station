@@ -6477,6 +6477,23 @@ def _pack_box(c, row):
                                WHERE shipment_id=? AND COALESCE(cancelled,0)=0""",(sid,)).fetchall():
             d=dict(it); d["label"]=lbl; d["part"]=_part_num(d["product_name"] or "")
             d["quantity"]=max(1,int(d["quantity"] or 1))
+            # Bundle: one sold sticker that is physically several products — expand it into one
+            # scannable row per component so the packer scans every barcode (per-component
+            # progress tracked in pack_kit_progress). A plain sticker stays a single row.
+            kit=_sticker_kit(c, lbl, (d["sku"] or "").strip(), d["part"])
+            if kit:
+                prog={r["component_sku"]: r["scanned"] for r in c.execute(
+                    "SELECT component_sku, scanned FROM pack_kit_progress WHERE item_id=?", (d["id"],)).fetchall()}
+                for comp in kit:
+                    cp=c.execute("SELECT sku,name,barcode,image_url FROM products WHERE sku=?",(comp["sku"],)).fetchone()
+                    cq=max(1,int(comp.get("qty") or 1))*d["quantity"]
+                    rd=dict(d); rd["kit_sku"]=comp["sku"]
+                    rd["product"]=dict(cp) if cp else {"sku":comp["sku"],"name":comp["sku"],"barcode":None,"image_url":None}
+                    rd["product_name"]=(cp["name"] if cp else comp["sku"])
+                    rd["quantity"]=cq
+                    rd["scanned"]=min(int(prog.get(comp["sku"],0)), cq)
+                    items.append(rd)
+                continue
             psku=_resolve_item_product(exact, by_st, (d["sku"] or "").strip(), d["product_name"])
             p=c.execute("SELECT sku,name,barcode,image_url FROM products WHERE sku=?",(psku,)).fetchone() if psku else None
             d["product"]=dict(p) if p else None
@@ -6488,6 +6505,7 @@ def _pack_view(items):
     return [{"id":d["id"],"sticker":d["sku"],"name":d["product_name"],"quantity":d["quantity"],
              "scanned":min(d["scanned"],d["quantity"]),"done":d["scanned"]>=d["quantity"],"method":d["pack_method"],
              "linked":bool(d["product"]),"product_name":(d["product"] or {}).get("name"),
+             "kit_sku":d.get("kit_sku"),"bundle":bool(d.get("kit_sku")),
              "image_url":(d["product"] or {}).get("image_url")} for d in items]
 
 def _looks_like_tracking(code):
@@ -6505,10 +6523,12 @@ def api_pack_begin():
         row=_resolve_shipment_by_code(c, code) if code else None
         if not row: return jsonify({"ok":False,"error":"Shipment not found"})
         if (row["status"] or "") not in ("shipped","cancelled"):
-            ids=[d["id"] for d in _pack_box(c,row)]
+            ids=list({d["id"] for d in _pack_box(c,row)})
             if ids:
-                c.execute("UPDATE shipment_items SET pack_scanned_qty=0, pack_method=NULL, pack_scanned_at=NULL WHERE id IN (%s)"
-                          % ",".join("?"*len(ids)), ids)
+                qm=",".join("?"*len(ids))
+                c.execute("UPDATE shipment_items SET pack_scanned_qty=0, pack_method=NULL, pack_scanned_at=NULL WHERE id IN (%s)"%qm, ids)
+                try: _kit_ensure(c); c.execute("DELETE FROM pack_kit_progress WHERE item_id IN (%s)"%qm, ids)   # restart bundle scans too
+                except Exception: pass
                 c.commit()
         _oev(c, row["shipment_id"], "pack_started", "packing video started"); c.commit()
         items=_pack_box(c,row)
@@ -6558,8 +6578,14 @@ def api_pack_scan():
             mine=[it for it in items if it["product"] and it["product"]["sku"] in skus]
             for it in [x for x in mine if x["scanned"]<x["quantity"]]:
                 # atomic: two quick scans on two workers can never both land on the same line
-                n=c.execute("""UPDATE shipment_items SET pack_scanned_qty=COALESCE(pack_scanned_qty,0)+1, pack_method='scan',
-                               pack_scanned_at=? WHERE id=? AND COALESCE(pack_scanned_qty,0)<?""",(now,it["id"],it["quantity"])).rowcount
+                if it.get("kit_sku"):     # a bundle component → track its own per-component progress
+                    n=c.execute("""INSERT INTO pack_kit_progress(item_id,component_sku,scanned,qty) VALUES(?,?,1,?)
+                                   ON CONFLICT(item_id,component_sku) DO UPDATE SET scanned=scanned+1
+                                   WHERE pack_kit_progress.scanned < ?""",
+                                (it["id"], it["kit_sku"], it["quantity"], it["quantity"])).rowcount
+                else:
+                    n=c.execute("""UPDATE shipment_items SET pack_scanned_qty=COALESCE(pack_scanned_qty,0)+1, pack_method='scan',
+                                   pack_scanned_at=? WHERE id=? AND COALESCE(pack_scanned_qty,0)<?""",(now,it["id"],it["quantity"])).rowcount
                 if n:
                     log("ok",it,it["product"]["sku"]); c.commit()
                     return jsonify({"ok":True,"result":"ok","item_id":it["id"],"items":_pack_view(_pack_box(c,row))})
@@ -9079,6 +9105,9 @@ def _kit_ensure(c):
         PRIMARY KEY(import_label, sticker_sku, part, component_sku))""")
     c.execute("""CREATE TABLE IF NOT EXISTS item_kit_depletions(
         item_id INTEGER, sku TEXT, qty INTEGER, PRIMARY KEY(item_id, sku))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS pack_kit_progress(
+        item_id INTEGER, component_sku TEXT, scanned INTEGER DEFAULT 0, qty INTEGER DEFAULT 1,
+        PRIMARY KEY(item_id, component_sku))""")
 
 def _sticker_kit(c, label, sticker, part=0):
     """Components of the bundle sold under this (label, sticker, part), or [] if it's a
