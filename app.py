@@ -1550,6 +1550,27 @@ def sdb_init(org):
         unit_cost REAL DEFAULT 0
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_poitems_po ON po_items(po_id)")
+    # Internal-PO approval flow: an invoice becomes an internal PO the warehouse manager
+    # opens (without the supplier name), scans each barcode to verify, then approves — only
+    # then does stock enter. A line that arrives as a SET (e.g. 100 sets of 4) explodes into
+    # its individual units (one child SKU if identical, or one per unit if different) so the
+    # warehouse can label and sell the end units.
+    for _stmt in ("ALTER TABLE purchase_orders ADD COLUMN approved_by TEXT",
+                  "ALTER TABLE purchase_orders ADD COLUMN approved_at TEXT",
+                  "ALTER TABLE po_items ADD COLUMN set_units INTEGER DEFAULT 0",
+                  "ALTER TABLE po_items ADD COLUMN set_mode TEXT",
+                  "ALTER TABLE po_items ADD COLUMN verified INTEGER DEFAULT 0",
+                  "ALTER TABLE po_items ADD COLUMN verified_by TEXT"):
+        try: c.execute(_stmt)
+        except sqlite3.OperationalError: pass
+    c.execute("""CREATE TABLE IF NOT EXISTS po_item_children(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        po_item_id INTEGER NOT NULL,
+        child_sku TEXT,
+        child_name TEXT,
+        qty_each INTEGER DEFAULT 1
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_poitemchildren ON po_item_children(po_item_id)")
     # Supplier-SKU → store-SKU memory: when a supplier PO/invoice uses their own
     # product codes, remember which of our catalog SKUs each one maps to so the next
     # import auto-fills the mapping. Keyed on the supplier code (case-insensitive).
@@ -8402,7 +8423,7 @@ def api_product_count(sku):
     return jsonify({"ok":True,"sku":sku,"old":old,"counted":counted,"delta":delta})
 
 @app.route("/api/po/<int:poid>/scan-receive",methods=["POST"])
-@req_role("admin","cs")
+@req_role("admin","cs","manager")
 def api_po_scan_receive(poid):
     """Scan a barcode/SKU on the receive screen → receive 1 unit of the matching line."""
     d=request.get_json() or {}
@@ -8701,25 +8722,32 @@ def api_po_update(poid):
     return jsonify({"ok":True})
 
 @app.route("/api/po/<int:poid>/detail")
-@req_role("admin","cs")
+@req_role("admin","cs","manager")
 def api_po_detail(poid):
     c=sdb()
     r=c.execute("SELECT * FROM purchase_orders WHERE id=?",(poid,)).fetchone()
     if not r: c.close(); return jsonify({"ok":False,"error":"Not found"}),404
     po=dict(r)
     po["items"]=[dict(x) for x in c.execute("SELECT * FROM po_items WHERE po_id=? ORDER BY id",(poid,)).fetchall()]
-    # attach current product image for the receive screen
+    # attach current product image + any set-child SKUs for the receive/approve screen
     for it in po["items"]:
-        pr=c.execute("SELECT image_url,on_hand FROM products WHERE sku=?",(it.get("sku"),)).fetchone()
+        pr=c.execute("SELECT image_url,on_hand,barcode FROM products WHERE sku=?",(it.get("sku"),)).fetchone()
         it["image_url"]=pr["image_url"] if pr else None
         it["on_hand"]=pr["on_hand"] if pr else None
+        it["barcode"]=pr["barcode"] if pr else None
+        it["children"]=[dict(ch) for ch in c.execute(
+            "SELECT id,child_sku,child_name,qty_each FROM po_item_children WHERE po_item_id=? ORDER BY id",(it["id"],)).fetchall()]
     c.close()
-    if session.get("role")!="admin":
-        for it in po["items"]: it.pop("unit_cost",None)
+    role=session.get("role")
+    if role!="admin":
+        for it in po["items"]: it.pop("unit_cost",None)   # cost is admin-only
+    # The warehouse manager approves by INTERNAL PO number only — never sees the supplier.
+    if role=="manager":
+        po["supplier"]=None; po["supplier_hidden"]=True
     return jsonify({"ok":True,"po":po})
 
 @app.route("/api/po/<int:poid>/item/<int:item_id>/receive",methods=["POST"])
-@req_role("admin","cs")
+@req_role("admin","cs","manager")
 def api_po_item_receive(poid,item_id):
     """Receive some/all of one line — updates stock + weighted-avg cost. iPad checkoff."""
     d=request.get_json() or {}
@@ -8730,11 +8758,10 @@ def api_po_item_receive(poid,item_id):
     try: qty=int(float(d.get("qty"))) if d.get("qty") not in (None,"") else remaining
     except Exception: qty=remaining
     qty=max(0,min(qty,remaining))
-    sku=(it["sku"] or "").strip()
-    if qty<=0 or not sku:
+    if qty<=0 or not ((it["sku"] or "").strip() or _po_children(c,item_id)):
         c.close(); return jsonify({"ok":False,"error":"Nothing to receive"})
-    oh,ac=_receive_stock(c,sku,qty,it["unit_cost"] or 0,po_id=poid,note="PO receive",name=it["product_name"])
-    c.execute("UPDATE po_items SET qty_received=qty_received+? WHERE id=?",(qty,item_id))
+    _receive_po_line(c, poid, it, qty)   # set lines explode onto their child SKUs
+    sku=(it["sku"] or "").strip()
     # auto-complete PO when every line is fully received
     left=c.execute("SELECT COALESCE(SUM(qty_ordered-qty_received),0) n FROM po_items WHERE po_id=?",(poid,)).fetchone()["n"]
     if left<=0:
@@ -8743,38 +8770,214 @@ def api_po_item_receive(poid,item_id):
     else:
         c.execute("UPDATE purchase_orders SET status='receiving' WHERE id=? AND status IN ('open','ordered','in_transit')",(poid,))
     c.commit(); c.close()
-    alog("stock.receive","PO#%d %s x%d"%(poid,sku,qty))
-    return jsonify({"ok":True,"sku":sku,"on_hand":oh,"avg_cost":ac,"received_now":qty,"po_done":left<=0})
+    alog("stock.receive","PO#%d %s x%d"%(poid,sku or "set",qty))
+    return jsonify({"ok":True,"sku":sku,"received_now":qty,"po_done":left<=0})
 
 @app.route("/api/po")
-@req_role("admin","cs")
+@req_role("admin","cs","manager")
 def api_po_list():
     c=sdb()
     rows=c.execute("SELECT * FROM purchase_orders ORDER BY created_at DESC LIMIT 200").fetchall()
+    is_mgr=session.get("role")=="manager"
     out=[]
     for r in rows:
         d=dict(r); d["items"]=[dict(x) for x in c.execute("SELECT * FROM po_items WHERE po_id=?",(r["id"],)).fetchall()]
+        if is_mgr: d["supplier"]=None; d["supplier_hidden"]=True   # manager sees internal PO# only
+        if session.get("role")!="admin":
+            for it in d["items"]: it.pop("unit_cost",None)
         out.append(d)
     c.close()
     return jsonify(out)
 
 @app.route("/api/po/<int:poid>/receive",methods=["POST"])
-@req_role("admin","cs")
+@req_role("admin","cs","manager")
 def api_po_receive(poid):
     c=sdb()
     items=c.execute("SELECT * FROM po_items WHERE po_id=?",(poid,)).fetchall()
     received=0
     for it in items:
-        sku=(it["sku"] or "").strip()
         qty=(it["qty_ordered"] or 0)-(it["qty_received"] or 0)
-        if not sku or qty<=0: continue
-        _receive_stock(c, sku, qty, it["unit_cost"] or 0, po_id=poid, note="PO receive", name=it["product_name"])
-        c.execute("UPDATE po_items SET qty_received=qty_ordered WHERE id=?",(it["id"],))
-        received+=qty
+        received+=_receive_po_line(c, poid, it, qty)   # set lines explode onto their children
     c.execute("UPDATE purchase_orders SET status='received',received_at=? WHERE id=?",
               (datetime.now().isoformat(timespec='seconds'),poid))
     c.commit(); c.close()
     return jsonify({"ok":True,"received":received})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INTERNAL PO — manager approval + "this is a set" explode.
+# A line can arrive as a SET: qty_ordered sets, each holding set_units pieces. On receive,
+# a set line puts stock on its CHILD SKUs (po_item_children), never on the container line:
+#   mode 'same'  → one child, qty_each = set_units  → child gets qty_ordered * set_units
+#   mode 'diff'  → one child per unit, qty_each = 1  → each child gets qty_ordered
+# A plain line receives its own SKU as before.
+# ══════════════════════════════════════════════════════════════════════════════
+def _po_children(c, item_id):
+    return c.execute("SELECT * FROM po_item_children WHERE po_item_id=? ORDER BY id",(item_id,)).fetchall()
+
+def _explode_set(c, item_id, base_name, units, mode, names=None):
+    """Turn a PO line into a SET: create the child unit SKU(s) and record set_units/set_mode.
+    mode 'same' → one child with qty_each=units; 'diff' → one child per unit, qty_each=1.
+    Returns the child dicts [{sku,name,qty_each}]."""
+    units=max(1,int(units or 1)); mode=(mode or "same").lower()
+    if mode not in ("same","diff"): mode="same"
+    names=[str(x).strip() for x in (names or [])]
+    now=datetime.now().isoformat(timespec='seconds')
+    c.execute("DELETE FROM po_item_children WHERE po_item_id=?",(item_id,))
+    base_name=base_name or "Item"; kids=[]
+    seq=[("same",0)] if mode=="same" else [("diff",k) for k in range(units)]
+    for _m,k in seq:
+        sku=_gen_sku()
+        if mode=="same":
+            nm=names[0] if names else base_name; qe=units
+        else:
+            nm=names[k] if k<len(names) and names[k] else (base_name+" – unit "+str(k+1)); qe=1
+        c.execute("INSERT INTO products(sku,name,updated_at) VALUES(?,?,?)",(sku,nm,now))
+        c.execute("INSERT INTO po_item_children(po_item_id,child_sku,child_name,qty_each) VALUES(?,?,?,?)",
+                  (item_id,sku,nm,qe))
+        kids.append({"sku":sku,"name":nm,"qty_each":qe})
+    c.execute("UPDATE po_items SET set_units=?,set_mode=? WHERE id=?",(units,mode,item_id))
+    return kids
+
+def _receive_po_line(c, poid, it, sets_qty):
+    """Receive `sets_qty` sets of one PO line. Expands set lines onto their child SKUs;
+    a plain line receives its own SKU. Bumps qty_received by sets_qty. Returns sets received."""
+    sets_qty=max(0,int(sets_qty or 0))
+    if sets_qty<=0: return 0
+    kids=_po_children(c, it["id"])
+    if kids:
+        for ch in kids:
+            units=sets_qty*int(ch["qty_each"] or 1)
+            if units>0 and (ch["child_sku"] or "").strip():
+                _receive_stock(c, ch["child_sku"], units, it["unit_cost"] or 0, po_id=poid,
+                               note="PO receive (set)", name=ch["child_name"])
+    else:
+        sku=(it["sku"] or "").strip()
+        if sku:
+            _receive_stock(c, sku, sets_qty, it["unit_cost"] or 0, po_id=poid,
+                           note="PO receive", name=it["product_name"])
+    c.execute("UPDATE po_items SET qty_received=COALESCE(qty_received,0)+? WHERE id=?",(sets_qty,it["id"]))
+    return sets_qty
+
+@app.route("/api/products/import-pdf/to-po",methods=["POST"])
+@req_role("admin")
+def api_import_pdf_to_po():
+    """Turn the reviewed invoice lines into an INTERNAL purchase order awaiting the
+    warehouse manager's approval — no stock moves yet. The supplier is saved on the PO
+    but hidden from the manager's view. Supplier→store SKU mappings are remembered."""
+    d=request.get_json() or {}
+    rows=d.get("items") or []
+    supplier=(d.get("supplier") or "").strip() or None
+    now=datetime.now().isoformat(timespec='seconds')
+    c=sdb()
+    cur=c.execute("""INSERT INTO purchase_orders(supplier,notes,status,created_by,created_at)
+                     VALUES(?,?,'awaiting_approval',?,?)""",
+                  (supplier,(d.get("notes") or "").strip() or None,session.get("name","")[:60],now))
+    poid=cur.lastrowid; added=0; mapped=0
+    for it in rows:
+        name=(it.get("name") or "").strip()
+        ssku=(it.get("supplier_sku") or "").strip()
+        store_sku=(it.get("store_sku") or "").strip()
+        try: qty=int(float(it.get("qty") or 0))
+        except Exception: qty=0
+        try: cost=float(str(it.get("unit_cost") or 0).replace("$","").replace(",",""))
+        except Exception: cost=0.0
+        if not (name or store_sku or ssku): continue
+        if not store_sku: store_sku=ssku or _gen_sku()
+        if not c.execute("SELECT 1 FROM products WHERE sku=?",(store_sku,)).fetchone():
+            c.execute("INSERT INTO products(sku,name,updated_at) VALUES(?,?,?)",(store_sku,name or store_sku,now))
+        cur2=c.execute("INSERT INTO po_items(po_id,sku,product_name,qty_ordered,unit_cost) VALUES(?,?,?,?,?)",
+                  (poid,store_sku,name or store_sku,qty,cost)); added+=1
+        # A line already flagged as a set in the invoice-review step explodes now too.
+        try: _su=int(it.get("set_units") or 0)
+        except Exception: _su=0
+        if _su>=1:
+            _explode_set(c, cur2.lastrowid, name or store_sku, _su, it.get("set_mode") or "same", it.get("set_names"))
+        if ssku and store_sku:
+            c.execute("""INSERT INTO supplier_sku_map(supplier_sku,store_sku,supplier,updated_at)
+                         VALUES(?,?,?,?) ON CONFLICT(supplier_sku) DO UPDATE SET
+                            store_sku=excluded.store_sku,supplier=excluded.supplier,updated_at=excluded.updated_at""",
+                      (ssku,store_sku,supplier,now)); mapped+=1
+    c.commit(); c.close()
+    return jsonify({"ok":True,"po_id":poid,"lines":added,"mapped":mapped})
+
+@app.route("/api/po/<int:poid>/line/<int:item_id>/set",methods=["POST"])
+@req_role("admin","cs","manager")
+def api_po_line_set(poid,item_id):
+    """Mark a line as a SET and explode it into child unit SKUs. Asked each time:
+      units = pieces per set; mode = 'same' (identical units → one SKU) or 'diff'
+      (different units → one SKU each). Optional names[] name the units."""
+    d=request.get_json() or {}
+    try: units=int(d.get("units") or 0)
+    except Exception: units=0
+    mode=(d.get("mode") or "same").strip().lower()
+    if mode not in ("same","diff"): mode="same"
+    names=[str(x).strip() for x in (d.get("names") or [])]
+    if units<1: return jsonify({"ok":False,"error":"Units per set must be at least 1"})
+    c=sdb()
+    it=c.execute("SELECT * FROM po_items WHERE id=? AND po_id=?",(item_id,poid)).fetchone()
+    if not it: c.close(); return jsonify({"ok":False,"error":"Line not found"}),404
+    if (it["qty_received"] or 0)>0:
+        c.close(); return jsonify({"ok":False,"error":"Already received — cannot change to a set"})
+    kids=_explode_set(c, item_id, (it["product_name"] or it["sku"] or "Item"), units, mode, names)
+    c.commit(); c.close()
+    return jsonify({"ok":True,"children":kids,"units":units,"mode":mode})
+
+@app.route("/api/po/<int:poid>/line/<int:item_id>/unset",methods=["POST"])
+@req_role("admin","cs","manager")
+def api_po_line_unset(poid,item_id):
+    c=sdb()
+    it=c.execute("SELECT * FROM po_items WHERE id=? AND po_id=?",(item_id,poid)).fetchone()
+    if not it: c.close(); return jsonify({"ok":False,"error":"Line not found"}),404
+    c.execute("DELETE FROM po_item_children WHERE po_item_id=?",(item_id,))
+    c.execute("UPDATE po_items SET set_units=0,set_mode=NULL WHERE id=?",(item_id,))
+    c.commit(); c.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/po/<int:poid>/line/<int:item_id>/verify",methods=["POST"])
+@req_role("admin","cs","manager")
+def api_po_line_verify(poid,item_id):
+    """Manager scans a barcode to confirm the received product matches the line. Matches
+    against the line's own product barcode/SKU, or any of its set-child barcodes/SKUs."""
+    d=request.get_json() or {}
+    code=(d.get("code") or "").strip()
+    c=sdb()
+    it=c.execute("SELECT * FROM po_items WHERE id=? AND po_id=?",(item_id,poid)).fetchone()
+    if not it: c.close(); return jsonify({"ok":False,"error":"Line not found"}),404
+    skus=[(it["sku"] or "")]+[ch["child_sku"] for ch in _po_children(c,item_id)]
+    ok=False
+    if code:
+        for s in skus:
+            if not s: continue
+            pr=c.execute("SELECT barcode FROM products WHERE sku=?",(s,)).fetchone()
+            if s==code or (pr and (pr["barcode"] or "")==code): ok=True; break
+    else:
+        ok=True   # manual check-off with no scanner
+    if ok:
+        c.execute("UPDATE po_items SET verified=1,verified_by=? WHERE id=?",(session.get("name","")[:60],item_id))
+        c.commit()
+    c.close()
+    return jsonify({"ok":ok,"verified":ok,"error":None if ok else "Barcode does not match this line"})
+
+@app.route("/api/po/<int:poid>/approve",methods=["POST"])
+@req_role("admin","manager")
+def api_po_approve(poid):
+    """Warehouse manager approves an internal PO: receive every line (set lines explode
+    onto their child SKUs), then mark the PO approved/received. Stock enters only here."""
+    c=sdb()
+    po=c.execute("SELECT * FROM purchase_orders WHERE id=?",(poid,)).fetchone()
+    if not po: c.close(); return jsonify({"ok":False,"error":"PO not found"}),404
+    items=c.execute("SELECT * FROM po_items WHERE po_id=?",(poid,)).fetchall()
+    unverified=sum(1 for it in items if not (it["verified"] or 0))
+    sets=0
+    for it in items:
+        left=(it["qty_ordered"] or 0)-(it["qty_received"] or 0)
+        sets+=_receive_po_line(c, poid, it, left)
+    now=datetime.now().isoformat(timespec='seconds')
+    c.execute("UPDATE purchase_orders SET status='received',received_at=?,approved_by=?,approved_at=? WHERE id=?",
+              (now,session.get("name","")[:60],now,poid))
+    c.commit(); c.close()
+    alog("po.approve","PO#%d approved (%d sets received)"%(poid,sets))
+    return jsonify({"ok":True,"received":sets,"unverified":unverified})
 
 _PO_INVOICE_EXT={"pdf","jpg","jpeg","png","webp"}
 
@@ -8802,7 +9005,7 @@ def api_po_invoice_upload(poid):
     return jsonify({"ok":True,"invoice_name":f.filename})
 
 @app.route("/api/po/<int:poid>/invoice-file")
-@req_role("admin","cs")
+@req_role("admin","cs","manager")
 def api_po_invoice_file(poid):
     c=sdb(); r=c.execute("SELECT invoice_key FROM purchase_orders WHERE id=?",(poid,)).fetchone(); c.close()
     key=r["invoice_key"] if r else None
@@ -8856,7 +9059,7 @@ def api_po_extract_invoice():
         return jsonify({"ok":False,"error":"Couldn't read the invoice automatically — add the lines manually."})
 
 @app.route("/api/po/<int:poid>/slip.pdf")
-@req_role("admin","cs")
+@req_role("admin","cs","manager")
 def api_po_slip(poid):
     """Warehouse receiving slip — quantities only, NO costs."""
     c=sdb()
@@ -9653,7 +9856,7 @@ def inventory_page():
     return INVENTORY_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__ROLE__",esc(session.get("role",""))).replace("__NAVBAR__",_navbar("inventory")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/admin/purchasing")
-@req_role("admin","cs")
+@req_role("admin","cs","manager")
 def purchasing_page():
     return PURCHASING_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__ROLE__",esc(session.get("role",""))).replace("__NAVBAR__",_navbar("purchasing")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 

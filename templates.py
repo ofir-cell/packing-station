@@ -127,7 +127,7 @@ def _navbar(active_page=""):
           ("Inventory", "📥", _vis([
             ("inventory", "/admin/inventory", "Inventory") if has("admin","cs") else None,
             ("productcleanup", "/admin/product-cleanup", "After-Live Cleanup") if has("admin","cs") else None,
-            ("purchasing", "/admin/purchasing", "Purchasing") if has("admin") else None,
+            ("purchasing", "/admin/purchasing", "Purchasing") if has("admin","manager") else None,
             ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation") if has("admin","cs") else None,
             ("stocktake", "/admin/stocktake", "Stock Take") if has("admin","cs") else None,
           ])),
@@ -7867,17 +7867,23 @@ __NAVBAR__
       <thead><tr style="text-align:left;color:#6b7280;border-bottom:1px solid rgba(17,24,39,0.1)">
         <th style="padding:6px 8px">Supplier SKU</th><th style="padding:6px 8px">Product (from PDF)</th>
         <th style="padding:6px 8px;width:70px">Qty</th><th style="padding:6px 8px;width:90px">Unit cost</th>
-        <th style="padding:6px 8px;width:220px">Your store SKU →</th></tr></thead>
+        <th style="padding:6px 8px;width:220px">Your store SKU →</th>
+        <th style="padding:6px 8px;width:90px">Set?</th></tr></thead>
       <tbody id="poRows"></tbody>
     </table>
     <datalist id="storeSkus"></datalist>
     <div class="row" style="margin-top:12px;align-items:flex-end">
-      <div class="f"><label>On-hand mode</label>
+      <div class="f"><label>Supplier (kept internal — hidden from the warehouse manager)</label>
+        <input id="poSupplier" placeholder="e.g. ACME Beauty" style="width:100%"></div>
+    </div>
+    <div class="row" style="margin-top:10px;align-items:flex-end">
+      <button class="btn btn-p" id="poToMgrBtn" title="Create an internal PO the warehouse manager approves before stock enters">📤 Send to Warehouse Manager</button>
+      <div class="f" style="max-width:220px"><label>Or import straight to stock</label>
         <select id="poMode" style="background:#ffffff;border:2px solid rgba(17,24,39,0.128);border-radius:10px;padding:11px 14px;font-size:14px;color:#1a2130;font-family:inherit;outline:none">
           <option value="add">Add to stock (receive)</option>
           <option value="replace">Replace on-hand (set)</option>
         </select></div>
-      <button class="btn btn-p" id="poImportBtn">Import all →</button>
+      <button class="btn btn-s" id="poImportBtn">Import all →</button>
       <button class="btn btn-s" id="poCancelBtn">Cancel</button>
     </div>
     <div class="muted" id="poImportResult" style="margin-top:10px;font-size:13px"></div>
@@ -8112,8 +8118,10 @@ function poRenderRows(){
       '<td style="padding:6px 8px"><input class="poQ" data-i="'+i+'" type="number" value="'+it.qty+'" style="width:60px;padding:6px"></td>'+
       '<td style="padding:6px 8px"><input class="poC" data-i="'+i+'" type="number" step="0.01" value="'+it.unit_cost+'" style="width:80px;padding:6px"></td>'+
       '<td style="padding:6px 8px"><input class="poS" data-i="'+i+'" list="storeSkus" value="'+esc(it.store_sku||'')+'" placeholder="'+esc(it.supplier_sku||'auto')+'" style="width:150px;padding:6px"> <span class="poTag" data-i="'+i+'">'+tag+'</span></td>'+
+      '<td style="padding:6px 8px"><button type="button" class="btn btn-ghost btn-s poSet" data-i="'+i+'" style="padding:5px 9px">'+(it.set_units?('📦 '+it.set_units+(it.set_mode==='diff'?' diff':'')):'📦 Set')+'</button></td>'+
     '</tr>';
   }).join('');
+  tb.querySelectorAll('.poSet').forEach(function(b){b.addEventListener('click',function(){poSetRow(+this.getAttribute('data-i'))})});
   tb.querySelectorAll('.poS').forEach(function(inp){inp.addEventListener('input',function(){
     var i=+this.getAttribute('data-i');PO_ITEMS[i].store_sku=this.value.trim();
     this.parentNode.querySelector('.poTag').innerHTML=this.value.trim()?'<span style="color:#6b7280">set</span>':'<span style="color:#f59e0b">new</span>';
@@ -8136,6 +8144,27 @@ document.getElementById('poReadBtn').addEventListener('click',function(){
 document.getElementById('poCancelBtn').addEventListener('click',function(){
   PO_ITEMS=[];document.getElementById('poReview').style.display='none';
   document.getElementById('poResult').textContent='';document.getElementById('poFile').value='';
+});
+function poSetRow(i){
+  var it=PO_ITEMS[i];
+  if(it.set_units){ if(confirm('This line is marked as a set of '+it.set_units+'. Remove the set?')){it.set_units=0;it.set_mode='';it.set_names=null;poRenderRows();} return; }
+  var u=prompt('How many units come inside each set?',''); if(u===null)return;
+  u=parseInt(u||'0'); if(!(u>=1)){toast('Enter a number ≥ 1',true);return;}
+  var diff=confirm('Are the '+u+' units DIFFERENT from each other?\\n\\nOK = different (a separate SKU per unit)\\nCancel = identical (one SKU)');
+  it.set_units=u; it.set_mode=diff?'diff':'same'; it.set_names=null;
+  if(diff){ var names=[]; for(var k=0;k<u;k++){var nm=prompt('Name of unit '+(k+1)+' (optional):',''); names.push(nm||'');} it.set_names=names; }
+  poRenderRows();
+}
+document.getElementById('poToMgrBtn').addEventListener('click',function(){
+  if(!PO_ITEMS.length){toast('Nothing to send',true);return}
+  document.getElementById('poImportResult').textContent='Creating internal PO…';
+  fetch('/api/products/import-pdf/to-po',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({supplier:document.getElementById('poSupplier').value.trim(),items:PO_ITEMS})}).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){document.getElementById('poImportResult').innerHTML='<span style="color:#f43f5e">'+esc(d.error||'Failed')+'</span>';return}
+    document.getElementById('poImportResult').innerHTML='✓ Internal <b>PO #'+d.po_id+'</b> created with '+d.lines+' line(s) — awaiting warehouse-manager approval. <a href="/admin/purchasing" style="color:#4f46e5">Open Purchasing ›</a>';
+    toast('Sent to Warehouse Manager ✓');PO_ITEMS=[];document.getElementById('poReview').style.display='none';
+    document.getElementById('poFile').value='';document.getElementById('poResult').textContent='';
+  }).catch(function(){document.getElementById('poImportResult').innerHTML='<span style="color:#f43f5e">Failed</span>'});
 });
 document.getElementById('poImportBtn').addEventListener('click',function(){
   if(!PO_ITEMS.length){toast('Nothing to import',true);return}
@@ -9052,34 +9081,73 @@ document.getElementById('extractBtn').addEventListener('click',function(){
 document.getElementById('genLabelBtn').addEventListener('click',function(){
   savePO(function(pid){window.location.href='/admin/inbound';});
 });
-// ── receive view ──
+// ── receive / approve view ──
 function openReceive(id){
   fetch('/api/po/'+id+'/detail').then(function(r){return r.json()}).then(function(d){
-    if(!d.ok)return;var p=d.po;
+    if(!d.ok)return;var p=d.po; var pend=(p.status==='awaiting_approval');
+    var verified=0, total=(p.items||[]).length;
     var rows=(p.items||[]).map(function(it){
+      if(it.verified)verified++;
       var remaining=(it.qty_ordered||0)-(it.qty_received||0);
       var img=it.image_url?'<img src="'+esc(it.image_url)+'">':'<div class="noimg"></div>';
       var doneCls=remaining<=0?' done':'';
-      var ctrl=remaining<=0?'<span class="pill s-received">✓ received</span>':
-        '<div class="qbox"><input type="number" id="q'+it.id+'" value="'+remaining+'" min="1" max="'+remaining+'"><button class="btn btn-g" onclick="recvLine('+p.id+','+it.id+')">Receive</button></div>';
+      // Set children + print-label links
+      var kids=(it.children||[]);
+      var kidHtml=kids.length?('<div class="sub" style="margin-top:4px">📦 Set of '+(it.set_units||kids.length)+(it.set_mode==='diff'?' (different)':' (identical)')+': '+
+        kids.map(function(ch){return esc(ch.child_name||ch.child_sku)+' <a href="/api/product/'+encodeURIComponent(ch.child_sku)+'/label.pdf" target="_blank" style="color:#4f46e5">🏷️</a>';}).join(' · ')+'</div>'):'';
+      var setBtn=remaining<=0?'':'<button class="btn btn-ghost btn-s" onclick="setLine('+p.id+','+it.id+',\\''+esc((it.product_name||it.sku||'').replace(/'/g,''))+'\\')">'+(kids.length?'📦 Edit set':'📦 This is a set')+'</button>';
+      // Verify (scan the barcode to confirm it matches)
+      var vHtml=it.verified?'<span class="pill s-received">✓ verified'+(it.verified_by?(' · '+esc(it.verified_by)):'')+'</span>':
+        '<div class="qbox"><input type="text" id="v'+it.id+'" placeholder="scan to verify…" style="width:150px" onkeydown="if(event.key===\\'Enter\\'){verifyLine('+p.id+','+it.id+')}"><button class="btn btn-s" onclick="verifyLine('+p.id+','+it.id+')">Verify</button></div>';
+      // Per-line receive is for non-approval POs; approval receives everything at once.
+      var ctrl=pend?'':(remaining<=0?'<span class="pill s-received">✓ received</span>':
+        '<div class="qbox"><input type="number" id="q'+it.id+'" value="'+remaining+'" min="1" max="'+remaining+'"><button class="btn btn-g" onclick="recvLine('+p.id+','+it.id+')">Receive</button></div>');
       return '<div class="rcv'+doneCls+'">'+img+'<div class="info"><div class="nm">'+esc(it.product_name||it.sku)+'</div>'+
-        '<div class="sub">SKU '+esc(it.sku)+' · ordered '+(it.qty_ordered||0)+' · received '+(it.qty_received||0)+' · on hand '+(it.on_hand!=null?it.on_hand:'—')+
-        ' &nbsp;<a href="/admin/inventory" style="color:#4f46e5">edit product ›</a></div></div>'+ctrl+'</div>';
+        '<div class="sub">SKU '+esc(it.sku)+(it.barcode?(' · barcode '+esc(it.barcode)):'')+' · ordered '+(it.qty_ordered||0)+' · on hand '+(it.on_hand!=null?it.on_hand:'—')+'</div>'+
+        kidHtml+'<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+vHtml+setBtn+'</div></div>'+ctrl+'</div>';
     }).join('');
-    document.getElementById('recvCard').innerHTML='<h2>Receive PO #'+p.id+' '+stpill(p.status)+'</h2>'+
-      '<div class="muted" style="margin-bottom:12px">'+esc(p.supplier||'')+(p.tracking?(' · '+esc(p.tracking)):'')+'</div>'+
+    var head = pend
+      ? ('<div style="margin-bottom:12px;padding:10px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;color:#92400e">⏳ Awaiting your approval — check each barcode matches, then approve. Stock enters only on approval. <b>'+verified+'/'+total+' verified.</b></div>')
+      : '';
+    var approveOrReceive = pend
+      ? '<button class="btn btn-p" onclick="approveP('+p.id+','+verified+','+total+')">✓ Approve &amp; receive</button>'
+      : (p.status!=='received'?'<button class="btn btn-g" onclick="receiveAll('+p.id+')">✓ Receive all remaining</button>':'');
+    document.getElementById('recvCard').innerHTML='<h2>'+(pend?'Approve':'Receive')+' PO #'+p.id+' '+stpill(p.status)+'</h2>'+
+      '<div class="muted" style="margin-bottom:12px">'+(p.supplier_hidden?'Internal order':esc(p.supplier||''))+(p.tracking?(' · '+esc(p.tracking)):'')+'</div>'+
+      head+
       '<div style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap">'+
       '<a class="btn btn-s" href="/api/po/'+p.id+'/slip.pdf" target="_blank" style="text-decoration:none">🖨️ Print receiving slip</a>'+
       (p.invoice_name?('<a class="btn btn-s" href="/api/po/'+p.id+'/invoice-file" target="_blank" style="text-decoration:none">📎 Invoice</a>'):'')+
-      (p.status!=='received'?('<button class="btn btn-s" onclick="editPO('+p.id+')">✎ Edit order</button>'):'')+
-      '<button class="btn btn-g" onclick="receiveAll('+p.id+')">✓ Receive all remaining</button>'+'</div>'+
-      '<div style="margin-bottom:14px"><label>📷 Scan to receive (1 unit each)</label>'+
+      (p.status!=='received'&&!p.supplier_hidden?('<button class="btn btn-s" onclick="editPO('+p.id+')">✎ Edit order</button>'):'')+
+      approveOrReceive+'</div>'+
+      '<div style="margin-bottom:14px"><label>📷 Scan — '+(pend?'verifies the matching line':'receives 1 unit each')+'</label>'+
       '<input type="text" id="scanBox" placeholder="Scan barcode or SKU…" style="width:100%" autocomplete="off" '+
-      'onkeydown="if(event.key===\\'Enter\\'){scanRecv('+p.id+')}"></div>'+
+      'onkeydown="if(event.key===\\'Enter\\'){scanRecv('+p.id+','+(pend?'true':'false')+')}"></div>'+
       rows;
     show('recvView');
     var sb=document.getElementById('scanBox');if(sb)sb.focus();
   });
+}
+function setLine(poid,itemId,baseName){
+  var u=prompt('How many units come inside each set?',''); if(u===null)return;
+  u=parseInt(u||'0'); if(!(u>=1)){toast('Enter a number ≥ 1',true);return;}
+  var diff=confirm('Are the '+u+' units DIFFERENT from each other?\\n\\nOK = different (a separate SKU per unit)\\nCancel = identical (one SKU)');
+  var names=null; if(diff){names=[];for(var k=0;k<u;k++){var nm=prompt('Name of unit '+(k+1)+' (optional):','');names.push(nm||'');}}
+  fetch('/api/po/'+poid+'/line/'+itemId+'/set',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({units:u,mode:diff?'diff':'same',names:names})})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Set created ✓');openReceive(poid)}else toast(d.error||'Failed',true)});
+}
+function verifyLine(poid,itemId){
+  var box=document.getElementById('v'+itemId);var code=box?(box.value||'').trim():'';
+  fetch('/api/po/'+poid+'/line/'+itemId+'/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code})})
+    .then(function(r){return r.json()}).then(function(d){if(d.verified){toast('Verified ✓');openReceive(poid)}else toast(d.error||'Barcode does not match',true)});
+}
+function approveP(poid,verified,total){
+  var msg='Approve PO #'+poid+' and receive everything into inventory?';
+  if(verified<total)msg='⚠️ Only '+verified+' of '+total+' lines are barcode-verified.\\n\\n'+msg;
+  if(!confirm(msg))return;
+  fetch('/api/po/'+poid+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Approved — stock received ✓');openReceive(poid)}else toast(d.error||'Failed',true)});
 }
 function recvLine(poid,itemId){
   var q=parseInt((document.getElementById('q'+itemId)||{}).value||'0');
@@ -9091,8 +9159,22 @@ function receiveAll(poid){
   fetch('/api/po/'+poid+'/receive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})})
     .then(function(r){return r.json()}).then(function(d){if(d.ok){toast('Received all ✓');openReceive(poid)}else toast(d.error||'Failed',true)});
 }
-function scanRecv(poid){
+function scanRecv(poid,pend){
   var box=document.getElementById('scanBox');var code=(box.value||'').trim();if(!code)return;box.value='';
+  if(pend){
+    // Awaiting approval: a scan VERIFIES the matching line (match against any line/child barcode).
+    fetch('/api/po/'+poid+'/detail').then(function(r){return r.json()}).then(function(d){
+      if(!d.ok)return;var hit=null;
+      (d.po.items||[]).forEach(function(it){
+        var codes=[it.sku,it.barcode].concat((it.children||[]).map(function(c){return c.child_sku}));
+        if(!hit && codes.indexOf(code)>=0)hit=it;
+      });
+      if(!hit){toast('No line matches that barcode',true);var b=document.getElementById('scanBox');if(b)b.focus();return;}
+      fetch('/api/po/'+poid+'/line/'+hit.id+'/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code})})
+        .then(function(r){return r.json()}).then(function(v){if(v.verified){toast('Verified ✓ '+esc(hit.product_name||hit.sku))}else toast(v.error||'Mismatch',true);openReceive(poid);});
+    });
+    return;
+  }
   fetch('/api/po/'+poid+'/scan-receive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code})})
     .then(function(r){return r.json()}).then(function(d){
       if(d.ok){toast('✓ '+esc(d.name)+' ('+d.qty_received+'/'+d.qty_ordered+')');openReceive(poid)}
