@@ -16,6 +16,18 @@ def _admin(client, A):
     return {"X-CSRF-Token": "tok"}
 
 
+def _as(client, A, name, role="worker"):
+    uname = name.lower()
+    with A.update_json(A.USERS_FILE) as users:          # so session-revocation sees a live account
+        u = dict(users.get(uname) or {})                # MERGE — never drop seeded fields (badge_token, etc.)
+        u.update({"password": u.get("password", "x"), "role": role, "name": name, "org": A.DEFAULT_ORG})
+        users[uname] = u
+    with client.session_transaction() as s:
+        s.update(user=uname, role=role, roles=[role], org=A.DEFAULT_ORG, name=name)
+    client.set_cookie("csrf_token", "tok")
+    return {"X-CSRF-Token": "tok"}
+
+
 def _prod(A, sku, barcode=None, on_hand=50, cost=2.0):
     c = A.sdb(A.DEFAULT_ORG)
     c.execute("INSERT OR REPLACE INTO products(sku,name,barcode,on_hand,avg_cost) VALUES(?,?,?,?,?)",
@@ -109,3 +121,52 @@ def test_bulk_bundle_applies_kit_to_every_sticker(appmod, client):
         got = client.get("/api/live/kit?show=%s&sticker=%s&part=1" % (lab, n), headers=hdr).get_json()
         skus = sorted(x["sku"] for x in got["components"])
         assert skus == sorted([a, b]), "sticker %s should carry both components" % n
+
+
+def test_history_is_per_worker_with_mine_flag(appmod, client):
+    """Two workers on the same live each see only their own matches via ?mine=1,
+    while the global queue (no flag) shows both."""
+    A = appmod; lab = "L" + uuid.uuid4().hex[:6]
+    pa = "DANA" + uuid.uuid4().hex[:4]; pb = "NOA" + uuid.uuid4().hex[:4]
+    _prod(A, pa, barcode="BC-DANA"); _prod(A, pb, barcode="BC-NOA")
+    _sold(A, lab, "30"); _sold(A, lab, "31")
+    hd = _as(client, A, "Dana")
+    client.post("/api/live/match", json={"show": lab, "sticker": "30", "part": 1, "code": "BC-DANA"}, headers=hd)
+    hn = _as(client, A, "Noa")
+    client.post("/api/live/match", json={"show": lab, "sticker": "31", "part": 1, "code": "BC-NOA"}, headers=hn)
+    # Noa's own history: only her sticker
+    mine = client.get("/api/live/match-queue?mine=1&show=" + lab, headers=hn).get_json()
+    assert sorted(str(m["sticker"]) for m in mine["matched"]) == ["31"]
+    # Dana's own history: only hers
+    _as(client, A, "Dana")
+    dmine = client.get("/api/live/match-queue?mine=1&show=" + lab).get_json()
+    assert sorted(str(m["sticker"]) for m in dmine["matched"]) == ["30"]
+    # Global (no flag) shows both; progress count is global either way
+    glob = client.get("/api/live/match-queue?show=" + lab).get_json()
+    assert sorted(str(m["sticker"]) for m in glob["matched"]) == ["30", "31"]
+    assert glob["matched_count"] == 2
+
+
+def test_audit_log_records_who_matched_what(appmod, client):
+    """The append-only log keeps every action (match, replace, bundle) with the worker,
+    even after a re-match overwrites the current product."""
+    A = appmod; lab = "L" + uuid.uuid4().hex[:6]
+    a = "WR" + uuid.uuid4().hex[:4]; b = "RT" + uuid.uuid4().hex[:4]
+    _prod(A, a, barcode="BC-WR"); _prod(A, b, barcode="BC-RT")
+    _sold(A, lab, "40")
+    hd = _as(client, A, "Dana")
+    client.post("/api/live/match", json={"show": lab, "sticker": "40", "part": 1, "code": "BC-WR"}, headers=hd)
+    client.post("/api/live/match", json={"show": lab, "sticker": "40", "part": 1, "code": "BC-RT"}, headers=hd)  # correction
+    hdr = _admin(client, A)
+    log = client.get("/api/live/match-log?show=" + lab, headers=hdr).get_json()
+    assert log["ok"]
+    acts = [(r["who"], r["sticker"], r["action"], r["product_sku"]) for r in log["rows"]]
+    assert ("Dana", "40", "match", a) in acts       # the first link is preserved
+    assert ("Dana", "40", "replace", b) in acts     # and the correction is its own row
+    assert "Dana" in log["workers"]
+
+
+def test_match_log_is_manager_only(appmod, client):
+    A = appmod; _as(client, A, "Floorhand22", "worker")
+    r = client.get("/api/live/match-log")
+    assert r.status_code in (302, 403)              # workers cannot read the audit trail

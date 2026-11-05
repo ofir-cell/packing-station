@@ -38,7 +38,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
     GUIDES_HTML, GUIDES_ADMIN_HTML,
     HIRES_ADMIN_HTML, HIRE_DETAIL_HTML, HIRE_ONBOARDING_HTML, HIRE_FILE_HTML,
-    SCANIT_HTML, APPLY_HTML, TRACK_HTML, EQUIPMENT_HTML, LIVE_HTML, LIVE_MATCH_HTML,
+    SCANIT_HTML, APPLY_HTML, TRACK_HTML, EQUIPMENT_HTML, LIVE_HTML, LIVE_MATCH_HTML, MATCH_LOG_HTML,
     PRODUCT_CLEANUP_HTML)
 from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
 from templates import COMBINE_HTML  # Combine & Labels screen
@@ -9021,10 +9021,21 @@ def api_live_match_queue():
         except Exception: n=-1
         return (w["part"], n)
     waiting=sorted(agg.values(), key=_kn, reverse=True)   # newest first: highest part, then number
-    matched=[dict(r) for r in c.execute("""
-        SELECT m.sticker_sku sticker, m.part, m.product_sku, p.name, p.image_url
-        FROM show_product_map m LEFT JOIN products p ON p.sku=m.product_sku
-        WHERE m.import_label=? ORDER BY m.mapped_at DESC LIMIT 24""",(show,)).fetchall()]
+    # The "just matched · tap to fix" list. With ?mine=1 it is scoped to the signed-in
+    # worker (by mapped_by), so four stations working the same live don't flood each other's
+    # history — each sees only what they themselves scanned. Progress counts stay global.
+    _me=(session.get("name","") or "")
+    _mine=(request.args.get("mine") in ("1","true","yes"))
+    if _mine and _me:
+        matched=[dict(r) for r in c.execute("""
+            SELECT m.sticker_sku sticker, m.part, m.product_sku, p.name, p.image_url
+            FROM show_product_map m LEFT JOIN products p ON p.sku=m.product_sku
+            WHERE m.import_label=? AND m.mapped_by=? ORDER BY m.mapped_at DESC LIMIT 24""",(show,_me)).fetchall()]
+    else:
+        matched=[dict(r) for r in c.execute("""
+            SELECT m.sticker_sku sticker, m.part, m.product_sku, p.name, p.image_url
+            FROM show_product_map m LEFT JOIN products p ON p.sku=m.product_sku
+            WHERE m.import_label=? ORDER BY m.mapped_at DESC LIMIT 24""",(show,)).fetchall()]
     mc=c.execute("SELECT COUNT(*) FROM show_product_map WHERE import_label=?",(show,)).fetchone()[0]
     # Matched count per part, for the guided Live Mode progress line ("X of Y scanned").
     matched_by_part={int(r["part"] or 0): r["n"] for r in c.execute(
@@ -9034,6 +9045,27 @@ def api_live_match_queue():
     return jsonify({"ok":True,"show":show,"waiting":waiting,"matched":matched,
                     "waiting_count":len(waiting),"matched_count":mc,"parts":parts,
                     "matched_by_part":matched_by_part})
+
+def _matchlog_ensure(c):
+    """Append-only trail of every live-match action: who linked which product to which
+    sold sticker, and when. show_product_map only keeps the CURRENT product (a re-match
+    overwrites it), so this table is the audit — nothing here is ever updated or deleted."""
+    c.execute("""CREATE TABLE IF NOT EXISTS live_match_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        import_label TEXT, sticker_sku TEXT, part INTEGER DEFAULT 0,
+        product_sku TEXT, action TEXT, who TEXT,
+        ts TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_mlog_show ON live_match_log(import_label, ts)")
+
+def _match_log(c, label, sticker, part, product_sku, action, who):
+    try:
+        _matchlog_ensure(c)
+        c.execute("""INSERT INTO live_match_log(import_label,sticker_sku,part,product_sku,action,who,ts)
+                     VALUES(?,?,?,?,?,?,?)""",
+                  (label, str(sticker), int(part or 0), product_sku, action,
+                   (who or "")[:60], datetime.now().isoformat(timespec='seconds')))
+    except Exception:
+        pass   # the audit log must never break a match
 
 @app.route("/api/live/match", methods=["POST"])
 @req_role("admin","cs","worker","picker","host")
@@ -9057,11 +9089,17 @@ def api_live_match():
     if not prod:
         c.close(); return jsonify({"ok":False,"error":"Scan a product barcode","not_found":True})
     _now=datetime.now().isoformat(timespec='seconds')
+    _who=session.get("name","")[:60]
+    # Was this sticker already matched to something else? Then this is a correction (replace).
+    _prev=c.execute("SELECT product_sku FROM show_product_map WHERE import_label=? AND sticker_sku=? AND part=?",
+                    (show,sticker,part)).fetchone()
+    _action="replace" if (_prev and _prev["product_sku"] and _prev["product_sku"]!=prod["sku"]) else "match"
     c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by)
                  VALUES(?,?,?,?,0,?,?)
                  ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET
                     product_sku=excluded.product_sku,mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
-              (show,sticker,part,prod["sku"],_now,session.get("name","")[:60]))
+              (show,sticker,part,prod["sku"],_now,_who))
+    _match_log(c, show, sticker, part, prod["sku"], _action, _who)
     _deplete_show_packed(c, show, sticker)
     c.commit()
     pr=dict(prod); c.close()
@@ -9160,10 +9198,12 @@ def api_live_kit_add():
         prod=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
         if not prod: prod,_cr,_src=_resolve_or_create_product_by_barcode(c, code, who=session.get("name",""))
     if not prod: c.close(); return jsonify({"ok":False,"error":"Scan a product barcode","not_found":True})
+    _who=session.get("name","")[:60]
     c.execute("""INSERT INTO show_kit(import_label,sticker_sku,part,component_sku,qty,added_by)
                  VALUES(?,?,?,?,?,?)
                  ON CONFLICT(import_label,sticker_sku,part,component_sku) DO UPDATE SET qty=excluded.qty""",
-              (show,sticker,part,prod["sku"],qty,session.get("name","")[:60]))
+              (show,sticker,part,prod["sku"],qty,_who))
+    _match_log(c, show, sticker, part, prod["sku"], "bundle+", _who)
     c.commit()
     try: _deplete_show_packed(c, show, sticker); c.commit()
     except Exception: pass
@@ -9182,8 +9222,32 @@ def api_live_kit_remove():
     c=sdb(); _kit_ensure(c)
     c.execute("DELETE FROM show_kit WHERE import_label=? AND sticker_sku=? AND part=? AND component_sku=?",
               (show,sticker,part,csku))
+    _match_log(c, show, sticker, part, csku, "bundle-", session.get("name","")[:60])
     c.commit(); comps=_sticker_kit(c, show, sticker, part); c.close()
     return jsonify({"ok":True,"components":comps})
+
+@app.route("/api/live/match-log")
+@req_role("admin","cs")
+def api_live_match_log():
+    """Audit trail for managers: who matched / corrected / bundled which product on which
+    sold sticker, newest first. Optional ?show= to one live, ?who= to one worker."""
+    show=(request.args.get("show") or "").strip()
+    who=(request.args.get("who") or "").strip()
+    try: limit=min(1000,max(1,int(request.args.get("limit") or 300)))
+    except Exception: limit=300
+    c=sdb(); _matchlog_ensure(c)
+    q="""SELECT l.ts, l.who, l.sticker_sku sticker, l.part, l.action, l.product_sku,
+                p.name, p.barcode
+         FROM live_match_log l LEFT JOIN products p ON p.sku=l.product_sku WHERE 1=1"""
+    args=[]
+    if show: q+=" AND l.import_label=?"; args.append(show)
+    if who: q+=" AND l.who=?"; args.append(who)
+    q+=" ORDER BY l.id DESC LIMIT ?"; args.append(limit)
+    rows=[dict(r) for r in c.execute(q,args).fetchall()]
+    workers=[r["who"] for r in c.execute(
+        "SELECT DISTINCT who FROM live_match_log WHERE who<>'' ORDER BY who").fetchall()]
+    c.close()
+    return jsonify({"ok":True,"rows":rows,"workers":workers,"count":len(rows)})
 
 # ── AFTER-LIVE PRODUCT CLEANUP ────────────────────────────────────────────────
 # During a live the assistant scans each sold product; an unknown barcode becomes a
@@ -9911,6 +9975,11 @@ def live_page():
 @req_role("admin","cs","worker","picker","host")
 def match_live_page():
     return LIVE_MATCH_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("matchlive")).replace("__NAVBAR_CSS__",_NAVBAR_CSS).replace("__ROLE__",session.get("role",""))
+
+@app.route("/admin/match-log")
+@req_role("admin","cs")
+def match_log_page():
+    return MATCH_LOG_HTML.replace("__NAVBAR__",_navbar("matchlog")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 # ── GEOGRAPHY ANALYTICS — where orders ship, by state (audience map) ──
 _US_STATES={"AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",

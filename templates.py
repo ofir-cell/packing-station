@@ -104,6 +104,7 @@ def _navbar(active_page=""):
           ("Live & orders", "🔴", _vis([
             ("live", "/admin/live", "Live Mode") if has("admin","cs","worker","picker") else None,
             # Match Live hidden from the menu — the guided Live Mode replaces it (route still reachable by URL).
+            ("matchlog", "/admin/match-log", "Match Log") if has("admin","cs") else None,
             ("scanit", "/scanit", "Scanit") if has("admin","cs","host","manager") else None,
             ("preshow", "/admin/preshow", "Match Products") if has("worker","picker") else None,
             ("pack", "/", "Pack station") if has("worker") else None,
@@ -13006,21 +13007,25 @@ __NAVBAR__
     </div>
 
     <div class="card" style="padding:14px 18px">
-      <div style="font-size:12px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Just matched · tap a sticker to fix it</div>
+      <div style="font-size:12px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Your matches · tap a sticker to fix it</div>
       <div class="mchips" id="matched"><div class="empty">—</div></div>
     </div>
 
     <div class="card" id="bulkPanel" style="display:none;border:2px solid #ddd6fe;background:#faf5ff">
-      <div style="font-weight:800;margin-bottom:10px">⇄ Bulk — same product(s) for a whole range of stickers</div>
-      <div style="display:flex;gap:10px;margin-bottom:10px">
+      <div style="font-weight:800;margin-bottom:4px">⇄ Bulk — same product (or bundle) for a whole range</div>
+      <div style="font-size:13px;color:#6b21a8;margin-bottom:10px">Scan <b>one</b> product → all stickers get it. Scan <b>several</b> → every sticker becomes that bundle.</div>
+      <div style="display:flex;gap:10px;margin-bottom:12px">
         <input class="inp" id="bFrom" type="number" inputmode="numeric" placeholder="from #" style="flex:1">
         <input class="inp" id="bTo" type="number" inputmode="numeric" placeholder="to #" style="flex:1">
       </div>
-      <div class="scanlbl">Scan the product(s) — scan several and it becomes a bundle on every sticker</div>
-      <input class="inp" id="bScan" placeholder="Scan product…" autocomplete="off">
-      <div class="mchips" id="bChips" style="margin-top:8px"><div class="empty">Scan at least one…</div></div>
+      <div class="scanlbl" id="bCount">Scan the product(s) for this range</div>
+      <div style="display:flex;gap:8px">
+        <input class="inp" id="bScan" placeholder="Scan product…" autocomplete="off" style="flex:1">
+        <button class="btn btn-ghost" id="bAdd" style="white-space:nowrap">+ Add</button>
+      </div>
+      <div class="mchips" id="bChips" style="margin-top:10px"><div class="empty">No products yet — scan or type a barcode, then + Add</div></div>
       <div class="err" id="bErr"></div>
-      <button class="btn btn-dark" id="bApply" style="margin-top:10px">Apply to range</button>
+      <button class="btn btn-dark" id="bApply" style="margin-top:12px">Apply to range</button>
       <button class="btn btn-ghost" id="bCancel">Cancel</button>
     </div>
 
@@ -13047,7 +13052,7 @@ function loadShows(){
 }
 function loadQueue(cb){
   if(!SHOW)return;
-  fetch('/api/live/match-queue?show='+encodeURIComponent(SHOW)).then(function(r){return r.json()}).then(function(d){
+  fetch('/api/live/match-queue?mine=1&show='+encodeURIComponent(SHOW)).then(function(r){return r.json()}).then(function(d){
     if(!d.ok){WAIT=[];MBP={};MATCHED=[];}else{WAIT=d.waiting||[];MBP=d.matched_by_part||{};MATCHED=d.matched||[];}
     renderMatched();
     if(cb)cb(d||{});
@@ -13159,15 +13164,21 @@ function renderMatched(){
 // ---- Bulk: one product (or a bundle) for a whole range of stickers ----
 var bCodes=[];
 function bRender(){var el=document.getElementById('bChips');
-  if(!bCodes.length){el.innerHTML='<div class="empty">Scan at least one…</div>';return;}
+  var lbl=document.getElementById('bCount');
+  if(!bCodes.length){el.innerHTML='<div class="empty">No products yet — scan or type a barcode, then + Add</div>';
+    if(lbl)lbl.textContent='Scan the product(s) for this range';return;}
+  if(lbl)lbl.textContent=(bCodes.length===1?'1 product → applied to every sticker in the range':(bCodes.length+' products → a BUNDLE on every sticker in the range'));
   el.innerHTML=bCodes.map(function(c,i){return '<span class="mchip" data-i="'+i+'"><b>'+esc(c)+'</b> ✕</span>';}).join('');
   el.querySelectorAll('.mchip').forEach(function(x){x.onclick=function(){bCodes.splice(parseInt(x.getAttribute('data-i'),10),1);bRender();};});
 }
+function bPush(){var inp=document.getElementById('bScan');var v=inp.value.trim();inp.value='';
+  if(v){bCodes.push(v);bRender();} inp.focus();}
 document.getElementById('bulkBtn').onclick=function(){kitExit();bCodes=[];bRender();
   document.getElementById('bFrom').value='';document.getElementById('bTo').value='';document.getElementById('bErr').style.display='none';
   document.getElementById('bulkPanel').style.display='block';document.getElementById('bFrom').focus();};
 document.getElementById('bCancel').onclick=function(){document.getElementById('bulkPanel').style.display='none';focusScan();};
-document.getElementById('bScan').addEventListener('keydown',function(e){if(e.key==='Enter'){var v=this.value.trim();this.value='';if(v){bCodes.push(v);bRender();}}});
+document.getElementById('bAdd').onclick=bPush;
+document.getElementById('bScan').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();bPush();}});
 document.getElementById('bApply').onclick=function(){
   var err=document.getElementById('bErr');err.style.display='none';
   var from=parseInt(document.getElementById('bFrom').value,10),to=parseInt(document.getElementById('bTo').value,10);
@@ -13433,6 +13444,83 @@ document.addEventListener('click',function(e){if(!e.target.closest('button,selec
 setInterval(load,4000);
 setInterval(loadShows,15000);   // detect when the live moves to a new PART and follow it
 loadShows();
+</script>
+</body></html>'''
+
+
+MATCH_LOG_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+''' + _FONT + '''
+<title>Match Log</title>
+__NAVBAR_CSS__
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',-apple-system,sans-serif;background:#f6f7fb;color:#1a2130;min-height:100vh;color-scheme:light}
+.wrap{max-width:1040px;margin:0 auto;padding:16px 16px 80px}
+h1{font-size:20px;font-weight:900;margin-bottom:4px}
+.sub{color:#6b7280;font-size:13px;margin-bottom:16px}
+.filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+select,input{padding:9px 12px;border:1.5px solid #e4e7ec;border-radius:10px;font-size:14px;font-family:inherit;background:#fff;color:#1a2130}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;padding:11px 14px;border-bottom:1px solid #eef0f3;background:#fafbfc}
+td{padding:11px 14px;border-bottom:1px solid #f2f4f7;font-size:14px}
+tr:last-child td{border-bottom:none}
+.who{font-weight:800}
+.pill{display:inline-block;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:700}
+.p-match{background:#dcfce7;color:#166534}.p-replace{background:#fef3c7;color:#92400e}
+.p-bundle\\+{background:#ede9fe;color:#5b21b6}.p-bundle\\-{background:#fee2e2;color:#991b1b}
+.stk{font-weight:800;color:#1d4ed8}.ts{color:#9aa1ab;font-size:12.5px;white-space:nowrap}
+.empty{text-align:center;color:#9aa1ab;padding:40px}
+.count{color:#6b7280;font-size:13px;margin:10px 2px}
+</style></head><body>
+__NAVBAR__
+<div class="wrap">
+  <h1>Live match log</h1>
+  <div class="sub">Every product-to-sticker match, correction and bundle action — who did it, and when. Newest first.</div>
+  <div class="filters">
+    <select id="show"><option value="">All lives</option></select>
+    <select id="who"><option value="">All workers</option></select>
+    <button class="btn btn-ghost" id="refresh">Refresh</button>
+  </div>
+  <div class="count" id="count"></div>
+  <table><thead><tr><th>When</th><th>Worker</th><th>Sticker</th><th>Action</th><th>Product</th></tr></thead>
+    <tbody id="rows"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody></table>
+</div>
+<script>
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+var SHOWS={};
+function loadShowList(){
+  fetch('/api/shows').then(function(r){return r.json()}).then(function(d){
+    var sel=document.getElementById('show');var list=(d&&(d.shows||d.list||d))||[];
+    if(Array.isArray(list)){list.forEach(function(s){var lbl=s.import_label||s.label||s.id||s;if(!lbl)return;
+      var o=document.createElement('option');o.value=lbl;o.textContent=s.name||lbl;sel.appendChild(o);});}
+  }).catch(function(){});
+}
+function load(){
+  var show=document.getElementById('show').value,who=document.getElementById('who').value;
+  var q='/api/live/match-log?limit=500';if(show)q+='&show='+encodeURIComponent(show);if(who)q+='&who='+encodeURIComponent(who);
+  fetch(q).then(function(r){return r.json()}).then(function(d){
+    var tb=document.getElementById('rows');
+    // keep the worker filter populated from the full known set
+    var wsel=document.getElementById('who');var cur=wsel.value;
+    if(d.workers){wsel.innerHTML='<option value="">All workers</option>'+d.workers.map(function(w){return '<option'+(w===cur?' selected':'')+'>'+esc(w)+'</option>';}).join('');}
+    if(!d.ok||!d.rows||!d.rows.length){tb.innerHTML='<tr><td colspan="5" class="empty">No matches logged yet.</td></tr>';document.getElementById('count').textContent='';return;}
+    document.getElementById('count').textContent=d.rows.length+' action(s)';
+    tb.innerHTML=d.rows.map(function(r){
+      var part=r.part?('P'+r.part+'·'):'';
+      var act=String(r.action||'');
+      var prod=esc(r.name||r.product_sku||'?')+(r.barcode?(' <span class="ts">'+esc(r.barcode)+'</span>'):'');
+      return '<tr><td class="ts">'+esc(r.ts||'')+'</td><td class="who">'+esc(r.who||'—')+'</td>'+
+             '<td class="stk">'+part+esc(r.sticker)+'</td>'+
+             '<td><span class="pill p-'+esc(act)+'">'+esc(act)+'</span></td>'+
+             '<td>'+prod+'</td></tr>';
+    }).join('');
+  }).catch(function(){document.getElementById('rows').innerHTML='<tr><td colspan="5" class="empty">Could not load.</td></tr>';});
+}
+document.getElementById('show').onchange=load;
+document.getElementById('who').onchange=load;
+document.getElementById('refresh').onclick=load;
+loadShowList();load();
 </script>
 </body></html>'''
 
