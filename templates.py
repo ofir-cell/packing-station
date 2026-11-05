@@ -7900,9 +7900,18 @@ __NAVBAR__
     <button class="btn btn-s adminOnly" id="resyncBtn" title="Recompute stock from the currently packed boxes and matches">♻️ Resync stock</button>
     <a class="btn btn-s" href="/admin/purchasing" style="text-decoration:none">📥 Purchasing</a>
     <button class="btn btn-s" id="addBtn">+ New product</button>
+    <button class="btn btn-s adminOnly" id="archViewBtn" title="Show products you've archived">🗄️ Archived</button>
   </div>
-  <table><thead><tr><th></th><th>SKU</th><th>Name</th><th>Barcode</th><th>On hand</th><th>Avg cost</th><th>Target</th><th>Label</th></tr></thead>
-  <tbody id="rows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody></table>
+  <div id="bulkBar" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;padding:10px 14px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:12px">
+    <b id="bulkCount" style="color:#3730a3">0 selected</b>
+    <button class="btn btn-s adminOnly" id="bArchive">🗄️ Archive</button>
+    <button class="btn btn-s adminOnly" id="bRestore" style="display:none">↩️ Restore</button>
+    <button class="btn btn-s" id="bCat">🏷️ Set category</button>
+    <button class="btn btn-ghost btn-s" id="bClear">Clear</button>
+    <span class="muted" style="font-size:12px">Tip: click a name to rename it inline.</span>
+  </div>
+  <table><thead><tr><th style="width:34px"><input type="checkbox" id="selAll" title="Select all" onclick="toggleAll(this)"></th><th>SKU</th><th>Name</th><th>Barcode</th><th>On hand</th><th>Avg cost</th><th>Target</th><th>Label</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody></table>
 </div>
 </div>
 
@@ -7961,23 +7970,86 @@ __NAVBAR__
 function toast(m,e){var t=document.getElementById('t');t.textContent=m;t.className=e?'toast err':'toast';t.style.display='block';setTimeout(function(){t.style.display='none'},3000)}
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML}
 function money(v){return v==null?'—':'$'+Number(v).toFixed(2)}
-var lowMode=false;
+var lowMode=false, archMode=false;
 function renderRows(rows){
-  if(!rows.length){document.getElementById('rows').innerHTML='<tr><td colspan="8" class="muted">'+(lowMode?'Nothing low on stock. 🎉':'No products yet. Receive stock or add a product.')+'</td></tr>';return}
+  if(!rows.length){document.getElementById('rows').innerHTML='<tr><td colspan="9" class="muted">'+(archMode?'No archived products.':(lowMode?'Nothing low on stock. 🎉':'No products yet. Receive stock or add a product.'))+'</td></tr>';selChanged();return}
   document.getElementById('rows').innerHTML=rows.map(function(p){
     var img=p.image_url?'<img class="thumb" src="'+esc(p.image_url)+'">':'<div class="thumb"></div>';
     var oh=(p.on_hand||0);
     var low=oh<0?' style="color:#e11d48;font-weight:800"':((p.reorder_point>0&&oh<=p.reorder_point)||oh<=0?' style="color:#c2410c;font-weight:700"':'');
     var vlabel=p.variant_name?' <span style="background:#eef2ff;color:#4338ca;border-radius:50px;padding:1px 8px;font-size:11px;font-weight:700">'+esc(p.variant_name)+'</span>':'';
     var vind=p.parent_sku?'<span class="muted" style="margin-right:4px">↳</span>':'';
-    return '<tr style="cursor:pointer" onclick="openP(\\''+esc(p.sku)+'\\')"><td>'+img+'</td><td class="sku">'+esc(p.sku)+'</td><td>'+vind+esc(p.name||'')+vlabel+'</td><td class="muted">'+esc(p.barcode||'—')+'</td>'+
+    // Name is inline-editable (click to rename). contenteditable keeps it light for hundreds of 'New product' stubs.
+    var nameCell='<span class="pname" data-sku="'+esc(p.sku)+'" contenteditable="true" onclick="event.stopPropagation()" onfocus="nameFocus(this)" onblur="saveName(this)" onkeydown="nameKey(event,this)" style="outline:none;border-radius:6px;padding:1px 4px;cursor:text" title="Click to rename">'+esc(p.name||'')+'</span>';
+    return '<tr style="cursor:pointer" onclick="openP(\\''+esc(p.sku)+'\\')">'+
+      '<td onclick="event.stopPropagation()"><input type="checkbox" class="rsel" data-sku="'+esc(p.sku)+'" onclick="event.stopPropagation();selChanged()"></td>'+
+      '<td class="sku">'+esc(p.sku)+'</td><td>'+vind+nameCell+vlabel+'</td><td class="muted">'+esc(p.barcode||'—')+'</td>'+
       '<td'+low+'>'+oh+(p.reorder_point>0?(' <span class="muted" style="font-size:11px">/'+p.reorder_point+'</span>'):'')+'</td><td>'+money(p.avg_cost)+'</td><td>'+money(p.target_price)+'</td>'+
       '<td><a href="/api/product/'+encodeURIComponent(p.sku)+'/label.pdf" target="_blank" onclick="event.stopPropagation()" style="color:#4f46e5;text-decoration:underline">🏷️ Print</a></td></tr>';
   }).join('');
+  var sa=document.getElementById('selAll'); if(sa)sa.checked=false;
+  selChanged();
 }
 function load(){
   if(lowMode){fetch('/api/inventory/low-stock').then(function(r){return r.json()}).then(function(d){renderRows(d.products||[])});return}
-  fetch('/api/products'+(document.getElementById('q').value.trim()?('?q='+encodeURIComponent(document.getElementById('q').value.trim())):'')).then(function(r){return r.json()}).then(renderRows);
+  var qs=document.getElementById('q').value.trim()?('q='+encodeURIComponent(document.getElementById('q').value.trim())):'';
+  if(archMode)qs=(qs?qs+'&':'')+'archived=1';
+  fetch('/api/products'+(qs?('?'+qs):'')).then(function(r){return r.json()}).then(renderRows);
+}
+// ---- selection + bulk actions ----
+function selectedSkus(){return Array.prototype.map.call(document.querySelectorAll('.rsel:checked'),function(x){return x.getAttribute('data-sku')});}
+function selChanged(){
+  var n=selectedSkus().length, bar=document.getElementById('bulkBar');
+  if(!bar)return;
+  bar.style.display=n?'flex':'none';
+  document.getElementById('bulkCount').textContent=n+' selected';
+  // In the archived view, offer Restore instead of Archive.
+  document.getElementById('bArchive').style.display=archMode?'none':'';
+  document.getElementById('bRestore').style.display=archMode?'':'none';
+  var all=document.querySelectorAll('.rsel'), sa=document.getElementById('selAll');
+  if(sa)sa.checked=(all.length>0&&n===all.length);
+}
+function toggleAll(cb){Array.prototype.forEach.call(document.querySelectorAll('.rsel'),function(x){x.checked=cb.checked});selChanged();}
+function bulkPost(body,done){
+  fetch('/api/products/bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+   .then(function(r){return r.json()}).then(function(d){
+     if(!d.ok){alert(d.error||'Action failed');return}
+     if(done)done(d); load(); loadStats();
+   }).catch(function(){alert('Network error')});
+}
+document.getElementById('bArchive').onclick=function(){
+  var s=selectedSkus(); if(!s.length)return;
+  if(!confirm('Archive '+s.length+' product(s)? They are hidden from the catalog but kept — you can restore them from 🗄️ Archived.'))return;
+  bulkPost({action:'archive',skus:s});
+};
+document.getElementById('bRestore').onclick=function(){
+  var s=selectedSkus(); if(!s.length)return;
+  bulkPost({action:'restore',skus:s});
+};
+document.getElementById('bCat').onclick=function(){
+  var s=selectedSkus(); if(!s.length)return;
+  var cat=prompt('Set category for '+s.length+' product(s):',''); if(cat===null)return;
+  bulkPost({action:'category',skus:s,value:cat});
+};
+document.getElementById('bClear').onclick=function(){toggleAll({checked:false});};
+document.getElementById('archViewBtn').onclick=function(){
+  archMode=!archMode; this.classList.toggle('btn-p',archMode);
+  this.textContent=archMode?'↩️ Back to catalog':'🗄️ Archived';
+  load();
+};
+// ---- inline rename ----
+var _nameOrig='';
+function nameFocus(el){_nameOrig=el.textContent;}
+function nameKey(e,el){if(e.key==='Enter'){e.preventDefault();el.blur();}if(e.key==='Escape'){el.textContent=_nameOrig;el.blur();}}
+function saveName(el){
+  var nm=(el.textContent||'').trim(), sku=el.getAttribute('data-sku');
+  if(nm===(_nameOrig||'').trim()||!nm){el.textContent=_nameOrig;return;}
+  var names={}; names[sku]=nm;
+  fetch('/api/products/bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'rename',names:names})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(!d.ok){alert(d.error||'Rename failed');el.textContent=_nameOrig;return;}
+     el.style.background='#dcfce7'; setTimeout(function(){el.style.background='';},700);
+   }).catch(function(){el.textContent=_nameOrig;});
 }
 function kpi(label,val,color){return '<div style="flex:1;min-width:130px;background:#fff;border:1px solid rgba(17,24,39,.1);border-radius:12px;padding:14px 16px"><div style="font-size:12px;color:#6b7280">'+label+'</div><div style="font-size:22px;font-weight:800;color:'+(color||'#1a2130')+'">'+val+'</div></div>'}
 function loadStats(){

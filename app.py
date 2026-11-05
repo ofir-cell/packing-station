@@ -1321,6 +1321,12 @@ def sdb_init(org):
         "ALTER TABLE products ADD COLUMN reorder_point INTEGER DEFAULT 0",
         "ALTER TABLE products ADD COLUMN parent_sku TEXT",
         "ALTER TABLE products ADD COLUMN variant_name TEXT",
+        # Soft-delete: archived products are hidden from the catalog but kept
+        # (recoverable). Bulk "delete" archives rather than hard-deletes so
+        # stock history and live-match links are never lost.
+        "ALTER TABLE products ADD COLUMN archived INTEGER DEFAULT 0",
+        "ALTER TABLE products ADD COLUMN archived_at TEXT",
+        "ALTER TABLE products ADD COLUMN archived_by TEXT",
         "ALTER TABLE availability ADD COLUMN end_time TEXT",
         # Show start time — used to attribute after-midnight sales to the right show.
         "ALTER TABLE show_state ADD COLUMN show_start TEXT",
@@ -1514,7 +1520,10 @@ def sdb_init(org):
                   "ALTER TABLE products ADD COLUMN notes_source TEXT",
                   "ALTER TABLE products ADD COLUMN info_status TEXT",
                   "ALTER TABLE products ADD COLUMN info_checked_at TEXT",
-                  "ALTER TABLE products ADD COLUMN info_attempts INTEGER DEFAULT 0"):
+                  "ALTER TABLE products ADD COLUMN info_attempts INTEGER DEFAULT 0",
+                  "ALTER TABLE products ADD COLUMN archived INTEGER DEFAULT 0",
+                  "ALTER TABLE products ADD COLUMN archived_at TEXT",
+                  "ALTER TABLE products ADD COLUMN archived_by TEXT"):
         try: c.execute(_stmt)
         except sqlite3.OperationalError: pass
     c.execute("""CREATE TABLE IF NOT EXISTS purchase_orders(
@@ -7904,13 +7913,15 @@ def _ensure_stock_model_once():
 @req_role("admin","cs")
 def api_products():
     q=(request.args.get("q") or "").strip().lower()
+    show_archived=(request.args.get("archived") in ("1","true","yes"))
+    arch="COALESCE(archived,0)=1" if show_archived else "COALESCE(archived,0)=0"
     c=sdb()
     if q:
         like='%'+q+'%'
-        rows=c.execute("""SELECT * FROM products WHERE LOWER(sku) LIKE ? OR LOWER(COALESCE(name,'')) LIKE ?
-                          OR COALESCE(barcode,'') LIKE ? ORDER BY name LIMIT 500""",(like,like,like)).fetchall()
+        rows=c.execute("""SELECT * FROM products WHERE """+arch+""" AND (LOWER(sku) LIKE ? OR LOWER(COALESCE(name,'')) LIKE ?
+                          OR COALESCE(barcode,'') LIKE ?) ORDER BY name LIMIT 500""",(like,like,like)).fetchall()
     else:
-        rows=c.execute("SELECT * FROM products ORDER BY updated_at DESC, name LIMIT 500").fetchall()
+        rows=c.execute("SELECT * FROM products WHERE "+arch+" ORDER BY updated_at DESC, name LIMIT 500").fetchall()
     c.close()
     out=[dict(r) for r in rows]
     if session.get("role","")!="admin":   # cost is admin-only
@@ -8005,6 +8016,53 @@ def api_product_save():
                        "manual adjustment",session.get("user")))
     c.commit(); c.close()
     return jsonify({"ok":True,"sku":sku})
+
+@app.route("/api/products/bulk",methods=["POST"])
+@req_role("admin","cs")
+def api_products_bulk():
+    """Catalog bulk actions from the selection checkboxes:
+      - archive / restore : soft-delete (hide) or bring back. Data is kept, so
+        stock history and live-match links are never lost. Archive is admin-only.
+      - category          : set one category on every selected product.
+      - rename            : {sku: new name} — used by inline name editing, one
+        row or many. Only the name changes; barcode/category/stock are untouched.
+    Returns how many rows changed."""
+    d=request.get_json() or {}
+    action=(d.get("action") or "").strip()
+    is_admin=session.get("role")=="admin"
+    skus=[str(s).strip() for s in (d.get("skus") or []) if str(s).strip()]
+    c=sdb(); n=0; now=datetime.now().isoformat(timespec='seconds')
+    try:
+        if action in ("archive","restore"):
+            if not is_admin:
+                c.close(); return jsonify({"ok":False,"error":"Admin only"}),403
+            if not skus: c.close(); return jsonify({"ok":False,"error":"No products selected"})
+            who=session.get("user","")
+            for sku in skus:
+                if action=="archive":
+                    r=c.execute("UPDATE products SET archived=1,archived_at=?,archived_by=? WHERE sku=? AND COALESCE(archived,0)=0",(now,who,sku))
+                else:
+                    r=c.execute("UPDATE products SET archived=0,archived_at=NULL,archived_by=NULL WHERE sku=? AND COALESCE(archived,0)=1",(sku,))
+                n+=r.rowcount
+        elif action=="category":
+            if not skus: c.close(); return jsonify({"ok":False,"error":"No products selected"})
+            val=(d.get("value") or "").strip() or None
+            for sku in skus:
+                n+=c.execute("UPDATE products SET category=?,updated_at=? WHERE sku=?",(val,now,sku)).rowcount
+        elif action=="rename":
+            names=d.get("names") or {}
+            if not isinstance(names,dict) or not names:
+                c.close(); return jsonify({"ok":False,"error":"No names provided"})
+            for sku,nm in names.items():
+                nm=(nm or "").strip()
+                if not nm: continue
+                n+=c.execute("UPDATE products SET name=?,updated_at=? WHERE sku=?",(nm,now,str(sku).strip())).rowcount
+        else:
+            c.close(); return jsonify({"ok":False,"error":"Unknown action"})
+        c.commit()
+    finally:
+        c.close()
+    return jsonify({"ok":True,"changed":n})
 
 @app.route("/api/product/<sku>/gen-barcode",methods=["POST"])
 @req_role("admin","cs")
