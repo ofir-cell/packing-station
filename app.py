@@ -3,7 +3,7 @@
 5 Second Beauty — Packing Station
 Production web app for packing video recording & lookup.
 """
-import os,csv,json,hashlib,secrets,time,threading,re,sys,sqlite3,fcntl,io
+import os,csv,json,hashlib,hmac,base64,secrets,time,threading,re,sys,sqlite3,fcntl,io
 from datetime import datetime,timedelta
 from functools import wraps
 from contextlib import contextmanager
@@ -721,6 +721,49 @@ def _verify(pw,stored):
     if len(stored)==64:
         return secrets.compare_digest(stored,_legacy_sha256(pw))
     return False
+
+# ── TWO-FACTOR (TOTP) — admin accounts only ──────────────────────────────────
+# Time-based one-time passwords (RFC 6238, SHA1, 30s, 6 digits), implemented inline so
+# there is no extra dependency. Secret is per-user base32; recovery codes are bcrypt-hashed.
+import struct as _struct
+_TOTP_ISSUER="LiveOpsHub"
+
+def _totp_new_secret():
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+def _totp_at(secret, for_time, step=30, digits=6):
+    try:
+        key=base64.b32decode(secret+"="*((8-len(secret)%8)%8), casefold=True)
+    except Exception:
+        return ""
+    msg=_struct.pack(">Q", int(for_time//step))
+    h=hmac.new(key,msg,hashlib.sha1).digest()
+    o=h[-1]&0x0F
+    code=(_struct.unpack(">I",h[o:o+4])[0]&0x7fffffff)%(10**digits)
+    return str(code).zfill(digits)
+
+def _totp_verify(secret, code, window=1):
+    """True if `code` matches within ±window 30s steps (clock-skew tolerance)."""
+    code=re.sub(r"\D","",(code or ""))
+    if len(code)!=6 or not secret: return False
+    now=time.time()
+    for w in range(-window,window+1):
+        if secrets.compare_digest(_totp_at(secret, now+w*30), code): return True
+    return False
+
+def _totp_uri(secret, account):
+    from urllib.parse import quote
+    label=quote("%s:%s"%(_TOTP_ISSUER,account))
+    return "otpauth://totp/%s?secret=%s&issuer=%s&digits=6&period=30"%(label,secret,quote(_TOTP_ISSUER))
+
+def _gen_recovery_codes(n=8):
+    """Plaintext one-time recovery codes (shown once) + their bcrypt hashes (stored)."""
+    plain=["-".join(secrets.token_hex(2) for _ in range(2)) for _ in range(n)]  # e.g. 'a1b2-c3d4'
+    return plain, [_h(p) for p in plain]
+
+def _twofa_required(user):
+    """2FA is mandatory for admins (org policy). Returns True if this account must have it."""
+    return (user or {}).get("role")=="admin"
 
 # Precomputed bcrypt hash used to equalize login timing on unknown usernames,
 # so an attacker can't tell "user exists" from response speed.
@@ -3854,6 +3897,22 @@ def _billing_gate():
                         "message":_BILLING_MSG.get(state,"Your subscription is not active.")}),402
     return redirect("/billing")
 
+# ── Mandatory 2FA enrollment gate (admins) ────────────────────────────────────
+# 2FA is required for admins. An admin who logged in before enrolling carries
+# must_setup_2fa; until they finish enrolling on the "Me" screen they can reach only
+# that screen and the enrollment endpoints — everything else (the money screens) is held.
+_2FA_SETUP_OPEN={"/me","/logout","/login","/healthz","/favicon.ico","/api/me","/api/me/stats"}
+_2FA_SETUP_OPEN_PREFIXES=("/static/","/guide-asset/","/api/2fa/")
+@app.before_request
+def _twofa_setup_gate():
+    if not session.get("must_setup_2fa"): return
+    p=request.path or "/"
+    if p in _2FA_SETUP_OPEN or p.startswith(_2FA_SETUP_OPEN_PREFIXES): return
+    if p.startswith("/api/"):
+        return jsonify({"ok":False,"error":"need_2fa_setup",
+                        "message":"Set up two-factor authentication to continue."}),403
+    return redirect("/me?setup2fa=1")
+
 # ── Session revocation: a deleted or demoted user must lose access immediately ──
 # Sessions carry role/roles captured at login. Without this check a user who was
 # removed (or had their role downgraded) in users.json keeps their old powers until
@@ -4808,19 +4867,140 @@ def api_login():
         if not user.get("password","").startswith("$2"):
             with update_json(USERS_FILE) as uu:
                 if u in uu: uu[u]["password"]=_h(p)
-        session.clear()  # rotate session id to prevent fixation
-        session["user"]=u;session["role"]=user["role"];session["name"]=user["name"]
-        session["roles"]=_effective_roles(user)
-        session["org"]=user.get("org",DEFAULT_ORG)
-        session["brand"]=brand_for_session(session["org"])
-        _touch_last_login(u)
-        return jsonify({"ok":True,"role":user["role"]})
+        # Admin with 2FA already enabled → password is step 1; require the TOTP code next.
+        if user.get("twofa_enabled"):
+            session.clear()
+            session["pending_2fa"]={"user":u,"ts":int(time.time())}
+            return jsonify({"ok":True,"twofa":True})
+        _finalize_login(u, user)
+        return jsonify({"ok":True,"role":user["role"],"must_setup_2fa":session.get("must_setup_2fa",False)})
     # Equalize timing on unknown username so it doesn't return faster (enumeration oracle)
     if not user:
         try: bcrypt.checkpw(b"x",_DUMMY_HASH)
         except Exception: pass
     _login_rate_fail(request.remote_addr,u)
     return jsonify({"ok":False,"error":"Invalid username or password"})
+
+def _finalize_login(u, user):
+    """Create the authenticated session. 2FA for admins is mandatory, so an admin who
+    has not enrolled yet is logged in but flagged must_setup_2fa until they enroll."""
+    session.clear()  # rotate session id to prevent fixation
+    session["user"]=u;session["role"]=user["role"];session["name"]=user["name"]
+    session["roles"]=_effective_roles(user)
+    session["org"]=user.get("org",DEFAULT_ORG)
+    session["brand"]=brand_for_session(session["org"])
+    if _twofa_required(user) and not user.get("twofa_enabled"):
+        session["must_setup_2fa"]=True
+    _touch_last_login(u)
+
+@app.route("/api/login/2fa",methods=["POST"])
+def api_login_2fa():
+    """Step 2 for an admin whose account has 2FA: verify the 6-digit TOTP code, or a
+    one-time recovery code. Completes the session only on success."""
+    pend=session.get("pending_2fa") or {}
+    u=pend.get("user")
+    if not u or (int(time.time())-int(pend.get("ts",0))>300):   # 5-minute window
+        session.pop("pending_2fa",None)
+        return jsonify({"ok":False,"error":"Session expired — sign in again","expired":True}),401
+    ok,limited=_login_rate_check(request.remote_addr,u+":2fa")
+    if limited: return jsonify({"ok":False,"error":"Too many attempts, try again shortly"}),429
+    d=request.get_json(silent=True) or {}
+    code=(d.get("code") or "").strip()
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    user=users.get(u)
+    if not user or not user.get("twofa_enabled"):
+        session.pop("pending_2fa",None)
+        return jsonify({"ok":False,"error":"Sign in again"}),401
+    good=_totp_verify(user.get("twofa_secret",""), code)
+    used_recovery=False
+    if not good:
+        # try one-time recovery codes
+        for i,h in enumerate(list(user.get("recovery_codes",[]))):
+            if _verify(re.sub(r"\s","",code).lower(), h):
+                good=True; used_recovery=True
+                with update_json(USERS_FILE) as uu:
+                    rc=uu.get(u,{}).get("recovery_codes",[])
+                    if i<len(rc): rc.pop(i); uu[u]["recovery_codes"]=rc
+                break
+    if not good:
+        _login_rate_fail(request.remote_addr,u+":2fa")
+        return jsonify({"ok":False,"error":"Invalid code"})
+    _login_rate_clear(request.remote_addr,u+":2fa")
+    session.pop("pending_2fa",None)
+    _finalize_login(u, user)
+    return jsonify({"ok":True,"role":user["role"],"used_recovery":used_recovery})
+
+# ── 2FA management (admin only; from the "Me" screen) ──
+@app.route("/api/2fa/status")
+@req_role("admin")
+def api_2fa_status():
+    u=session.get("user"); user=(ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}).get(u,{})
+    return jsonify({"ok":True,"enabled":bool(user.get("twofa_enabled")),
+                    "required":_twofa_required(user),"must_setup":bool(session.get("must_setup_2fa")),
+                    "recovery_left":len(user.get("recovery_codes",[]))})
+
+@app.route("/api/2fa/setup",methods=["POST"])
+@req_role("admin")
+def api_2fa_setup():
+    """Begin enrollment: make a fresh secret (not active yet) and return the QR data."""
+    u=session.get("user")
+    secret=_totp_new_secret()
+    with update_json(USERS_FILE) as uu:
+        if u in uu: uu[u]["twofa_pending_secret"]=secret
+    return jsonify({"ok":True,"secret":secret,"otpauth_uri":_totp_uri(secret,u)})
+
+@app.route("/api/2fa/enable",methods=["POST"])
+@req_role("admin")
+def api_2fa_enable():
+    """Confirm enrollment: the code must match the pending secret. Turns 2FA on and
+    returns the one-time recovery codes (shown once)."""
+    u=session.get("user"); d=request.get_json(silent=True) or {}
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    pend=(users.get(u) or {}).get("twofa_pending_secret","")
+    if not pend: return jsonify({"ok":False,"error":"Start setup first"})
+    if not _totp_verify(pend,(d.get("code") or "")):
+        return jsonify({"ok":False,"error":"That code didn't match — check the time on your phone and try again"})
+    plain,hashed=_gen_recovery_codes()
+    with update_json(USERS_FILE) as uu:
+        if u in uu:
+            uu[u]["twofa_secret"]=pend; uu[u]["twofa_enabled"]=True
+            uu[u].pop("twofa_pending_secret",None)
+            uu[u]["recovery_codes"]=hashed
+    session.pop("must_setup_2fa",None)
+    return jsonify({"ok":True,"recovery_codes":plain})
+
+@app.route("/api/2fa/disable",methods=["POST"])
+@req_role("admin")
+def api_2fa_disable():
+    """Turn 2FA off (verify a current code first). Mandatory for admins, so the account
+    will be prompted to re-enroll on the next login."""
+    u=session.get("user"); d=request.get_json(silent=True) or {}
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    user=users.get(u) or {}
+    if not user.get("twofa_enabled"): return jsonify({"ok":True})
+    if not _totp_verify(user.get("twofa_secret",""),(d.get("code") or "")):
+        return jsonify({"ok":False,"error":"Enter a current 6-digit code to turn 2FA off"})
+    with update_json(USERS_FILE) as uu:
+        if u in uu:
+            for k in ("twofa_secret","twofa_enabled","twofa_pending_secret","recovery_codes"):
+                uu[u].pop(k,None)
+    if _twofa_required(user): session["must_setup_2fa"]=True
+    return jsonify({"ok":True})
+
+@app.route("/api/2fa/recovery",methods=["POST"])
+@req_role("admin")
+def api_2fa_recovery():
+    """Regenerate recovery codes (invalidates the old set). Verify a current code first."""
+    u=session.get("user"); d=request.get_json(silent=True) or {}
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    user=users.get(u) or {}
+    if not user.get("twofa_enabled"): return jsonify({"ok":False,"error":"2FA is not on"})
+    if not _totp_verify(user.get("twofa_secret",""),(d.get("code") or "")):
+        return jsonify({"ok":False,"error":"Enter a current 6-digit code"})
+    plain,hashed=_gen_recovery_codes()
+    with update_json(USERS_FILE) as uu:
+        if u in uu: uu[u]["recovery_codes"]=hashed
+    return jsonify({"ok":True,"recovery_codes":plain})
 
 @app.route("/api/select-station",methods=["POST"])
 @req_login
@@ -5251,6 +5431,7 @@ def analytics_page():
 def me_page():
     return (ME_HTML
         .replace("__NAVBAR__", _navbar("me"))
+        .replace("__ROLE__", esc(session.get("role","")))
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
 @app.route("/api/me/stats")

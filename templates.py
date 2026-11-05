@@ -496,10 +496,18 @@ body{font-family:'DM Sans',sans-serif;background:#ffffff;color:#1a2130;display:f
 <div class="wrap">
 <div class="logo"><span class="brand-tile"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg></span><span class="brand-txt"><span class="brand-mark-big">__BRANDMARK__</span><span class="brand-sub-big">Employee Sign-In</span></span></div>
 <div class="card">
-<h2>Sign in with password</h2><p class="sub">For admin or when no badge is available</p>
+<h2 id="loginTitle">Sign in with password</h2><p class="sub" id="loginSub">For admin or when no badge is available</p>
+<div id="pwStep">
 <div class="field"><label>Username</label><input type="text" id="u" placeholder="Enter your username" autofocus></div>
 <div class="field"><label>Password</label><input type="password" id="p" placeholder="Enter your password"></div>
 <button class="btn btn-primary" id="loginBtn">Sign In</button>
+</div>
+<div id="tfaStep" style="display:none">
+<div class="field"><label>6-digit code from your authenticator app</label>
+<input type="text" id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="9" placeholder="123456"></div>
+<button class="btn btn-primary" id="tfaBtn">Verify &amp; continue</button>
+<p class="sub" style="margin-top:12px">Lost your phone? Enter a recovery code above.</p>
+</div>
 <div class="err" id="e"></div>
 <a href="/badge-login" class="back-to-badge"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9v6M11 9v6M15 9v6"/></svg> Back to badge scan</a>
 </div>
@@ -509,16 +517,33 @@ body{font-family:'DM Sans',sans-serif;background:#ffffff;color:#1a2130;display:f
 document.getElementById('p').addEventListener('keydown',function(e){if(e.key==='Enter')login()});
 document.getElementById('u').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('p').focus()});
 document.getElementById('loginBtn').addEventListener('click',login);
+document.getElementById('tfaBtn').addEventListener('click',verify2fa);
+document.getElementById('code').addEventListener('keydown',function(e){if(e.key==='Enter')verify2fa()});
+function show2fa(){
+    document.getElementById('pwStep').style.display='none';
+    document.getElementById('tfaStep').style.display='block';
+    document.getElementById('loginTitle').textContent='Two-factor verification';
+    document.getElementById('loginSub').textContent='Enter the code from your authenticator app';
+    document.getElementById('e').textContent='';
+    document.getElementById('code').focus();
+}
 async function login(){
     var u=document.getElementById('u').value.trim(),p=document.getElementById('p').value;
     if(!u||!p){document.getElementById('e').textContent='Please enter username and password';return}
     var r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
     var d=await r.json();
-    if(d.ok){
-        // / does device-aware routing: workers on mobile → /pick,
-        // workers on desktop → packing screen, admin/cs → /home.
-        window.location.href = '/';
-    } else document.getElementById('e').textContent=d.error;
+    if(d.twofa){show2fa();return}
+    if(d.ok){ window.location.href='/'; }
+    else document.getElementById('e').textContent=d.error;
+}
+async function verify2fa(){
+    var code=document.getElementById('code').value.trim();
+    if(!code){document.getElementById('e').textContent='Enter the code';return}
+    var r=await fetch('/api/login/2fa',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code})});
+    var d=await r.json();
+    if(d.ok){ window.location.href='/'; }
+    else if(d.expired){ window.location.href='/login'; }
+    else document.getElementById('e').textContent=d.error;
 }
 </script></body></html>'''
 
@@ -2497,6 +2522,7 @@ ME_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''
 <title>My Profile — Packing Station</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 __NAVBAR_CSS__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -2578,6 +2604,41 @@ __NAVBAR__
   <div class="section-title">Recent packages</div>
   <div id="recentWrap"></div>
 
+  <div id="secSection" style="display:none">
+    <div class="section-title" style="margin-top:40px">Security · Two-factor authentication</div>
+    <div id="setupBanner" style="display:none;background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:14px 16px;margin-bottom:12px;color:#92400e;font-size:14px;font-weight:600">⚠️ Two-factor authentication is required for admin accounts. Set it up now to keep access to cost &amp; profit screens.</div>
+    <div style="background:rgba(17,24,39,0.032);border:1px solid rgba(17,24,39,0.096);border-radius:14px;padding:22px">
+      <div id="tfaOff">
+        <p style="font-size:14px;color:#374151;line-height:1.6;max-width:640px">Protect this admin account with an authenticator app (Google Authenticator, Authy, 1Password…). After your password you’ll enter a 6-digit code. <b>Status: <span id="tfaState">—</span></b></p>
+        <button class="btn btn-p" id="tfaSetupBtn" style="margin-top:14px">Enable two-factor</button>
+      </div>
+      <div id="tfaSetupBox" style="display:none;margin-top:8px">
+        <ol style="font-size:14px;color:#374151;line-height:1.9;padding-left:20px;max-width:640px">
+          <li>Scan this QR in your authenticator app:</li>
+        </ol>
+        <div id="qr" style="width:180px;height:180px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;display:flex;align-items:center;justify-content:center;margin:10px 0"></div>
+        <div style="font-size:13px;color:#6b7280">Can’t scan? Enter this key manually:<br><code id="manualKey" style="font-size:15px;font-weight:700;letter-spacing:1px;color:#111827;user-select:all"></code></div>
+        <div class="field" style="max-width:260px;margin-top:14px"><label style="font-size:11px;font-weight:700;color:#586274">Enter the 6-digit code to confirm</label>
+          <input type="text" id="tfaCode" inputmode="numeric" maxlength="6" placeholder="123456" style="width:100%;padding:11px 14px;border:1.5px solid #e4e7ec;border-radius:10px;font-size:16px"></div>
+        <button class="btn btn-p" id="tfaEnableBtn" style="margin-top:12px">Confirm &amp; turn on</button>
+        <button class="btn btn-ghost" id="tfaCancelBtn">Cancel</button>
+        <div class="err" id="tfaErr" style="color:#dc2626;margin-top:8px;font-size:14px"></div>
+      </div>
+      <div id="tfaOn" style="display:none">
+        <p style="font-size:14px;color:#059669;font-weight:700">✓ Two-factor is on. <span id="recLeft" style="color:#6b7280;font-weight:500"></span></p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+          <button class="btn btn-s" id="tfaRecBtn">Regenerate recovery codes</button>
+          <button class="btn btn-ghost" id="tfaDisableBtn">Turn off 2FA</button>
+        </div>
+      </div>
+      <div id="recBox" style="display:none;margin-top:16px;background:#fff;border:1px solid #c7d2fe;border-radius:12px;padding:16px">
+        <div style="font-weight:800;color:#3730a3;margin-bottom:8px">🔑 Recovery codes — save these now (shown once)</div>
+        <div style="font-size:13px;color:#6b7280;margin-bottom:10px">Each code works once if you lose your phone. Store them somewhere safe.</div>
+        <div id="recList" style="font-family:'SF Mono',Menlo,monospace;font-size:15px;line-height:2;color:#111827"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="section-title" style="margin-top:40px">Account &amp; privacy</div>
   <div class="danger" id="dangerZone">
     <h3>Delete my account</h3>
@@ -2592,6 +2653,57 @@ __NAVBAR__
 </div>
 
 <script>
+// ── Two-factor authentication (admin only) ──
+(function(){
+  var ROLE="__ROLE__";
+  if(ROLE!=="admin")return;                       // section is admin-only
+  var sec=document.getElementById('secSection'); sec.style.display='block';
+  function J(u,b){return fetch(u,{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(function(r){return r.json()});}
+  function refresh(){
+    J('/api/2fa/status').then(function(d){
+      document.getElementById('tfaState').textContent=d.enabled?'On':'Off';
+      document.getElementById('tfaOff').style.display=d.enabled?'none':'block';
+      document.getElementById('tfaOn').style.display=d.enabled?'block':'none';
+      document.getElementById('tfaSetupBox').style.display='none';
+      document.getElementById('setupBanner').style.display=(d.must_setup?'block':'none');
+      document.getElementById('recLeft').textContent=d.enabled?('· '+d.recovery_left+' recovery codes left'):'';
+    });
+  }
+  document.getElementById('tfaSetupBtn').onclick=function(){
+    J('/api/2fa/setup',{}).then(function(d){
+      if(!d.ok)return;
+      document.getElementById('tfaOff').style.display='none';
+      document.getElementById('tfaSetupBox').style.display='block';
+      document.getElementById('manualKey').textContent=d.secret;
+      var q=document.getElementById('qr'); q.innerHTML='';
+      try{ new QRCode(q,{text:d.otpauth_uri,width:180,height:180}); }
+      catch(e){ q.textContent='Use the key below'; }
+      document.getElementById('tfaCode').focus();
+    });
+  };
+  document.getElementById('tfaCancelBtn').onclick=refresh;
+  document.getElementById('tfaEnableBtn').onclick=function(){
+    var err=document.getElementById('tfaErr'); err.textContent='';
+    J('/api/2fa/enable',{code:document.getElementById('tfaCode').value.trim()}).then(function(d){
+      if(!d.ok){err.textContent=d.error||'Failed';return;}
+      showRecovery(d.recovery_codes); refresh();
+    });
+  };
+  document.getElementById('tfaDisableBtn').onclick=function(){
+    var code=prompt('Enter a current 6-digit code to turn 2FA off:'); if(!code)return;
+    J('/api/2fa/disable',{code:code}).then(function(d){ if(!d.ok){alert(d.error||'Failed');return;} refresh(); });
+  };
+  document.getElementById('tfaRecBtn').onclick=function(){
+    var code=prompt('Enter a current 6-digit code to regenerate recovery codes:'); if(!code)return;
+    J('/api/2fa/recovery',{code:code}).then(function(d){ if(!d.ok){alert(d.error||'Failed');return;} showRecovery(d.recovery_codes); });
+  };
+  function showRecovery(codes){
+    var box=document.getElementById('recBox'); box.style.display='block';
+    document.getElementById('recList').innerHTML=(codes||[]).map(function(c){return c;}).join('<br>');
+    box.scrollIntoView({block:'center'});
+  }
+  refresh();
+})();
 function fmtDur(s){if(!s||s==='0')return '—';var n=parseFloat(s);return isNaN(n)?'—':n.toFixed(1)+'s avg'}
 // ── Self-serve account deletion (Apple App Store 5.1.1(v) + data-subject right) ──
 (function(){
