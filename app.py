@@ -9123,10 +9123,14 @@ def api_live_match_queue():
         FROM show_product_map m LEFT JOIN products p ON p.sku=m.product_sku
         WHERE m.import_label=? ORDER BY m.mapped_at DESC LIMIT 24""",(show,)).fetchall()]
     mc=c.execute("SELECT COUNT(*) FROM show_product_map WHERE import_label=?",(show,)).fetchone()[0]
-    parts=sorted(set(w["part"] for w in waiting))
+    # Matched count per part, for the guided Live Mode progress line ("X of Y scanned").
+    matched_by_part={int(r["part"] or 0): r["n"] for r in c.execute(
+        "SELECT part, COUNT(*) n FROM show_product_map WHERE import_label=? GROUP BY part",(show,)).fetchall()}
+    parts=sorted(set([w["part"] for w in waiting]+list(matched_by_part.keys())))
     c.close()
     return jsonify({"ok":True,"show":show,"waiting":waiting,"matched":matched,
-                    "waiting_count":len(waiting),"matched_count":mc,"parts":parts})
+                    "waiting_count":len(waiting),"matched_count":mc,"parts":parts,
+                    "matched_by_part":matched_by_part})
 
 @app.route("/api/live/match", methods=["POST"])
 @req_role("admin","cs","worker","picker","host")
