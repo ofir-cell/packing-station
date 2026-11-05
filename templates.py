@@ -437,9 +437,21 @@ img,canvas,video{max-width:100%}
   .card,.wrap,.box,.panel,.modal .box{max-width:100%}
   .row{gap:8px}
 }
+@media(max-width:620px){
+  /* Fixed multi-column grids collapse to two columns on large phones /
+     small tablets. auto-fit/auto-fill minmax grids already self-wrap and
+     are deliberately not touched. !important is needed to beat inline styles. */
+  [style*="repeat(3,"],[style*="repeat(4,"],[style*="repeat(5,"],[style*="repeat(6,"],
+  [style*="repeat(7,"],[style*="repeat(8,"],[style*="1fr 1fr 1fr"]{
+    grid-template-columns:repeat(2,1fr)!important}
+}
 @media(max-width:430px){
   .card{padding:14px}
   .wrap{padding-left:12px;padding-right:12px}
+  /* Narrow phones: one column for any fixed multi-column grid. */
+  [style*="repeat(2,"],[style*="repeat(3,"],[style*="repeat(4,"],[style*="repeat(5,"],
+  [style*="repeat(6,"],[style*="repeat(7,"],[style*="repeat(8,"],[style*="1fr 1fr"]{
+    grid-template-columns:1fr!important}
 }
 </style><script>(function(){try{var t=localStorage.getItem('siteTheme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
 window.setSiteTheme=function(t){try{if(t){localStorage.setItem('siteTheme',t);document.documentElement.setAttribute('data-theme',t);}else{localStorage.removeItem('siteTheme');document.documentElement.removeAttribute('data-theme');}}catch(e){}document.querySelectorAll('.theme-swatch').forEach(function(s){s.classList.toggle('on',(s.getAttribute('data-theme')||'')===(t||''));});};</script>'''
