@@ -8713,7 +8713,9 @@ def api_receive():
     oh,ac=_receive_stock(c, sku, qty, cost, po_id=d.get("po_id"), note=d.get("note"),
                          name=d.get("name"), barcode=d.get("barcode"))
     c.commit(); c.close()
-    return jsonify({"ok":True,"sku":sku,"on_hand":oh,"avg_cost":ac})
+    resp={"ok":True,"sku":sku,"on_hand":oh}
+    if session.get("role")=="admin": resp["avg_cost"]=ac   # cost is admin-only
+    return jsonify(resp)
 
 def _po_insert_items(c, poid, items):
     now=datetime.now().isoformat(timespec='seconds')
@@ -9689,7 +9691,9 @@ def _show_is_live(c, label):
     except Exception:
         return False
 
-def _live_totals(c, label):
+def _live_totals(c, label, is_admin=True):
+    """Live running totals. COGS and profit are COST-derived, so they are returned to
+    admins only — every non-admin caller gets units/revenue with the cost fields stripped."""
     rows=c.execute("""SELECT l.product_sku, SUM(l.qty) units,
                              SUM(l.qty*COALESCE(l.unit_cost,0)) cogs,
                              SUM(l.qty*COALESCE(l.unit_price,0)) revenue,
@@ -9701,8 +9705,12 @@ def _live_totals(c, label):
     units=sum((r["units"] or 0) for r in rows)
     cogs=round(sum((r["cogs"] or 0) for r in rows),2)
     revenue=round(sum((r["revenue"] or 0) for r in rows),2)
-    return {"units":units,"cogs":cogs,"revenue":revenue,"profit":round(revenue-cogs,2),
-            "has_prices":revenue>0,"products":items}
+    out={"units":units,"revenue":revenue,"has_prices":revenue>0,"products":items}
+    if is_admin:
+        out["cogs"]=cogs; out["profit"]=round(revenue-cogs,2)
+    else:
+        for it in items: it.pop("cogs",None)   # per-product COGS is cost data too
+    return out
 
 @app.route("/api/live/scan",methods=["POST"])
 @req_role("admin","cs","worker","picker")
@@ -9756,10 +9764,12 @@ def api_live_scan():
                  VALUES(?,?,?,?,?,?,?,?,?)""",(show,sticker,part,prod["sku"],qty,cost,price,now,who))
     c.commit()
     oh=c.execute("SELECT on_hand FROM products WHERE sku=?",(prod["sku"],)).fetchone()["on_hand"]
-    tot=_live_totals(c, show)
+    _is_admin=session.get("role")=="admin"
+    tot=_live_totals(c, show, _is_admin)
     c.close()
-    return jsonify({"ok":True,"product":{"sku":prod["sku"],"name":prod["name"],"image_url":prod["image_url"],
-                    "on_hand":oh,"unit_cost":cost,"unit_price":price},"qty":qty,"sticker":sticker,"totals":tot,
+    _p={"sku":prod["sku"],"name":prod["name"],"image_url":prod["image_url"],"on_hand":oh,"unit_price":price}
+    if _is_admin: _p["unit_cost"]=cost   # cost is admin-only
+    return jsonify({"ok":True,"product":_p,"qty":qty,"sticker":sticker,"totals":tot,
                     "auto_created":auto_created,"auto_source":auto_source})
 
 @app.route("/api/live/summary")
@@ -9768,7 +9778,7 @@ def api_live_summary():
     show=(request.args.get("show") or "").strip()
     if not show: return jsonify({"ok":False,"error":"show required"})
     c=sdb()
-    tot=_live_totals(c, show)
+    tot=_live_totals(c, show, session.get("role")=="admin")
     recent=[dict(r) for r in c.execute("""SELECT l.id,l.sticker_sku,l.qty,l.product_sku,l.sold_by,l.sold_at,p.name
                       FROM live_sales l LEFT JOIN products p ON p.sku=l.product_sku
                       WHERE l.import_label=? ORDER BY l.id DESC LIMIT 25""",(show,)).fetchall()]
@@ -9795,7 +9805,7 @@ def api_live_undo():
                datetime.now().isoformat(timespec='seconds'),session.get("name","")[:60]))
     c.execute("DELETE FROM live_sales WHERE id=?",(row["id"],))
     c.commit()
-    tot=_live_totals(c, show)
+    tot=_live_totals(c, show, session.get("role")=="admin")
     c.close()
     return jsonify({"ok":True,"totals":tot})
 
