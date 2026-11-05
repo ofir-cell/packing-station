@@ -413,6 +413,34 @@ _NAVBAR_CSS='''<style>
   body:has(.sidebar){padding-top:62px}
 }
 a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,.sb-toggle:focus-visible,.sb-nav2 .sb-back:focus-visible,.sb-nav2 .sb-home:focus-visible,.sidebar a:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+
+/* ============================================================
+   GLOBAL RESPONSIVE + CONTROL-CONSISTENCY LAYER (whole site)
+   Defined once here → applies to every screen that injects
+   __NAVBAR_CSS__. All rules are low-specificity element selectors,
+   so any per-screen class/id styling still wins over them.
+   ============================================================ */
+/* Native controls left unstyled (e.g. the "Export by show…" dropdown)
+   get an intentional look that matches inputs/buttons. The native chevron
+   is kept so it still reads as a dropdown. */
+select{font-family:inherit;font-size:14px;color:var(--text,#1a2130);padding:9px 12px;
+  border:1.5px solid var(--border,#e4e7ec);border-radius:10px;background:#fff;line-height:1.2;
+  cursor:pointer;max-width:100%}
+select:hover{border-color:var(--brand-ink,#a63456)}
+img,canvas,video{max-width:100%}
+@media(max-width:720px){
+  /* Wide data tables scroll sideways instead of crushing their columns to
+     one word per line. Cells keep their text on one line inside the scroller. */
+  table{display:block;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  table th,table td{white-space:nowrap}
+  /* Oversized panels never exceed the viewport */
+  .card,.wrap,.box,.panel,.modal .box{max-width:100%}
+  .row{gap:8px}
+}
+@media(max-width:430px){
+  .card{padding:14px}
+  .wrap{padding-left:12px;padding-right:12px}
+}
 </style><script>(function(){try{var t=localStorage.getItem('siteTheme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
 window.setSiteTheme=function(t){try{if(t){localStorage.setItem('siteTheme',t);document.documentElement.setAttribute('data-theme',t);}else{localStorage.removeItem('siteTheme');document.documentElement.removeAttribute('data-theme');}}catch(e){}document.querySelectorAll('.theme-swatch').forEach(function(s){s.classList.toggle('on',(s.getAttribute('data-theme')||'')===(t||''));});};</script>'''
 
