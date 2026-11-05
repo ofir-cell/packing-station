@@ -13004,15 +13004,36 @@ __NAVBAR__
       </div>
       <div class="alldone" id="allDone">🎉 All sold stickers in this part are matched.</div>
     </div>
+
+    <div class="card" style="padding:14px 18px">
+      <div style="font-size:12px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Just matched · tap a sticker to fix it</div>
+      <div class="mchips" id="matched"><div class="empty">—</div></div>
+    </div>
+
+    <div class="card" id="bulkPanel" style="display:none;border:2px solid #ddd6fe;background:#faf5ff">
+      <div style="font-weight:800;margin-bottom:10px">⇄ Bulk — same product(s) for a whole range of stickers</div>
+      <div style="display:flex;gap:10px;margin-bottom:10px">
+        <input class="inp" id="bFrom" type="number" inputmode="numeric" placeholder="from #" style="flex:1">
+        <input class="inp" id="bTo" type="number" inputmode="numeric" placeholder="to #" style="flex:1">
+      </div>
+      <div class="scanlbl">Scan the product(s) — scan several and it becomes a bundle on every sticker</div>
+      <input class="inp" id="bScan" placeholder="Scan product…" autocomplete="off">
+      <div class="mchips" id="bChips" style="margin-top:8px"><div class="empty">Scan at least one…</div></div>
+      <div class="err" id="bErr"></div>
+      <button class="btn btn-dark" id="bApply" style="margin-top:10px">Apply to range</button>
+      <button class="btn btn-ghost" id="bCancel">Cancel</button>
+    </div>
+
     <div class="chgrow">
       <button class="btn btn-ghost" id="skipBtn" style="flex:1">Skip this one →</button>
+      <button class="btn btn-ghost" id="bulkBtn" style="flex:1">⇄ Bulk range</button>
       <button class="btn btn-ghost" id="restart" style="flex:1">Change live / part</button>
     </div>
   </div>
 </div>
 <script>
 var ROLE="__ROLE__",ADMIN=(ROLE==="admin");
-var SHOW="",PART=0,START=0,WAIT=[],MBP={},CUR=null,kitMode=false,busy=false;
+var SHOW="",PART=0,START=0,WAIT=[],MBP={},MATCHED=[],CUR=null,kitMode=false,busy=false;
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
 function numOf(s){var m=String(s==null?'':s).match(/\\d+/);return m?parseInt(m[0],10):-1;}
 function show(id){['s1','s2','s3','scanView'].forEach(function(x){document.getElementById(x).style.display=(x===id?(x==='scanView'?'block':'block'):'none');});}
@@ -13027,7 +13048,8 @@ function loadShows(){
 function loadQueue(cb){
   if(!SHOW)return;
   fetch('/api/live/match-queue?show='+encodeURIComponent(SHOW)).then(function(r){return r.json()}).then(function(d){
-    if(!d.ok){WAIT=[];MBP={};}else{WAIT=d.waiting||[];MBP=d.matched_by_part||{};}
+    if(!d.ok){WAIT=[];MBP={};MATCHED=[];}else{WAIT=d.waiting||[];MBP=d.matched_by_part||{};MATCHED=d.matched||[];}
+    renderMatched();
     if(cb)cb(d||{});
   });
 }
@@ -13077,11 +13099,12 @@ function render(){
   if(PART){pb.textContent='PART '+PART;pb.style.display='inline-block';}else{pb.style.display='none';}
   document.getElementById('curPrice').textContent=ADMIN?('sold at $'+(CUR.price!=null?CUR.price:'?')):'scan to confirm';
 }
+function curPart(){return (CUR&&CUR.part!=null)?CUR.part:PART;}  // a tapped matched sticker may be in another part
 function doScan(code){
   if(!CUR||busy)return;busy=true;
   var err=document.getElementById('errBox');err.style.display='none';
   fetch('/api/live/match',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({show:SHOW,sticker:CUR.sticker,part:PART,code:code})})
+    body:JSON.stringify({show:SHOW,sticker:CUR.sticker,part:curPart(),code:code})})
    .then(function(r){return r.json()}).then(function(d){busy=false;
      if(!d.ok){err.textContent='⚠️ '+(d.error||'Not matched');err.style.display='block';focusScan();return;}
      var ob=document.getElementById('okBox');
@@ -13105,15 +13128,67 @@ function kitRender(comps){var el=document.getElementById('kitChips');
   if(!comps||!comps.length){el.innerHTML='<div class="empty">Scan the first…</div>';return;}
   el.innerHTML=comps.map(function(c){return '<span class="mchip" data-sku="'+esc(c.sku)+'"><b>'+esc(c.name||c.sku)+'</b> ✕</span>';}).join('');
   el.querySelectorAll('.mchip').forEach(function(x){x.onclick=function(){kitRemove(x.getAttribute('data-sku'));};});}
-function kitLoad(){if(!CUR)return;fetch('/api/live/kit?show='+encodeURIComponent(SHOW)+'&sticker='+encodeURIComponent(CUR.sticker)+'&part='+PART).then(function(r){return r.json()}).then(function(d){if(d.ok)kitRender(d.components);});}
+function kitLoad(){if(!CUR)return;fetch('/api/live/kit?show='+encodeURIComponent(SHOW)+'&sticker='+encodeURIComponent(CUR.sticker)+'&part='+curPart()).then(function(r){return r.json()}).then(function(d){if(d.ok)kitRender(d.components);});}
 function kitAdd(code){if(!CUR)return;document.getElementById('scan').value='';
-  fetch('/api/live/kit/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:SHOW,sticker:CUR.sticker,part:PART,code:code})})
+  fetch('/api/live/kit/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:SHOW,sticker:CUR.sticker,part:curPart(),code:code})})
    .then(function(r){return r.json()}).then(function(d){if(d.ok)kitRender(d.components);else{var e=document.getElementById('errBox');e.textContent='⚠️ '+(d.error||'Not added');e.style.display='block';}focusScan();});}
-function kitRemove(sku){if(!CUR)return;fetch('/api/live/kit/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:SHOW,sticker:CUR.sticker,part:PART,component_sku:sku})}).then(function(r){return r.json()}).then(function(d){if(d.ok)kitRender(d.components);});}
+function kitRemove(sku){if(!CUR)return;fetch('/api/live/kit/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:SHOW,sticker:CUR.sticker,part:curPart(),component_sku:sku})}).then(function(r){return r.json()}).then(function(d){if(d.ok)kitRender(d.components);});}
 function kitExit(){kitMode=false;document.getElementById('kitWrap').style.display='none';document.getElementById('kitBtn').textContent='🧩 This sticker is a bundle (scan several)';}
 document.getElementById('kitBtn').onclick=function(){if(!CUR)return;kitMode=!kitMode;document.getElementById('kitWrap').style.display=kitMode?'block':'none';this.textContent=kitMode?'🧩 Bundle mode ON — scans add to this sticker':'🧩 This sticker is a bundle (scan several)';if(kitMode)kitLoad();focusScan();};
 document.getElementById('kitDone').onclick=function(){kitExit();if(CUR)START=numOf(CUR.sticker)+1;loadQueue(function(){render();focusScan();});};
 
+// ---- Just matched · tap to fix: re-open a matched sticker; the next scan replaces its product ----
+function renderMatched(){
+  var el=document.getElementById('matched'); if(!el)return;
+  if(!MATCHED.length){el.innerHTML='<div class="empty">—</div>';return;}
+  el.innerHTML=MATCHED.map(function(m){var pb=(m.part?('P'+m.part+'·'):'');
+    return '<span class="mchip" data-s="'+esc(m.sticker)+'" data-p="'+(m.part||0)+'"><b>'+pb+esc(m.sticker)+'</b> → '+esc(m.name||m.product_sku||'?')+' ✎</span>';
+  }).join('');
+  el.querySelectorAll('.mchip').forEach(function(x){x.onclick=function(){
+    kitExit();
+    var s=x.getAttribute('data-s'),p=parseInt(x.getAttribute('data-p'),10)||0;
+    CUR={sticker:s,part:p,price:null};
+    document.getElementById('curNum').textContent=s;
+    var pbEl=document.getElementById('curPart');
+    if(p){pbEl.textContent='PART '+p;pbEl.style.display='inline-block';}else{pbEl.style.display='none';}
+    document.getElementById('curPrice').textContent='re-scan to replace';
+    document.getElementById('allDone').style.display='none';
+    focusScan();
+  };});
+}
+// ---- Bulk: one product (or a bundle) for a whole range of stickers ----
+var bCodes=[];
+function bRender(){var el=document.getElementById('bChips');
+  if(!bCodes.length){el.innerHTML='<div class="empty">Scan at least one…</div>';return;}
+  el.innerHTML=bCodes.map(function(c,i){return '<span class="mchip" data-i="'+i+'"><b>'+esc(c)+'</b> ✕</span>';}).join('');
+  el.querySelectorAll('.mchip').forEach(function(x){x.onclick=function(){bCodes.splice(parseInt(x.getAttribute('data-i'),10),1);bRender();};});
+}
+document.getElementById('bulkBtn').onclick=function(){kitExit();bCodes=[];bRender();
+  document.getElementById('bFrom').value='';document.getElementById('bTo').value='';document.getElementById('bErr').style.display='none';
+  document.getElementById('bulkPanel').style.display='block';document.getElementById('bFrom').focus();};
+document.getElementById('bCancel').onclick=function(){document.getElementById('bulkPanel').style.display='none';focusScan();};
+document.getElementById('bScan').addEventListener('keydown',function(e){if(e.key==='Enter'){var v=this.value.trim();this.value='';if(v){bCodes.push(v);bRender();}}});
+document.getElementById('bApply').onclick=function(){
+  var err=document.getElementById('bErr');err.style.display='none';
+  var from=parseInt(document.getElementById('bFrom').value,10),to=parseInt(document.getElementById('bTo').value,10);
+  if(isNaN(from)||isNaN(to)||to<from){err.textContent='Enter a valid from–to range';err.style.display='block';return;}
+  if(!bCodes.length){err.textContent='Scan at least one product';err.style.display='block';return;}
+  var targets=poolAll().filter(function(w){var x=numOf(w.sticker);return x>=from&&x<=to;});
+  if(!targets.length){err.textContent='No sold stickers waiting between '+from+' and '+to+' in this part';err.style.display='block';return;}
+  var btn=document.getElementById('bApply');btn.disabled=true;btn.textContent='Applying…';
+  var seq=Promise.resolve(),n=0;
+  targets.forEach(function(w){seq=seq.then(function(){
+    return fetch('/api/live/match',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:SHOW,sticker:String(w.sticker),part:(w.part||0),code:bCodes[0]})})
+      .then(function(){ if(bCodes.length<2)return;
+        var k=Promise.resolve();bCodes.forEach(function(cd){k=k.then(function(){return fetch('/api/live/kit/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show:SHOW,sticker:String(w.sticker),part:(w.part||0),code:cd})});});});return k;
+      }).then(function(){n++;});
+  });});
+  seq.then(function(){btn.disabled=false;btn.textContent='Apply to range';document.getElementById('bulkPanel').style.display='none';
+    loadQueue(function(){render();focusScan();});
+    var e=document.getElementById('errBox');e.textContent='✓ Applied to '+n+' sticker(s)';e.style.display='block';e.style.background='#ecfdf5';e.style.color='#065f46';
+    setTimeout(function(){e.style.display='none';e.style.background='';e.style.color='';},2600);
+  });
+};
 loadShows();show('s1');
 </script>
 </body></html>'''
