@@ -6,7 +6,9 @@ import SwiftUI
 /// Captures H.264 720p (small enough to upload over warehouse Wi-Fi), writes a
 /// QuickTime file, then remuxes it to MP4 without re-encoding so the web dashboard
 /// can play it in any browser.
-final class PackingRecorder: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate {
+// @unchecked Sendable: every AVCaptureSession/output call is serialized on `queue`,
+// and all UI state (@Published) is @MainActor-isolated.
+final class PackingRecorder: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate, @unchecked Sendable {
     enum State: Equatable { case idle, configuring, ready, recording, finishing, failed(String) }
 
     @MainActor @Published private(set) var state: State = .idle
