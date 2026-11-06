@@ -15,6 +15,8 @@ concurrency:
 jobs:
   build:
     runs-on: macos-15
+    permissions:
+      contents: write
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +39,20 @@ jobs:
             ios/
             !ios/build.log
           retention-days: 30
+
+      - name: Publish generated project to branch ios-xcodeproj
+        if: github.event_name == 'push'
+        run: |
+          set -e
+          tmp="$(mktemp -d)"
+          cp -R ios/. "$tmp/"
+          rm -f "$tmp/build.log" "$tmp/.gitignore"
+          cd "$tmp"
+          git init -q -b ios-xcodeproj
+          git config user.name "ios-ci"; git config user.email "ios-ci@users.noreply.github.com"
+          git add -A
+          git commit -qm "Generated Xcode project from ${GITHUB_SHA::7}"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" ios-xcodeproj
 
       - name: Build (simulator, unsigned)
         run: |
