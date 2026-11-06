@@ -3833,7 +3833,7 @@ def _csrf_protect():
 # When a tenant's trial has expired or its subscription isn't active, everything is
 # blocked except logging out, the billing screen, and the public/lead pages. The
 # platform owner (super-admin) is never gated.
-_BILLING_OPEN_PATHS={"/login","/logout","/billing","/api/billing/status","/healthz",
+_BILLING_OPEN_PATHS={"/privacy","/terms","/privacy.html","/terms.html","/login","/logout","/billing","/api/billing/status","/healthz",
                      "/demo","/api/lead","/favicon.ico","/api/account/delete"}
 _BILLING_OPEN_PREFIXES=("/static/","/api/billing/","/guide-asset/")
 
@@ -12543,6 +12543,27 @@ def _slug_org_id(name):
     s=re.sub(r'[^a-z0-9]+','-',(name or '').lower()).strip('-')[:24]
     if not s or not s[0].isalnum(): s=("c"+s).strip('-')
     return s or "client"
+
+# Public legal pages (App Store + TikTok Shop Partner listing both require a reachable
+# privacy policy URL on the app's own domain). Source of truth: site/*.html.
+_SITE_DIR=os.path.join(os.path.dirname(os.path.abspath(__file__)),"site")
+def _site_page(name):
+    try:
+        with open(os.path.join(_SITE_DIR,name),encoding="utf-8") as f: return f.read()
+    except OSError:
+        return None
+
+@app.route("/privacy")
+@app.route("/privacy.html")
+def privacy_page():
+    html=_site_page("privacy.html")
+    return (html,200,{"Content-Type":"text/html; charset=utf-8"}) if html else ("Not found",404)
+
+@app.route("/terms")
+@app.route("/terms.html")
+def terms_page():
+    html=_site_page("terms.html")
+    return (html,200,{"Content-Type":"text/html; charset=utf-8"}) if html else ("Not found",404)
 
 @app.route("/apply")
 def apply_page():

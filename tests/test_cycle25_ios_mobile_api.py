@@ -111,3 +111,12 @@ def test_upload_webm_still_webm(client, appmod):
         from flask import session
         session["org"] = appmod.DEFAULT_ORG
         assert _latest_video(appmod, trk).endswith(".webm")
+
+
+# ── public legal pages ────────────────────────────────────────────────────────
+def test_privacy_and_terms_are_public(client):
+    for path, word in (("/privacy", "Privacy"), ("/terms", "Terms"), ("/privacy.html", "Privacy")):
+        r = client.get(path)
+        assert r.status_code == 200, path
+        assert r.content_type.startswith("text/html")
+        assert word in r.get_data(as_text=True)
