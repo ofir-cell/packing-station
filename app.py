@@ -3950,7 +3950,8 @@ def _security_headers(resp):
         "frame-ancestors 'none'; "
         "base-uri 'self'")
     # Ensure the CSRF cookie exists (readable by JS; Secure; SameSite=Lax).
-    if not request.cookies.get(CSRF_COOKIE):
+    if not request.cookies.get(CSRF_COOKIE) and not any(
+            h.startswith(CSRF_COOKIE+"=") for h in resp.headers.getlist("Set-Cookie")):
         resp.set_cookie(CSRF_COOKIE,secrets.token_urlsafe(32),max_age=7*24*3600,
                         secure=True,httponly=False,samesite="Lax")
     # Inject the token-forwarding shim into HTML pages (not JSON/file responses),
@@ -3973,10 +3974,25 @@ def _security_headers(resp):
         pass
     return resp
 
+# ── Native iOS client ─────────────────────────────────────────────────────────
+# The iPhone app (LiveOpsHub iOS) sends X-Client: lohub-ios/<version>. For that client an
+# auth failure must be a JSON status, not a redirect to the HTML login page.
+MOBILE_CLIENT_HEADER="X-Client"
+def _is_mobile_client():
+    return (request.headers.get(MOBILE_CLIENT_HEADER) or "").lower().startswith("lohub-ios")
+def _auth_fail():
+    if _is_mobile_client():
+        return jsonify({"ok":False,"error":"not_signed_in"}),401
+    return redirect("/")
+def _role_fail():
+    if _is_mobile_client():
+        return jsonify({"ok":False,"error":"forbidden"}),403
+    return "Access denied",403
+
 def req_login(f):
     @wraps(f)
     def d(*a,**k):
-        if "user" not in session: return redirect("/")
+        if "user" not in session: return _auth_fail()
         return f(*a,**k)
     return d
 def _effective_roles(info):
@@ -4043,7 +4059,7 @@ def req_role(*roles):
     def w(f):
         @wraps(f)
         def d(*a,**k):
-            if "user" not in session: return redirect("/")
+            if "user" not in session: return _auth_fail()
             ur = session_roles()
             # A user passes if ANY of their roles (primary or extra) is allowed.
             if any(r in roles for r in ur):
@@ -4051,7 +4067,7 @@ def req_role(*roles):
             # Warehouse Manager acts as an admin everywhere except the blocklist above.
             if ("manager" in ur) and ("admin" in roles) and not _manager_blocked(request.path):
                 return f(*a,**k)
-            return "Access denied",403
+            return _role_fail()
         return d
     return w
 def req_true_admin(f):
@@ -4060,8 +4076,8 @@ def req_true_admin(f):
     req_role does NOT apply here. Independent of any route-prefix blocklist (defense in depth)."""
     @wraps(f)
     def d(*a,**k):
-        if "user" not in session: return redirect("/")
-        if "admin" not in session_roles(): return "Access denied",403
+        if "user" not in session: return _auth_fail()
+        if "admin" not in session_roles(): return _role_fail()
         return f(*a,**k)
     return d
 
@@ -4069,8 +4085,8 @@ def req_super(f):
     """Platform-owner only (cross-tenant control plane: org management)."""
     @wraps(f)
     def d(*a,**k):
-        if "user" not in session: return redirect("/")
-        if session.get("role")!="superadmin": return "Access denied",403
+        if "user" not in session: return _auth_fail()
+        if session.get("role")!="superadmin": return _role_fail()
         return f(*a,**k)
     return d
 def is_super():
@@ -4749,6 +4765,32 @@ def api_account_delete():
 @app.route("/logout")
 def logout(): session.clear(); return redirect("/")
 
+IOS_MIN_VERSION=os.environ.get("IOS_MIN_VERSION","1.0.0")
+
+@app.route("/api/mobile/session")
+def api_mobile_session():
+    """Bootstrap for the native iOS app: who is signed in, their roles and tenant
+    branding, plus the CSRF token the app must echo in X-CSRF-Token on every POST
+    (the app has no JS to read the cookie). Safe to call signed out."""
+    tok=request.cookies.get(CSRF_COOKIE)
+    fresh=None
+    if not tok:
+        tok=fresh=secrets.token_urlsafe(32)
+    signed_in="user" in session
+    body={"ok":True,"signed_in":signed_in,"csrf_token":tok,"min_version":IOS_MIN_VERSION}
+    if signed_in:
+        org=session.get("org",DEFAULT_ORG)
+        try: o=org_get(org) or {}
+        except Exception: o={}
+        body.update({"user":session.get("user"),"name":session.get("name"),
+                     "role":session.get("role"),"roles":session_roles(),"org":org,
+                     "company_name":o.get("company_name") or org,
+                     "station":session.get("station")})
+    resp=jsonify(body)
+    if fresh:
+        resp.set_cookie(CSRF_COOKIE,fresh,max_age=7*24*3600,secure=True,httponly=False,samesite="Lax")
+    return resp
+
 @app.route("/api/login",methods=["POST"])
 def api_login():
     d=request.get_json(silent=True) or {}
@@ -4809,6 +4851,10 @@ def _normalize_tracking(s):
 # We defensively cut everything before the first EBML magic on the way in.
 EBML_MAGIC = b'\x1a\x45\xdf\xa3'
 
+def _is_mp4(data):
+    """ISO-BMFF (MP4 / QuickTime MOV) files carry an 'ftyp' box at offset 4."""
+    return bool(data) and len(data)>=12 and data[4:8]==b"ftyp"
+
 def _clean_webm(data):
     """Return (cleaned_bytes, stripped_count). Strips any junk before EBML magic."""
     i = data.find(EBML_MAGIC)
@@ -4854,24 +4900,30 @@ def api_upload():
     if vf:
         # Read fully so we can sanitize before storage (videos are small, ~3.5MB).
         vdata=vf.read()
-        vdata,stripped=_clean_webm(vdata)
-        if stripped:
-            print("upload: stripped %d junk bytes before EBML for %s" % (stripped,fn),flush=True)
-        if not vdata.startswith(EBML_MAGIC):
-            # No header even after scanning — store raw but warn loudly for diagnosis.
-            print("upload: WARNING no EBML header for %s (first8=%s)" % (fn,vdata[:8].hex()),flush=True)
+        # The iPhone app records H.264 MP4 (ISO-BMFF 'ftyp' box at byte 4); the web
+        # station records WebM. Store each with its real extension + content type.
+        is_mp4=_is_mp4(vdata)
+        vext=".mp4" if is_mp4 else ".webm"
+        vct="video/mp4" if is_mp4 else "video/webm"
+        if not is_mp4:
+            vdata,stripped=_clean_webm(vdata)
+            if stripped:
+                print("upload: stripped %d junk bytes before EBML for %s" % (stripped,fn),flush=True)
+            if not vdata.startswith(EBML_MAGIC):
+                # No header even after scanning — store raw but warn loudly for diagnosis.
+                print("upload: WARNING no EBML header for %s (first8=%s)" % (fn,vdata[:8].hex()),flush=True)
         if r2:
             # R2 mode: always include timestamp to ensure uniqueness without an existence check
-            vn=fn+"_"+now.strftime('%H%M%S')+".webm"
+            vn=fn+"_"+now.strftime('%H%M%S')+vext
             try:
                 r2.put_object(Bucket=R2_BUCKET,Key=_r2_media_key("videos",vn),Body=vdata,
-                    ContentType='video/webm')
+                    ContentType=vct)
             except Exception as e:
                 print("R2 video upload failed:",e,flush=True)
                 return jsonify({"ok":False,"error":"Storage upload failed"})
         else:
-            vn=fn+".webm";vp=os.path.join(video_dir(),vn)
-            if os.path.exists(vp):vn=fn+"_"+now.strftime('%H%M%S')+".webm";vp=os.path.join(video_dir(),vn)
+            vn=fn+vext;vp=os.path.join(video_dir(),vn)
+            if os.path.exists(vp):vn=fn+"_"+now.strftime('%H%M%S')+vext;vp=os.path.join(video_dir(),vn)
             with open(vp,"wb") as out: out.write(vdata)
     pf=request.files.get("photo");pn=None
     if pf:
@@ -13848,7 +13900,7 @@ def serve_v(fn):
     p=os.path.join(video_dir(),fn)
     real=os.path.realpath(p)
     if not real.startswith(os.path.realpath(video_dir())+os.sep): return ("",404)
-    return send_file(real,mimetype="video/webm") if os.path.exists(real) else ("",404)
+    return send_file(real,mimetype=("video/mp4" if real.lower().endswith(".mp4") else "video/webm")) if os.path.exists(real) else ("",404)
 
 @app.route("/media/photo/<fn>")
 @req_role("admin","cs")
