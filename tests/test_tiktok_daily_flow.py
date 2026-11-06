@@ -264,16 +264,19 @@ def test_cancel_after_pick_blocks_show_until_item_pulled_off_table(appmod, clien
     assert client.get("/api/pick/PKB" + t).get_json()["cleanup_blocked"] is False
 
 
-def test_cancel_before_pick_does_not_block_the_floor(appmod, client, tiktok):
+def test_cancel_before_pick_now_gates_cleanup(appmod, client, tiktok):
+    """Per the warehouse's flow (bulk-pull the show's stock to the table before cleanup),
+    a TikTok cancellation counts as cleanup work even before the item is individually
+    picked — the same as Whatnot. So it gates picking until the table is cleared."""
     A = appmod
     t, room, label, o = _live(A, tiktok)
     hdr = _login(client, A, "worker1", "worker")
     client.post("/api/show/cleanout", headers=hdr, json={"label": label})
     o["b"]["status"] = "CANCELLED"
-    _ingest(A, o["b"]["id"])                                       # never pulled → nothing on the table
-    assert client.get("/api/pick/PKA" + t).get_json()["cleanup_blocked"] is False
+    _ingest(A, o["b"]["id"])
+    assert client.get("/api/pick/PKA" + t).get_json()["cleanup_blocked"] is True   # now gated
     d = client.post("/api/pick/complete/PKB" + t, headers=hdr).get_json()
-    assert d["ok"] is False                                        # and it can't be picked
+    assert d["ok"] is False                                        # cancelled line still can't be picked
 
 
 def test_issue_leaves_queue_and_retry_brings_it_back(appmod, client, tiktok):

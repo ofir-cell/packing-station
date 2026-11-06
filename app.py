@@ -2694,13 +2694,14 @@ def _cleanup_groups(label):
     if not label:
         return []
     c = sdb()
+    # Every cancelled line in the show is cleanup work — TikTok the same as Whatnot.
+    # (The warehouse bulk-pulls a show's stock to the table before cleanup, so a cancelled
+    #  item needs taking off the table whether or not it was individually picked yet.)
     rows = c.execute("""
         SELECT i.sku, i.product_name, i.quantity, i.order_id, i.shipment_id
         FROM shipment_items i
         JOIN shipments s ON s.shipment_id = i.shipment_id
         WHERE s.import_label = ? AND COALESCE(i.cancelled, 0) = 1
-          AND NOT (COALESCE(s.import_batch,'')='tiktok-api'
-                   AND COALESCE(i.picked,0)=0 AND COALESCE(i.depleted_qty,0)=0)
     """, (label,)).fetchall()
     state_rows = c.execute("""
         SELECT sku, part, removed_at, removed_by

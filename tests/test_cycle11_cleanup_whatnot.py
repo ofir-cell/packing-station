@@ -27,12 +27,24 @@ def test_whatnot_cancelled_items_do_not_block_pick(appmod, admin, sdb):
 def test_tiktok_cancelled_items_still_block_pick(appmod, admin, sdb):
     c = sdb()
     lbl = "TT Live " + uuid.uuid4().hex[:5]
-    # picked=1 so the cancelled item counts for a tiktok-api shipment
     sid = _show_with_cancelled(c, lbl, "tiktok", "tiktok-api", picked=1)
     c.close()
     r = admin.get("/api/pick/" + sid).get_json()
     assert r["ok"] is True
-    assert r["cleanup_blocked"] is True             # TikTok still gated
+    assert r["cleanup_blocked"] is True             # TikTok gated
+
+
+def test_tiktok_cancelled_unpicked_now_counts(appmod, admin, sdb):
+    """Fix: TikTok cancellations count for cleanup even before the item is individually
+    picked — the warehouse bulk-pulls the show's stock, so a cancellation is on the table
+    and must be cleared, exactly like Whatnot. (Previously hidden until picked → showed 0.)"""
+    c = sdb()
+    lbl = "TT Live " + uuid.uuid4().hex[:5]
+    sid = _show_with_cancelled(c, lbl, "tiktok", "tiktok-api", picked=0)
+    c.close()
+    r = admin.get("/api/pick/" + sid).get_json()
+    assert r["cleanup"]["has_cancellations"] is True   # now visible as cleanup work
+    assert r["cleanup_blocked"] is True
 
 
 def test_shows_list_marks_whatnot_clean(appmod, admin, sdb):
