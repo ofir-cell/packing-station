@@ -1614,6 +1614,15 @@ def sdb_init(org):
         qty_each INTEGER DEFAULT 1
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_poitemchildren ON po_item_children(po_item_id)")
+    # WARP freight (pallet / LTL) bookings — inbound supplier → warehouse by the pallet.
+    c.execute("""CREATE TABLE IF NOT EXISTS warp_shipments(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        po_id INTEGER, quote_id TEXT, shipment_id TEXT, shipment_number TEXT,
+        tracking_number TEXT, price_usd REAL, mode TEXT,
+        origin_zip TEXT, dest_zip TEXT, pallets INTEGER,
+        pickup_date TEXT, delivery_date TEXT, status TEXT,
+        reference TEXT, booked_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_warp_created ON warp_shipments(created_at)")
     # Supplier-SKU → store-SKU memory: when a supplier PO/invoice uses their own
     # product codes, remember which of our catalog SKUs each one maps to so the next
     # import auto-fills the mapping. Keyed on the supplier code (case-insensitive).
@@ -7656,6 +7665,131 @@ def _set_setting(key, value):
     c=sdb()
     c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,str(value)))
     c.commit(); c.close()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WARP FREIGHT — inbound pallet / LTL shipping (wearewarp.com).
+# Per-org keys live in settings: warp_live_key, warp_test_key, warp_mode (test|live).
+# Quote is free + keyless; Book charges the card on file at WARP; Track is read-only.
+# ══════════════════════════════════════════════════════════════════════════════
+_WARP_BASE="https://www.wearewarp.com/api/v1"
+
+def _warp_cfg():
+    mode=(_get_setting("warp_mode","test") or "test").lower()
+    key=_get_setting("warp_live_key","") if mode=="live" else _get_setting("warp_test_key","")
+    return {"mode":mode,"key":(key or "").strip()}
+
+def _mask_key(k):
+    k=(k or "").strip()
+    return (k[:8]+"…"+k[-4:]) if len(k)>14 else ("set" if k else "")
+
+def _warp_api(method, path, body=None, use_key=True):
+    """Call the WARP freight API. Returns (ok, status, data|error). Never raises."""
+    url=_WARP_BASE+path
+    cfg=_warp_cfg()
+    headers={"Content-Type":"application/json","Accept":"application/json"}
+    if use_key:
+        if not cfg["key"]: return (False,0,{"error":"WARP API key not configured"})
+        headers["Authorization"]="Bearer "+cfg["key"]
+    data=json.dumps(body).encode() if body is not None else None
+    try:
+        req=_urlreq.Request(url,data=data,method=method,headers=headers)
+        with _urlreq.urlopen(req,timeout=30) as r:
+            txt=r.read().decode(); return (True,r.status,json.loads(txt) if txt else {})
+    except _urlerr.HTTPError as e:
+        try: d=json.loads(e.read().decode())
+        except Exception: d={"error":"HTTP %s"%e.code}
+        return (False,e.code,d)
+    except Exception as e:
+        return (False,0,{"error":"WARP request failed: %s"%str(e)[:200]})
+
+@app.route("/api/warp/settings",methods=["GET","POST"])
+@req_role("admin")
+def api_warp_settings():
+    if request.method=="POST":
+        d=request.get_json(silent=True) or {}
+        if "live_key" in d: _set_setting("warp_live_key",(d.get("live_key") or "").strip())
+        if "test_key" in d: _set_setting("warp_test_key",(d.get("test_key") or "").strip())
+        mode=(d.get("mode") or "").lower()
+        if mode in ("test","live"): _set_setting("warp_mode",mode)
+        return jsonify({"ok":True})
+    cfg=_warp_cfg()
+    return jsonify({"ok":True,"mode":cfg["mode"],
+                    "live_set":bool(_get_setting("warp_live_key","")),
+                    "test_set":bool(_get_setting("warp_test_key","")),
+                    "live_mask":_mask_key(_get_setting("warp_live_key","")),
+                    "test_mask":_mask_key(_get_setting("warp_test_key","")),
+                    "configured":bool(cfg["key"])})
+
+@app.route("/api/warp/verify",methods=["POST"])
+@req_role("admin")
+def api_warp_verify():
+    ok,st,d=_warp_api("GET","/agents/account")
+    return jsonify({"ok":ok,"status":st,"account":d if ok else None,"error":None if ok else d.get("error","Invalid key")})
+
+@app.route("/api/warp/quote",methods=["POST"])
+@req_role("admin","cs","manager")
+def api_warp_quote():
+    """Free LTL quote. Body: origin_zip, destination_zip, pickup_date, pallets,
+    weight_lbs_per_pallet, length_in, width_in, height_in, commodity."""
+    d=request.get_json(silent=True) or {}
+    payload={"origin_zip":(d.get("origin_zip") or "").strip(),
+             "destination_zip":(d.get("destination_zip") or "").strip(),
+             "pickup_date":(d.get("pickup_date") or "").strip(),
+             "commodity":(d.get("commodity") or "general freight").strip()}
+    for k,src in (("pallets","pallets"),("weight_lbs_per_pallet","weight_lbs_per_pallet"),
+                  ("length_in","length_in"),("width_in","width_in"),("height_in","height_in")):
+        try: payload[k]=int(float(d.get(src) or 0))
+        except Exception: payload[k]=0
+    if not payload["origin_zip"] or not payload["destination_zip"] or not payload["pickup_date"] or payload["pallets"]<1:
+        return jsonify({"ok":False,"error":"Origin ZIP, destination ZIP, pickup date and ≥1 pallet are required"})
+    ok,st,res=_warp_api("POST","/ltl/quote",payload,use_key=False)
+    if not ok: return jsonify({"ok":False,"error":res.get("error","Quote failed"),"status":st})
+    return jsonify({"ok":True,"quote":res})
+
+@app.route("/api/warp/book",methods=["POST"])
+@req_role("admin")
+def api_warp_book():
+    """Book a quoted shipment. CHARGES the card on file at WARP (live mode). Stores it."""
+    d=request.get_json(silent=True) or {}
+    quote_id=(d.get("quote_id") or "").strip()
+    if not quote_id: return jsonify({"ok":False,"error":"quote_id required"})
+    pickup=d.get("pickup") or {}; delivery=d.get("delivery") or {}
+    body={"quote_id":quote_id,"reference":(d.get("reference") or "").strip(),
+          "patch":{"pickup":pickup,"delivery":delivery}}
+    ok,st,res=_warp_api("POST","/book",body)
+    if not ok: return jsonify({"ok":False,"error":res.get("error","Booking failed"),"status":st})
+    c=sdb()
+    c.execute("""INSERT INTO warp_shipments(po_id,quote_id,shipment_id,shipment_number,tracking_number,
+                   price_usd,mode,origin_zip,dest_zip,pallets,pickup_date,delivery_date,status,reference,booked_by,created_at)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (d.get("po_id"),quote_id,res.get("shipment_id"),res.get("shipment_number"),
+               res.get("tracking_number"),d.get("price_usd"),_warp_cfg()["mode"],
+               (pickup.get("zipCode") or ""),(delivery.get("zipCode") or ""),d.get("pallets"),
+               d.get("pickup_date"),d.get("delivery_date"),"booked",body["reference"],
+               session.get("name","")[:60],datetime.now().isoformat(timespec='seconds')))
+    c.commit(); c.close()
+    alog("warp.book","WARP %s %s"%(res.get("shipment_number") or "",_warp_cfg()["mode"]))
+    return jsonify({"ok":True,"booking":res})
+
+@app.route("/api/warp/track")
+@req_role("admin","cs","manager")
+def api_warp_track():
+    bid=(request.args.get("booking_id") or "").strip()
+    if not bid: return jsonify({"ok":False,"error":"booking_id required"})
+    ok,st,res=_warp_api("GET","/track?booking_id="+_urlparse.quote(bid))
+    if not ok: return jsonify({"ok":False,"error":res.get("error","Track failed"),"status":st})
+    return jsonify({"ok":True,"tracking":res})
+
+@app.route("/api/warp/shipments")
+@req_role("admin","cs","manager")
+def api_warp_shipments():
+    c=sdb()
+    rows=[dict(r) for r in c.execute("SELECT * FROM warp_shipments ORDER BY id DESC LIMIT 100").fetchall()]
+    c.close()
+    if session.get("role")!="admin":
+        for r in rows: r.pop("price_usd",None)   # freight cost is money → admin only
+    return jsonify({"ok":True,"shipments":rows})
+
 def _get_perms():
     raw=_get_setting("permissions")
     out=dict(_DEFAULT_PERMS)
@@ -15580,7 +15714,7 @@ def inbound_multi_print():
 @app.route("/admin/inbound")
 @req_role("admin","cs")
 def inbound_page():
-    return INBOUND_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("inbound")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return INBOUND_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__ROLE__",esc(session.get("role",""))).replace("__NAVBAR__",_navbar("inbound")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/giveaway/<int:gid>/notes",methods=["POST"])
 @req_role("admin","cs")

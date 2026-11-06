@@ -10763,6 +10763,49 @@ __NAVBAR__
   <table><thead><tr><th style="width:34px"><input type="checkbox" id="selAll" style="width:auto"></th><th>Supplier</th><th>Labels</th><th>Total</th><th>When</th><th>Print</th></tr></thead>
   <tbody id="inRows"><tr><td colspan="6" class="muted">None yet</td></tr></tbody></table>
 </div>
+
+<div class="card">
+  <h2 style="margin:0 0 4px">🚛 Freight · Pallets <span class="muted" style="font-size:13px">(WARP)</span> <span id="warpModeTag" style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:#fef3c7;color:#92400e;margin-left:6px"></span></h2>
+  <p class="muted" style="margin:0 0 12px;font-size:13px">For pallet-sized inbound from a supplier: get an all-inclusive LTL quote, book it, and track it.</p>
+
+  <div id="warpConnect" class="adminOnly" style="display:none;background:rgba(17,24,39,0.03);border:1px solid rgba(17,24,39,.08);border-radius:12px;padding:14px;margin-bottom:14px">
+    <div style="font-weight:700;margin-bottom:8px">Connection <span id="warpStatus" class="muted" style="font-weight:500"></span></div>
+    <div class="grid2">
+      <div><label>Sandbox key (wak_test_…)</label><input id="warpTestKey" placeholder="paste test key"></div>
+      <div><label>Live key (wak_live_…)</label><input id="warpLiveKey" placeholder="paste live key"></div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px">
+      <label style="margin:0"><input type="radio" name="warpMode" value="test" style="width:auto"> Sandbox (no charges)</label>
+      <label style="margin:0"><input type="radio" name="warpMode" value="live" style="width:auto"> Live (books & charges)</label>
+      <button class="btn btn-s" id="warpSaveKeys">Save</button>
+      <button class="btn btn-s" id="warpVerify">Verify key</button>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div><label>Origin ZIP (supplier)</label><input id="wOrig" inputmode="numeric" placeholder="90001"></div>
+    <div><label>Destination ZIP (your warehouse)</label><input id="wDest" inputmode="numeric" placeholder="10001"></div>
+  </div>
+  <div class="grid2" style="margin-top:8px">
+    <div><label>Pickup date</label><input id="wDate" type="date"></div>
+    <div><label>Pallets</label><input id="wPallets" type="number" min="1" value="1"></div>
+  </div>
+  <div class="grid2" style="margin-top:8px">
+    <div><label>Weight per pallet (lbs)</label><input id="wWeight" type="number" min="1" value="500"></div>
+    <div><label>Commodity</label><input id="wCommodity" placeholder="general freight"></div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:8px">
+    <div><label>Length (in)</label><input id="wL" type="number" value="48"></div>
+    <div><label>Width (in)</label><input id="wW" type="number" value="40"></div>
+    <div><label>Height (in)</label><input id="wH" type="number" value="48"></div>
+  </div>
+  <button class="btn btn-p" id="wQuoteBtn" style="margin-top:12px">Get freight quote</button>
+  <div id="wQuoteOut" style="margin-top:12px"></div>
+
+  <div style="font-weight:700;margin:18px 0 8px">Recent freight shipments</div>
+  <table><thead><tr><th>Shipment</th><th>Route</th><th class="adminOnly">Price</th><th>Status</th><th>Track</th></tr></thead>
+  <tbody id="warpRows"><tr><td colspan="5" class="muted">None yet</td></tr></tbody></table>
+</div>
 </div>
 <div class="toast" id="t"></div>
 <script>
@@ -10990,6 +11033,85 @@ document.getElementById('printSel').addEventListener('click',function(){
   window.open('/label/inbound/multi?ids='+ids.join(','),'_blank');
 });
 loadInbound();
+
+// ── WARP freight (pallets): quote → book → track ──
+var WROLE="__ROLE__", WADMIN=(WROLE==="admin"), LASTQ=null;
+if(!WADMIN){document.querySelectorAll('#warpConnect').forEach&&document.querySelectorAll('#warpConnect').forEach(function(e){e.style.display='none'});}
+function wJ(u,b,m){return fetch(u,{method:m||(b?'POST':'GET'),headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(function(r){return r.json()});}
+function warpStatus(){
+  wJ('/api/warp/settings').then(function(d){
+    if(!d.ok)return;
+    document.getElementById('warpModeTag').textContent=(d.mode==='live'?'LIVE':'SANDBOX');
+    var cn=document.getElementById('warpConnect'); if(cn&&WADMIN){cn.style.display='block';
+      document.querySelector('input[name=warpMode][value="'+d.mode+'"]').checked=true;
+      document.getElementById('warpStatus').textContent=d.configured?('· connected ('+(d.mode==='live'?d.live_mask:d.test_mask)+')'):'· not connected yet';
+    }
+  });
+}
+if(document.getElementById('warpSaveKeys')) document.getElementById('warpSaveKeys').onclick=function(){
+  var mode=(document.querySelector('input[name=warpMode]:checked')||{}).value||'test';
+  wJ('/api/warp/settings',{test_key:document.getElementById('warpTestKey').value.trim(),live_key:document.getElementById('warpLiveKey').value.trim(),mode:mode}).then(function(d){ if(d.ok){toast('Saved ✓');document.getElementById('warpTestKey').value='';document.getElementById('warpLiveKey').value='';warpStatus();} });
+};
+if(document.getElementById('warpVerify')) document.getElementById('warpVerify').onclick=function(){
+  wJ('/api/warp/verify',{}).then(function(d){ toast(d.ok?'Key is valid ✓':(d.error||'Invalid key'), !d.ok); });
+};
+document.getElementById('wQuoteBtn').onclick=function(){
+  var body={origin_zip:document.getElementById('wOrig').value.trim(),destination_zip:document.getElementById('wDest').value.trim(),
+    pickup_date:document.getElementById('wDate').value,pallets:document.getElementById('wPallets').value,
+    weight_lbs_per_pallet:document.getElementById('wWeight').value,commodity:document.getElementById('wCommodity').value.trim()||'general freight',
+    length_in:document.getElementById('wL').value,width_in:document.getElementById('wW').value,height_in:document.getElementById('wH').value};
+  var out=document.getElementById('wQuoteOut'); out.innerHTML='<span class="muted">Getting quote…</span>';
+  wJ('/api/warp/quote',body).then(function(d){
+    if(!d.ok){out.innerHTML='<span style="color:#dc2626">'+esc(d.error||'Quote failed')+'</span>';return;}
+    LASTQ={quote:d.quote,body:body};
+    var q=d.quote;
+    out.innerHTML='<div style="background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.4);border-radius:12px;padding:14px">'+
+      '<div style="font-size:22px;font-weight:900;color:#059669">$'+(q.price_usd!=null?Number(q.price_usd).toFixed(2):'—')+'</div>'+
+      '<div class="muted" style="font-size:13px">all-inclusive · '+(q.transit_days!=null?q.transit_days+' day transit':'')+(q.delivery_date?(' · delivery '+q.delivery_date):'')+'</div>'+
+      (WADMIN?('<button class="btn btn-p" id="wBookBtn" style="margin-top:12px">Book this shipment — charges your WARP card</button>'):'<div class="muted" style="margin-top:8px">Ask an admin to book.</div>')+
+      '</div>';
+    var bb=document.getElementById('wBookBtn'); if(bb)bb.onclick=warpBook;
+  });
+};
+function warpBook(){
+  if(!LASTQ)return; var q=LASTQ.quote, b=LASTQ.body;
+  var pcompany=prompt('Supplier (pickup) company name:',''); if(pcompany===null)return;
+  var pstreet=prompt('Supplier pickup street address:',''); if(pstreet===null)return;
+  var dcompany=prompt('Your warehouse (delivery) company name:',''); if(dcompany===null)return;
+  var dstreet=prompt('Warehouse delivery street address:',''); if(dstreet===null)return;
+  if(!confirm('Book this freight shipment for $'+Number(q.price_usd).toFixed(2)+'? This charges your WARP card ('+document.getElementById('warpModeTag').textContent+').'))return;
+  var book={quote_id:q.quote_id,reference:'',price_usd:q.price_usd,pallets:b.pallets,pickup_date:q.pickup_date,delivery_date:q.delivery_date,
+    pickup:{company:pcompany,street:pstreet,zipCode:b.origin_zip},delivery:{company:dcompany,street:dstreet,zipCode:b.destination_zip}};
+  wJ('/api/warp/book',book).then(function(d){
+    if(!d.ok){toast(d.error||'Booking failed',true);return;}
+    toast('Booked ✓ '+(d.booking.shipment_number||''));
+    document.getElementById('wQuoteOut').innerHTML='<div style="color:#059669;font-weight:700">✓ Booked — '+esc(d.booking.shipment_number||'')+'</div>';
+    LASTQ=null; loadWarp();
+  });
+}
+function loadWarp(){
+  wJ('/api/warp/shipments').then(function(d){
+    var tb=document.getElementById('warpRows'); if(!d.ok||!d.shipments.length){tb.innerHTML='<tr><td colspan="5" class="muted">None yet</td></tr>';return;}
+    tb.innerHTML=d.shipments.map(function(s){
+      return '<tr><td><b>'+esc(s.shipment_number||s.shipment_id||'—')+'</b></td>'+
+        '<td class="muted">'+esc(s.origin_zip||'')+' → '+esc(s.dest_zip||'')+'</td>'+
+        '<td class="adminOnly">'+(s.price_usd!=null?('$'+Number(s.price_usd).toFixed(2)):'—')+'</td>'+
+        '<td>'+esc(s.status||'')+'</td>'+
+        '<td><button class="btn btn-s" onclick="warpTrack(\\''+esc(s.tracking_number||s.shipment_number||'')+'\\')">Track</button></td></tr>';
+    }).join('');
+    if(!WADMIN)document.querySelectorAll('.adminOnly').forEach(function(e){e.style.display='none'});
+  });
+}
+function warpTrack(bid){
+  if(!bid)return;
+  wJ('/api/warp/track?booking_id='+encodeURIComponent(bid)).then(function(d){
+    if(!d.ok){toast(d.error||'Track failed',true);return;}
+    var t=d.tracking;
+    toast('Status: '+(t.status||'—')+(t.delivery_date?(' · ETA '+t.delivery_date):''));
+  });
+}
+if(!WADMIN)document.querySelectorAll('.adminOnly').forEach(function(e){e.style.display='none'});
+warpStatus(); loadWarp();
 </script></body></html>'''
 
 
