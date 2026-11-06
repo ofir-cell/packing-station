@@ -29,6 +29,15 @@ jobs:
           brew install xcodegen
           cd ios && xcodegen generate
 
+      - name: Upload ready-to-open Xcode project
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveOpsHub-iOS-project
+          path: |
+            ios/
+            !ios/build.log
+          retention-days: 30
+
       - name: Build (simulator, unsigned)
         run: |
           cd ios
