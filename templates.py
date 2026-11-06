@@ -11091,10 +11091,16 @@ document.getElementById('wQuoteBtn').onclick=function(){
       '<button class="btn btn-p" id="wBookBtn" style="margin-top:12px">Book — charges your WARP card</button>'+
       '</div>'
     ):'<div class="muted" style="margin-top:8px">Ask an admin to book.</div>';
+    var dbg='';
+    if(WADMIN&&q.raw){
+      var ch=(q.raw.charges||[]).map(function(x){return (x.name||x.type||x.code||'?')+': $'+(Number(x.amount||x.total||0).toFixed(2));}).join(' · ');
+      dbg='<details style="margin-top:8px"><summary class="muted" style="font-size:12px;cursor:pointer">WARP breakdown (debug)</summary>'+
+        '<div class="muted" style="font-size:12px;margin-top:6px">type: '+esc(q.raw.shipmentType||'?')+' · '+esc(ch||'no charge rows')+'</div></details>';
+    }
     out.innerHTML='<div style="background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.4);border-radius:12px;padding:14px">'+
       '<div style="font-size:22px;font-weight:900;color:#059669">$'+(q.price_usd!=null?Number(q.price_usd).toFixed(2):'—')+'</div>'+
       '<div class="muted" style="font-size:13px">all-inclusive'+(q.transit_days!=null?(' · '+q.transit_days+' day transit'):'')+'</div>'+
-      bookForm+'</div>';
+      dbg+bookForm+'</div>';
     var bb=document.getElementById('wBookBtn'); if(bb)bb.onclick=warpBook;
     // prefill delivery with the destination ZIP from the quote
     if(WADMIN){var dz=document.getElementById('bk_d_city'); }
