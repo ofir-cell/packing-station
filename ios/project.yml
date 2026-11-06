@@ -32,6 +32,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         API_BASE_URL: https://www.getwhatnot.com
+        NSPhotoLibraryAddUsageDescription: Save exported reports and packing videos to your Photos.
         LSRequiresIPhoneOS: true
         UILaunchScreen:
           UIColorName: AccentColor

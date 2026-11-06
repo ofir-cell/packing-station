@@ -3,7 +3,8 @@ import SwiftUI
 /// Scan a label → see what goes in the box → record → upload. Then the next label.
 /// Same flow as the web packing station, with the phone camera doing both jobs.
 struct PackFlowView: View {
-    @Environment(AppState.self) private var app
+    /// Set when the dashboard asks to pack a specific label (LOHubNative.pack(code)).
+    var initialTracking: String? = nil
     @StateObject private var recorder = PackingRecorder()
 
     enum Step: Equatable {
@@ -42,6 +43,12 @@ struct PackFlowView: View {
             .alert("Couldn't continue", isPresented: .constant(error != nil)) {
                 Button("OK") { error = nil }
             } message: { Text(error ?? "") }
+        }
+        .task {
+            if let t = initialTracking, !t.isEmpty, case .scan = step {
+                await WebSession.shared.syncCookiesToNative()
+                await lookup(t)
+            }
         }
         .onDisappear {
             if recorder.state == .recording { recorder.cancel() }
@@ -163,8 +170,7 @@ struct PackFlowView: View {
             }
             step = .order(ShipmentLookupBox(r))
         } catch {
-            app.handle(error)
-            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            self.error = Self.message(for: error)
             step = .scan
         }
     }
@@ -179,10 +185,17 @@ struct PackFlowView: View {
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             step = .done(trk)
         } catch {
-            app.handle(error)
-            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            self.error = Self.message(for: error)
             step = .order(box)
         }
+    }
+
+    /// A lost session means the dashboard tab needs a sign-in; say so plainly.
+    static func message(for error: Error) -> String {
+        if let e = error as? APIError, e == .notSignedIn {
+            return "You're signed out. Open the Dashboard tab and sign in, then come back to Pack."
+        }
+        return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 
     private func reset() {
