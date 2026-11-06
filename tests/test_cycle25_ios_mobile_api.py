@@ -140,3 +140,10 @@ def test_signed_out_browser_still_starts_on_badge_login(client):
 def test_badge_page_offers_camera_scan_only_inside_app(client):
     html = client.get("/badge-login").get_data(as_text=True)
     assert "window.LOHubNative&&LOHubNative.scan" in html     # guarded: hidden in browsers
+
+
+def test_csp_allows_only_the_pinned_2fa_qr_script(client):
+    csp = client.get("/login").headers.get("Content-Security-Policy", "")
+    script = next(d for d in csp.split(";") if d.strip().startswith("script-src"))
+    assert "https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" in script
+    assert "https://cdnjs.cloudflare.com " not in script + " "   # not the whole CDN

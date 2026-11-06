@@ -4008,7 +4008,8 @@ def _security_headers(resp):
     resp.headers.setdefault("Strict-Transport-Security","max-age=31536000; includeSubDomains")
     resp.headers.setdefault("Content-Security-Policy",
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
+        # one pinned file only: the 2FA enrollment QR code (ME_HTML) — without it the QR never renders
+        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob: https:; "
