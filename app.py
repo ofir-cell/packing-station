@@ -4430,6 +4430,10 @@ def index():
     # without the auto-routing pulling them back to /pick.
     force = (request.args.get("force") or "").lower()
     if "user" not in session:
+        # The iOS app has no USB badge scanner: start it on the password sign-in.
+        # (Its badge screen can still scan a badge with the camera via LOHubNative.)
+        if "LiveOpsHubiOS" in (request.headers.get("User-Agent") or ""):
+            return redirect("/login")
         # Default to badge-login (warehouse stations have no keyboard/mouse).
         # Admins/anyone needing password type can click "Use password instead" → /login
         return redirect("/badge-login")

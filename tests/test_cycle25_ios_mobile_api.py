@@ -120,3 +120,23 @@ def test_privacy_and_terms_are_public(client):
         assert r.status_code == 200, path
         assert r.content_type.startswith("text/html")
         assert word in r.get_data(as_text=True)
+
+
+# ── iOS app entry point ───────────────────────────────────────────────────────
+IOS_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
+          "(KHTML, like Gecko) LiveOpsHubiOS/1.0.0 Mobile")
+
+
+def test_signed_out_ios_app_starts_on_password_login(client):
+    r = client.get("/", headers={"User-Agent": IOS_UA})
+    assert r.status_code in (301, 302) and r.headers["Location"].endswith("/login")
+
+
+def test_signed_out_browser_still_starts_on_badge_login(client):
+    r = client.get("/", headers={"User-Agent": "Mozilla/5.0 (iPhone) Safari"})
+    assert r.headers["Location"].endswith("/badge-login")
+
+
+def test_badge_page_offers_camera_scan_only_inside_app(client):
+    html = client.get("/badge-login").get_data(as_text=True)
+    assert "window.LOHubNative&&LOHubNative.scan" in html     # guarded: hidden in browsers

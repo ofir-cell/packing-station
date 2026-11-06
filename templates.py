@@ -2355,6 +2355,14 @@ document.addEventListener('keydown',function(e){
 // Keep focus on the hidden input so the page is always "listening"
 inp.focus();
 setInterval(function(){if(document.activeElement!==inp)inp.focus()},500);
+// LiveOpsHub iOS app: scan the badge with the iPhone camera (native bridge).
+if(window.LOHubNative&&LOHubNative.scan){(function(){
+  var b=document.createElement('button');b.type='button';b.className='alt-link';
+  b.style.cssText='display:block;margin:14px auto 0;border:0;cursor:pointer;font:inherit';
+  b.textContent='📷 Scan badge with camera';
+  b.onclick=function(){LOHubNative.scan().then(function(code){if(code){tryLogin(String(code).trim().toUpperCase())}})};
+  var a=document.querySelector('.alt-link');if(a&&a.parentNode){a.parentNode.insertBefore(b,a)}else{document.body.appendChild(b)}
+})()}
 </script></body></html>'''
 
 
