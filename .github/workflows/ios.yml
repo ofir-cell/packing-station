@@ -1,0 +1,94 @@
+# Compiles the native iOS app (ios/) on every change to it. Unsigned simulator
+# build — this proves the code compiles; signing/archiving happens in Xcode.
+name: iOS build
+
+on:
+  push:
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  pull_request:
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    permissions:
+      contents: write
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          xcodebuild -version
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          cd ios && xcodegen generate
+
+      - name: Upload ready-to-open Xcode project
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveOpsHub-iOS-project
+          path: |
+            ios/
+            !ios/build.log
+          retention-days: 30
+
+      - name: Publish generated project to branch ios-xcodeproj
+        if: github.event_name == 'push'
+        run: |
+          set -e
+          tmp="$(mktemp -d)"
+          cp -R ios/. "$tmp/"
+          rm -f "$tmp/build.log" "$tmp/.gitignore"
+          cd "$tmp"
+          git init -q -b ios-xcodeproj
+          git config user.name "ios-ci"; git config user.email "ios-ci@users.noreply.github.com"
+          git add -A
+          git commit -qm "Generated Xcode project from ${GITHUB_SHA::7}"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" ios-xcodeproj
+
+      - name: Build (simulator, unsigned)
+        run: |
+          cd ios
+          set -o pipefail
+          xcodebuild build \
+            -project LiveOpsHub.xcodeproj \
+            -scheme LiveOpsHub \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee build.log | grep -E "error:|warning:|BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" build.log
+
+      - name: Run in simulator + screenshots
+        if: github.event_name == 'push'
+        run: |
+          set -e
+          cd ios
+          DEV=$(xcrun simctl list devices available -j | python3 -c "import json,sys;d=json.load(sys.stdin)['devices'];print(next(x['udid'] for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone 16 Pro')))")
+          xcrun simctl boot "$DEV"; xcrun simctl bootstatus "$DEV" -b
+          xcodebuild build -project LiveOpsHub.xcodeproj -scheme LiveOpsHub -configuration Debug \
+            -destination "id=$DEV" -derivedDataPath build/dd CODE_SIGNING_ALLOWED=NO -quiet
+          APP=$(ls -d build/dd/Build/Products/Debug-iphonesimulator/LiveOpsHub.app)
+          xcrun simctl install "$DEV" "$APP"
+          xcrun simctl launch "$DEV" com.liveopshub.app
+          mkdir -p shots
+          sleep 20; xcrun simctl io "$DEV" screenshot shots/01-dashboard.png
+          sleep 10; xcrun simctl io "$DEV" screenshot shots/02-dashboard-later.png
+
+      - name: Publish screenshots to branch ios-screens
+        if: github.event_name == 'push'
+        run: |
+          set -e
+          tmp="$(mktemp -d)"; cp ios/shots/*.png "$tmp/"; cd "$tmp"
+          git init -q -b ios-screens
+          git config user.name "ios-ci"; git config user.email "ios-ci@users.noreply.github.com"
+          git add -A; git commit -qm "Simulator screenshots from ${GITHUB_SHA::7}"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" ios-screens
