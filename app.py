@@ -7671,40 +7671,60 @@ def _set_setting(key, value):
     c.commit(); c.close()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# WARP FREIGHT — inbound pallet / LTL shipping (wearewarp.com).
-# Per-org keys live in settings: warp_live_key, warp_test_key, warp_mode (test|live).
-# Quote is free + keyless; Book charges the card on file at WARP; Track is read-only.
+# WARP FREIGHT — inbound pallet / LTL shipping (WARP API v2).
+# Auth: header `apikey: <key>`. One key per environment:
+#   mode "test"  → staging    https://stg.wearewarp.com/api/v1  (Stripe test, no real charges)
+#   mode "live"  → production https://gw.wearewarp.com/api/v1   (booking charges the card)
+# Endpoints: POST /freights/quote, /freights/booking, /freights/tracking.
+# Quote returns a price only (no charge); Book charges; Track is read-only.
+# Per-org keys live in settings: warp_live_key, warp_test_key, warp_mode.
 # ══════════════════════════════════════════════════════════════════════════════
-_WARP_BASE="https://www.wearewarp.com/api/v1"
+_WARP_BASES={"test":"https://stg.wearewarp.com/api/v1","live":"https://gw.wearewarp.com/api/v1"}
 
 def _warp_cfg():
     mode=(_get_setting("warp_mode","test") or "test").lower()
+    if mode not in _WARP_BASES: mode="test"
     key=_get_setting("warp_live_key","") if mode=="live" else _get_setting("warp_test_key","")
-    return {"mode":mode,"key":(key or "").strip()}
+    return {"mode":mode,"key":(key or "").strip(),"base":_WARP_BASES[mode]}
 
 def _mask_key(k):
     k=(k or "").strip()
-    return (k[:8]+"…"+k[-4:]) if len(k)>14 else ("set" if k else "")
+    return (k[:6]+"…"+k[-4:]) if len(k)>12 else ("set" if k else "")
 
-def _warp_api(method, path, body=None, use_key=True):
-    """Call the WARP freight API. Returns (ok, status, data|error). Never raises."""
-    url=_WARP_BASE+path
+def _warp_api(method, path, body=None):
+    """Call the WARP v2 freight API with the apikey header. Returns (ok, status, data). Never raises."""
     cfg=_warp_cfg()
-    headers={"Content-Type":"application/json","Accept":"application/json"}
-    if use_key:
-        if not cfg["key"]: return (False,0,{"error":"WARP API key not configured"})
-        headers["Authorization"]="Bearer "+cfg["key"]
+    if not cfg["key"]: return (False,0,{"error":"WARP API key not configured for %s mode"%cfg["mode"]})
+    headers={"Content-Type":"application/json","Accept":"application/json","apikey":cfg["key"]}
     data=json.dumps(body).encode() if body is not None else None
     try:
-        req=_urlreq.Request(url,data=data,method=method,headers=headers)
+        req=_urlreq.Request(cfg["base"]+path,data=data,method=method,headers=headers)
         with _urlreq.urlopen(req,timeout=30) as r:
             txt=r.read().decode(); return (True,r.status,json.loads(txt) if txt else {})
     except _urlerr.HTTPError as e:
         try: d=json.loads(e.read().decode())
-        except Exception: d={"error":"HTTP %s"%e.code}
+        except Exception: d={"message":"HTTP %s"%e.code}
         return (False,e.code,d)
     except Exception as e:
-        return (False,0,{"error":"WARP request failed: %s"%str(e)[:200]})
+        return (False,0,{"message":"WARP request failed: %s"%str(e)[:200]})
+
+def _warp_err(d):
+    return (d.get("message") or d.get("error") or "WARP error")
+
+def _warp_list_items(d):
+    """Build the WARP `listItems` array from the quote form. The SAME items must be resent
+    on booking (WARP requires the booking to match the quote exactly), so quote and book
+    both go through here with the same inputs."""
+    def _i(x):
+        try: return int(float(x or 0))
+        except Exception: return 0
+    pallets=max(1,_i(d.get("pallets")))
+    per=_i(d.get("weight_lbs_per_pallet"))
+    total=_i(d.get("total_weight")) or (per*pallets)
+    return [{"name":(d.get("commodity") or "general freight").strip() or "general freight",
+             "quantity":pallets,"totalWeight":max(1,total),"weightUnit":"lbs",
+             "length":_i(d.get("length_in")) or 48,"width":_i(d.get("width_in")) or 40,
+             "height":_i(d.get("height_in")) or 48,"sizeUnit":"IN","packaging":"Pallet"}]
 
 @app.route("/api/warp/settings",methods=["GET","POST"])
 @req_role("admin")
@@ -7714,10 +7734,10 @@ def api_warp_settings():
         if "live_key" in d: _set_setting("warp_live_key",(d.get("live_key") or "").strip())
         if "test_key" in d: _set_setting("warp_test_key",(d.get("test_key") or "").strip())
         mode=(d.get("mode") or "").lower()
-        if mode in ("test","live"): _set_setting("warp_mode",mode)
+        if mode in _WARP_BASES: _set_setting("warp_mode",mode)
         return jsonify({"ok":True})
     cfg=_warp_cfg()
-    return jsonify({"ok":True,"mode":cfg["mode"],
+    return jsonify({"ok":True,"mode":cfg["mode"],"base":cfg["base"],
                     "live_set":bool(_get_setting("warp_live_key","")),
                     "test_set":bool(_get_setting("warp_test_key","")),
                     "live_mask":_mask_key(_get_setting("warp_live_key","")),
@@ -7727,62 +7747,89 @@ def api_warp_settings():
 @app.route("/api/warp/verify",methods=["POST"])
 @req_role("admin")
 def api_warp_verify():
-    ok,st,d=_warp_api("GET","/agents/account")
-    return jsonify({"ok":ok,"status":st,"account":d if ok else None,"error":None if ok else d.get("error","Invalid key")})
+    # A valid key returns 200 on the (non-rate-limited) shipments list.
+    ok,st,d=_warp_api("GET","/freights/shipments")
+    return jsonify({"ok":ok,"status":st,"error":None if ok else _warp_err(d)})
 
 @app.route("/api/warp/quote",methods=["POST"])
 @req_role("admin","cs","manager")
 def api_warp_quote():
-    """Free LTL quote. Body: origin_zip, destination_zip, pickup_date, pallets,
-    weight_lbs_per_pallet, length_in, width_in, height_in, commodity."""
+    """LTL quote (price only, no charge). Returns the normalized quote plus the raw body."""
     d=request.get_json(silent=True) or {}
-    payload={"origin_zip":(d.get("origin_zip") or "").strip(),
-             "destination_zip":(d.get("destination_zip") or "").strip(),
-             "pickup_date":(d.get("pickup_date") or "").strip(),
-             "commodity":(d.get("commodity") or "general freight").strip()}
-    for k,src in (("pallets","pallets"),("weight_lbs_per_pallet","weight_lbs_per_pallet"),
-                  ("length_in","length_in"),("width_in","width_in"),("height_in","height_in")):
-        try: payload[k]=int(float(d.get(src) or 0))
-        except Exception: payload[k]=0
-    if not payload["origin_zip"] or not payload["destination_zip"] or not payload["pickup_date"] or payload["pallets"]<1:
-        return jsonify({"ok":False,"error":"Origin ZIP, destination ZIP, pickup date and ≥1 pallet are required"})
-    ok,st,res=_warp_api("POST","/ltl/quote",payload,use_key=False)
-    if not ok: return jsonify({"ok":False,"error":res.get("error","Quote failed"),"status":st})
-    return jsonify({"ok":True,"quote":res})
+    orig=(d.get("origin_zip") or "").strip(); dest=(d.get("destination_zip") or "").strip()
+    pdate=(d.get("pickup_date") or "").strip()
+    if not orig or not dest or not pdate:
+        return jsonify({"ok":False,"error":"Origin ZIP, destination ZIP and pickup date are required"})
+    payload={"pickupDate":pdate,"pickupInfo":{"zipcode":orig,"country":"US"},
+             "deliveryInfo":{"zipcode":dest,"country":"US"},
+             "shipmentType":"LTL","listItems":_warp_list_items(d)}
+    ok,st,res=_warp_api("POST","/freights/quote",payload)
+    if not ok: return jsonify({"ok":False,"error":_warp_err(res),"status":st})
+    price=((res.get("price") or {}).get("amount"))
+    return jsonify({"ok":True,"quote":{"quote_id":res.get("quote_id"),"price_usd":price,
+                    "transit_days":res.get("transit_time"),"expires":res.get("expiration_time_utc"),
+                    "raw":res}})
+
+def _warp_stop(d, is_pickup=False, pickup_date=None):
+    """Build a WARP StopInfo from the form's pickup/delivery block."""
+    stop={"locationName":(d.get("company") or "").strip(),
+          "contactName":(d.get("contact") or "").strip(),
+          "contactPhone":(d.get("phone") or "").strip(),
+          "contactEmail":(d.get("email") or "").strip(),
+          "address":{"street":(d.get("street") or "").strip(),
+                     "city":(d.get("city") or "").strip(),
+                     "state":(d.get("state") or "").strip(),
+                     "zipcode":(d.get("zipcode") or "").strip()}}
+    if is_pickup:
+        # WARP requires a pickup window. Default to 8am–5pm on the pickup date.
+        stop["windowTime"]={"from":(pickup_date or "")+"T08:00:00Z","to":(pickup_date or "")+"T17:00:00Z"}
+    return stop
 
 @app.route("/api/warp/book",methods=["POST"])
 @req_role("admin")
 def api_warp_book():
-    """Book a quoted shipment. CHARGES the card on file at WARP (live mode). Stores it."""
+    """Book a quoted shipment (CHARGES the card in live mode). Resends the exact quote items."""
     d=request.get_json(silent=True) or {}
     quote_id=(d.get("quote_id") or "").strip()
-    if not quote_id: return jsonify({"ok":False,"error":"quote_id required"})
+    q=d.get("quote") or {}
     pickup=d.get("pickup") or {}; delivery=d.get("delivery") or {}
-    body={"quote_id":quote_id,"reference":(d.get("reference") or "").strip(),
-          "patch":{"pickup":pickup,"delivery":delivery}}
-    ok,st,res=_warp_api("POST","/book",body)
-    if not ok: return jsonify({"ok":False,"error":res.get("error","Booking failed"),"status":st})
+    if not quote_id: return jsonify({"ok":False,"error":"quote_id required"})
+    if not (pickup.get("phone") or "").strip(): return jsonify({"ok":False,"error":"Pickup contact phone is required"})
+    pdate=(q.get("pickup_date") or "").strip()
+    body={"quoteId":quote_id,"shipmentType":"LTL","refNum":(d.get("reference") or "").strip(),
+          "listItems":_warp_list_items(q),
+          "pickupInfo":_warp_stop(pickup, is_pickup=True, pickup_date=pdate),
+          "deliveryInfo":_warp_stop(delivery)}
+    ok,st,res=_warp_api("POST","/freights/booking",body)
+    if not ok: return jsonify({"ok":False,"error":_warp_err(res),"status":st})
+    tracking=res.get("trackingNumber") or res.get("shipmentNumber")
     c=sdb()
     c.execute("""INSERT INTO warp_shipments(po_id,quote_id,shipment_id,shipment_number,tracking_number,
                    price_usd,mode,origin_zip,dest_zip,pallets,pickup_date,delivery_date,status,reference,booked_by,created_at)
                  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-              (d.get("po_id"),quote_id,res.get("shipment_id"),res.get("shipment_number"),
-               res.get("tracking_number"),d.get("price_usd"),_warp_cfg()["mode"],
-               (pickup.get("zipCode") or ""),(delivery.get("zipCode") or ""),d.get("pallets"),
-               d.get("pickup_date"),d.get("delivery_date"),"booked",body["reference"],
+              (d.get("po_id"),quote_id,res.get("shipmentId"),res.get("shipmentNumber"),tracking,
+               d.get("price_usd"),_warp_cfg()["mode"],(pickup.get("zipcode") or ""),(delivery.get("zipcode") or ""),
+               q.get("pallets"),pdate,None,"booked",body["refNum"],
                session.get("name","")[:60],datetime.now().isoformat(timespec='seconds')))
     c.commit(); c.close()
-    alog("warp.book","WARP %s %s"%(res.get("shipment_number") or "",_warp_cfg()["mode"]))
-    return jsonify({"ok":True,"booking":res})
+    alog("warp.book","WARP %s %s"%(res.get("shipmentNumber") or "",_warp_cfg()["mode"]))
+    return jsonify({"ok":True,"booking":res,"payment_link":res.get("paymentLink")})
 
 @app.route("/api/warp/track")
 @req_role("admin","cs","manager")
 def api_warp_track():
     bid=(request.args.get("booking_id") or "").strip()
     if not bid: return jsonify({"ok":False,"error":"booking_id required"})
-    ok,st,res=_warp_api("GET","/track?booking_id="+_urlparse.quote(bid))
-    if not ok: return jsonify({"ok":False,"error":res.get("error","Track failed"),"status":st})
-    return jsonify({"ok":True,"tracking":res})
+    ok,st,res=_warp_api("POST","/freights/tracking",{"trackingNumbers":[bid]})
+    if not ok: return jsonify({"ok":False,"error":_warp_err(res),"status":st})
+    arr=res if isinstance(res,list) else (res.get("data") or res.get("shipments") or [])
+    hit=(arr[0] if arr else {})
+    status=((hit.get("statusInfo") or {}).get("status")) or hit.get("status")
+    if status:
+        try:
+            cc=sdb(); cc.execute("UPDATE warp_shipments SET status=? WHERE tracking_number=? OR shipment_number=?",(status,bid,bid)); cc.commit(); cc.close()
+        except Exception: pass
+    return jsonify({"ok":True,"tracking":{"status":status,"shipment_number":hit.get("shipmentNumber"),"raw":hit}})
 
 @app.route("/api/warp/shipments")
 @req_role("admin","cs","manager")

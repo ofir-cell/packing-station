@@ -10779,12 +10779,12 @@ __NAVBAR__
   <div id="warpConnect" class="adminOnly" style="display:none;background:rgba(17,24,39,0.03);border:1px solid rgba(17,24,39,.08);border-radius:12px;padding:14px;margin-bottom:14px">
     <div style="font-weight:700;margin-bottom:8px">Connection <span id="warpStatus" class="muted" style="font-weight:500"></span></div>
     <div class="grid2">
-      <div><label>Sandbox key (wak_test_…)</label><input id="warpTestKey" placeholder="paste test key"></div>
-      <div><label>Live key (wak_live_…)</label><input id="warpLiveKey" placeholder="paste live key"></div>
+      <div><label>Staging key (stg.wearewarp.com)</label><input id="warpTestKey" placeholder="paste staging apikey"></div>
+      <div><label>Production key (gw.wearewarp.com)</label><input id="warpLiveKey" placeholder="paste production apikey"></div>
     </div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px">
-      <label style="margin:0"><input type="radio" name="warpMode" value="test" style="width:auto"> Sandbox (no charges)</label>
-      <label style="margin:0"><input type="radio" name="warpMode" value="live" style="width:auto"> Live (books & charges)</label>
+      <label style="margin:0"><input type="radio" name="warpMode" value="test" style="width:auto"> Staging — stg.wearewarp.com (test, no charges)</label>
+      <label style="margin:0"><input type="radio" name="warpMode" value="live" style="width:auto"> Production — gw.wearewarp.com (books &amp; charges)</label>
       <button class="btn btn-s" id="warpSaveKeys">Save</button>
       <button class="btn btn-s" id="warpVerify">Verify key</button>
     </div>
@@ -11073,27 +11073,48 @@ document.getElementById('wQuoteBtn').onclick=function(){
     if(!d.ok){out.innerHTML='<span style="color:#dc2626">'+esc(d.error||'Quote failed')+'</span>';return;}
     LASTQ={quote:d.quote,body:body};
     var q=d.quote;
+    var bookForm=WADMIN?(
+      '<div style="margin-top:14px;border-top:1px solid rgba(17,24,39,.1);padding-top:12px">'+
+      '<div style="font-weight:700;margin-bottom:8px">Book this shipment</div>'+
+      '<div class="grid2"><div><label>Supplier (pickup) company</label><input id="bk_p_company"></div>'+
+      '<div><label>Pickup contact phone *</label><input id="bk_p_phone" placeholder="2135550100"></div></div>'+
+      '<div class="grid2" style="margin-top:6px"><div><label>Pickup street</label><input id="bk_p_street"></div>'+
+      '<div><label>Pickup city</label><input id="bk_p_city"></div></div>'+
+      '<div class="grid2" style="margin-top:6px"><div><label>Pickup state (e.g. CA)</label><input id="bk_p_state" maxlength="2"></div>'+
+      '<div><label>Pickup contact name</label><input id="bk_p_contact"></div></div>'+
+      '<div class="grid2" style="margin-top:10px"><div><label>Warehouse (delivery) company</label><input id="bk_d_company"></div>'+
+      '<div><label>Delivery phone</label><input id="bk_d_phone"></div></div>'+
+      '<div class="grid2" style="margin-top:6px"><div><label>Delivery street</label><input id="bk_d_street"></div>'+
+      '<div><label>Delivery city</label><input id="bk_d_city"></div></div>'+
+      '<div class="grid2" style="margin-top:6px"><div><label>Delivery state</label><input id="bk_d_state" maxlength="2"></div>'+
+      '<div><label>Reference (PO/order)</label><input id="bk_ref"></div></div>'+
+      '<button class="btn btn-p" id="wBookBtn" style="margin-top:12px">Book — charges your WARP card</button>'+
+      '</div>'
+    ):'<div class="muted" style="margin-top:8px">Ask an admin to book.</div>';
     out.innerHTML='<div style="background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.4);border-radius:12px;padding:14px">'+
       '<div style="font-size:22px;font-weight:900;color:#059669">$'+(q.price_usd!=null?Number(q.price_usd).toFixed(2):'—')+'</div>'+
-      '<div class="muted" style="font-size:13px">all-inclusive · '+(q.transit_days!=null?q.transit_days+' day transit':'')+(q.delivery_date?(' · delivery '+q.delivery_date):'')+'</div>'+
-      (WADMIN?('<button class="btn btn-p" id="wBookBtn" style="margin-top:12px">Book this shipment — charges your WARP card</button>'):'<div class="muted" style="margin-top:8px">Ask an admin to book.</div>')+
-      '</div>';
+      '<div class="muted" style="font-size:13px">all-inclusive'+(q.transit_days!=null?(' · '+q.transit_days+' day transit'):'')+'</div>'+
+      bookForm+'</div>';
     var bb=document.getElementById('wBookBtn'); if(bb)bb.onclick=warpBook;
+    // prefill delivery with the destination ZIP from the quote
+    if(WADMIN){var dz=document.getElementById('bk_d_city'); }
   });
 };
+function bkv(id){var e=document.getElementById(id);return e?e.value.trim():'';}
 function warpBook(){
   if(!LASTQ)return; var q=LASTQ.quote, b=LASTQ.body;
-  var pcompany=prompt('Supplier (pickup) company name:',''); if(pcompany===null)return;
-  var pstreet=prompt('Supplier pickup street address:',''); if(pstreet===null)return;
-  var dcompany=prompt('Your warehouse (delivery) company name:',''); if(dcompany===null)return;
-  var dstreet=prompt('Warehouse delivery street address:',''); if(dstreet===null)return;
+  if(!bkv('bk_p_phone')){toast('Pickup contact phone is required',true);return;}
   if(!confirm('Book this freight shipment for $'+Number(q.price_usd).toFixed(2)+'? This charges your WARP card ('+document.getElementById('warpModeTag').textContent+').'))return;
-  var book={quote_id:q.quote_id,reference:'',price_usd:q.price_usd,pallets:b.pallets,pickup_date:q.pickup_date,delivery_date:q.delivery_date,
-    pickup:{company:pcompany,street:pstreet,zipCode:b.origin_zip},delivery:{company:dcompany,street:dstreet,zipCode:b.destination_zip}};
+  var book={quote_id:q.quote_id,price_usd:q.price_usd,reference:bkv('bk_ref'),
+    quote:b,
+    pickup:{company:bkv('bk_p_company'),contact:bkv('bk_p_contact'),phone:bkv('bk_p_phone'),street:bkv('bk_p_street'),city:bkv('bk_p_city'),state:bkv('bk_p_state'),zipcode:b.origin_zip},
+    delivery:{company:bkv('bk_d_company'),phone:bkv('bk_d_phone'),street:bkv('bk_d_street'),city:bkv('bk_d_city'),state:bkv('bk_d_state'),zipcode:b.destination_zip}};
+  var bb=document.getElementById('wBookBtn'); if(bb){bb.disabled=true;bb.textContent='Booking…';}
   wJ('/api/warp/book',book).then(function(d){
-    if(!d.ok){toast(d.error||'Booking failed',true);return;}
-    toast('Booked ✓ '+(d.booking.shipment_number||''));
-    document.getElementById('wQuoteOut').innerHTML='<div style="color:#059669;font-weight:700">✓ Booked — '+esc(d.booking.shipment_number||'')+'</div>';
+    if(!d.ok){toast(d.error||'Booking failed',true);if(bb){bb.disabled=false;bb.textContent='Book — charges your WARP card';}return;}
+    toast('Booked ✓ '+(d.booking.shipmentNumber||''));
+    var pl=d.payment_link?(' <a href="'+esc(d.payment_link)+'" target="_blank" style="color:#4f46e5">Complete payment ›</a>'):'';
+    document.getElementById('wQuoteOut').innerHTML='<div style="color:#059669;font-weight:700">✓ Booked — '+esc(d.booking.shipmentNumber||'')+pl+'</div>';
     LASTQ=null; loadWarp();
   });
 }
