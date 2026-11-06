@@ -763,7 +763,11 @@ def _gen_recovery_codes(n=8):
 
 def _twofa_required(user):
     """2FA is mandatory for admins (org policy). Returns True if this account must have it."""
-    return (user or {}).get("role")=="admin"
+    u=user or {}
+    # "twofa_exempt" exists only for the App Store review demo account; it is never set
+    # from the UI (edit users.json / platform console), so it can't be self-granted.
+    if u.get("twofa_exempt") is True: return False
+    return u.get("role")=="admin"
 
 # Precomputed bcrypt hash used to equalize login timing on unknown usernames,
 # so an attacker can't tell "user exists" from response speed.
@@ -3885,7 +3889,7 @@ def _csrf_protect():
 # When a tenant's trial has expired or its subscription isn't active, everything is
 # blocked except logging out, the billing screen, and the public/lead pages. The
 # platform owner (super-admin) is never gated.
-_BILLING_OPEN_PATHS={"/privacy","/terms","/privacy.html","/terms.html","/login","/logout","/billing","/api/billing/status","/healthz",
+_BILLING_OPEN_PATHS={"/me","/api/me","/api/me/stats","/privacy","/terms","/privacy.html","/terms.html","/login","/logout","/billing","/api/billing/status","/healthz",
                      "/demo","/api/lead","/favicon.ico","/api/account/delete"}
 _BILLING_OPEN_PREFIXES=("/static/","/api/billing/","/guide-asset/")
 
@@ -3910,7 +3914,8 @@ def _billing_gate():
 # 2FA is required for admins. An admin who logged in before enrolling carries
 # must_setup_2fa; until they finish enrolling on the "Me" screen they can reach only
 # that screen and the enrollment endpoints — everything else (the money screens) is held.
-_2FA_SETUP_OPEN={"/me","/logout","/login","/healthz","/favicon.ico","/api/me","/api/me/stats"}
+_2FA_SETUP_OPEN={"/me","/logout","/login","/healthz","/favicon.ico","/api/me","/api/me/stats",
+                 "/api/account/delete","/privacy","/terms"}
 _2FA_SETUP_OPEN_PREFIXES=("/static/","/guide-asset/","/api/2fa/")
 @app.before_request
 def _twofa_setup_gate():
@@ -4047,6 +4052,9 @@ def _security_headers(resp):
 # The iPhone app (LiveOpsHub iOS) sends X-Client: lohub-ios/<version>. For that client an
 # auth failure must be a JSON status, not a redirect to the HTML login page.
 MOBILE_CLIENT_HEADER="X-Client"
+def _is_ios_app():
+    """Request comes from the LiveOpsHub iOS app's web view (its UA carries LiveOpsHubiOS)."""
+    return "LiveOpsHubiOS" in (request.headers.get("User-Agent") or "")
 def _is_mobile_client():
     return (request.headers.get(MOBILE_CLIENT_HEADER) or "").lower().startswith("lohub-ios")
 def _auth_fail():
@@ -12776,7 +12784,15 @@ def billing_page():
                 (b.get("current_period_end") or "")[:10])
         else:
             msg="Your plan is active. Thanks for using LiveOpsHub!"
-    return (BILLING_HTML.replace("__FONT__",_FONT)
+    html=BILLING_HTML
+    if _is_ios_app():
+        # App Store 3.1: no prices / purchase buttons / payment instructions inside the app.
+        html=re.sub(r'<div class="plans">.*?<div class="foot">.*?</div>',
+                    '<div class="foot">Plans and billing are managed by your company admin '
+                    'on the web.</div>', html, count=1, flags=re.S)
+        if state!="ok":
+            msg="Your company's LiveOpsHub access is paused. Ask your admin to contact LiveOpsHub."
+    return (html.replace("__FONT__",_FONT)
             .replace("__STATE_CLS__",cls).replace("__STATE_LABEL__",label)
             .replace("__HEADLINE__",esc(_BILLING_HEADLINE.get(state,"Billing")))
             .replace("__MESSAGE__",esc(msg))
