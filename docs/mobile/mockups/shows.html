@@ -1,0 +1,445 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Mockup · Manager · Shows</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&display=swap" rel="stylesheet">
+<style>
+/* ==========================================================================
+   LiveOpsHub mobile layer — reference implementation of docs/mobile/DESIGN_SYSTEM.md
+   Owner: ios-designer. The mobile-engineer ports this into templates.py as
+   _MOBILE_CSS and injects it via app.py after_request (see DESIGN_SYSTEM.md §6).
+
+   Layering:
+     §1 tokens            — always present, harmless on desktop (new vars only)
+     §2 components (m-*)  — only affect elements that carry an m- class
+     §3 global fix-ups    — ONLY inside @media (max-width:820px) or html.lohub-ios
+   Desktop (>820px, not in the app) must render pixel-identical to today.
+   ========================================================================== */
+
+/* §1 ── TOKENS ─────────────────────────────────────────────────────────── */
+:root{
+  /* LiveOpsHub brand (Classic). Tenant _brand_style() may still override --brand. */
+  --brand:#4f46e5; --brand-2:#7c3aed; --brand-strong:#4338ca; --brand-ink:#3730a3;
+  --brand-glow:rgba(79,70,229,.14);
+  --brand-gradient:linear-gradient(135deg,var(--brand) 0%,var(--brand-2) 100%);
+  --on-brand:#ffffff;
+
+  --bg:#ffffff; --surface:#f2f3f7; --surface-strong:#e7e9f0; --border:#e3e5ec;
+  --text:#141a26; --text-muted:#566072; --text-dim:#5f6b7d;
+
+  /* semantic (text-safe on --bg and on their own tint) */
+  --m-green:#15803d;  --m-green-tint:#dcfce7;
+  --m-teal:#0f766e;   --m-teal-tint:#ccfbf1;
+  --m-blue:#1d4ed8;   --m-blue-tint:#dbeafe;
+  --m-amber:#a16207;  --m-amber-tint:#fef3c7;
+  --m-orange:#c2410c; --m-orange-tint:#ffedd5;
+  --m-red:#dc2626;    --m-red-tint:#fee2e2;
+  --m-gray:#4b5563;   --m-gray-tint:#eceef2;
+
+  /* spacing — 4pt grid */
+  --m-1:.25rem; --m-2:.5rem; --m-3:.75rem; --m-4:1rem; --m-5:1.25rem; --m-6:1.5rem; --m-8:2rem;
+  --m-gutter:var(--m-4);                       /* screen side margin = 16pt */
+  /* radii */
+  --m-r-xs:6px; --m-r-sm:8px; --m-r-md:12px; --m-r-lg:16px; --m-r-xl:22px; --m-r-pill:999px;
+  /* type scale (rem, Dynamic-Type friendly; 1rem = 16px) */
+  --m-fs-largetitle:2.125rem; --m-fs-title1:1.75rem; --m-fs-title2:1.375rem; --m-fs-title3:1.25rem;
+  --m-fs-headline:1.0625rem; --m-fs-body:1.0625rem; --m-fs-callout:1rem; --m-fs-subhead:.9375rem;
+  --m-fs-footnote:.8125rem; --m-fs-caption:.75rem;
+  /* elevation */
+  --m-shadow-1:0 1px 2px rgba(16,24,40,.06),0 1px 1px rgba(16,24,40,.04);
+  --m-shadow-2:0 6px 20px rgba(16,24,40,.08),0 1px 3px rgba(16,24,40,.06);
+  --m-shadow-3:0 -10px 40px rgba(16,24,40,.18);
+  --m-shadow-brand:0 8px 22px rgba(79,70,229,.32);
+  /* motion */
+  --m-ease:cubic-bezier(.2,.8,.2,1); --m-t-fast:120ms; --m-t:200ms; --m-t-slow:320ms;
+  /* chrome */
+  --m-navbar-h:44px; --m-tabbar-h:0px;          /* 0 in the app (native tab bar is outside the WebView) */
+  --m-tap:44px;
+  --m-safe-top:env(safe-area-inset-top,0px); --m-safe-bottom:env(safe-area-inset-bottom,0px);
+  --m-safe-left:env(safe-area-inset-left,0px); --m-safe-right:env(safe-area-inset-right,0px);
+  --m-material:rgba(255,255,255,.82);
+}
+:root[data-theme="taupe"]{--brand-2:#0e7490;--brand-gradient:linear-gradient(135deg,#0f766e,#0e7490);--m-shadow-brand:0 8px 22px rgba(15,118,110,.3)}
+:root[data-theme="sage"] {--brand-2:#4d6a5a;--brand-gradient:linear-gradient(135deg,#5b7355,#4d6a5a);--m-shadow-brand:0 8px 22px rgba(91,115,85,.3)}
+:root[data-theme="slate"]{--brand-2:#9d4d77;--brand-gradient:linear-gradient(135deg,#c2607d,#9d4d77);--m-shadow-brand:0 8px 22px rgba(194,96,125,.3)}
+
+/* Dark: html.theme-dark (existing class, set by the page toggle or by the iOS shell
+   from the system appearance). Theme accents are lifted for ≥4.5:1 on dark cells. */
+:root.theme-dark{
+  --bg:#1c1c22; --surface:#0d0d12; --surface-strong:#2a2a33; --border:rgba(255,255,255,.10);
+  --text:#f4f4f7; --text-muted:#a7a9b6; --text-dim:#9496a3;
+  --brand:#5b54f0; --brand-2:#7c3aed; --brand-strong:#818cf8; --brand-ink:#a5b4fc; --brand-glow:rgba(129,140,248,.18);
+  --m-green:#4ade80; --m-green-tint:rgba(74,222,128,.14);
+  --m-teal:#2dd4bf;  --m-teal-tint:rgba(45,212,191,.14);
+  --m-blue:#93c5fd;  --m-blue-tint:rgba(147,197,253,.14);
+  --m-amber:#fcd34d; --m-amber-tint:rgba(252,211,77,.14);
+  --m-orange:#fdba74;--m-orange-tint:rgba(253,186,116,.14);
+  --m-red:#f87171;   --m-red-tint:rgba(248,113,113,.15);
+  --m-gray:#c4c7d0;  --m-gray-tint:rgba(255,255,255,.08);
+  --m-shadow-1:none; --m-shadow-2:0 0 0 1px rgba(255,255,255,.06);
+  --m-material:rgba(28,28,34,.78);
+}
+:root.theme-dark[data-theme="taupe"]{--brand:#14b8a6;--brand-2:#0891b2;--brand-ink:#5eead4;--brand-strong:#2dd4bf}
+:root.theme-dark[data-theme="sage"] {--brand:#7f9a77;--brand-2:#6b8f7b;--brand-ink:#b7cdb0;--brand-strong:#9db596}
+:root.theme-dark[data-theme="slate"]{--brand:#d77a96;--brand-2:#b9668f;--brand-ink:#f0a9bf;--brand-strong:#e38fa8}
+
+/* §2 ── COMPONENTS ─────────────────────────────────────────────────────── */
+.m-screen{min-height:100dvh;background:var(--surface);color:var(--text);font-family:'DM Sans',-apple-system,system-ui,sans-serif;
+  font-size:var(--m-fs-body);line-height:1.35;-webkit-font-smoothing:antialiased;
+  padding:0 0 calc(var(--m-tabbar-h) + var(--m-safe-bottom) + var(--m-4));}
+.m-screen *,.m-actionbar,.m-actionbar *,.m-sheet,.m-sheet *,.m-toast,.m-tabbar,.m-tabbar *{box-sizing:border-box}
+.m-screen--has-actionbar{padding-bottom:calc(var(--m-tabbar-h) + var(--m-safe-bottom) + 96px)}
+
+/* Nav bar + large title */
+.m-navbar{position:sticky;top:0;z-index:50;padding-top:var(--m-safe-top);background:transparent;
+  transition:background var(--m-t) var(--m-ease),box-shadow var(--m-t) var(--m-ease)}
+.m-navbar.is-scrolled{background:var(--m-material);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);box-shadow:0 .5px 0 var(--border)}
+.m-navbar__row{height:var(--m-navbar-h);display:flex;align-items:center;gap:var(--m-2);padding:0 calc(var(--m-2) + var(--m-safe-right)) 0 calc(var(--m-2) + var(--m-safe-left))}
+.m-navbar__back{display:inline-flex;align-items:center;gap:2px;min-width:var(--m-tap);height:var(--m-tap);padding:0 var(--m-2) 0 0;
+  border:0;background:none;color:var(--brand-ink);font:inherit;font-size:var(--m-fs-body);text-decoration:none;cursor:pointer}
+.m-navbar__back svg{width:13px;height:21px}
+.m-navbar__title{flex:1;text-align:center;font-weight:700;font-size:var(--m-fs-headline);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  opacity:0;transition:opacity var(--m-t-fast)}
+.m-navbar.is-scrolled .m-navbar__title{opacity:1}
+.m-navbar__actions{display:flex;gap:var(--m-1);margin-left:auto}
+.m-iconbtn{width:var(--m-tap);height:var(--m-tap);display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:var(--m-r-pill);
+  background:none;color:var(--brand-ink);cursor:pointer;-webkit-tap-highlight-color:transparent}
+.m-iconbtn--filled{background:var(--bg);box-shadow:var(--m-shadow-1)}
+.m-iconbtn svg{width:22px;height:22px}
+.m-iconbtn:active{opacity:.55}
+.m-largetitle{padding:var(--m-1) var(--m-gutter) var(--m-2);margin:0}
+.m-largetitle h1{font-size:var(--m-fs-largetitle);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin:0}
+.m-largetitle p{margin:var(--m-1) 0 0;color:var(--text-muted);font-size:var(--m-fs-subhead)}
+.m-eyebrow{font-size:var(--m-fs-footnote);font-weight:700;color:var(--brand-ink);letter-spacing:.02em}
+
+/* Sections & inset-grouped lists */
+.m-section{margin:var(--m-5) 0 0;padding:0 var(--m-gutter)}
+.m-section__header{display:flex;align-items:baseline;justify-content:space-between;padding:0 var(--m-1) var(--m-2);
+  font-size:var(--m-fs-footnote);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
+.m-section__header a,.m-section__header button{text-transform:none;letter-spacing:0;font-size:var(--m-fs-subhead);font-weight:600;color:var(--brand-ink);background:none;border:0;text-decoration:none}
+.m-section__footer{padding:var(--m-2) var(--m-1) 0;font-size:var(--m-fs-footnote);color:var(--text-muted)}
+.m-list{background:var(--bg);border-radius:var(--m-r-lg);overflow:hidden;box-shadow:var(--m-shadow-1);list-style:none;margin:0;padding:0}
+.m-row{position:relative;display:flex;align-items:center;gap:var(--m-3);min-height:var(--m-tap);padding:var(--m-3) var(--m-4);
+  color:var(--text);text-decoration:none;background:var(--bg);-webkit-tap-highlight-color:transparent}
+.m-row + .m-row::before{content:"";position:absolute;top:0;right:0;left:var(--m-row-inset,var(--m-4));height:.5px;background:var(--border)}
+.m-row--lead + .m-row--lead{--m-row-inset:calc(var(--m-4) + 36px + var(--m-3))}
+a.m-row:active,button.m-row:active{background:var(--surface-strong)}
+button.m-row{width:100%;border:0;font:inherit;text-align:left;cursor:pointer}
+.m-row__lead{flex:0 0 36px;width:36px;height:36px;border-radius:var(--m-r-sm);display:flex;align-items:center;justify-content:center;
+  background:var(--brand-glow);color:var(--brand-ink)}
+.m-row__lead svg{width:20px;height:20px}
+.m-row__body{flex:1;min-width:0}
+.m-row__title{font-size:var(--m-fs-body);font-weight:600;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-row__sub{margin-top:2px;font-size:var(--m-fs-subhead);color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:var(--m-2)}
+.m-row__trail{flex:0 0 auto;display:flex;align-items:center;gap:var(--m-2);color:var(--text-muted);font-size:var(--m-fs-subhead)}
+.m-row__value{font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
+.m-row__chev{width:8px;height:14px;color:var(--text-dim);opacity:.7}
+
+/* Cards */
+.m-card{background:var(--bg);border-radius:var(--m-r-lg);box-shadow:var(--m-shadow-1);padding:var(--m-4)}
+.m-card--tap{display:block;color:inherit;text-decoration:none;transition:transform var(--m-t-fast) var(--m-ease)}
+.m-card--tap:active{transform:scale(.98)}
+.m-card--hero{background:var(--brand-gradient);color:var(--on-brand);box-shadow:var(--m-shadow-brand)}
+.m-card + .m-card{margin-top:var(--m-3)}
+
+/* Stat tiles */
+.m-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--m-3)}
+.m-stats--scroll{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;margin:0 calc(-1 * var(--m-gutter));padding:0 var(--m-gutter) var(--m-1);scrollbar-width:none}
+.m-stats--scroll::-webkit-scrollbar{display:none}
+.m-stats--scroll .m-stat{flex:0 0 132px;scroll-snap-align:start}
+.m-stat{background:var(--bg);border-radius:var(--m-r-md);box-shadow:var(--m-shadow-1);padding:var(--m-3) var(--m-4);min-width:0}
+.m-stat__label{font-size:var(--m-fs-footnote);font-weight:600;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-stat__value{margin-top:2px;font-size:var(--m-fs-title1);font-weight:800;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.1}
+.m-stat__delta{font-size:var(--m-fs-caption);font-weight:600;color:var(--text-muted);margin-top:2px}
+.m-stat--brand .m-stat__value{color:var(--brand-ink)} .m-stat--warn .m-stat__value{color:var(--m-amber)}
+.m-stat--good .m-stat__value{color:var(--m-green)}   .m-stat--bad .m-stat__value{color:var(--m-red)}
+
+/* Status pills — label text always present (never color alone) */
+.m-pill{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:var(--m-r-pill);
+  font-size:var(--m-fs-caption);font-weight:700;line-height:1;white-space:nowrap;background:var(--m-gray-tint);color:var(--m-gray)}
+.m-pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto}
+.m-pill--plain::before{display:none}
+.m-pill--pending  {background:var(--m-amber-tint); color:var(--m-amber)}
+.m-pill--picked   {background:var(--m-blue-tint);  color:var(--m-blue)}
+.m-pill--packed   {background:var(--m-teal-tint);  color:var(--m-teal)}
+.m-pill--shipped  {background:var(--m-green-tint); color:var(--m-green)}
+.m-pill--cancelled{background:var(--m-red-tint);   color:var(--m-red)}
+.m-pill--cancelled::before{border-radius:1px;width:7px;height:2px}             /* dash, not dot */
+.m-pill--issue    {background:var(--m-orange-tint);color:var(--m-orange)}
+.m-pill--issue::before{content:"!";width:auto;height:auto;background:none;font-weight:900}
+.m-pill--live     {background:#dc2626;color:#fff}                 /* fixed red: white text ≥4.5:1 in both modes */
+.m-pill--live::before{background:#fff;animation:m-pulse 1.4s infinite}
+.m-pill--brand    {background:var(--brand-glow);color:var(--brand-ink)}
+@keyframes m-pulse{50%{opacity:.35}}
+
+/* Progress */
+.m-progress{height:6px;border-radius:var(--m-r-pill);background:var(--surface-strong);overflow:hidden;display:flex}
+.m-progress > span{display:block;height:100%}
+.m-progress__a{background:var(--brand-gradient)} .m-progress__b{background:var(--m-teal)} .m-progress__c{background:var(--m-green)}
+
+/* Segmented control */
+.m-seg{display:flex;padding:2px;border-radius:var(--m-r-sm);background:var(--surface-strong);gap:0}
+.m-seg__btn{flex:1;min-height:32px;border:0;background:none;border-radius:7px;font:inherit;font-size:var(--m-fs-subhead);font-weight:600;
+  color:var(--text);cursor:pointer;position:relative}
+.m-seg__btn::after{content:"";position:absolute;inset:-6px 0}            /* 44pt hit area around a 32pt visual */
+.m-seg__btn[aria-selected="true"]{background:var(--bg);box-shadow:0 1px 3px rgba(16,24,40,.12),0 0 0 .5px rgba(16,24,40,.04);font-weight:700}
+.m-seg__count{color:var(--text-muted);font-weight:600;margin-left:3px}
+
+/* Search field */
+.m-search{position:relative;display:flex;align-items:center;gap:var(--m-2);height:var(--m-tap);padding:0 var(--m-3);
+  border-radius:var(--m-r-md);background:var(--surface-strong);color:var(--text-muted)}
+.m-search svg{width:18px;height:18px;flex:0 0 auto}
+.m-search input{flex:1;min-width:0;height:100%;border:0;background:none;outline:none;font:inherit;font-size:var(--m-fs-body);color:var(--text)}
+.m-search input::placeholder{color:var(--text-dim)}
+.m-search__scan{margin-right:calc(-1 * var(--m-2))}
+
+/* Buttons */
+.m-btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--m-2);min-height:var(--m-tap);padding:0 var(--m-5);
+  border:0;border-radius:var(--m-r-md);font:inherit;font-size:var(--m-fs-body);font-weight:700;text-decoration:none;cursor:pointer;
+  -webkit-tap-highlight-color:transparent;transition:transform var(--m-t-fast) var(--m-ease),opacity var(--m-t-fast)}
+.m-btn:active{transform:scale(.97)}
+.m-btn[disabled]{opacity:.4;pointer-events:none}
+.m-btn--lg{min-height:52px;border-radius:14px;width:100%}
+.m-btn--primary{background:var(--brand-gradient);color:var(--on-brand);box-shadow:var(--m-shadow-brand)}
+.m-btn--secondary{background:var(--brand-glow);color:var(--brand-ink)}
+.m-btn--tinted-red,.m-btn--destructive{background:var(--m-red-tint);color:var(--m-red)}
+.m-btn--plain{background:none;color:var(--brand-ink);padding:0 var(--m-2)}
+.m-btn svg{width:20px;height:20px}
+
+/* Sticky bottom action bar (one primary action per screen) */
+.m-actionbar{position:fixed;left:0;right:0;bottom:calc(var(--m-tabbar-h));z-index:60;
+  padding:var(--m-3) calc(var(--m-gutter) + var(--m-safe-right)) calc(var(--m-3) + var(--m-safe-bottom)) calc(var(--m-gutter) + var(--m-safe-left));
+  background:var(--m-material);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
+  box-shadow:0 -.5px 0 var(--border);display:flex;gap:var(--m-3)}
+.m-actionbar .m-btn--lg{flex:1}
+.m-actionbar__aux{flex:0 0 52px!important;width:52px;padding:0}
+
+/* Bottom sheet + action sheet */
+.m-sheet__backdrop{position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.32);opacity:0;pointer-events:none;transition:opacity var(--m-t) var(--m-ease)}
+.m-sheet{position:fixed;left:0;right:0;bottom:0;z-index:91;max-height:92dvh;overflow:auto;background:var(--bg);border-radius:var(--m-r-xl) var(--m-r-xl) 0 0;
+  box-shadow:var(--m-shadow-3);padding:var(--m-2) var(--m-gutter) calc(var(--m-4) + var(--m-safe-bottom));
+  transform:translateY(105%);transition:transform var(--m-t-slow) var(--m-ease)}
+.m-sheet.is-open{transform:none} .m-sheet.is-open ~ .m-sheet__backdrop,.m-sheet__backdrop.is-open{opacity:1;pointer-events:auto}
+.m-sheet__grabber{width:36px;height:5px;border-radius:3px;background:var(--border);margin:0 auto var(--m-3)}
+.m-sheet__title{font-size:var(--m-fs-headline);font-weight:700;text-align:center;margin-bottom:var(--m-4)}
+
+/* Form fields */
+.m-field{display:block;margin-bottom:var(--m-4)}
+.m-field__label{display:block;font-size:var(--m-fs-footnote);font-weight:700;color:var(--text-muted);margin:0 0 6px var(--m-1)}
+.m-field__control{display:flex;align-items:center;gap:var(--m-2);min-height:48px;padding:0 var(--m-3);border-radius:var(--m-r-md);
+  background:var(--bg);border:1px solid var(--border);transition:border-color var(--m-t-fast),box-shadow var(--m-t-fast)}
+.m-field__control:focus-within{border-color:var(--brand);box-shadow:0 0 0 4px var(--brand-glow)}
+.m-field__control input,.m-field__control select,.m-field__control textarea{flex:1;min-width:0;border:0;outline:none;background:none;
+  font:inherit;font-size:max(16px,var(--m-fs-body));color:var(--text);padding:var(--m-3) 0}
+.m-field__help{font-size:var(--m-fs-footnote);color:var(--text-muted);margin:6px var(--m-1) 0}
+.m-field--error .m-field__control{border-color:var(--m-red);box-shadow:0 0 0 4px var(--m-red-tint)}
+.m-field--error .m-field__help{color:var(--m-red)}
+.m-field__scan{display:none} html.lohub-ios .m-field__scan{display:inline-flex}
+
+/* Empty / loading / error */
+.m-empty{text-align:center;padding:var(--m-8) var(--m-6);color:var(--text-muted)}
+.m-empty__icon{width:56px;height:56px;margin:0 auto var(--m-3);border-radius:16px;display:flex;align-items:center;justify-content:center;background:var(--brand-glow);color:var(--brand-ink)}
+.m-empty__title{font-size:var(--m-fs-title3);font-weight:700;color:var(--text);margin-bottom:var(--m-1)}
+.m-empty__body{font-size:var(--m-fs-subhead);margin-bottom:var(--m-4)}
+.m-skeleton{border-radius:var(--m-r-sm);background:linear-gradient(90deg,var(--surface-strong) 25%,var(--surface) 50%,var(--surface-strong) 75%);
+  background-size:200% 100%;animation:m-shimmer 1.2s linear infinite;min-height:1em}
+@keyframes m-shimmer{to{background-position:-200% 0}}
+.m-banner{display:flex;gap:var(--m-3);align-items:flex-start;padding:var(--m-3) var(--m-4);border-radius:var(--m-r-md);font-size:var(--m-fs-subhead)}
+.m-banner--error{background:var(--m-red-tint);color:var(--m-red)} .m-banner--warn{background:var(--m-amber-tint);color:var(--m-amber)}
+.m-banner--offline{background:var(--surface-strong);color:var(--text)}
+
+/* Toast */
+.m-toast{position:fixed;left:50%;bottom:calc(var(--m-tabbar-h) + var(--m-safe-bottom) + 96px);z-index:100;transform:translate(-50%,20px);opacity:0;
+  display:flex;align-items:center;gap:var(--m-2);max-width:calc(100vw - 32px);padding:var(--m-3) var(--m-4);border-radius:var(--m-r-pill);
+  background:rgba(20,20,26,.92);color:#fff;font-size:var(--m-fs-subhead);font-weight:600;box-shadow:var(--m-shadow-2);
+  transition:all var(--m-t) var(--m-ease);pointer-events:none}
+.m-toast.is-shown{opacity:1;transform:translate(-50%,0)}
+.m-toast--success svg{color:#4ade80} .m-toast--error svg{color:#f87171}
+
+/* Web tab bar (browser fallback only; inside the app the tab bar is native) */
+.m-tabbar{position:fixed;left:0;right:0;bottom:0;z-index:80;display:flex;padding:0 var(--m-safe-right) var(--m-safe-bottom) var(--m-safe-left);
+  background:var(--m-material);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);box-shadow:0 -.5px 0 var(--border)}
+.m-tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:49px;padding-top:4px;
+  font-size:10px;font-weight:600;color:var(--text-dim);text-decoration:none;letter-spacing:.01em}   /* 10pt is the HIG tab-label size; exempt from the 12px floor */
+.m-tab svg{width:26px;height:26px}
+.m-tab[aria-current="page"]{color:var(--brand)}
+html.lohub-ios .m-tabbar{display:none}
+
+/* §3 ── GLOBAL FIX-UPS (phones/tablets and the app only) ────────────────
+   Listed in DESIGN_SYSTEM.md §6 with desktop risk per rule. */
+@media (max-width:820px){
+  html{-webkit-text-size-adjust:100%}
+  body{overflow-x:clip}                                                   /* G5 last-resort guard */
+  input:not([type=checkbox]):not([type=radio]):not([type=range]),select,textarea{font-size:max(16px,1em)!important}   /* G2 */
+  button,[role=button],input[type=submit],input[type=button],select,.btn,a[class*="btn"]{min-height:var(--m-tap);touch-action:manipulation}  /* G1 */
+  input[type=checkbox],input[type=radio]{width:22px;height:22px;accent-color:var(--brand)}
+  label:has(> input[type=checkbox]),label:has(> input[type=radio]){min-height:var(--m-tap);display:inline-flex;align-items:center;gap:var(--m-2)}
+  img,video,canvas,svg,iframe{max-width:100%}
+  pre,code{white-space:pre-wrap;word-break:break-word}
+  .sidebar{box-shadow:none}  body.sb-open .sidebar{box-shadow:0 0 60px rgba(0,0,0,.25)}             /* G6 */
+  /* G3 tiny-text floor: known offenders + inline px sizes < 12 */
+  .brand-sub,.sb-brand .brand-sub,.sb-user-id small,small,th,.txt,.lbl,.label,.badge,.tag,
+  [style*="font-size:8px"],[style*="font-size:9px"],[style*="font-size:10px"],[style*="font-size:11px"],
+  [style*="font-size: 8px"],[style*="font-size: 9px"],[style*="font-size: 10px"],[style*="font-size: 11px"]{font-size:max(12px,1em)!important}
+  /* G4 flex/grid children may shrink instead of pushing the page wide */
+  [style*="display:flex"] > *,.row > *{min-width:0}
+  /* Tables → see §7: annotated tables become lists; others scroll inside their own box */
+  table:not([data-m="list"]){display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+}
+@media (max-width:599px){
+  table[data-m="list"],table[data-m="list"] tbody{display:block;width:100%}
+  table[data-m="list"] thead{display:none}
+  table[data-m="list"] tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px var(--m-3);padding:var(--m-3) var(--m-4);
+    background:var(--bg);border-bottom:.5px solid var(--border)}
+  table[data-m="list"] td{display:none;padding:0;border:0;white-space:normal}
+  table[data-m="list"] td[data-m="primary"]{display:block;grid-column:1;font-weight:600;font-size:var(--m-fs-body);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  table[data-m="list"] td[data-m="secondary"]{display:block;grid-column:1;font-size:var(--m-fs-subhead);color:var(--text-muted)}
+  table[data-m="list"] td[data-m="trailing"]{display:flex;grid-column:2;grid-row:1 / span 2;align-items:center;justify-content:flex-end}
+  table[data-m="list"] td[data-m="detail"]{display:block;grid-column:1 / -1;font-size:var(--m-fs-footnote);color:var(--text-muted)}
+  table[data-m="list"] td[data-m="detail"]::before{content:attr(data-label) ": ";font-weight:600}
+}
+@media (pointer:coarse) and (max-width:820px){ a,button{-webkit-tap-highlight-color:transparent} }
+
+/* In the iOS app: web chrome that the native shell replaces */
+html.lohub-ios .sb-toggle,html.lohub-ios .sb-nav2,html.lohub-ios .sb-mbar,html.lohub-ios .sb-ov,html.lohub-ios .sidebar{display:none!important}
+html.lohub-ios body:has(.sidebar){padding-top:0!important;padding-left:0!important}
+html.lohub-ios{--m-tabbar-h:0px}
+html:not(.lohub-ios) body:has(.m-tabbar){--m-tabbar-h:calc(49px)}
+
+@media (prefers-reduced-motion:reduce){
+  .m-screen *,.m-sheet,.m-toast,.m-card--tap{transition:none!important;animation:none!important}
+}
+
+/* Mockup-only: simulates the iPhone 16 Pro frame around the WKWebView.
+   In the real app the status bar and tab bar are native; inside the WebView
+   --m-safe-top comes from env() and --m-tabbar-h is 0. */
+:root{--m-safe-top:54px;--m-safe-bottom:0px;--m-tabbar-h:83px}
+html,body{margin:0;background:var(--surface)}
+.mk-status,.mk-tabbar,.mk-tab,.m-actionbar{box-sizing:border-box}
+body{font-family:'DM Sans',-apple-system,system-ui,sans-serif}
+.mk-status{position:fixed;top:0;left:0;right:0;height:54px;z-index:70;display:flex;align-items:center;justify-content:space-between;
+  padding:6px 34px 0 46px;font:600 17px/1 -apple-system,'SF Pro Text',system-ui,sans-serif;color:var(--text);pointer-events:none}
+.mk-status .r{display:flex;gap:6px;align-items:center}
+.mk-island{position:fixed;top:11px;left:50%;transform:translateX(-50%);width:124px;height:36px;border-radius:20px;background:#000;z-index:71}
+/* native UITabBar look-alike */
+.mk-tabbar{position:fixed;left:0;right:0;bottom:0;height:83px;z-index:80;display:flex;padding:0 6px 34px;
+  background:rgba(250,250,252,.86);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);box-shadow:0 -.5px 0 rgba(0,0,0,.18)}
+.mk-tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding-top:7px;gap:3px;
+  font:500 10px/1 -apple-system,'SF Pro Text',system-ui,sans-serif;color:#8a8a8e;position:relative}
+.mk-tab svg{width:27px;height:27px}
+.mk-tab.on{color:var(--brand)}
+.mk-badge{position:absolute;top:3px;left:calc(50% + 6px);min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#ff3b30;color:#fff;
+  font:600 12px/18px -apple-system,system-ui,sans-serif;text-align:center}
+.mk-home{position:fixed;bottom:8px;left:50%;transform:translateX(-50%);width:139px;height:5px;border-radius:3px;background:#111;z-index:81}
+
+.sh-search{margin:var(--m-2) var(--m-gutter) 0}
+.sh-stats{margin:var(--m-4) var(--m-gutter) 0}
+.sh-stats .m-stat{flex-basis:118px}
+.sh-seg{margin:var(--m-5) var(--m-gutter) 0}
+.sh-card{display:block;padding:var(--m-4);color:inherit;text-decoration:none}
+.sh-card__top{display:flex;align-items:flex-start;gap:var(--m-3)}
+.sh-card__title{font-size:var(--m-fs-headline);font-weight:700;line-height:1.25;flex:1;min-width:0}
+.sh-card__meta{display:flex;align-items:center;flex-wrap:wrap;gap:6px var(--m-2);margin-top:6px;font-size:var(--m-fs-subhead);color:var(--text-muted)}
+.sh-card .m-progress{margin:var(--m-3) 0 var(--m-2);height:8px;gap:2px;background:var(--surface-strong)}
+.sh-legend{display:flex;gap:var(--m-4);font-size:var(--m-fs-footnote);color:var(--text-muted);font-weight:600}
+.sh-legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:0}
+.sh-legend b{color:var(--text);font-variant-numeric:tabular-nums}
+.sh-more{width:var(--m-tap);height:var(--m-tap);margin:-10px -12px 0 0;flex:0 0 auto}
+.sh-attn{margin-top:var(--m-3);display:flex;gap:var(--m-2);flex-wrap:wrap}
+</style></head>
+<body>
+<div class="mk-status"><span>9:41</span><span class="r">
+  <svg width="18" height="12" viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx="1" fill="currentColor"/><rect x="5" y="5.5" width="3" height="6.5" rx="1" fill="currentColor"/><rect x="10" y="3" width="3" height="9" rx="1" fill="currentColor"/><rect x="15" y="0" width="3" height="12" rx="1" fill="currentColor"/></svg>
+  <svg width="16" height="12" viewBox="0 0 16 12"><path d="M8 2.2c2.3 0 4.4.9 6 2.4l1.1-1.2A10.2 10.2 0 0 0 8 .6 10.2 10.2 0 0 0 .9 3.4L2 4.6a8.6 8.6 0 0 1 6-2.4Zm0 3.3c1.4 0 2.6.5 3.6 1.4l1.1-1.2A6.8 6.8 0 0 0 8 3.9a6.8 6.8 0 0 0-4.7 1.8l1.1 1.2c1-.9 2.2-1.4 3.6-1.4Zm0 3.2c-.6 0-1.2.2-1.6.6L8 11l1.6-1.7c-.4-.4-1-.6-1.6-.6Z" fill="currentColor"/></svg>
+  <svg width="27" height="13" viewBox="0 0 27 13"><rect x=".5" y=".5" width="23" height="12" rx="3.5" stroke="currentColor" opacity=".4" fill="none"/><rect x="2" y="2" width="19" height="9" rx="2" fill="currentColor"/><path d="M25 4.5v4c.8-.3 1.4-1.1 1.4-2s-.6-1.7-1.4-2Z" fill="currentColor" opacity=".45"/></svg>
+</span></div><div class="mk-island"></div>
+
+<main class="m-screen">
+  <header class="m-navbar">
+    <div class="m-navbar__row">
+      <div class="m-navbar__title">Shows</div>
+      <div class="m-navbar__actions">
+        <button class="m-iconbtn" aria-label="Filter by date and status">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg></button>
+        <button class="m-iconbtn" aria-label="Import orders CSV">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+      </div>
+    </div>
+  </header>
+  <div class="m-largetitle"><h1>Shows</h1><p>Active and last 30 days</p></div>
+
+  <div class="sh-search"><label class="m-search">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input type="search" placeholder="Search shows" aria-label="Search shows"></label></div>
+
+  <div class="sh-stats m-stats m-stats--scroll" aria-label="Summary">
+    <div class="m-stat m-stat--brand"><div class="m-stat__label">Active shows</div><div class="m-stat__value">4</div></div>
+    <div class="m-stat m-stat--warn"><div class="m-stat__label">To pick</div><div class="m-stat__value">48</div></div>
+    <div class="m-stat m-stat--good"><div class="m-stat__label">Packed</div><div class="m-stat__value">36</div></div>
+    <div class="m-stat"><div class="m-stat__label">Shipments</div><div class="m-stat__value">110</div></div>
+    <div class="m-stat m-stat--bad"><div class="m-stat__label">Cancelled</div><div class="m-stat__value">5</div></div>
+  </div>
+
+  <div class="sh-seg"><div class="m-seg" role="tablist">
+    <button class="m-seg__btn" role="tab" aria-selected="true">Active<span class="m-seg__count">4</span></button>
+    <button class="m-seg__btn" role="tab" aria-selected="false">Done</button>
+    <button class="m-seg__btn" role="tab" aria-selected="false">All</button>
+  </div></div>
+
+  <section class="m-section">
+    <div class="m-section__header"><span>In progress</span><button>Select</button></div>
+
+    <div class="m-card" style="padding:0">
+      <a class="sh-card" href="#">
+        <div class="sh-card__top">
+          <div class="sh-card__title">Peach LIVE · Nov 5 Evening</div>
+          <span class="m-pill m-pill--live">Live</span>
+          <svg class="m-row__chev" viewBox="0 0 8 14" style="margin-top:5px"><path d="M1 1l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="sh-card__meta"><span class="m-pill m-pill--brand m-pill--plain">TikTok</span>38 orders · Started 7:00 PM</div>
+        <div class="m-progress" aria-label="8 packed, 16 picked, 14 to pick"><span class="m-progress__c" style="width:21%"></span><span class="m-progress__a" style="width:42%"></span></div>
+        <div class="sh-legend"><span><i style="background:var(--m-green)"></i><b>8</b> packed</span><span><i style="background:var(--brand)"></i><b>16</b> picked</span><span><i style="background:var(--surface-strong);box-shadow:inset 0 0 0 1px var(--border)"></i><b>14</b> to pick</span></div>
+        <div class="sh-attn"><span class="m-pill m-pill--issue">1 issue</span><span class="m-pill m-pill--cancelled">2 cancelled</span></div>
+      </a>
+    </div>
+
+    <div class="m-card" style="padding:0">
+      <a class="sh-card" href="#">
+        <div class="sh-card__top"><div class="sh-card__title">Peach LIVE · Nov 5 Morning</div>
+          <svg class="m-row__chev" viewBox="0 0 8 14" style="margin-top:5px"><path d="M1 1l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="sh-card__meta"><span class="m-pill m-pill--brand m-pill--plain">TikTok</span>31 orders · 11:00 AM</div>
+        <div class="m-progress"><span class="m-progress__c" style="width:35%"></span><span class="m-progress__a" style="width:20%"></span></div>
+        <div class="sh-legend"><span><i style="background:var(--m-green)"></i><b>11</b> packed</span><span><i style="background:var(--brand)"></i><b>6</b> picked</span><span><i style="background:var(--surface-strong);box-shadow:inset 0 0 0 1px var(--border)"></i><b>14</b> to pick</span></div>
+      </a>
+    </div>
+
+    <div class="m-card" style="padding:0">
+      <a class="sh-card" href="#">
+        <div class="sh-card__top"><div class="sh-card__title">Hera LIVE · Nov 4</div>
+          <svg class="m-row__chev" viewBox="0 0 8 14" style="margin-top:5px"><path d="M1 1l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="sh-card__meta"><span class="m-pill m-pill--brand m-pill--plain">TikTok</span>24 orders · Yesterday</div>
+        <div class="m-progress"><span class="m-progress__c" style="width:38%"></span><span class="m-progress__a" style="width:8%"></span></div>
+        <div class="sh-legend"><span><i style="background:var(--m-green)"></i><b>9</b> packed</span><span><i style="background:var(--brand)"></i><b>2</b> picked</span><span><i style="background:var(--surface-strong);box-shadow:inset 0 0 0 1px var(--border)"></i><b>13</b> to pick</span></div>
+      </a>
+    </div>
+
+    <div class="m-card" style="padding:0">
+      <a class="sh-card" href="#">
+        <div class="sh-card__top"><div class="sh-card__title">Sydney B LIVE · Nov 3</div>
+          <svg class="m-row__chev" viewBox="0 0 8 14" style="margin-top:5px"><path d="M1 1l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="sh-card__meta"><span class="m-pill m-pill--brand m-pill--plain">Whatnot</span>17 orders · Mon</div>
+        <div class="m-progress"><span class="m-progress__c" style="width:47%"></span><span class="m-progress__a" style="width:12%"></span></div>
+        <div class="sh-legend"><span><i style="background:var(--m-green)"></i><b>8</b> packed</span><span><i style="background:var(--brand)"></i><b>2</b> picked</span><span><i style="background:var(--surface-strong);box-shadow:inset 0 0 0 1px var(--border)"></i><b>7</b> to pick</span></div>
+      </a>
+    </div>
+  </section>
+</main>
+
+<nav class="mk-tabbar">
+  <div class="mk-tab"><svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M4.5 12.5 14 4.5l9.5 8V23a1 1 0 0 1-1 1h-5.5v-6.5h-6V24H5.5a1 1 0 0 1-1-1z"/></svg>Today</div>
+  <div class="mk-tab on"><svg viewBox="0 0 28 28" fill="currentColor"><rect x="3" y="6" width="22" height="15" rx="3"/><path d="M10 25h8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="m12 10.5 5 3-5 3z" fill="#fff"/></svg>Shows</div>
+  <div class="mk-tab"><svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M14 4 25 23H3z"/><path d="M14 11v5.5M14 19.6v.2" stroke-linecap="round"/></svg>Issues<span class="mk-badge">3</span></div>
+  <div class="mk-tab"><svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M4 10.5 14 5l10 5.5V23H4z"/><path d="M8.5 23v-8h11v8M8.5 18.5h11"/></svg>Inventory</div>
+  <div class="mk-tab"><svg viewBox="0 0 28 28" fill="currentColor"><circle cx="7" cy="14" r="2.2"/><circle cx="14" cy="14" r="2.2"/><circle cx="21" cy="14" r="2.2"/></svg>More</div>
+</nav>
+<div class="mk-home"></div>
+</body></html>

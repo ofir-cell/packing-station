@@ -1,0 +1,20 @@
+/* Proposed new values for the Classic theme in _NAVBAR_CSS (templates.py :root block).
+   Decision D1 for Ofir: this re-brands the default theme from 5 Second Beauty pink
+   (#d9748f) to LiveOpsHub indigo -> violet on ALL screens, desktop included.
+   Tenants with their own color keep it via _brand_style(), which should also emit
+   --brand-2 (for #4f46e5 -> #7c3aed; otherwise its dark(0.78) variant).
+   The mockups render with these values. */
+:root{
+  --brand:#4f46e5;              /* indigo 600 — fills, active tab, focus ring */
+  --brand-2:#7c3aed;            /* violet 600 — gradient end */
+  --brand-strong:#4338ca;       /* pressed/hover */
+  --brand-ink:#3730a3;          /* brand text on white: 10.4:1 */
+  --brand-glow:rgba(79,70,229,.14);
+  --bg:#ffffff;
+  --surface:#f2f3f7;            /* iOS grouped background, a hair cooler than #f6f7f9 */
+  --surface-strong:#e7e9f0;
+  --border:#e3e5ec;
+  --text:#141a26;
+  --text-muted:#566072;         /* 6.4:1 on white */
+  --text-dim:#5f6b7d;           /* 5.4:1 on white */
+}

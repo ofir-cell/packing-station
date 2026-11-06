@@ -1,0 +1,318 @@
+/* ==========================================================================
+   LiveOpsHub mobile layer — reference implementation of docs/mobile/DESIGN_SYSTEM.md
+   Owner: ios-designer. The mobile-engineer ports this into templates.py as
+   _MOBILE_CSS and injects it via app.py after_request (see DESIGN_SYSTEM.md §6).
+
+   Layering (all of it is safe to inject on every page, desktop included):
+     §1 tokens   — NEW variables only (--m-*, --brand-2, --brand-gradient, --on-brand).
+                   Existing tokens (--brand, --bg, --text …) are NOT redefined here, so
+                   desktop and tenant brand overrides are untouched. Dark-mode values for
+                   the existing tokens apply only under html.m.theme-dark.
+     §2 components (m-*) — only affect elements that carry an m- class.
+     §3 global fix-ups   — ONLY under html.m (set by the layer script on viewports
+                   ≤820px or inside the iOS app) or html.lohub-ios.
+   Desktop (>820px, not in the app) never gets html.m → renders identical to today.
+   The proposed Classic indigo/violet values for _NAVBAR_CSS live in
+   classic-tokens.proposal.css (Ofir decision D1), not here.
+   ========================================================================== */
+
+/* §1 ── TOKENS ─────────────────────────────────────────────────────────── */
+:root{
+  --brand-2:var(--brand-strong);              /* gradient end; _brand_style() / themes set a real second hue */
+  --brand-gradient:linear-gradient(135deg,var(--brand) 0%,var(--brand-2) 100%);
+  --on-brand:#ffffff;
+
+  /* semantic (text-safe ≥4.5:1 on --bg and on their own tint) */
+  --m-green:#15803d;  --m-green-tint:#dcfce7;
+  --m-teal:#0f766e;   --m-teal-tint:#ccfbf1;
+  --m-blue:#1d4ed8;   --m-blue-tint:#dbeafe;
+  --m-amber:#a16207;  --m-amber-tint:#fef3c7;
+  --m-orange:#c2410c; --m-orange-tint:#ffedd5;
+  --m-red:#dc2626;    --m-red-tint:#fee2e2;
+  --m-gray:#4b5563;   --m-gray-tint:#eceef2;
+
+  /* spacing — 4pt grid */
+  --m-1:.25rem; --m-2:.5rem; --m-3:.75rem; --m-4:1rem; --m-5:1.25rem; --m-6:1.5rem; --m-8:2rem;
+  --m-gutter:var(--m-4);                       /* screen side margin = 16pt */
+  /* radii */
+  --m-r-xs:6px; --m-r-sm:8px; --m-r-md:12px; --m-r-lg:16px; --m-r-xl:22px; --m-r-pill:999px;
+  /* type scale (rem, Dynamic-Type friendly; 1rem = 16px) */
+  --m-fs-largetitle:2.125rem; --m-fs-title1:1.75rem; --m-fs-title2:1.375rem; --m-fs-title3:1.25rem;
+  --m-fs-headline:1.0625rem; --m-fs-body:1.0625rem; --m-fs-callout:1rem; --m-fs-subhead:.9375rem;
+  --m-fs-footnote:.8125rem; --m-fs-caption:.75rem;
+  /* elevation */
+  --m-shadow-1:0 1px 2px rgba(16,24,40,.06),0 1px 1px rgba(16,24,40,.04);
+  --m-shadow-2:0 6px 20px rgba(16,24,40,.08),0 1px 3px rgba(16,24,40,.06);
+  --m-shadow-3:0 -10px 40px rgba(16,24,40,.18);
+  --m-shadow-brand:0 8px 22px var(--brand-glow);
+  /* motion */
+  --m-ease:cubic-bezier(.2,.8,.2,1); --m-t-fast:120ms; --m-t:200ms; --m-t-slow:320ms;
+  /* chrome */
+  --m-navbar-h:44px; --m-tabbar-h:0px;          /* 0 in the app (native tab bar is outside the WebView) */
+  --m-tap:44px;
+  --m-safe-top:env(safe-area-inset-top,0px); --m-safe-bottom:env(safe-area-inset-bottom,0px);
+  --m-safe-left:env(safe-area-inset-left,0px); --m-safe-right:env(safe-area-inset-right,0px);
+  --m-material:rgba(255,255,255,.82);
+}
+:root[data-theme="taupe"]{--brand-2:#0e7490;--m-shadow-brand:0 8px 22px rgba(15,118,110,.3)}
+:root[data-theme="sage"] {--brand-2:#4d6a5a;--m-shadow-brand:0 8px 22px rgba(91,115,85,.3)}
+:root[data-theme="slate"]{--brand-2:#9d4d77;--m-shadow-brand:0 8px 22px rgba(194,96,125,.3)}
+
+/* Dark: html.m.theme-dark. The layer script sets theme-dark from the user's choice
+   (localStorage "lohubMode": light|dark|system; default "system" in the app, "light"
+   in browsers). Accents are lifted so text stays ≥4.5:1 on dark cells; fills
+   (--brand) stay deep enough for white text ≥4.5:1. */
+html.m.theme-dark{
+  --bg:#1c1c22; --surface:#0d0d12; --surface-strong:#2a2a33; --border:rgba(255,255,255,.10);
+  --text:#f4f4f7; --text-muted:#a7a9b6; --text-dim:#9496a3;
+  --brand:#5b54f0; --brand-2:#7c3aed; --brand-strong:#818cf8; --brand-ink:#a5b4fc; --brand-glow:rgba(129,140,248,.18);
+  --m-green:#4ade80; --m-green-tint:rgba(74,222,128,.14);
+  --m-teal:#2dd4bf;  --m-teal-tint:rgba(45,212,191,.14);
+  --m-blue:#93c5fd;  --m-blue-tint:rgba(147,197,253,.14);
+  --m-amber:#fcd34d; --m-amber-tint:rgba(252,211,77,.14);
+  --m-orange:#fdba74;--m-orange-tint:rgba(253,186,116,.14);
+  --m-red:#f87171;   --m-red-tint:rgba(248,113,113,.15);
+  --m-gray:#c4c7d0;  --m-gray-tint:rgba(255,255,255,.08);
+  --m-shadow-1:none; --m-shadow-2:0 0 0 1px rgba(255,255,255,.06); --m-shadow-brand:0 8px 24px rgba(91,84,240,.35);
+  --m-material:rgba(28,28,34,.78);
+  color-scheme:dark;
+}
+html.m.theme-dark[data-theme="taupe"]{--brand:#0f766e;--brand-2:#0e7490;--brand-ink:#5eead4;--brand-strong:#2dd4bf;--brand-glow:rgba(45,212,191,.16)}
+html.m.theme-dark[data-theme="sage"] {--brand:#4f6849;--brand-2:#45604f;--brand-ink:#b7cdb0;--brand-strong:#9db596;--brand-glow:rgba(157,181,150,.16)}
+html.m.theme-dark[data-theme="slate"]{--brand:#a84e68;--brand-2:#8f4268;--brand-ink:#f0a9bf;--brand-strong:#e38fa8;--brand-glow:rgba(227,143,168,.16)}
+
+/* §2 ── COMPONENTS ─────────────────────────────────────────────────────── */
+.m-screen{min-height:100dvh;background:var(--surface);color:var(--text);font-family:'DM Sans',-apple-system,system-ui,sans-serif;
+  font-size:var(--m-fs-body);line-height:1.35;-webkit-font-smoothing:antialiased;
+  padding:0 0 calc(var(--m-tabbar-h) + var(--m-safe-bottom) + var(--m-4));}
+.m-screen *,.m-actionbar,.m-actionbar *,.m-sheet,.m-sheet *,.m-toast,.m-tabbar,.m-tabbar *{box-sizing:border-box}
+.m-screen--has-actionbar{padding-bottom:calc(var(--m-tabbar-h) + var(--m-safe-bottom) + 96px)}
+
+/* Nav bar + large title */
+.m-navbar{position:sticky;top:0;z-index:50;padding-top:var(--m-safe-top);background:transparent;
+  transition:background var(--m-t) var(--m-ease),box-shadow var(--m-t) var(--m-ease)}
+.m-navbar.is-scrolled{background:var(--m-material);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);box-shadow:0 .5px 0 var(--border)}
+.m-navbar__row{height:var(--m-navbar-h);display:flex;align-items:center;gap:var(--m-2);padding:0 calc(var(--m-2) + var(--m-safe-right)) 0 calc(var(--m-2) + var(--m-safe-left))}
+.m-navbar__back{display:inline-flex;align-items:center;gap:2px;min-width:var(--m-tap);height:var(--m-tap);padding:0 var(--m-2) 0 0;
+  border:0;background:none;color:var(--brand-ink);font:inherit;font-size:var(--m-fs-body);text-decoration:none;cursor:pointer}
+.m-navbar__back svg{width:13px;height:21px}
+.m-navbar__title{flex:1;text-align:center;font-weight:700;font-size:var(--m-fs-headline);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  opacity:0;transition:opacity var(--m-t-fast)}
+.m-navbar.is-scrolled .m-navbar__title{opacity:1}
+.m-navbar__actions{display:flex;gap:var(--m-1);margin-left:auto}
+.m-iconbtn{width:var(--m-tap);height:var(--m-tap);display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:var(--m-r-pill);
+  background:none;color:var(--brand-ink);cursor:pointer;-webkit-tap-highlight-color:transparent}
+.m-iconbtn--filled{background:var(--bg);box-shadow:var(--m-shadow-1)}
+.m-iconbtn svg{width:22px;height:22px}
+.m-iconbtn:active{opacity:.55}
+.m-largetitle{padding:var(--m-1) var(--m-gutter) var(--m-2);margin:0}
+.m-largetitle h1{font-size:var(--m-fs-largetitle);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin:0}
+.m-largetitle p{margin:var(--m-1) 0 0;color:var(--text-muted);font-size:var(--m-fs-subhead)}
+.m-eyebrow{font-size:var(--m-fs-footnote);font-weight:700;color:var(--brand-ink);letter-spacing:.02em}
+
+/* Sections & inset-grouped lists */
+.m-section{margin:var(--m-5) 0 0;padding:0 var(--m-gutter)}
+.m-section__header{display:flex;align-items:baseline;justify-content:space-between;padding:0 var(--m-1) var(--m-2);
+  font-size:var(--m-fs-footnote);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
+.m-section__header a,.m-section__header button{text-transform:none;letter-spacing:0;font-size:var(--m-fs-subhead);font-weight:600;color:var(--brand-ink);background:none;border:0;text-decoration:none}
+.m-section__footer{padding:var(--m-2) var(--m-1) 0;font-size:var(--m-fs-footnote);color:var(--text-muted)}
+.m-list{background:var(--bg);border-radius:var(--m-r-lg);overflow:hidden;box-shadow:var(--m-shadow-1);list-style:none;margin:0;padding:0}
+.m-row{position:relative;display:flex;align-items:center;gap:var(--m-3);min-height:var(--m-tap);padding:var(--m-3) var(--m-4);
+  color:var(--text);text-decoration:none;background:var(--bg);-webkit-tap-highlight-color:transparent}
+.m-row + .m-row::before{content:"";position:absolute;top:0;right:0;left:var(--m-row-inset,var(--m-4));height:.5px;background:var(--border)}
+.m-row--lead + .m-row--lead{--m-row-inset:calc(var(--m-4) + 36px + var(--m-3))}
+a.m-row:active,button.m-row:active{background:var(--surface-strong)}
+button.m-row{width:100%;border:0;font:inherit;text-align:left;cursor:pointer}
+.m-row__lead{flex:0 0 36px;width:36px;height:36px;border-radius:var(--m-r-sm);display:flex;align-items:center;justify-content:center;
+  background:var(--brand-glow);color:var(--brand-ink)}
+.m-row__lead svg{width:20px;height:20px}
+.m-row__body{flex:1;min-width:0}
+.m-row__title{font-size:var(--m-fs-body);font-weight:600;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-row__sub{margin-top:2px;font-size:var(--m-fs-subhead);color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:var(--m-2)}
+.m-row__trail{flex:0 0 auto;display:flex;align-items:center;gap:var(--m-2);color:var(--text-muted);font-size:var(--m-fs-subhead)}
+.m-row__value{font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
+.m-row__chev{width:8px;height:14px;color:var(--text-dim);opacity:.7}
+
+/* Cards */
+.m-card{background:var(--bg);border-radius:var(--m-r-lg);box-shadow:var(--m-shadow-1);padding:var(--m-4)}
+.m-card--tap{display:block;color:inherit;text-decoration:none;transition:transform var(--m-t-fast) var(--m-ease)}
+.m-card--tap:active{transform:scale(.98)}
+.m-card--hero{background:var(--brand-gradient);color:var(--on-brand);box-shadow:var(--m-shadow-brand)}
+.m-card + .m-card{margin-top:var(--m-3)}
+
+/* Stat tiles */
+.m-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--m-3)}
+.m-stats--scroll{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;margin:0 calc(-1 * var(--m-gutter));padding:0 var(--m-gutter) var(--m-1);scrollbar-width:none}
+.m-stats--scroll::-webkit-scrollbar{display:none}
+.m-stats--scroll .m-stat{flex:0 0 132px;scroll-snap-align:start}
+.m-stat{background:var(--bg);border-radius:var(--m-r-md);box-shadow:var(--m-shadow-1);padding:var(--m-3) var(--m-4);min-width:0}
+.m-stat__label{font-size:var(--m-fs-footnote);font-weight:600;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-stat__value{margin-top:2px;font-size:var(--m-fs-title1);font-weight:800;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.1}
+.m-stat__delta{font-size:var(--m-fs-caption);font-weight:600;color:var(--text-muted);margin-top:2px}
+.m-stat--brand .m-stat__value{color:var(--brand-ink)} .m-stat--warn .m-stat__value{color:var(--m-amber)}
+.m-stat--good .m-stat__value{color:var(--m-green)}   .m-stat--bad .m-stat__value{color:var(--m-red)}
+
+/* Status pills — label text always present (never color alone) */
+.m-pill{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:var(--m-r-pill);
+  font-size:var(--m-fs-caption);font-weight:700;line-height:1;white-space:nowrap;background:var(--m-gray-tint);color:var(--m-gray)}
+.m-pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto}
+.m-pill--plain::before{display:none}
+.m-pill--pending  {background:var(--m-amber-tint); color:var(--m-amber)}
+.m-pill--picked   {background:var(--m-blue-tint);  color:var(--m-blue)}
+.m-pill--packed   {background:var(--m-teal-tint);  color:var(--m-teal)}
+.m-pill--shipped  {background:var(--m-green-tint); color:var(--m-green)}
+.m-pill--cancelled{background:var(--m-red-tint);   color:var(--m-red)}
+.m-pill--cancelled::before{border-radius:1px;width:7px;height:2px}             /* dash, not dot */
+.m-pill--issue    {background:var(--m-orange-tint);color:var(--m-orange)}
+.m-pill--issue::before{content:"!";width:auto;height:auto;background:none;font-weight:900}
+.m-pill--live     {background:#dc2626;color:#fff}                 /* fixed red: white text ≥4.5:1 in both modes */
+.m-pill--live::before{background:#fff;animation:m-pulse 1.4s infinite}
+.m-pill--brand    {background:var(--brand-glow);color:var(--brand-ink)}
+@keyframes m-pulse{50%{opacity:.35}}
+
+/* Progress */
+.m-progress{height:6px;border-radius:var(--m-r-pill);background:var(--surface-strong);overflow:hidden;display:flex}
+.m-progress > span{display:block;height:100%}
+.m-progress__a{background:var(--brand-gradient)} .m-progress__b{background:var(--m-teal)} .m-progress__c{background:var(--m-green)}
+
+/* Segmented control */
+.m-seg{display:flex;padding:2px;border-radius:var(--m-r-sm);background:var(--surface-strong);gap:0}
+.m-seg__btn{flex:1;min-height:32px;border:0;background:none;border-radius:7px;font:inherit;font-size:var(--m-fs-subhead);font-weight:600;
+  color:var(--text);cursor:pointer;position:relative}
+.m-seg__btn::after{content:"";position:absolute;inset:-6px 0}            /* 44pt hit area around a 32pt visual */
+.m-seg__btn[aria-selected="true"]{background:var(--bg);box-shadow:0 1px 3px rgba(16,24,40,.12),0 0 0 .5px rgba(16,24,40,.04);font-weight:700}
+.m-seg__count{color:var(--text-muted);font-weight:600;margin-left:3px}
+
+/* Search field */
+.m-search{position:relative;display:flex;align-items:center;gap:var(--m-2);height:var(--m-tap);padding:0 var(--m-3);
+  border-radius:var(--m-r-md);background:var(--surface-strong);color:var(--text-muted)}
+.m-search svg{width:18px;height:18px;flex:0 0 auto}
+.m-search input{flex:1;min-width:0;height:100%;border:0;background:none;outline:none;font:inherit;font-size:var(--m-fs-body);color:var(--text)}
+.m-search input::placeholder{color:var(--text-dim)}
+.m-search__scan{margin-right:calc(-1 * var(--m-2))}
+
+/* Buttons */
+.m-btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--m-2);min-height:var(--m-tap);padding:0 var(--m-5);
+  border:0;border-radius:var(--m-r-md);font:inherit;font-size:var(--m-fs-body);font-weight:700;text-decoration:none;cursor:pointer;
+  -webkit-tap-highlight-color:transparent;transition:transform var(--m-t-fast) var(--m-ease),opacity var(--m-t-fast)}
+.m-btn:active{transform:scale(.97)}
+.m-btn[disabled]{opacity:.4;pointer-events:none}
+.m-btn--lg{min-height:52px;border-radius:14px;width:100%}
+.m-btn--primary{background:var(--brand-gradient);color:var(--on-brand);box-shadow:var(--m-shadow-brand)}
+.m-btn--secondary{background:var(--brand-glow);color:var(--brand-ink)}
+.m-btn--tinted-red,.m-btn--destructive{background:var(--m-red-tint);color:var(--m-red)}
+.m-btn--plain{background:none;color:var(--brand-ink);padding:0 var(--m-2)}
+.m-btn svg{width:20px;height:20px}
+
+/* Sticky bottom action bar (one primary action per screen) */
+.m-actionbar{position:fixed;left:0;right:0;bottom:calc(var(--m-tabbar-h));z-index:60;
+  padding:var(--m-3) calc(var(--m-gutter) + var(--m-safe-right)) calc(var(--m-3) + var(--m-safe-bottom)) calc(var(--m-gutter) + var(--m-safe-left));
+  background:var(--m-material);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);
+  box-shadow:0 -.5px 0 var(--border);display:flex;gap:var(--m-3)}
+.m-actionbar .m-btn--lg{flex:1}
+.m-actionbar__aux{flex:0 0 52px!important;width:52px;padding:0}
+
+/* Bottom sheet + action sheet */
+.m-sheet__backdrop{position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.32);opacity:0;pointer-events:none;transition:opacity var(--m-t) var(--m-ease)}
+.m-sheet{position:fixed;left:0;right:0;bottom:0;z-index:91;max-height:92dvh;overflow:auto;background:var(--bg);border-radius:var(--m-r-xl) var(--m-r-xl) 0 0;
+  box-shadow:var(--m-shadow-3);padding:var(--m-2) var(--m-gutter) calc(var(--m-4) + var(--m-safe-bottom));
+  transform:translateY(105%);transition:transform var(--m-t-slow) var(--m-ease)}
+.m-sheet.is-open{transform:none} .m-sheet.is-open ~ .m-sheet__backdrop,.m-sheet__backdrop.is-open{opacity:1;pointer-events:auto}
+.m-sheet__grabber{width:36px;height:5px;border-radius:3px;background:var(--border);margin:0 auto var(--m-3)}
+.m-sheet__title{font-size:var(--m-fs-headline);font-weight:700;text-align:center;margin-bottom:var(--m-4)}
+
+/* Form fields */
+.m-field{display:block;margin-bottom:var(--m-4)}
+.m-field__label{display:block;font-size:var(--m-fs-footnote);font-weight:700;color:var(--text-muted);margin:0 0 6px var(--m-1)}
+.m-field__control{display:flex;align-items:center;gap:var(--m-2);min-height:48px;padding:0 var(--m-3);border-radius:var(--m-r-md);
+  background:var(--bg);border:1px solid var(--border);transition:border-color var(--m-t-fast),box-shadow var(--m-t-fast)}
+.m-field__control:focus-within{border-color:var(--brand);box-shadow:0 0 0 4px var(--brand-glow)}
+.m-field__control input,.m-field__control select,.m-field__control textarea{flex:1;min-width:0;border:0;outline:none;background:none;
+  font:inherit;font-size:max(16px,var(--m-fs-body));color:var(--text);padding:var(--m-3) 0}
+.m-field__help{font-size:var(--m-fs-footnote);color:var(--text-muted);margin:6px var(--m-1) 0}
+.m-field--error .m-field__control{border-color:var(--m-red);box-shadow:0 0 0 4px var(--m-red-tint)}
+.m-field--error .m-field__help{color:var(--m-red)}
+.m-field__scan{display:none} html.lohub-ios .m-field__scan{display:inline-flex}
+
+/* Empty / loading / error */
+.m-empty{text-align:center;padding:var(--m-8) var(--m-6);color:var(--text-muted)}
+.m-empty__icon{width:56px;height:56px;margin:0 auto var(--m-3);border-radius:16px;display:flex;align-items:center;justify-content:center;background:var(--brand-glow);color:var(--brand-ink)}
+.m-empty__title{font-size:var(--m-fs-title3);font-weight:700;color:var(--text);margin-bottom:var(--m-1)}
+.m-empty__body{font-size:var(--m-fs-subhead);margin-bottom:var(--m-4)}
+.m-skeleton{border-radius:var(--m-r-sm);background:linear-gradient(90deg,var(--surface-strong) 25%,var(--surface) 50%,var(--surface-strong) 75%);
+  background-size:200% 100%;animation:m-shimmer 1.2s linear infinite;min-height:1em}
+@keyframes m-shimmer{to{background-position:-200% 0}}
+.m-banner{display:flex;gap:var(--m-3);align-items:flex-start;padding:var(--m-3) var(--m-4);border-radius:var(--m-r-md);font-size:var(--m-fs-subhead)}
+.m-banner--error{background:var(--m-red-tint);color:var(--m-red)} .m-banner--warn{background:var(--m-amber-tint);color:var(--m-amber)}
+.m-banner--offline{background:var(--surface-strong);color:var(--text)}
+
+/* Toast */
+.m-toast{position:fixed;left:50%;bottom:calc(var(--m-tabbar-h) + var(--m-safe-bottom) + 96px);z-index:100;transform:translate(-50%,20px);opacity:0;
+  display:flex;align-items:center;gap:var(--m-2);max-width:calc(100vw - 32px);padding:var(--m-3) var(--m-4);border-radius:var(--m-r-pill);
+  background:rgba(20,20,26,.92);color:#fff;font-size:var(--m-fs-subhead);font-weight:600;box-shadow:var(--m-shadow-2);
+  transition:all var(--m-t) var(--m-ease);pointer-events:none}
+.m-toast.is-shown{opacity:1;transform:translate(-50%,0)}
+.m-toast--success svg{color:#4ade80} .m-toast--error svg{color:#f87171}
+
+/* Web tab bar (browser fallback only; inside the app the tab bar is native) */
+.m-tabbar{position:fixed;left:0;right:0;bottom:0;z-index:80;display:flex;box-sizing:border-box;padding:0 var(--m-safe-right) var(--m-safe-bottom) var(--m-safe-left);
+  background:var(--m-material);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);box-shadow:0 -.5px 0 var(--border)}
+.m-tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:49px;padding-top:4px;
+  font-size:10px;font-weight:600;color:var(--text-dim);text-decoration:none;letter-spacing:.01em}   /* 10pt is the HIG tab-label size; exempt from the 12px floor */
+.m-tab svg{width:26px;height:26px}
+.m-tab[aria-current="page"]{color:var(--brand)}
+html.lohub-ios .m-tabbar{display:none}
+
+/* §3 ── GLOBAL FIX-UPS (html.m = ≤820px or the iOS app) ─────────────────
+   Each rule is G-numbered and listed in DESIGN_SYSTEM.md §6 with its desktop risk.
+   Desktop never carries html.m, so none of this can reach it. */
+html.m{-webkit-text-size-adjust:100%}
+/* G1 tap targets ≥44pt */
+html.m button,html.m [role=button],html.m input[type=submit],html.m input[type=button],html.m select,
+html.m .btn,html.m a[class*="btn"]{min-height:var(--m-tap);touch-action:manipulation}
+html.m input[type=checkbox],html.m input[type=radio]{width:22px;height:22px;accent-color:var(--brand)}
+html.m label:has(> input[type=checkbox]),html.m label:has(> input[type=radio]){min-height:var(--m-tap);display:inline-flex;align-items:center;gap:var(--m-2)}
+/* G2 inputs ≥16px (no iOS focus zoom) */
+html.m input:not([type=checkbox]):not([type=radio]):not([type=range]),html.m select,html.m textarea{font-size:max(16px,1em)!important}
+/* G3 tiny-text floor 12px: known offenders + inline px sizes < 12 (tab-bar labels .m-tab exempt) */
+html.m .brand-sub,html.m .sb-user-id small,html.m small,html.m th,html.m .txt,html.m .lbl,html.m .label,html.m .badge,html.m .tag,
+html.m [style*="font-size:8px"],html.m [style*="font-size:9px"],html.m [style*="font-size:10px"],html.m [style*="font-size:11px"],
+html.m [style*="font-size: 8px"],html.m [style*="font-size: 9px"],html.m [style*="font-size: 10px"],html.m [style*="font-size: 11px"]{font-size:max(12px,1em)!important}
+/* G4 no element wider than the screen */
+html.m img,html.m video,html.m canvas,html.m svg,html.m iframe{max-width:100%}
+html.m pre,html.m code{white-space:pre-wrap;word-break:break-word}
+html.m [style*="display:flex"] > *,html.m .row > *{min-width:0}
+html.m table:not([data-m="list"]){display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+/* G5 last-resort guard (QA measures element right edges, not scrollWidth, so this can't hide bugs) */
+html.m body{overflow-x:clip}
+/* G6 off-canvas sidebar shadow leaking into every screen's left edge */
+html.m .sidebar{box-shadow:none} html.m body.sb-open .sidebar{box-shadow:0 0 60px rgba(0,0,0,.25)}
+/* G7 table → list on phones (opt-in per table, §7) */
+@media (max-width:599px){
+  html.m table[data-m="list"],html.m table[data-m="list"] tbody{display:block;width:100%}
+  html.m table[data-m="list"] thead{display:none}
+  html.m table[data-m="list"] tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px var(--m-3);padding:var(--m-3) var(--m-4);
+    background:var(--bg);border-bottom:.5px solid var(--border)}
+  html.m table[data-m="list"] td{display:none;padding:0;border:0;white-space:normal}
+  html.m table[data-m="list"] td[data-m="primary"]{display:block;grid-column:1;font-weight:600;font-size:var(--m-fs-body);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  html.m table[data-m="list"] td[data-m="secondary"]{display:block;grid-column:1;font-size:var(--m-fs-subhead);color:var(--text-muted)}
+  html.m table[data-m="list"] td[data-m="trailing"]{display:flex;grid-column:2;grid-row:1 / span 2;align-items:center;justify-content:flex-end}
+  html.m table[data-m="list"] td[data-m="detail"]{display:block;grid-column:1 / -1;font-size:var(--m-fs-footnote);color:var(--text-muted)}
+  html.m table[data-m="list"] td[data-m="detail"]::before{content:attr(data-label) ": ";font-weight:600}
+  /* G8 browser on a phone: the web tab bar replaces hamburger + Back/Home */
+  html.m:not(.lohub-ios) body:has(.m-tabbar) .sb-toggle,html.m:not(.lohub-ios) body:has(.m-tabbar) .sb-nav2,
+  html.m:not(.lohub-ios) body:has(.m-tabbar) .sb-mbar{display:none}
+  html.m:not(.lohub-ios) body:has(.m-tabbar){padding-top:0;--m-tabbar-h:calc(49px + var(--m-safe-bottom))}
+}
+@media (min-width:600px){ .m-tabbar{display:none} }
+/* G9 in the iOS app: web chrome the native shell replaces */
+html.lohub-ios .sb-toggle,html.lohub-ios .sb-nav2,html.lohub-ios .sb-mbar,html.lohub-ios .sb-ov,html.lohub-ios .sidebar{display:none!important}
+html.lohub-ios body:has(.sidebar){padding-top:0!important;padding-left:0!important}
+html.lohub-ios{--m-tabbar-h:0px}
+/* G10 iOS niceties */
+html.lohub-ios body{-webkit-touch-callout:none;overscroll-behavior-y:none}
+html.lohub-ios input,html.lohub-ios textarea,html.lohub-ios [contenteditable]{-webkit-touch-callout:default}
+
+@media (prefers-reduced-motion:reduce){
+  .m-screen *,.m-sheet,.m-toast,.m-card--tap{transition:none!important;animation:none!important}
+}
