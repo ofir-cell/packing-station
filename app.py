@@ -3,7 +3,7 @@
 5 Second Beauty — Packing Station
 Production web app for packing video recording & lookup.
 """
-import os,csv,json,hashlib,secrets,time,threading,re,sys,sqlite3,fcntl,io
+import os,csv,json,hashlib,hmac,base64,secrets,time,threading,re,sys,sqlite3,fcntl,io
 from datetime import datetime,timedelta
 from functools import wraps
 from contextlib import contextmanager
@@ -721,6 +721,49 @@ def _verify(pw,stored):
     if len(stored)==64:
         return secrets.compare_digest(stored,_legacy_sha256(pw))
     return False
+
+# ── TWO-FACTOR (TOTP) — admin accounts only ──────────────────────────────────
+# Time-based one-time passwords (RFC 6238, SHA1, 30s, 6 digits), implemented inline so
+# there is no extra dependency. Secret is per-user base32; recovery codes are bcrypt-hashed.
+import struct as _struct
+_TOTP_ISSUER="LiveOpsHub"
+
+def _totp_new_secret():
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+def _totp_at(secret, for_time, step=30, digits=6):
+    try:
+        key=base64.b32decode(secret+"="*((8-len(secret)%8)%8), casefold=True)
+    except Exception:
+        return ""
+    msg=_struct.pack(">Q", int(for_time//step))
+    h=hmac.new(key,msg,hashlib.sha1).digest()
+    o=h[-1]&0x0F
+    code=(_struct.unpack(">I",h[o:o+4])[0]&0x7fffffff)%(10**digits)
+    return str(code).zfill(digits)
+
+def _totp_verify(secret, code, window=1):
+    """True if `code` matches within ±window 30s steps (clock-skew tolerance)."""
+    code=re.sub(r"\D","",(code or ""))
+    if len(code)!=6 or not secret: return False
+    now=time.time()
+    for w in range(-window,window+1):
+        if secrets.compare_digest(_totp_at(secret, now+w*30), code): return True
+    return False
+
+def _totp_uri(secret, account):
+    from urllib.parse import quote
+    label=quote("%s:%s"%(_TOTP_ISSUER,account))
+    return "otpauth://totp/%s?secret=%s&issuer=%s&digits=6&period=30"%(label,secret,quote(_TOTP_ISSUER))
+
+def _gen_recovery_codes(n=8):
+    """Plaintext one-time recovery codes (shown once) + their bcrypt hashes (stored)."""
+    plain=["-".join(secrets.token_hex(2) for _ in range(2)) for _ in range(n)]  # e.g. 'a1b2-c3d4'
+    return plain, [_h(p) for p in plain]
+
+def _twofa_required(user):
+    """2FA is mandatory for admins (org policy). Returns True if this account must have it."""
+    return (user or {}).get("role")=="admin"
 
 # Precomputed bcrypt hash used to equalize login timing on unknown usernames,
 # so an attacker can't tell "user exists" from response speed.
@@ -1571,6 +1614,15 @@ def sdb_init(org):
         qty_each INTEGER DEFAULT 1
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_poitemchildren ON po_item_children(po_item_id)")
+    # WARP freight (pallet / LTL) bookings — inbound supplier → warehouse by the pallet.
+    c.execute("""CREATE TABLE IF NOT EXISTS warp_shipments(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        po_id INTEGER, quote_id TEXT, shipment_id TEXT, shipment_number TEXT,
+        tracking_number TEXT, price_usd REAL, mode TEXT,
+        origin_zip TEXT, dest_zip TEXT, pallets INTEGER,
+        pickup_date TEXT, delivery_date TEXT, status TEXT,
+        reference TEXT, booked_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_warp_created ON warp_shipments(created_at)")
     # Supplier-SKU → store-SKU memory: when a supplier PO/invoice uses their own
     # product codes, remember which of our catalog SKUs each one maps to so the next
     # import auto-fills the mapping. Keyed on the supplier code (case-insensitive).
@@ -3854,6 +3906,22 @@ def _billing_gate():
                         "message":_BILLING_MSG.get(state,"Your subscription is not active.")}),402
     return redirect("/billing")
 
+# ── Mandatory 2FA enrollment gate (admins) ────────────────────────────────────
+# 2FA is required for admins. An admin who logged in before enrolling carries
+# must_setup_2fa; until they finish enrolling on the "Me" screen they can reach only
+# that screen and the enrollment endpoints — everything else (the money screens) is held.
+_2FA_SETUP_OPEN={"/me","/logout","/login","/healthz","/favicon.ico","/api/me","/api/me/stats"}
+_2FA_SETUP_OPEN_PREFIXES=("/static/","/guide-asset/","/api/2fa/")
+@app.before_request
+def _twofa_setup_gate():
+    if not session.get("must_setup_2fa"): return
+    p=request.path or "/"
+    if p in _2FA_SETUP_OPEN or p.startswith(_2FA_SETUP_OPEN_PREFIXES): return
+    if p.startswith("/api/"):
+        return jsonify({"ok":False,"error":"need_2fa_setup",
+                        "message":"Set up two-factor authentication to continue."}),403
+    return redirect("/me?setup2fa=1")
+
 # ── Session revocation: a deleted or demoted user must lose access immediately ──
 # Sessions carry role/roles captured at login. Without this check a user who was
 # removed (or had their role downgraded) in users.json keeps their old powers until
@@ -4808,19 +4876,140 @@ def api_login():
         if not user.get("password","").startswith("$2"):
             with update_json(USERS_FILE) as uu:
                 if u in uu: uu[u]["password"]=_h(p)
-        session.clear()  # rotate session id to prevent fixation
-        session["user"]=u;session["role"]=user["role"];session["name"]=user["name"]
-        session["roles"]=_effective_roles(user)
-        session["org"]=user.get("org",DEFAULT_ORG)
-        session["brand"]=brand_for_session(session["org"])
-        _touch_last_login(u)
-        return jsonify({"ok":True,"role":user["role"]})
+        # Admin with 2FA already enabled → password is step 1; require the TOTP code next.
+        if user.get("twofa_enabled"):
+            session.clear()
+            session["pending_2fa"]={"user":u,"ts":int(time.time())}
+            return jsonify({"ok":True,"twofa":True})
+        _finalize_login(u, user)
+        return jsonify({"ok":True,"role":user["role"],"must_setup_2fa":session.get("must_setup_2fa",False)})
     # Equalize timing on unknown username so it doesn't return faster (enumeration oracle)
     if not user:
         try: bcrypt.checkpw(b"x",_DUMMY_HASH)
         except Exception: pass
     _login_rate_fail(request.remote_addr,u)
     return jsonify({"ok":False,"error":"Invalid username or password"})
+
+def _finalize_login(u, user):
+    """Create the authenticated session. 2FA for admins is mandatory, so an admin who
+    has not enrolled yet is logged in but flagged must_setup_2fa until they enroll."""
+    session.clear()  # rotate session id to prevent fixation
+    session["user"]=u;session["role"]=user["role"];session["name"]=user["name"]
+    session["roles"]=_effective_roles(user)
+    session["org"]=user.get("org",DEFAULT_ORG)
+    session["brand"]=brand_for_session(session["org"])
+    if _twofa_required(user) and not user.get("twofa_enabled"):
+        session["must_setup_2fa"]=True
+    _touch_last_login(u)
+
+@app.route("/api/login/2fa",methods=["POST"])
+def api_login_2fa():
+    """Step 2 for an admin whose account has 2FA: verify the 6-digit TOTP code, or a
+    one-time recovery code. Completes the session only on success."""
+    pend=session.get("pending_2fa") or {}
+    u=pend.get("user")
+    if not u or (int(time.time())-int(pend.get("ts",0))>300):   # 5-minute window
+        session.pop("pending_2fa",None)
+        return jsonify({"ok":False,"error":"Session expired — sign in again","expired":True}),401
+    ok,limited=_login_rate_check(request.remote_addr,u+":2fa")
+    if limited: return jsonify({"ok":False,"error":"Too many attempts, try again shortly"}),429
+    d=request.get_json(silent=True) or {}
+    code=(d.get("code") or "").strip()
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    user=users.get(u)
+    if not user or not user.get("twofa_enabled"):
+        session.pop("pending_2fa",None)
+        return jsonify({"ok":False,"error":"Sign in again"}),401
+    good=_totp_verify(user.get("twofa_secret",""), code)
+    used_recovery=False
+    if not good:
+        # try one-time recovery codes
+        for i,h in enumerate(list(user.get("recovery_codes",[]))):
+            if _verify(re.sub(r"\s","",code).lower(), h):
+                good=True; used_recovery=True
+                with update_json(USERS_FILE) as uu:
+                    rc=uu.get(u,{}).get("recovery_codes",[])
+                    if i<len(rc): rc.pop(i); uu[u]["recovery_codes"]=rc
+                break
+    if not good:
+        _login_rate_fail(request.remote_addr,u+":2fa")
+        return jsonify({"ok":False,"error":"Invalid code"})
+    _login_rate_clear(request.remote_addr,u+":2fa")
+    session.pop("pending_2fa",None)
+    _finalize_login(u, user)
+    return jsonify({"ok":True,"role":user["role"],"used_recovery":used_recovery})
+
+# ── 2FA management (admin only; from the "Me" screen) ──
+@app.route("/api/2fa/status")
+@req_role("admin")
+def api_2fa_status():
+    u=session.get("user"); user=(ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}).get(u,{})
+    return jsonify({"ok":True,"enabled":bool(user.get("twofa_enabled")),
+                    "required":_twofa_required(user),"must_setup":bool(session.get("must_setup_2fa")),
+                    "recovery_left":len(user.get("recovery_codes",[]))})
+
+@app.route("/api/2fa/setup",methods=["POST"])
+@req_role("admin")
+def api_2fa_setup():
+    """Begin enrollment: make a fresh secret (not active yet) and return the QR data."""
+    u=session.get("user")
+    secret=_totp_new_secret()
+    with update_json(USERS_FILE) as uu:
+        if u in uu: uu[u]["twofa_pending_secret"]=secret
+    return jsonify({"ok":True,"secret":secret,"otpauth_uri":_totp_uri(secret,u)})
+
+@app.route("/api/2fa/enable",methods=["POST"])
+@req_role("admin")
+def api_2fa_enable():
+    """Confirm enrollment: the code must match the pending secret. Turns 2FA on and
+    returns the one-time recovery codes (shown once)."""
+    u=session.get("user"); d=request.get_json(silent=True) or {}
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    pend=(users.get(u) or {}).get("twofa_pending_secret","")
+    if not pend: return jsonify({"ok":False,"error":"Start setup first"})
+    if not _totp_verify(pend,(d.get("code") or "")):
+        return jsonify({"ok":False,"error":"That code didn't match — check the time on your phone and try again"})
+    plain,hashed=_gen_recovery_codes()
+    with update_json(USERS_FILE) as uu:
+        if u in uu:
+            uu[u]["twofa_secret"]=pend; uu[u]["twofa_enabled"]=True
+            uu[u].pop("twofa_pending_secret",None)
+            uu[u]["recovery_codes"]=hashed
+    session.pop("must_setup_2fa",None)
+    return jsonify({"ok":True,"recovery_codes":plain})
+
+@app.route("/api/2fa/disable",methods=["POST"])
+@req_role("admin")
+def api_2fa_disable():
+    """Turn 2FA off (verify a current code first). Mandatory for admins, so the account
+    will be prompted to re-enroll on the next login."""
+    u=session.get("user"); d=request.get_json(silent=True) or {}
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    user=users.get(u) or {}
+    if not user.get("twofa_enabled"): return jsonify({"ok":True})
+    if not _totp_verify(user.get("twofa_secret",""),(d.get("code") or "")):
+        return jsonify({"ok":False,"error":"Enter a current 6-digit code to turn 2FA off"})
+    with update_json(USERS_FILE) as uu:
+        if u in uu:
+            for k in ("twofa_secret","twofa_enabled","twofa_pending_secret","recovery_codes"):
+                uu[u].pop(k,None)
+    if _twofa_required(user): session["must_setup_2fa"]=True
+    return jsonify({"ok":True})
+
+@app.route("/api/2fa/recovery",methods=["POST"])
+@req_role("admin")
+def api_2fa_recovery():
+    """Regenerate recovery codes (invalidates the old set). Verify a current code first."""
+    u=session.get("user"); d=request.get_json(silent=True) or {}
+    users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
+    user=users.get(u) or {}
+    if not user.get("twofa_enabled"): return jsonify({"ok":False,"error":"2FA is not on"})
+    if not _totp_verify(user.get("twofa_secret",""),(d.get("code") or "")):
+        return jsonify({"ok":False,"error":"Enter a current 6-digit code"})
+    plain,hashed=_gen_recovery_codes()
+    with update_json(USERS_FILE) as uu:
+        if u in uu: uu[u]["recovery_codes"]=hashed
+    return jsonify({"ok":True,"recovery_codes":plain})
 
 @app.route("/api/select-station",methods=["POST"])
 @req_login
@@ -5251,6 +5440,7 @@ def analytics_page():
 def me_page():
     return (ME_HTML
         .replace("__NAVBAR__", _navbar("me"))
+        .replace("__ROLE__", esc(session.get("role","")))
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
 @app.route("/api/me/stats")
@@ -7475,6 +7665,131 @@ def _set_setting(key, value):
     c=sdb()
     c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,str(value)))
     c.commit(); c.close()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WARP FREIGHT — inbound pallet / LTL shipping (wearewarp.com).
+# Per-org keys live in settings: warp_live_key, warp_test_key, warp_mode (test|live).
+# Quote is free + keyless; Book charges the card on file at WARP; Track is read-only.
+# ══════════════════════════════════════════════════════════════════════════════
+_WARP_BASE="https://www.wearewarp.com/api/v1"
+
+def _warp_cfg():
+    mode=(_get_setting("warp_mode","test") or "test").lower()
+    key=_get_setting("warp_live_key","") if mode=="live" else _get_setting("warp_test_key","")
+    return {"mode":mode,"key":(key or "").strip()}
+
+def _mask_key(k):
+    k=(k or "").strip()
+    return (k[:8]+"…"+k[-4:]) if len(k)>14 else ("set" if k else "")
+
+def _warp_api(method, path, body=None, use_key=True):
+    """Call the WARP freight API. Returns (ok, status, data|error). Never raises."""
+    url=_WARP_BASE+path
+    cfg=_warp_cfg()
+    headers={"Content-Type":"application/json","Accept":"application/json"}
+    if use_key:
+        if not cfg["key"]: return (False,0,{"error":"WARP API key not configured"})
+        headers["Authorization"]="Bearer "+cfg["key"]
+    data=json.dumps(body).encode() if body is not None else None
+    try:
+        req=_urlreq.Request(url,data=data,method=method,headers=headers)
+        with _urlreq.urlopen(req,timeout=30) as r:
+            txt=r.read().decode(); return (True,r.status,json.loads(txt) if txt else {})
+    except _urlerr.HTTPError as e:
+        try: d=json.loads(e.read().decode())
+        except Exception: d={"error":"HTTP %s"%e.code}
+        return (False,e.code,d)
+    except Exception as e:
+        return (False,0,{"error":"WARP request failed: %s"%str(e)[:200]})
+
+@app.route("/api/warp/settings",methods=["GET","POST"])
+@req_role("admin")
+def api_warp_settings():
+    if request.method=="POST":
+        d=request.get_json(silent=True) or {}
+        if "live_key" in d: _set_setting("warp_live_key",(d.get("live_key") or "").strip())
+        if "test_key" in d: _set_setting("warp_test_key",(d.get("test_key") or "").strip())
+        mode=(d.get("mode") or "").lower()
+        if mode in ("test","live"): _set_setting("warp_mode",mode)
+        return jsonify({"ok":True})
+    cfg=_warp_cfg()
+    return jsonify({"ok":True,"mode":cfg["mode"],
+                    "live_set":bool(_get_setting("warp_live_key","")),
+                    "test_set":bool(_get_setting("warp_test_key","")),
+                    "live_mask":_mask_key(_get_setting("warp_live_key","")),
+                    "test_mask":_mask_key(_get_setting("warp_test_key","")),
+                    "configured":bool(cfg["key"])})
+
+@app.route("/api/warp/verify",methods=["POST"])
+@req_role("admin")
+def api_warp_verify():
+    ok,st,d=_warp_api("GET","/agents/account")
+    return jsonify({"ok":ok,"status":st,"account":d if ok else None,"error":None if ok else d.get("error","Invalid key")})
+
+@app.route("/api/warp/quote",methods=["POST"])
+@req_role("admin","cs","manager")
+def api_warp_quote():
+    """Free LTL quote. Body: origin_zip, destination_zip, pickup_date, pallets,
+    weight_lbs_per_pallet, length_in, width_in, height_in, commodity."""
+    d=request.get_json(silent=True) or {}
+    payload={"origin_zip":(d.get("origin_zip") or "").strip(),
+             "destination_zip":(d.get("destination_zip") or "").strip(),
+             "pickup_date":(d.get("pickup_date") or "").strip(),
+             "commodity":(d.get("commodity") or "general freight").strip()}
+    for k,src in (("pallets","pallets"),("weight_lbs_per_pallet","weight_lbs_per_pallet"),
+                  ("length_in","length_in"),("width_in","width_in"),("height_in","height_in")):
+        try: payload[k]=int(float(d.get(src) or 0))
+        except Exception: payload[k]=0
+    if not payload["origin_zip"] or not payload["destination_zip"] or not payload["pickup_date"] or payload["pallets"]<1:
+        return jsonify({"ok":False,"error":"Origin ZIP, destination ZIP, pickup date and ≥1 pallet are required"})
+    ok,st,res=_warp_api("POST","/ltl/quote",payload,use_key=False)
+    if not ok: return jsonify({"ok":False,"error":res.get("error","Quote failed"),"status":st})
+    return jsonify({"ok":True,"quote":res})
+
+@app.route("/api/warp/book",methods=["POST"])
+@req_role("admin")
+def api_warp_book():
+    """Book a quoted shipment. CHARGES the card on file at WARP (live mode). Stores it."""
+    d=request.get_json(silent=True) or {}
+    quote_id=(d.get("quote_id") or "").strip()
+    if not quote_id: return jsonify({"ok":False,"error":"quote_id required"})
+    pickup=d.get("pickup") or {}; delivery=d.get("delivery") or {}
+    body={"quote_id":quote_id,"reference":(d.get("reference") or "").strip(),
+          "patch":{"pickup":pickup,"delivery":delivery}}
+    ok,st,res=_warp_api("POST","/book",body)
+    if not ok: return jsonify({"ok":False,"error":res.get("error","Booking failed"),"status":st})
+    c=sdb()
+    c.execute("""INSERT INTO warp_shipments(po_id,quote_id,shipment_id,shipment_number,tracking_number,
+                   price_usd,mode,origin_zip,dest_zip,pallets,pickup_date,delivery_date,status,reference,booked_by,created_at)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (d.get("po_id"),quote_id,res.get("shipment_id"),res.get("shipment_number"),
+               res.get("tracking_number"),d.get("price_usd"),_warp_cfg()["mode"],
+               (pickup.get("zipCode") or ""),(delivery.get("zipCode") or ""),d.get("pallets"),
+               d.get("pickup_date"),d.get("delivery_date"),"booked",body["reference"],
+               session.get("name","")[:60],datetime.now().isoformat(timespec='seconds')))
+    c.commit(); c.close()
+    alog("warp.book","WARP %s %s"%(res.get("shipment_number") or "",_warp_cfg()["mode"]))
+    return jsonify({"ok":True,"booking":res})
+
+@app.route("/api/warp/track")
+@req_role("admin","cs","manager")
+def api_warp_track():
+    bid=(request.args.get("booking_id") or "").strip()
+    if not bid: return jsonify({"ok":False,"error":"booking_id required"})
+    ok,st,res=_warp_api("GET","/track?booking_id="+_urlparse.quote(bid))
+    if not ok: return jsonify({"ok":False,"error":res.get("error","Track failed"),"status":st})
+    return jsonify({"ok":True,"tracking":res})
+
+@app.route("/api/warp/shipments")
+@req_role("admin","cs","manager")
+def api_warp_shipments():
+    c=sdb()
+    rows=[dict(r) for r in c.execute("SELECT * FROM warp_shipments ORDER BY id DESC LIMIT 100").fetchall()]
+    c.close()
+    if session.get("role")!="admin":
+        for r in rows: r.pop("price_usd",None)   # freight cost is money → admin only
+    return jsonify({"ok":True,"shipments":rows})
+
 def _get_perms():
     raw=_get_setting("permissions")
     out=dict(_DEFAULT_PERMS)
@@ -8713,7 +9028,9 @@ def api_receive():
     oh,ac=_receive_stock(c, sku, qty, cost, po_id=d.get("po_id"), note=d.get("note"),
                          name=d.get("name"), barcode=d.get("barcode"))
     c.commit(); c.close()
-    return jsonify({"ok":True,"sku":sku,"on_hand":oh,"avg_cost":ac})
+    resp={"ok":True,"sku":sku,"on_hand":oh}
+    if session.get("role")=="admin": resp["avg_cost"]=ac   # cost is admin-only
+    return jsonify(resp)
 
 def _po_insert_items(c, poid, items):
     now=datetime.now().isoformat(timespec='seconds')
@@ -9689,7 +10006,9 @@ def _show_is_live(c, label):
     except Exception:
         return False
 
-def _live_totals(c, label):
+def _live_totals(c, label, is_admin=True):
+    """Live running totals. COGS and profit are COST-derived, so they are returned to
+    admins only — every non-admin caller gets units/revenue with the cost fields stripped."""
     rows=c.execute("""SELECT l.product_sku, SUM(l.qty) units,
                              SUM(l.qty*COALESCE(l.unit_cost,0)) cogs,
                              SUM(l.qty*COALESCE(l.unit_price,0)) revenue,
@@ -9701,8 +10020,12 @@ def _live_totals(c, label):
     units=sum((r["units"] or 0) for r in rows)
     cogs=round(sum((r["cogs"] or 0) for r in rows),2)
     revenue=round(sum((r["revenue"] or 0) for r in rows),2)
-    return {"units":units,"cogs":cogs,"revenue":revenue,"profit":round(revenue-cogs,2),
-            "has_prices":revenue>0,"products":items}
+    out={"units":units,"revenue":revenue,"has_prices":revenue>0,"products":items}
+    if is_admin:
+        out["cogs"]=cogs; out["profit"]=round(revenue-cogs,2)
+    else:
+        for it in items: it.pop("cogs",None)   # per-product COGS is cost data too
+    return out
 
 @app.route("/api/live/scan",methods=["POST"])
 @req_role("admin","cs","worker","picker")
@@ -9756,10 +10079,12 @@ def api_live_scan():
                  VALUES(?,?,?,?,?,?,?,?,?)""",(show,sticker,part,prod["sku"],qty,cost,price,now,who))
     c.commit()
     oh=c.execute("SELECT on_hand FROM products WHERE sku=?",(prod["sku"],)).fetchone()["on_hand"]
-    tot=_live_totals(c, show)
+    _is_admin=session.get("role")=="admin"
+    tot=_live_totals(c, show, _is_admin)
     c.close()
-    return jsonify({"ok":True,"product":{"sku":prod["sku"],"name":prod["name"],"image_url":prod["image_url"],
-                    "on_hand":oh,"unit_cost":cost,"unit_price":price},"qty":qty,"sticker":sticker,"totals":tot,
+    _p={"sku":prod["sku"],"name":prod["name"],"image_url":prod["image_url"],"on_hand":oh,"unit_price":price}
+    if _is_admin: _p["unit_cost"]=cost   # cost is admin-only
+    return jsonify({"ok":True,"product":_p,"qty":qty,"sticker":sticker,"totals":tot,
                     "auto_created":auto_created,"auto_source":auto_source})
 
 @app.route("/api/live/summary")
@@ -9768,7 +10093,7 @@ def api_live_summary():
     show=(request.args.get("show") or "").strip()
     if not show: return jsonify({"ok":False,"error":"show required"})
     c=sdb()
-    tot=_live_totals(c, show)
+    tot=_live_totals(c, show, session.get("role")=="admin")
     recent=[dict(r) for r in c.execute("""SELECT l.id,l.sticker_sku,l.qty,l.product_sku,l.sold_by,l.sold_at,p.name
                       FROM live_sales l LEFT JOIN products p ON p.sku=l.product_sku
                       WHERE l.import_label=? ORDER BY l.id DESC LIMIT 25""",(show,)).fetchall()]
@@ -9795,7 +10120,7 @@ def api_live_undo():
                datetime.now().isoformat(timespec='seconds'),session.get("name","")[:60]))
     c.execute("DELETE FROM live_sales WHERE id=?",(row["id"],))
     c.commit()
-    tot=_live_totals(c, show)
+    tot=_live_totals(c, show, session.get("role")=="admin")
     c.close()
     return jsonify({"ok":True,"totals":tot})
 
@@ -15389,7 +15714,7 @@ def inbound_multi_print():
 @app.route("/admin/inbound")
 @req_role("admin","cs")
 def inbound_page():
-    return INBOUND_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__NAVBAR__",_navbar("inbound")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+    return INBOUND_HTML.replace("__NAME__",esc(session.get("name",""))).replace("__ROLE__",esc(session.get("role",""))).replace("__NAVBAR__",_navbar("inbound")).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
 @app.route("/api/giveaway/<int:gid>/notes",methods=["POST"])
 @req_role("admin","cs")
