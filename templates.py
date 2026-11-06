@@ -1245,7 +1245,7 @@ function doSearch(){
             if(l&&l.worker)h+='<span>📦 Packed by '+l.worker+'</span>';
             if(d.pick)h+='<span>🧺 Picked by '+String(d.pick.picked_by||(d.pick.pick_started_by?(d.pick.pick_started_by+' (in progress)'):'—')).replace(/</g,'&lt;')+'</span>';
             h+='<span class="tag tag-s">'+v.station+'</span><span class="tag tag-g">✓ Found</span>';
-            h+='</div></div><div class="rc-b"><div class="mb"><video controls preload="metadata"><source src="'+v.url+'" type="video/webm"></video><div class="ml"><span>🎥 Video'+(v.size_mb?(' · '+v.size_mb+' MB'):'')+'</span><a href="'+v.url+'" download class="dl-btn">⬇ Download</a></div></div>';
+            h+='</div></div><div class="rc-b"><div class="mb"><video controls preload="metadata"><source src="'+v.url+'"></video><div class="ml"><span>🎥 Video'+(v.size_mb?(' · '+v.size_mb+' MB'):'')+'</span><a href="'+v.url+'" download class="dl-btn">⬇ Download</a></div></div>';
             if(p)h+='<div class="mb"><img src="'+p.url+'"><div class="ml">📸 Photo</div></div>';
             h+='</div></div>';
         }
@@ -1297,7 +1297,7 @@ function filterByWorkerDay(){
         var h=head;
         d.items.forEach(function(v){
             h+='<div class="rc"><div class="rc-h"><span class="rc-t">'+esc(v.tracking||'—')+'</span><div class="rc-m"><span>'+esc(v.time||'')+'</span><span>'+esc(v.duration_seconds||'0')+'s</span>'+(v.station?('<span class="tag tag-s">'+esc(v.station)+'</span>'):'')+'</div></div>';
-            if(v.video_url){h+='<div class="rc-b"><div class="mb"><video controls preload="metadata"><source src="'+esc(v.video_url)+'" type="video/webm"></video><div class="ml"><span>🎥 Video</span><a href="'+esc(v.video_url)+'" download class="dl-btn">⬇ Download</a></div></div>'+(v.photo_url?('<div class="mb"><img src="'+esc(v.photo_url)+'"><div class="ml">📸 Photo</div></div>'):'')+'</div>';}
+            if(v.video_url){h+='<div class="rc-b"><div class="mb"><video controls preload="metadata"><source src="'+esc(v.video_url)+'"></video><div class="ml"><span>🎥 Video</span><a href="'+esc(v.video_url)+'" download class="dl-btn">⬇ Download</a></div></div>'+(v.photo_url?('<div class="mb"><img src="'+esc(v.photo_url)+'"><div class="ml">📸 Photo</div></div>'):'')+'</div>';}
             h+='</div>';
         });
         document.getElementById('res').innerHTML=h;
