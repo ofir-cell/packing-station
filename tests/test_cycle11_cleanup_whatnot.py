@@ -47,6 +47,27 @@ def test_tiktok_cancelled_unpicked_now_counts(appmod, admin, sdb):
     assert r["cleanup_blocked"] is True
 
 
+def test_mark_cleared_then_finish_lets_picking_start(appmod, admin, sdb):
+    """After marking every cancelled group cleared, the show is clean and the cleanout
+    hand-off succeeds — i.e. the worker can finish cleanup and move to picking."""
+    c = sdb()
+    lbl = "TT Finish " + uuid.uuid4().hex[:5]
+    sid = _show_with_cancelled(c, lbl, "tiktok", "tiktok-api", picked=0)
+    c.close()
+    # still blocked before clearing
+    assert admin.get("/api/pick/" + sid).get_json()["cleanup_blocked"] is True
+    # mark the (sku, part) group removed
+    r = admin.post("/api/cleanup/" + lbl + "/mark", json={"sku": "101", "part": "", "removed": True},
+                   headers=getattr(admin, "csrf", {"X-CSRF-Token": "tok"})).get_json()
+    assert r["ok"] and r["is_clean"] is True            # table is now clean
+    # the hand-off (cleanout) that the "start picking" button calls succeeds
+    co = admin.post("/api/show/cleanout", json={"label": lbl},
+                    headers=getattr(admin, "csrf", {"X-CSRF-Token": "tok"})).get_json()
+    assert co.get("ok") is True
+    # and picking is no longer blocked
+    assert admin.get("/api/pick/" + sid).get_json()["cleanup_blocked"] is False
+
+
 def test_shows_list_marks_whatnot_clean(appmod, admin, sdb):
     c = sdb()
     lbl = "WN Shows " + uuid.uuid4().hex[:5]

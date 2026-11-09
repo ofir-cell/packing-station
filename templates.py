@@ -6359,16 +6359,16 @@ function renderDetail(d){
     st.textContent=d.is_clean?'✓ Clean':'Not clean';
     st.className='big-prog-status '+(d.is_clean?'clean':'dirty');
     document.getElementById('cleanBanner').classList.toggle('on',d.is_clean && d.total_groups>0);
-    // Pre-pick clean-out flow: show the "start picking" bar; enable only once clean.
+    // Always offer the "table cleared — start picking" hand-off in a show's cleanup detail
+    // (not only when redirected from /pick). It's enabled once the table is clean, so a
+    // worker who opens cleanup directly can finish and move to picking.
     lastClean=!!d.is_clean;
-    if(prePick){
-        document.getElementById('prepickBar').style.display='block';
-        var sb=document.getElementById('startPickBtn');
-        sb.disabled=!lastClean;
-        sb.style.opacity=lastClean?'1':'.5';
-        sb.style.cursor=lastClean?'pointer':'not-allowed';
-        document.getElementById('startPickHint').style.display=lastClean?'none':'block';
-    }
+    document.getElementById('prepickBar').style.display='block';
+    var sb=document.getElementById('startPickBtn');
+    sb.disabled=!lastClean;
+    sb.style.opacity=lastClean?'1':'.5';
+    sb.style.cursor=lastClean?'pointer':'not-allowed';
+    document.getElementById('startPickHint').style.display=lastClean?'none':'block';
     var list=document.getElementById('groupsList');
     if(groups.length===0){
         list.innerHTML='<div class="empty"><div class="icn">🎉</div><div class="ttl">No cancelled items for this show</div><div>Nothing to remove. Pickers can start whenever.</div></div>';

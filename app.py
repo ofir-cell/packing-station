@@ -12189,7 +12189,7 @@ def api_cleanup_mark(label):
     removed = bool(d.get("removed", True))
     if not sku:
         return jsonify({"ok": False, "error": "Missing SKU"}), 400
-    user = session.get("username", "")
+    user = session.get("name", "") or session.get("user", "")
     c = sdb()
     if removed:
         # Upsert — set removed_at to now
