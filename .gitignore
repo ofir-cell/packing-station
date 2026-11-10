@@ -24,3 +24,4 @@ test_data/
 # Scratch
 _test_*
 *.log
+audit/

@@ -50,7 +50,8 @@ BUILT FOR LIVE COMMERCE
 LiveOpsHub is for businesses using the LiveOpsHub service. Your company admin creates your login. New companies can request access at getwhatnot.com.
 
 ### Keywords (100)
-`warehouse,packing video,fulfillment,tiktok shop,whatnot,live selling,pick pack,barcode,shipping,orders`
+`warehouse,packing video,fulfillment,live selling,live commerce,pick pack,barcode,shipping,orders,picking`  
+_(no third-party trademarks in keywords — Apple 2.3.7)_
 
 ### What's New (v1.0)
 First release: pack with video proof, pick by show, label lookup, and daily stats.
@@ -59,14 +60,14 @@ First release: pack with video proof, pick by show, label lookup, and daily stat
 | Field | Value |
 |---|---|
 | Sign-in required | Yes |
-| Demo username | **☐ Ofir**: create `appreview` (role **admin**) in a demo company with sample orders |
+| Demo username | **☐ Ofir**: create `appreview` (role **admin**) in a demo company with sample orders and an active plan; set `"twofa_exempt": true` on that user only (App Review can't do 2FA) |
 | Demo password | **☐ Ofir** |
 | Contact | Ofir Rashtty · ofir@5secbeauty.com · (859) 489-1528 |
 
 **Notes for the reviewer** (paste as is):
 > LiveOpsHub is a business tool for warehouse staff of TikTok Shop / Whatnot sellers. Accounts are created by each company's admin in the LiveOpsHub web dashboard, so the app has no public sign-up. Prospective companies request access at getwhatnot.com/apply. Nothing is sold in the app.
 >
-> To test: sign in with the demo account. **Pack** tab: point the camera at any of the sample labels below (or type a tracking number). The order contents appear and a packing video starts recording. Tap "Stop & save". **Pick** tab: open an order and tap items to pick them. **Account** tab → "Delete my account" permanently deletes the login.
+> To test: sign in with the demo account (username and password below — no badge scanner or 2FA needed for this account). The **Dashboard** tab is the company's operations hub: open the menu for Today, Pick (tap an order, tick items), Shows and order Lookup. The **Pack** tab is the packing station: point the camera at a sample label below (or type a tracking number), the order contents appear, recording starts automatically; tap "Stop & save". Account deletion: Dashboard → Me → "Delete my account".
 >
 > Sample tracking numbers in the demo account: **☐ Ofir: paste 3 from the demo company**
 >
