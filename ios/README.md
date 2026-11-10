@@ -47,10 +47,13 @@ open LiveOpsHub.xcodeproj
 
 ## Ship to TestFlight / App Store
 
-1. The App Store Connect record already exists: **Live Ops Hub**, iOS, bundle `com.liveopshub.ios`, SKU `liveopshub-ios`, company name BTRADE LLC.
-2. Xcode → **Product → Archive** (destination "Any iOS Device") → **Distribute App → App Store Connect → Upload**.
-3. Build appears in TestFlight in ~15 min → add internal testers (your warehouse team) → test on the floor.
-4. Fill the listing from `APP_STORE.md` → **Submit for Review**.
+The App Store Connect record already exists: **Live Ops Hub**, iOS, bundle `com.liveopshub.ios`, SKU `liveopshub-ios`, company name BTRADE LLC.
+
+**Automatic (no Mac needed).** `.github/workflows/testflight.yml` archives, signs and uploads a build whenever iOS code lands on `main`, or on demand from Actions → TestFlight → Run workflow. It needs three repository secrets (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`) from an App Store Connect API key with the Admin role — the steps are at the top of that file. Build numbers come from the workflow run number.
+
+**By hand, from Xcode.** Product → Archive (destination "Any iOS Device") → Distribute App → App Store Connect → Upload.
+
+Either way the build appears under TestFlight after Apple processes it (10–20 min). Add internal testers there (your warehouse team) and test on the floor. For the store listing, fill it from `APP_STORE.md` → Submit for Review.
 
 ## CI
 
