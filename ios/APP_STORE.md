@@ -10,10 +10,10 @@ Items marked **☐ Ofir** need you (accounts, money, real data).
 ### App information
 | Field | Value |
 |---|---|
-| Name | LiveOpsHub |
+| Name | Live Ops Hub |
 | Subtitle (30) | Pick, pack & prove live orders |
 | Category | Primary: **Business** · Secondary: **Productivity** |
-| Bundle ID | `com.liveopshub.app` |
+| Bundle ID | `com.liveopshub.ios` |
 | Age rating | 4+ (no objectionable content) |
 | Price | Free (no in-app purchases) |
 | Privacy Policy URL | https://www.getwhatnot.com/privacy |

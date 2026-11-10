@@ -40,14 +40,14 @@ open LiveOpsHub.xcodeproj
 ```
 
 1. Target **LiveOpsHub → Signing & Capabilities** → Team: **Btrade LLC**. (Or put the Team ID in `project.yml` → `DEVELOPMENT_TEAM` and re-run `xcodegen`.)
-2. Bundle ID is `com.liveopshub.app`. Change it in `project.yml` first if you want another — it can't be changed after the first App Store upload.
+2. Bundle ID is `com.liveopshub.ios`, registered to BTRADE LLC (team `4B4X663V8J`) on Nov 10 2026. It can't be changed after the first App Store upload. (`com.liveopshub.app` was already taken at Apple.)
 3. Run on a real iPhone (the simulator has no camera; scanning falls back to typing).
 
 `project.yml` is the source of truth; the `.xcodeproj` is generated and git-ignored.
 
 ## Ship to TestFlight / App Store
 
-1. App Store Connect → **My Apps → +** → New App: iOS, name "LiveOpsHub", bundle `com.liveopshub.app`, SKU `liveopshub-ios`.
+1. The App Store Connect record already exists: **Live Ops Hub**, iOS, bundle `com.liveopshub.ios`, SKU `liveopshub-ios`, company name BTRADE LLC.
 2. Xcode → **Product → Archive** (destination "Any iOS Device") → **Distribute App → App Store Connect → Upload**.
 3. Build appears in TestFlight in ~15 min → add internal testers (your warehouse team) → test on the floor.
 4. Fill the listing from `APP_STORE.md` → **Submit for Review**.
