@@ -19559,6 +19559,16 @@ load();
 </body></html>"""
     return html.replace("__NAVBAR__",nav).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
 
+# ══════════════════════════════════════════════════════════
+# MOBILE SCREENS (/m/...) — separate front end for the iPhone/iPad app, in mobile/.
+# Same login, same data, same /api/* endpoints as the desktop screens above; it adds
+# routes only and changes none of the existing ones. See mobile/__init__.py.
+# ══════════════════════════════════════════════════════════
+from mobile import init_mobile
+from templates import _brand_style as _mobile_brand_style
+init_mobile(app, req_role=req_role, sdb=sdb, esc=esc, brand_style=_mobile_brand_style,
+            staging_banner=_staging_banner, heartbeat_js=_heartbeat_js)
+
 if __name__=="__main__":
     print("="*50)
     print("LiveOpsHub — Packing Station")

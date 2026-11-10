@@ -1,7 +1,7 @@
 # LiveOpsHub Mobile Design System
 
 Owner: ios-designer · Status: **draft for Ofir's approval** · Nov 5 2026
-Reference CSS: [`mobile.css`](mobile.css) (the layer itself) and [`classic-tokens.proposal.css`](classic-tokens.proposal.css) (proposed Classic values).
+Reference CSS: [`mobile/static/mobile.css`](../../mobile/static/mobile.css) (the layer itself) and [`classic-tokens.proposal.css`](classic-tokens.proposal.css) (proposed Classic values).
 Mockups: [`mockups/pick.html`](mockups/pick.html) / `pick.png` / `pick-dark.png`, [`mockups/shows.html`](mockups/shows.html) / `shows.png` / `shows-dark.png`.
 Screen specs: [`screens/`](screens/) (worker screens come first).
 

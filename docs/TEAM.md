@@ -26,12 +26,14 @@ Bug fixes from `AUDIT_2026-10.md` may skip product-engineer and designer: progra
 
 ## Mobile team — iPhone/iPad app (added Nov 2026)
 
-The iOS app (`ios/`) is a native SwiftUI shell around the real dashboard (WKWebView) plus native Pack (camera scan + packing video). Making the app App-Store-grade means rebuilding every web screen mobile-first.
+The iOS app (`ios/`) is a native SwiftUI shell around the real dashboard (WKWebView) plus native Pack (camera or Bluetooth scanner + packing video). Making the app App-Store-grade means rebuilding every screen mobile-first.
+
+**How (Ofir, Nov 10 2026): as a separate front end.** Mobile screens live in `mobile/` and are served under `/m/` (first one: `/m/pick`). The desktop screens in templates.py are not edited. Both use the same login, data and `/api/*` endpoints.
 
 ```
 mobile-qa          runs scripts/mobile_audit.py → audit/report.json + screenshots (baseline)
    → ios-designer     docs/mobile/DESIGN_SYSTEM.md once; docs/mobile/screens/<screen>.md per screen
-   → mobile-engineer  implements in templates.py/app.py (shared mobile layer), PR → main
+   → mobile-engineer  implements the /m/ screen in mobile/ (shared mobile layer), PR → main
    → mobile-qa        PASS/FAIL per screen at SE / 16 Pro / Pro Max / iPad / desktop
    → app-review       before TestFlight/App Store: guideline-by-guideline verdict
    → Ofir             approves the design system + first screens, merges
@@ -40,7 +42,7 @@ mobile-qa          runs scripts/mobile_audit.py → audit/report.json + screensh
 | Agent | Writes | Never |
 |---|---|---|
 | ios-designer | `docs/mobile/` | app.py / templates.py |
-| mobile-engineer | templates.py, app.py, `ios/`, mobile tests | merge; change data/permissions |
+| mobile-engineer | `mobile/`, `ios/`, mobile tests, the `mobile/` wiring in app.py | edit desktop templates; merge; change data/permissions |
 | mobile-qa | `tests/`, `scripts/mobile_audit.py`, `audit/` | approve with a hard fail |
 | app-review | `docs/mobile/REVIEW-*.md`, `ios/APP_STORE.md` | product code |
 

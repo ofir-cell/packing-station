@@ -87,7 +87,7 @@ Answer **Yes, we collect data**. None of it is used for tracking.
 This matches `LiveOpsHub/Resources/PrivacyInfo.xcprivacy`.
 
 ### Screenshots **☐ Ofir** (I can produce them from the demo account once it exists)
-Required sizes: **6.9"** (1320×2868) and **13" iPad** (2064×2752). Suggested set:
+Required sizes: **6.9"** (1320×2868) and **13" iPad** (2064×2752) — the app targets iPhone and iPad. Suggested set:
 1. Pack: camera recording with the order contents card
 2. Packed ✓ confirmation
 3. Pick queue for a show

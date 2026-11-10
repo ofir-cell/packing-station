@@ -18,6 +18,18 @@ final class DashboardController: ObservableObject {
         webView?.load(URLRequest(url: url))
     }
     func evaluate(_ js: String) { webView?.evaluateJavaScript(js) }
+
+    /// Make sure this tab is showing a page under `prefix`; if it drifted elsewhere
+    /// (bounced to sign-in, followed a link to a desktop screen), load `path`.
+    /// Does nothing before the web view exists — it will load its start page itself.
+    func ensure(prefix: String, path: String) {
+        guard let web = webView, !web.isLoading else { return }
+        if !(web.url?.path.hasPrefix(prefix) ?? false) { load(path: path) }
+    }
+
+    /// Give the page keyboard focus so a Bluetooth scanner's keystrokes reach it
+    /// without the user having to tap the page first.
+    func focus() { webView?.becomeFirstResponder() }
 }
 
 /// The real LiveOpsHub dashboard, full screen. Everything a bare WKWebView silently
@@ -27,6 +39,10 @@ final class DashboardController: ObservableObject {
 struct DashboardWebView: UIViewRepresentable {
     @ObservedObject var controller: DashboardController
     var startPath = "/"
+    /// Set on a tab that hosts the mobile screens (/m/...). The server's desktop
+    /// landing pages (/home after sign-in, /pick after a table clean-out) are then
+    /// replaced by this path, so the tab always comes back to its mobile screen.
+    var mobileHome: String? = nil
     var onNativeMessage: (NativeBridge.Message, WKWebView) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -85,7 +101,13 @@ struct DashboardWebView: UIViewRepresentable {
 
         private func isOurs(_ url: URL?) -> Bool {
             guard let h = url?.host?.lowercased() else { return true }      // about:, data:, blob:
-            return h == host || h.hasSuffix("getwhatnot.com")
+            return Self.isOurHost(h, base: host)
+        }
+
+        /// Exact host, the apex domain, or a real subdomain — never a look-alike
+        /// such as "evilgetwhatnot.com".
+        static func isOurHost(_ h: String, base: String) -> Bool {
+            h == base || h == "getwhatnot.com" || h.hasSuffix(".getwhatnot.com")
         }
 
         /// TikTok's shop-authorization pages must stay in-app so the OAuth callback
@@ -106,6 +128,15 @@ struct DashboardWebView: UIViewRepresentable {
                 UIApplication.shared.open(url); decisionHandler(.cancel); return
             }
             if action.shouldPerformDownload { decisionHandler(.download); return }
+            if let home = parent.mobileHome, action.targetFrame?.isMainFrame != false,
+               url.host != nil, isOurs(url), ["/home", "/pick"].contains(url.path) {
+                decisionHandler(.cancel)
+                var dest = URLComponents(url: APIClient.shared.baseURL.appendingPathComponent(home),
+                                         resolvingAgainstBaseURL: false)
+                dest?.percentEncodedQuery = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery
+                if let u = dest?.url { webView.load(URLRequest(url: u)) }
+                return
+            }
             if action.targetFrame?.isMainFrame == false || isOurs(url) || isAuthFlow(url) {
                 decisionHandler(.allow); return
             }
@@ -133,6 +164,7 @@ struct DashboardWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             parent.controller.isLoading = false
             webView.scrollView.refreshControl?.endRefreshing()
+            if parent.mobileHome != nil { webView.becomeFirstResponder() }   // Bluetooth scanner → page
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -204,7 +236,7 @@ struct DashboardWebView: UIViewRepresentable {
                      initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
                      decisionHandler: @escaping @MainActor (WKPermissionDecision) -> Void) {
             let h = origin.host.lowercased()
-            decisionHandler(h == host || h.hasSuffix("getwhatnot.com") ? .grant : .prompt)
+            decisionHandler(Self.isOurHost(h, base: host) ? .grant : .prompt)
         }
 
         // MARK: Downloads (CSV / PDF exports, packing videos)

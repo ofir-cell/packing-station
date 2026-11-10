@@ -13,6 +13,8 @@ final class PackingRecorder: NSObject, ObservableObject, AVCaptureFileOutputReco
 
     @MainActor @Published private(set) var state: State = .idle
     @MainActor @Published private(set) var elapsed: TimeInterval = 0
+    /// The camera in use, once configured. The preview needs it to stay upright on iPad.
+    @MainActor @Published private(set) var camera: AVCaptureDevice?
 
     let session = AVCaptureSession()
     private let output = AVCaptureMovieFileOutput()
@@ -20,6 +22,10 @@ final class PackingRecorder: NSObject, ObservableObject, AVCaptureFileOutputReco
     private var startedAt: Date?
     private var timer: Timer?
     private var finish: CheckedContinuation<URL, Error>?
+    /// Tells us how the device is being held, so the saved video is upright in any
+    /// orientation (an iPad on a stand is usually landscape). Used on `queue` only.
+    private var rotation: AVCaptureDevice.RotationCoordinator?
+    private var builtCamera: AVCaptureDevice?
 
     static func requestAccess() async -> Bool {
         let cam = await AVCaptureDevice.requestAccess(for: .video)
@@ -38,7 +44,7 @@ final class PackingRecorder: NSObject, ObservableObject, AVCaptureFileOutputReco
         let result: String? = await withCheckedContinuation { cont in
             queue.async { cont.resume(returning: self.buildSession()) }
         }
-        if let err = result { state = .failed(err) } else { state = .ready }
+        if let err = result { state = .failed(err) } else { camera = builtCamera; state = .ready }
     }
 
     /// Runs on `queue`. Returns an error message or nil.
@@ -51,6 +57,8 @@ final class PackingRecorder: NSObject, ObservableObject, AVCaptureFileOutputReco
               let vin = try? AVCaptureDeviceInput(device: cam), session.canAddInput(vin)
         else { return "No camera available on this device." }
         session.addInput(vin)
+        builtCamera = cam
+        rotation = AVCaptureDevice.RotationCoordinator(device: cam, previewLayer: nil)
 
         if AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
            let mic = AVCaptureDevice.default(for: .audio),
@@ -64,11 +72,19 @@ final class PackingRecorder: NSObject, ObservableObject, AVCaptureFileOutputReco
             if output.availableVideoCodecTypes.contains(.h264) {
                 output.setOutputSettings([AVVideoCodecKey: AVVideoCodecType.h264], for: conn)
             }
-            if conn.isVideoRotationAngleSupported(90) { conn.videoRotationAngle = 90 }
         }
+        applyCaptureRotation()
         output.maxRecordedDuration = CMTime(seconds: 600, preferredTimescale: 1)   // 10-min safety cap
         session.startRunning()
         return nil
+    }
+
+    /// Runs on `queue`. Rotates the recording to match how the device is held right now.
+    /// The angle is fixed when a recording starts, so this is called just before each one.
+    private func applyCaptureRotation() {
+        guard let conn = output.connection(with: .video) else { return }
+        let angle = rotation?.videoRotationAngleForHorizonLevelCapture ?? 90
+        if conn.isVideoRotationAngleSupported(angle) { conn.videoRotationAngle = angle }
     }
 
     @MainActor
@@ -84,7 +100,10 @@ final class PackingRecorder: NSObject, ObservableObject, AVCaptureFileOutputReco
                 self.elapsed = Date().timeIntervalSince(s)
             }
         }
-        queue.async { self.output.startRecording(to: url, recordingDelegate: self) }
+        queue.async {
+            self.applyCaptureRotation()
+            self.output.startRecording(to: url, recordingDelegate: self)
+        }
     }
 
     /// Stops recording and returns an MP4 file plus its duration.
@@ -157,9 +176,14 @@ extension PackingRecorder.State {
     var isFailed: Bool { if case .failed = self { return true }; return false }
 }
 
-/// Camera preview for the recorder.
+/// Camera preview for the recorder. Stays upright in every orientation (iPhone
+/// portrait, iPad portrait or landscape).
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
+    /// The recorder's camera, once it is configured.
+    var camera: AVCaptureDevice?
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> PreviewView {
         let v = PreviewView()
@@ -169,8 +193,46 @@ struct CameraPreview: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PreviewView, context: Context) {
-        if let c = uiView.previewLayer.connection, c.isVideoRotationAngleSupported(90) {
-            c.videoRotationAngle = 90          // the app is portrait-only on iPhone
+        context.coordinator.follow(camera, layer: uiView.previewLayer)
+    }
+
+    static func dismantleUIView(_ uiView: PreviewView, coordinator: Coordinator) {
+        coordinator.stop()
+    }
+
+    /// Keeps the preview's rotation in step with the device orientation.
+    @MainActor
+    final class Coordinator {
+        private var rotation: AVCaptureDevice.RotationCoordinator?
+        private var observation: NSKeyValueObservation?
+        private weak var device: AVCaptureDevice?
+
+        func follow(_ camera: AVCaptureDevice?, layer: AVCaptureVideoPreviewLayer) {
+            guard let camera else { apply(90, to: layer); return }     // not configured yet
+            if device !== camera {
+                stop()
+                device = camera
+                let rc = AVCaptureDevice.RotationCoordinator(device: camera, previewLayer: layer)
+                rotation = rc
+                observation = rc.observe(\.videoRotationAngleForHorizonLevelPreview, options: [.new]) { [weak self, weak layer] rc, _ in
+                    let angle = rc.videoRotationAngleForHorizonLevelPreview
+                    Task { @MainActor in
+                        guard let self, let layer else { return }
+                        self.apply(angle, to: layer)
+                    }
+                }
+            }
+            if let rc = rotation { apply(rc.videoRotationAngleForHorizonLevelPreview, to: layer) }
+        }
+
+        func stop() {
+            observation?.invalidate(); observation = nil
+            rotation = nil; device = nil
+        }
+
+        private func apply(_ angle: CGFloat, to layer: AVCaptureVideoPreviewLayer) {
+            guard let c = layer.connection, c.isVideoRotationAngleSupported(angle) else { return }
+            if c.videoRotationAngle != angle { c.videoRotationAngle = angle }
         }
     }
 

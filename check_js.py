@@ -35,9 +35,11 @@ def main():
                 js = m.group(1)
                 if not js.strip():
                     continue
-                # Server-side placeholders aren't valid JS on their own.
+                # Server-side placeholders: swap each for a plain identifier, which is valid
+                # syntax both bare (var r=__ROLE__) and inside a string literal ("__ROLE__").
+                # (A quoted "X" broke every placeholder that already sat inside double quotes.)
                 for ph in set(re.findall(r"__[A-Z_]+__", js)):
-                    js = js.replace(ph, '"X"')
+                    js = js.replace(ph, "PLACEHOLDER")
                 path = os.path.join(tmp, f"{name}_{idx}.js")
                 with open(path, "w") as f:
                     f.write(js)
@@ -51,7 +53,15 @@ def main():
         for name, idx, err in failures:
             print(f"  ✗ {name} (block {idx})\n    {err}\n")
         return 1
-    print(f"✅ {checked} inline script blocks across {len(names)} screens — all valid")
+    # The /m/ mobile screens keep their JavaScript in real .js files.
+    mdir = os.path.join(HERE, "mobile", "static")
+    for fn in sorted(os.listdir(mdir)) if os.path.isdir(mdir) else []:
+        if fn.endswith(".js"):
+            r = subprocess.run(["node", "--check", os.path.join(mdir, fn)], capture_output=True, text=True)
+            checked += 1
+            if r.returncode != 0:
+                print(f"  ✗ mobile/static/{fn}\n    {r.stderr.strip()[:400]}\n"); return 1
+    print(f"✅ {checked} script blocks across {len(names)} screens + mobile/static — all valid")
     return 0
 
 if __name__ == "__main__":

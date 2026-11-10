@@ -1,0 +1,125 @@
+<!DOCTYPE html><html lang="en" class="m"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="format-detection" content="telephone=no">
+<title>Pick · LiveOpsHub</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/m/static/mobile.css?v=__V__">
+<link rel="stylesheet" href="/m/static/shell.css?v=__V__">
+__BRAND_STYLE__
+</head>
+<body data-name="__NAME__" data-role="__ROLE__">
+
+<!-- ═════════ Queue: choose a show, scan a label ═════════ -->
+<main class="m-screen m-screen--has-actionbar" id="queue">
+  <header class="m-navbar">
+    <div class="m-navbar__row">
+      <div class="m-navbar__title" data-t="pick">Pick</div>
+      <div class="m-navbar__actions">
+        <a class="m-iconbtn m-homebtn" href="/home" data-t-label="home" aria-label="Home"><svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4.5 12.5 14 4.5l9.5 8V23a1 1 0 0 1-1 1h-5.5v-6.5h-6V24H5.5a1 1 0 0 1-1-1z"/></svg></a>
+        <button type="button" class="m-iconbtn" id="langBtn" aria-label="Cambiar a español"><span class="m-lang">ES</span></button>
+        <a class="m-iconbtn" href="/me" data-t-label="myprofile" aria-label="My profile"><span class="m-avatar">__INITIALS__</span></a>
+      </div>
+    </div>
+  </header>
+  <div class="m-largetitle"><h1 data-t="pick">Pick</h1><p id="qSub">&nbsp;</p></div>
+
+  <div class="m-banner m-banner--offline" id="offline" hidden><span data-t="offline">You're offline. Reconnect to keep picking.</span></div>
+  <div class="m-banner m-banner--error" id="loadErr" hidden><span data-t="loaderr">Couldn't load shows</span><button type="button" id="retryBtn" data-t="retry">Retry</button></div>
+
+  <div id="heroSlot"><div class="m-skeleton pk-skel--hero"></div></div>
+
+  <div class="m-banner m-banner--ok" id="scannerOk" hidden>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+    <span data-t="scannerready">Scanner ready — scan a label any time</span></div>
+
+  <div class="pk-seg"><div class="m-seg" role="tablist">
+    <button type="button" class="m-seg__btn" role="tab" aria-selected="true" data-seg="todo"><span data-t="topick">To pick</span><span class="m-seg__count" id="segTodo"></span></button>
+    <button type="button" class="m-seg__btn" role="tab" aria-selected="false" data-seg="done"><span data-t="donetoday">Done today</span><span class="m-seg__count" id="segDone"></span></button>
+  </div></div>
+
+  <section class="m-section">
+    <div class="m-section__header"><span data-t="shows">Shows</span><span style="text-transform:none;letter-spacing:0;font-weight:600" id="showsHint" data-t="taptoswitch">Tap to switch</span></div>
+    <div id="showList"><div class="m-list"><div class="m-skeleton pk-skel"></div><div class="m-skeleton pk-skel"></div><div class="m-skeleton pk-skel"></div></div></div>
+  </section>
+
+  <div class="pk-stats">
+    <div><b id="stSession">0</b><span data-t="st_session">This session</span></div>
+    <div><b id="stToday">–</b><span data-t="st_today">Today</span></div>
+    <div><b id="stWeek">–</b><span data-t="st_week">Last 7 days</span></div>
+  </div>
+</main>
+
+<div class="m-actionbar" id="queueBar">
+  <button type="button" class="m-btn m-btn--lg m-btn--primary" id="scanBtn">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M10.5 8v8M14 8v8M17 8v8"/></svg>
+    <span data-t="scanlabel">Scan packing label</span></button>
+  <button type="button" class="m-btn m-btn--lg m-btn--secondary m-actionbar__aux" id="typeBtn" data-t-label="typeinstead" aria-label="Type order number instead">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M7 14h10"/></svg></button>
+</div>
+
+<!-- ═════════ Order: tick each item off ═════════ -->
+<main class="m-screen m-screen--has-actionbar" id="order" hidden>
+  <header class="m-navbar">
+    <div class="m-navbar__row">
+      <button type="button" class="m-navbar__back" id="backBtn"><svg viewBox="0 0 13 21" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2 2.5 10.5 11 19"/></svg><span data-t="pick">Pick</span></button>
+      <div class="m-navbar__title" id="oNavTitle"></div>
+      <div class="m-navbar__actions" style="min-width:44px"></div>
+    </div>
+  </header>
+  <div class="m-largetitle"><h1 id="oBuyer"></h1><p id="oSub"></p></div>
+  <div class="pk-tags" id="oTags"></div>
+  <div class="pk-prog">
+    <div class="pk-prog__label"><div id="oProgText"></div><span id="oProgPct"></span></div>
+    <div class="m-progress" role="progressbar" id="oProg"><span class="m-progress__a" style="width:0%"></span></div>
+  </div>
+  <section class="m-section" id="oItems"></section>
+</main>
+
+<div class="m-actionbar" id="orderBar" hidden>
+  <button type="button" class="m-btn m-btn--lg m-btn--secondary" id="doneBtn"></button>
+  <button type="button" class="m-btn m-btn--lg m-btn--destructive m-actionbar__aux" id="issueBtn" data-t-label="reportproblem" aria-label="Report a problem">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 2.5 20h19z"/><path d="M12 10v4.5M12 17.2v.01"/></svg></button>
+</div>
+
+<!-- Report a problem -->
+<div class="m-sheet" id="issueSheet" role="dialog" aria-modal="true" hidden>
+  <div class="m-sheet__grabber"></div>
+  <div class="m-sheet__title" data-t="whatswrong">What's wrong?</div>
+  <div class="m-sheet__body" data-t="issuehelp">Your manager gets it in Issues. You can keep picking.</div>
+  <div class="m-radios" role="radiogroup">
+    <button type="button" class="m-radio" role="radio" aria-checked="false" data-r="Item missing — not on the table"><span class="m-radio__dot"></span><span data-t="p_missing">Item missing</span></button>
+    <button type="button" class="m-radio" role="radio" aria-checked="false" data-r="Item damaged"><span class="m-radio__dot"></span><span data-t="p_damaged">Damaged</span></button>
+    <button type="button" class="m-radio" role="radio" aria-checked="false" data-r="Wrong SKU on the table"><span class="m-radio__dot"></span><span data-t="p_wrongsku">Wrong SKU on table</span></button>
+    <button type="button" class="m-radio" role="radio" aria-checked="false" data-r="Can't find the table"><span class="m-radio__dot"></span><span data-t="p_cantfind">Can't find the table</span></button>
+  </div>
+  <label class="m-field"><span class="m-field__label" data-t="note">Note (optional)</span>
+    <span class="m-field__control"><textarea id="issueNote" rows="2" maxlength="400" data-t-ph="describe" placeholder="Describe the problem…"></textarea></span></label>
+  <div class="m-sheet__actions">
+    <button type="button" class="m-btn m-btn--lg m-btn--secondary" id="issueCancel" data-t="cancel">Cancel</button>
+    <button type="button" class="m-btn m-btn--lg m-btn--destructive" id="issueSubmit" data-t="reportskip">Report &amp; skip</button>
+  </div>
+</div>
+
+<!-- Cancelled order -->
+<div class="pk-stop" id="stop" role="alertdialog" aria-modal="true" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9.5"/><path d="M5.5 5.5l13 13"/></svg>
+  <h2 data-t="dontpick">Don't pick this order</h2>
+  <p data-t="cancelledsub">The customer cancelled it. Put any items back and scan the next label.</p>
+  <button type="button" class="m-btn m-btn--lg" id="stopBtn" data-t="scannext">Scan next label</button>
+</div>
+
+<!-- Browser fallback only. Inside the app the tab bar is native. -->
+<nav class="m-tabbar" aria-label="Sections">
+  <a class="m-tab" href="/home"><svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M4.5 12.5 14 4.5l9.5 8V23a1 1 0 0 1-1 1h-5.5v-6.5h-6V24H5.5a1 1 0 0 1-1-1z"/></svg><span data-t="tab_today">Today</span></a>
+  <a class="m-tab" href="/m/pick" aria-current="page"><svg viewBox="0 0 28 28" fill="currentColor"><rect x="5" y="4" width="18" height="21" rx="3.5"/><rect x="10" y="2.5" width="8" height="4.5" rx="1.5" fill="#fff" stroke="currentColor" stroke-width="1.6"/><path d="m9.5 15 3 3 6-6.5" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-t="pick">Pick</span></a>
+  <a class="m-tab" href="/?force=pack"><svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M14 3.5 24 8.5v11L14 24.5 4 19.5v-11z"/><path d="M4 8.5l10 5 10-5M14 13.5v11M9 6l10 5"/></svg><span data-t="tab_pack">Pack</span></a>
+  <a class="m-tab" href="/admin/track"><svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12.5" cy="12.5" r="7.5"/><path d="m18 18 6 6"/></svg><span data-t="tab_track">Track</span></a>
+  <a class="m-tab" href="/me"><svg viewBox="0 0 28 28" fill="currentColor"><circle cx="7" cy="14" r="2.2"/><circle cx="14" cy="14" r="2.2"/><circle cx="21" cy="14" r="2.2"/></svg><span data-t="tab_more">More</span></a>
+</nav>
+
+<script src="/m/static/mobile.js?v=__V__"></script>
+<script src="/m/static/pick.js?v=__V__"></script>
+</body></html>
+__TAIL__
