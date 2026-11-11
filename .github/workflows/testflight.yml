@@ -18,7 +18,7 @@ name: TestFlight
 
 on:
   push:
-    branches: [main]
+    branches: [main, "testflight/**"]     # testflight/* branches: for fixing this pipeline itself
     paths: ["ios/**", ".github/workflows/testflight.yml"]
   workflow_dispatch:
 
@@ -51,10 +51,17 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
+      # App Store Connect only accepts builds made with Xcode 26 / the iOS 26 SDK or later.
+      - name: Select Xcode (26 or later)
         run: |
-          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          XC="$(ls -d /Applications/Xcode_[2-9][0-9]*.app 2>/dev/null | grep -Ev 'Xcode_(1[0-9]|2[0-5])[._]' | grep -vi beta | sort -V | tail -1)"
+          if [ -z "$XC" ]; then
+            echo "::error::No Xcode 26+ on this runner. Installed:"; ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$XC"
           xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos
 
       - name: Generate Xcode project
         run: |
@@ -68,8 +75,12 @@ jobs:
           chmod 600 "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
           echo "ASC_KEY_PATH=$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8" >> "$GITHUB_ENV"
 
+      # The archive is built UNSIGNED and signed in the next step. Signing during
+      # `archive` makes Xcode ask Apple for a *development* profile, which needs at
+      # least one registered device on the team ("Your team has no devices…").
+      # Signing at export only needs the App Store profile, which needs no devices.
       # Every upload needs a build number higher than the last one; the run number is.
-      - name: Archive (signed)
+      - name: Archive
         run: |
           cd ios
           set -o pipefail
@@ -79,16 +90,14 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/LiveOpsHub.xcarchive" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$ASC_KEY_PATH" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             | tee "$RUNNER_TEMP/archive.log" | tail -n 40
 
-      - name: Upload to App Store Connect
+      - name: Sign and upload to App Store Connect
         run: |
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
