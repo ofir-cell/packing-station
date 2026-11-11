@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Live Ops Hub</title>
+<style>
+:root{--grad:linear-gradient(120deg,#6366f1,#8b5cf6 45%,#ec4899);--ink:#0f1222;--muted:#6b7280;--line:#e6e8ee}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,system-ui,'Segoe UI',sans-serif;background:#f7f8fb;color:var(--ink);-webkit-font-smoothing:antialiased;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{display:flex;align-items:center;gap:10px;padding:16px 18px;background:#fff;border-bottom:1px solid var(--line)}
+.mark{width:34px;height:34px;border-radius:9px;background:var(--grad);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:13px}
+header b{font-size:17px}
+#offline{display:none;background:#fef3c7;color:#92400e;font-size:13px;font-weight:600;text-align:center;padding:8px}
+.wrap{padding:18px;max-width:560px;margin:0 auto}
+.card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:20px;margin-bottom:16px}
+.card h2{font-size:17px;margin-bottom:6px}
+.card p{font-size:14px;color:var(--muted);margin-bottom:14px;line-height:1.5}
+.btn{display:block;width:100%;border:none;border-radius:12px;padding:15px;font-size:16px;font-weight:700;font-family:inherit;cursor:pointer}
+.btn-grad{background:var(--grad);color:#fff}
+.btn-dark{background:var(--ink);color:#fff}
+.btn-ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}
+.btn-danger{background:#fff;color:#dc2626;border:1px solid #fecaca}
+.result{display:none;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:14px;margin-top:14px}
+.result b{font-size:15px}.result .code{font-family:ui-monospace,monospace;font-size:13px;color:#166534;margin-top:4px;display:block}
+.view{display:none}.view.on{display:block}
+.back{background:none;border:none;color:#6366f1;font-size:15px;font-weight:700;padding:14px 18px;cursor:pointer}
+small{display:block;color:var(--muted);font-size:12px;margin-top:10px;line-height:1.5}
+</style>
+</head>
+<body>
+<header><span class="mark">L○H</span><b>Live Ops Hub</b></header>
+<div id="offline">You're offline — scans are queued and will sync when you're back.</div>
+
+<!-- HOME -->
+<div id="home" class="view on"><div class="wrap">
+  <div class="card">
+    <h2>Scan to pack</h2>
+    <p>Scan a product barcode to pull its name, price and packing notes — right here, no typing.</p>
+    <button class="btn btn-grad" id="scanBtn">Scan a barcode</button>
+    <div class="result" id="scanResult"><b id="scanTitle">Scanned</b><span class="code" id="scanCode"></span></div>
+  </div>
+  <div class="card">
+    <h2>Operations console</h2>
+    <p>Open the full Live Ops Hub console — orders, picking, packing, shipping and analytics.</p>
+    <button class="btn btn-dark" id="openConsole">Open console</button>
+  </div>
+  <button class="back" id="toAccount">Account &amp; privacy →</button>
+</div></div>
+
+<!-- ACCOUNT -->
+<div id="account" class="view"><div class="wrap">
+  <button class="back" id="toHome">← Back</button>
+  <div class="card">
+    <h2>Account</h2>
+    <p>Signed in to Live Ops Hub.</p>
+    <button class="btn btn-ghost" id="signOut">Sign out</button>
+  </div>
+  <div class="card">
+    <h2>Delete account</h2>
+    <p>Permanently delete your Live Ops Hub account and request deletion of your data. This can't be undone.</p>
+    <button class="btn btn-danger" id="deleteAccount">Delete my account</button>
+    <small>We stop all data access immediately and delete or anonymize your data within 30 days, per our <a href="https://liveopshub.com/privacy">Privacy Policy</a>.</small>
+  </div>
+</div></div>
+
+<script src="app.js"></script>
+</body>
+</html>

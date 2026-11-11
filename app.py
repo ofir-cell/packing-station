@@ -7491,11 +7491,14 @@ def api_pick_complete(sid):
                         "picked_by": s["picked_by"], "picked_at": s["picked_at"],
                         "error": "Already picked by " + who})
     # Claim the shipment atomically: only the request whose conditional UPDATE actually
-    # flips pending->picked (rowcount==1) is the winner. Concurrent callers all read
-    # 'pending' above, so without this they would ALL return success and all think they
-    # picked it -- here the losers get 'already_picked' with the real picker's name.
+    # flips to picked (rowcount==1) is the winner. Concurrent callers all read the same
+    # status above, so without this they would ALL return success -- here the losers get
+    # 'already_picked' with the real picker's name.
+    # A combined order that carries a free prize alongside a paid product can land in the
+    # 'giveaway' status; it is still a real box to pick, so accept it here too (the pick
+    # detail already shows these as pickable). Only picked/packed/shipped/cancelled block.
     won = c.execute("""UPDATE shipments SET status='picked', picked_at=CURRENT_TIMESTAMP, picked_by=?
-                       WHERE shipment_id=? AND status='pending'""", (user, sid)).rowcount
+                       WHERE shipment_id=? AND status IN ('pending','giveaway')""", (user, sid)).rowcount
     if not won:
         row = c.execute("SELECT picked_by, picked_at FROM shipments WHERE shipment_id=?", (sid,)).fetchone()
         c.commit(); c.close()
