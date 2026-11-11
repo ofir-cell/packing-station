@@ -31,20 +31,38 @@ The iOS app (`ios/`) is a native SwiftUI shell around the real dashboard (WKWebV
 **How (Ofir, Nov 10 2026): as a separate front end.** Mobile screens live in `mobile/` and are served under `/m/` (first one: `/m/pick`). The desktop screens in templates.py are not edited. Both use the same login, data and `/api/*` endpoints.
 
 ```
-mobile-qa          runs scripts/mobile_audit.py → audit/report.json + screenshots (baseline)
-   → ios-designer     docs/mobile/DESIGN_SYSTEM.md once; docs/mobile/screens/<screen>.md per screen
-   → mobile-engineer  implements the /m/ screen in mobile/ (shared mobile layer), PR → main
-   → mobile-qa        PASS/FAIL per screen at SE / 16 Pro / Pro Max / iPad / desktop
-   → app-review       before TestFlight/App Store: guideline-by-guideline verdict
-   → Ofir             approves the design system + first screens, merges
+ios-designer       docs/mobile/screens/<screen>.md (spec) — design system already in docs/mobile/DESIGN_SYSTEM.md
+   → mobile-engineer  builds the /m/ screen in mobile/            ┐ in parallel when a screen
+   → ios-engineer     builds the native piece in ios/, if any     ┘ needs both
+   → programmer       only if the screen needs a server change (new field/endpoint) — own PR
+   → mobile-qa        PASS/FAIL per screen at SE / 16 Pro / Pro Max / iPad, in a real browser, against server state
+   → security-reviewer  on anything touching sign-in, roles, org data, the demo account, the bridge
+   → Ofir             merges the PR to main  → Railway deploys the server, TestFlight uploads the app
+   → release-manager  release note for the build; fixes the pipeline if the upload fails
+   → device-test-lead 10-minute on-device script for Ofir / the warehouse; files what comes back
+   → app-review       before any App Store submission: guideline-by-guideline verdict
 ```
 
-| Agent | Writes | Never |
+| Agent | Owns / writes | Never |
 |---|---|---|
-| ios-designer | `docs/mobile/` | app.py / templates.py |
-| mobile-engineer | `mobile/`, `ios/`, mobile tests, the `mobile/` wiring in app.py | edit desktop templates; merge; change data/permissions |
-| mobile-qa | `tests/`, `scripts/mobile_audit.py`, `audit/` | approve with a hard fail |
-| app-review | `docs/mobile/REVIEW-*.md`, `ios/APP_STORE.md` | product code |
+| ios-designer | `docs/mobile/` (design system, screen specs, mockups) | product code |
+| mobile-engineer | `mobile/` (the `/m/` screens), their tests, the `mobile/` wiring in app.py | Swift; desktop templates; merge; change data/permissions |
+| ios-engineer | `ios/` (SwiftUI shell, Pack, scanner, camera, Account, bridge) | server code; call Swift "working" without a device test |
+| mobile-qa | `tests/`, `scripts/mobile_audit.py`, `scripts/m_*_check.py`, `audit/` | approve with a hard fail |
+| security-reviewer | `docs/security/`, failing tests that show a finding | fix product code; CLEAR what it could not exercise |
+| release-manager | `.github/workflows/testflight.yml`, `ios/APP_STORE.md`, `docs/mobile/releases/` | submit, add testers or touch App Store Connect; see keys or passwords |
+| device-test-lead | `docs/mobile/device-tests/` (scripts, `PROVEN.md`) | mark anything proven without a real device |
+| app-review | `docs/mobile/REVIEW-*.md` | product code |
+
+### How the agents talk to each other
+
+Agents do not share a conversation; each one starts cold. They talk through files in the repo, and the lead session (the Claude conversation Ofir is in) dispatches them.
+
+- **`docs/mobile/BOARD.md` is the one shared board.** Every piece of work in flight has one entry: what, who owns it now, state, the PR, what is blocked on whom. An agent reads the board first and updates its entry last. Format is at the top of the file.
+- **A handoff names its receiver and is complete on its own**: what was done, the evidence (test run, CI run link, screenshots), what is *not* verified, and the exact next action. "Done, please review" is not a handoff.
+- **Requests across lanes go through the board**, not by editing someone else's files: mobile-engineer needs a native piece → entry for ios-engineer; anyone needs a server change → entry for programmer; a reviewer finds a problem → entry for the owner with the reproduction.
+- **Disagreements go to Ofir as a choice**, in plain words: the two options, what each costs, the recommendation. Reviewers (mobile-qa, security-reviewer, app-review) cannot be overruled by the engineer whose work they reviewed.
+- **Three states of "works"**, never blurred: *tests pass* (pytest + browser check), *compiles* (iOS build run), *proven on a device* (listed in `docs/mobile/device-tests/PROVEN.md`).
 
 Rollout order (Ofir, Nov 5 2026): **warehouse workers → warehouse manager → admin**. Same brand (indigo/violet, logo, themes), iPhone quality.
 Note: `staging` has diverged from `main`; mobile PRs target `main` (Railway deploys `main`).
