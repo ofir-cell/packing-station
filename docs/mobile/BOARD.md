@@ -74,6 +74,12 @@ _Nothing in flight. Building starts when the roadmap is approved._
 - Done so far: build 5 is installed on Ofir's iPhone and opens. Nothing else is proven — see `docs/mobile/device-tests/PROVEN.md`.
 - Next action: write `docs/mobile/device-tests/5.md` (sign-in, Pick, Bluetooth scanner on Pick and Pack, camera scan, packing video on iPhone and on iPad in every orientation, Wi-Fi off) → device-test-lead; Ofir runs it. Result answers D4.
 
+### M1b. App blueprint (new agent: app-planner)
+- Owner now: app-planner      State: blocked
+- Done so far: agent defined (`.claude/agents/app-planner.md`). Known contradictions it must settle: `screens/more.md` plans a fifth "More" tab and `/api/mobile/nav`, the roadmap plans Today / Pick / Pack / Account + admin-only Manage; `ios/APP_STORE.md` describes screens that do not exist.
+- Next action: write `docs/mobile/APP_BLUEPRINT.md` (tabs and launch screen per role, screen inventory with native / `/m/` / Manage / not-in-app, end-to-end flows, 1.0 scope line, open questions) → app-planner; Ofir approves; then ios-designer aligns the specs.
+- Blocked on: Ofir's go-ahead to run it. Blocks M4 and M5 (they build from the blueprint).
+
 ### M2. Server security fixes
 - Owner now: programmer      State: blocked
 - Done so far: findings and failing demonstrations exist (`tests/test_security_mobile_baseline.py`, strict xfail). Before the demo company: SEC-1, SEC-2, SEC-3, SEC-4, SEC-7. Before outside sellers: SEC-5, SEC-6.
@@ -91,13 +97,13 @@ _Nothing in flight. Building starts when the roadmap is approved._
 - Owner now: ios-designer      State: blocked
 - Done so far: specs `docs/mobile/screens/sign-in.md`, `me.md` exist; `/api/mobile/session` returns the user's roles; `LegalLinks.swift` exists but is unused.
 - Next action: confirm the specs cover native sign-in with legal links, Account (sign out, delete, privacy, terms, support) and the tab rules (Pick hidden for roles that cannot pick; Dashboard becomes admin-only "Manage", never the launch tab) → ios-designer; then ios-engineer builds, incl. signed-out Pack (K7), SEC-15, SEC-16; then security-reviewer + app-review.
-- Blocked on: roadmap approval.
+- Blocked on: roadmap approval; M1b (approved blueprint).
 
 ### M5. `/m/today`, `/m/track`, `/m/cleanup`
 - Owner now: mobile-engineer      State: blocked
 - Done so far: specs exist (`today.md`, `track.md`, `cleanup.md`). `/m/pick` is the reference implementation.
 - Next action: build `/m/today` (launch screen), then `/m/track`, then `/m/cleanup` and point `/m/pick`'s two gates at it, each with a browser check → mobile-engineer; then mobile-qa.
-- Blocked on: roadmap approval; D8 for colour.
+- Blocked on: roadmap approval; M1b (approved blueprint); D8 for colour.
 
 ### M6. Listing, policy and public pages
 - Owner now: release-manager      State: blocked

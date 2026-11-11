@@ -31,7 +31,9 @@ The iOS app (`ios/`) is a native SwiftUI shell around the real dashboard (WKWebV
 **How (Ofir, Nov 10 2026): as a separate front end.** Mobile screens live in `mobile/` and are served under `/m/` (first one: `/m/pick`). The desktop screens in templates.py are not edited. Both use the same login, data and `/api/*` endpoints.
 
 ```
-ios-designer       docs/mobile/screens/<screen>.md (spec) — design system already in docs/mobile/DESIGN_SYSTEM.md
+app-planner        docs/mobile/APP_BLUEPRINT.md — the app as a whole: tabs per role, every screen and where it lives, flows, 1.0 scope
+   → Ofir             approves the blueprint
+   → ios-designer     docs/mobile/screens/<screen>.md (spec) for each blueprint row — design system already in docs/mobile/DESIGN_SYSTEM.md
    → mobile-engineer  builds the /m/ screen in mobile/            ┐ in parallel when a screen
    → ios-engineer     builds the native piece in ios/, if any     ┘ needs both
    → programmer       only if the screen needs a server change (new field/endpoint) — own PR
@@ -45,7 +47,8 @@ ios-designer       docs/mobile/screens/<screen>.md (spec) — design system alre
 
 | Agent | Owns / writes | Never |
 |---|---|---|
-| ios-designer | `docs/mobile/` (design system, screen specs, mockups) | product code |
+| app-planner | `docs/mobile/APP_BLUEPRINT.md` (app map, screen inventory, flows, 1.0 scope) | screen specs, visual design, product code |
+| ios-designer | `docs/mobile/` (design system, screen specs, mockups) | product code; add a screen or tab that is not in the blueprint |
 | mobile-engineer | `mobile/` (the `/m/` screens), their tests, the `mobile/` wiring in app.py | Swift; desktop templates; merge; change data/permissions |
 | ios-engineer | `ios/` (SwiftUI shell, Pack, scanner, camera, Account, bridge) | server code; call Swift "working" without a device test |
 | mobile-qa | `tests/`, `scripts/mobile_audit.py`, `scripts/m_*_check.py`, `audit/` | approve with a hard fail |

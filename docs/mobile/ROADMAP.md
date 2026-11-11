@@ -8,6 +8,7 @@ Sources: `docs/mobile/REVIEW-2026-11-10.md` (app-review: a submission today woul
 
 ```
 M0 decisions ─┬─ M1 device round on build 5 (no code) ────────────────┐
+              ├─ M1b app blueprint ── (gates M4 and M5)                │
               ├─ M2 server security fixes ── M3 demo company ─────────┤
               ├─ M4 native shell (sign-in, Account, role tabs) ───────┼─ M7 rehearsal → Ofir submits → Apple
               ├─ M5 phone screens (Today, Track, Cleanup) ────────────┤
@@ -15,7 +16,7 @@ M0 decisions ─┬─ M1 device round on build 5 (no code) ──────�
                                                         M8 outside sellers (after approval)
 ```
 
-M1, M2, M4, M5 and M6 can run side by side once M0 is answered. M3 waits for M2. M7 waits for everything.
+M1, M1b, M2 and M6 can start side by side once M0 is answered. M4 and M5 wait for the approved blueprint (M1b). M3 waits for M2. M7 waits for everything.
 
 What touches the live warehouse: **M2 and M3 change shared server logic** (`app.py`) — each fix is its own PR, labelled as such, through programmer → qa → security-reviewer, merged outside packing hours. M4 is `ios/` only (reaches phones through TestFlight). M5 adds new `/m/` pages; the desktop is untouched but a merge redeploys the server.
 
@@ -33,6 +34,13 @@ What touches the live warehouse: **M2 and M3 change shared server logic** (`app.
 - **Agent:** device-test-lead (script, then files what comes back as bugs for ios-engineer / mobile-engineer).
 - **Ofir on the phone:** run the script on the iPhone and the iPad with the Bluetooth scanner. Until the demo company exists this is on the real company — use real orders that are actually being packed, never invented activity.
 - **Done when:** every line of the script is in `PROVEN.md` as proven or as a filed bug, and the iPad question (D4) is answered by evidence: iPad stays in 1.0 only if it passes this round.
+
+## M1b — App blueprint (no code)
+
+- **Built:** `docs/mobile/APP_BLUEPRINT.md` — the app planned as one product before more screens are built: the tab bar and launch screen for each role, every screen with where it lives (native · phone-built `/m/` · desktop page inside the admin-only Manage tab · not in the app), the end-to-end flows (first sign-in, a picker's shift, scan → pack → next box, a manager checking a show, label lookup, account deletion, the reviewer's ten minutes), the rules that span screens (scanning, language, offline), and the 1.0 scope line. It also settles the contradictions between the Nov 5 screen specs (a fifth "More" tab) and this roadmap (Today / Pick / Pack / Account + Manage).
+- **Agents:** app-planner (new) → ios-designer aligns `docs/mobile/screens/` and mockups to it → app-review reads it for 4.2 before anything is built.
+- **Ofir:** reads the app map and the 1.0 scope line and answers the blueprint's open questions; looks at the tab-bar mockup for each role on the phone.
+- **Done when:** the blueprint is marked approved by Ofir, every screen spec agrees with it, and each M4 / M5 item points at a blueprint row.
 
 ## M2 — Server security fixes (shared logic)
 
@@ -52,14 +60,14 @@ What touches the live warehouse: **M2 and M3 change shared server logic** (`app.
 ## M4 — Native shell
 
 - **Built:** native sign-in with Privacy and Terms links; native Account screen (name, role, company, sign out, delete account, privacy, terms, support); tab bar built from the user's roles (Pick hidden for roles that cannot pick; Dashboard becomes an admin-only "Manage" tab and is never the launch tab); signed-out Pack no longer opens the camera; SEC-15 and SEC-16 (exact-host checks, bridge ignores sub-frames); remove the unused photo-library permission string; iPhone-only target if D4 says so.
-- **Agents:** ios-designer (specs: `sign-in.md`, `me.md`, tab rules) → ios-engineer → programmer only if an endpoint is missing (own PR) → security-reviewer → app-review.
+- **Agents:** from the approved blueprint (M1b): ios-designer (specs: `sign-in.md`, `me.md`, tab rules) → ios-engineer → programmer only if an endpoint is missing (own PR) → security-reviewer → app-review.
 - **Ofir on the phone:** each TestFlight build — sign in, open Account, sign out, sign in as a worker and as an admin and see different tabs. Account deletion is tried only on the demo company.
 - **Done when:** `iOS build` green, device script for that build proven, security-reviewer CLEAR, app-review marks K1, K2, K7 closed.
 
 ## M5 — Phone-built screens
 
 - **Built:** `/m/today` (the launch screen), `/m/track` (label lookup), `/m/cleanup` (table clean-out, replacing the hop to the desktop page), each with a browser check modelled on `scripts/m_pick_check.py`. Colour per D8.
-- **Agents:** ios-designer (specs exist; update if D8 changes colour) → mobile-engineer → mobile-qa (PASS at SE / 16 Pro / Pro Max / iPad for every role) → security-reviewer on any new `/m/api/` route.
+- **Agents:** from the approved blueprint (M1b): ios-designer (specs exist; update if D8 changes colour) → mobile-engineer → mobile-qa (PASS at SE / 16 Pro / Pro Max / iPad for every role) → security-reviewer on any new `/m/api/` route.
 - **Ofir on the phone:** each screen in the demo company, in English and Spanish.
 - **Done when:** mobile-qa PASS, each screen proven on a device, and app-review judges 4.2 (R2) no longer a realistic rejection: the app opens on Today, a worker never sees a desktop page.
 
