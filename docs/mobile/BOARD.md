@@ -44,7 +44,11 @@ Roadmap (`docs/mobile/ROADMAP.md`) and app blueprint (`docs/mobile/APP_BLUEPRINT
 ### Run the first device script (M1)
 - Owner now: Ofir      State: blocked
 - Next action: run `docs/mobile/device-tests/5.md` on the iPhone and the iPad with the Bluetooth scanner and send back the ✓ / ✗ list → Ofir. Decides D4.
-- Blocked on: device-test-lead finishing the script (in flight).
+- Done so far: script written (52 steps; needs 3 real orders to pick and 9 real boxes to pack). Expected failures from code reading are listed at its end.
+
+### New questions from the approved blueprint (Q6–Q8)
+- Owner now: Ofir      State: blocked
+- Next action: answer — Q6 SMS through a managed verification service (recommended) or our own sending number · Q7 the person enters their own phone number at set-up (recommended) or an admin enters it · Q8 2FA required for admin, manager and cs (recommended; what D3's wording implies) or admin only as today → Ofir. Also read the two blueprint sections marked "new" (Scanit, SMS 2FA).
 
 ### SMS provider for 2FA codes (from D3)
 - Owner now: Ofir      State: blocked
@@ -57,22 +61,13 @@ Roadmap (`docs/mobile/ROADMAP.md`) and app blueprint (`docs/mobile/APP_BLUEPRINT
 
 ## In flight
 
-### Blueprint → approved version
-- Owner now: app-planner      State: in progress
-- Next action: fold the decisions above into `docs/mobile/APP_BLUEPRINT.md` (Scanit in 1.0, SMS 2FA, indigo only, manager + worker demo logins) → app-planner; then ios-designer aligns the specs.
-
-### M1. First on-device test script (build 5)
-- Owner now: device-test-lead      State: in progress
-- Next action: write `docs/mobile/device-tests/5.md` → device-test-lead; Ofir runs it.
+### M1b. Align screen specs to the approved blueprint
+- Owner now: ios-designer      State: in progress
+- PR / branch: `design/specs-to-blueprint`
+- Done so far: blueprint approved version written by app-planner (Scanit and SMS sections are marked "new": written after Ofir's approval, he has not read them yet).
+- Next action: in the blueprint's order — `DESIGN_SYSTEM.md` (tab map, no More, indigo only), new `scanit.md`, `today.md`, `track.md` (video), `me.md` → Account, `cleanup.md`, `pick.md`, `pack.md`, withdraw `more.md`, mark the eight waiting specs, mockups → ios-designer. `sign-in.md` (SMS step, set-up screen) waits for Q7 and Q8.
 
 ## Up next (by milestone — see `docs/mobile/ROADMAP.md`)
-
-### M1b. Align screen specs to the blueprint
-- Owner now: ios-designer      State: blocked
-- Done so far: app-planner wrote `docs/mobile/APP_BLUEPRINT.md` (draft, Nov 10 2026) and listed every contradiction: `more.md` (withdraw), `DESIGN_SYSTEM.md` §3.1–3.5 and §8–10, `today.md`, `track.md`, `pick.md`, `cleanup.md`, `sign-in.md`, `me.md`, `pack.md`, and the eight specs that wait for 1.1.
-- Not verified: the blueprint is from reading code only; N4, N8 and N10 (blueprint §3) are unreproduced.
-- Next action: after Ofir approves the blueprint, bring the specs and mockups in line with it → ios-designer; app-review reads blueprint §2 and §6 for 4.2 and for the per-role tab sets.
-- Blocked on: app-planner's approved version (in flight). Blocks M4 and M5.
 
 ### M1b. Pieces 1.0 needs that do not exist (from the blueprint)
 - Owner now: programmer / ios-engineer / mobile-engineer      State: blocked
@@ -122,6 +117,11 @@ Roadmap (`docs/mobile/ROADMAP.md`) and app blueprint (`docs/mobile/APP_BLUEPRINT
 - Blocked on: Apple's approval; no open BLOCK-EXTERNAL finding.
 
 ## Done
+
+### App blueprint approved; first device script written (Nov 10 2026)
+- `docs/mobile/APP_BLUEPRINT.md` approved by Ofir with D1–D8 and Q1–Q5; app-planner folded the answers in. Tabs: worker / manager / cs Today · Pick · Pack · Account; host Today · Scanit · Account; admin adds Manage.
+- `docs/mobile/device-tests/5.md` written by device-test-lead. Not run yet.
+- Not verified: every code claim in both is from reading.
 
 ### App Review and security baselines, roadmap (Nov 10 2026)
 - app-review: `docs/mobile/REVIEW-2026-11-10.md` — a submission today would be rejected (R1 demo access, R2 web wrapper, R3 listing does not match the build).
