@@ -890,3 +890,37 @@ def test_org_id_with_trailing_newline_is_refused(appmod, fake):
         assert res["ok"] is False and fake.calls == []
     finally:
         c = A.pdb(); c.execute("DELETE FROM org_tombstones WHERE org_id=?", ("zz\n",)); c.commit(); c.close()
+
+
+# ═════════════ re-review of e973284: the loop's late-row purge ═════════════
+
+@pytest.mark.parametrize("state", ["deleted", "partial", "stuck", "pending", "weird"])
+def test_late_row_purge_never_touches_a_live_org_or_a_neighbour(appmod, fake, state):
+    """The loop now also removes platform rows of finished deletions. It must do that
+    only for ids without an organizations row, and only for that exact id."""
+    A = appmod
+    c = A.pdb(); c.execute("UPDATE org_tombstones SET state='deleted' WHERE state='pending'"); c.commit(); c.close()
+    base, tids = _family(A, fake)
+    live, gone = base, "qg" + uuid.uuid4().hex[:6]
+    c = A.pdb()
+    c.execute("INSERT INTO org_tombstones(org_id,state) VALUES(?,?)", (live, state))        # stray tombstone on a LIVE org
+    if state != "pending":
+        c.execute("INSERT INTO org_tombstones(org_id,state) VALUES(?,?)", (gone, state))    # a finished deletion...
+        c.execute("INSERT INTO tiktok_shops(org_id,shop_id,access_token,refresh_token,active) VALUES(?,?,?,?,1)",
+                  (gone, "late-" + gone, "late", "late"))                                    # ...with a late row
+    c.commit(); c.close()
+    before = _platform_snapshot(A, gone, -1)
+    keys, users, files = fake.all_keys(), A.ldj(A.USERS_FILE), _files_snapshot(A, "\0none", -1)
+    try:
+        assert A._org_delete_resume_pending() == 0
+        after = _platform_snapshot(A, gone, -1)
+        before.pop("platform_audit"); after.pop("platform_audit")
+        assert after == before                                  # the live org and its neighbours kept every row
+        assert fake.calls == [] and fake.all_keys() == keys
+        assert A.ldj(A.USERS_FILE) == users and _files_snapshot(A, "\0none", -1) == files
+        c = A.pdb()
+        left = c.execute("SELECT COUNT(*) FROM tiktok_shops WHERE org_id=?", (gone,)).fetchone()[0]
+        c.close()
+        assert left == 0
+    finally:
+        c = A.pdb(); c.execute("DELETE FROM org_tombstones WHERE org_id=?", (live,)); c.commit(); c.close()
