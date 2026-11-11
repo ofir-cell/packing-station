@@ -22,7 +22,7 @@ Roadmap (`docs/mobile/ROADMAP.md`) and app blueprint (`docs/mobile/APP_BLUEPRINT
 |---|---|
 | D1 | Yes: an isolated demo (sandbox) company signs in without 2FA for Apple's reviewer. |
 | D2 | Reviewer logins are **manager + worker**. No admin demo account. |
-| D3 | Badge sign-in only for floor roles — **on condition that 2FA by SMS code exists first**, offered in addition to the authenticator app. |
+| D3 | Badge sign-in only for floor roles — **on condition that a 2FA code sent by email works first** (first answer was SMS; changed to email the same evening). The authenticator app stays as the other option. No SMS and no phone numbers in 1.0. |
 | D4 | iPad in 1.0 is decided by the first device round (M1): it stays only if every iPad step passes. |
 | D5 | **Unlisted** distribution, **US storefront only**. |
 | D6 | liveopshub.com is Ofir's; the public pages (privacy, terms, support, marketing) move there. |
@@ -33,6 +33,9 @@ Roadmap (`docs/mobile/ROADMAP.md`) and app blueprint (`docs/mobile/APP_BLUEPRINT
 | Q3 | News and My Schedule wait for 1.1. |
 | Q4 | **Scanit (the host's tool) is built for 1.0.** |
 | Q5 | Packing video is viewable from Track for cs / manager / admin. |
+| Q6 | Void — no SMS provider is needed. |
+| Q7 | The person enters their own email address at set-up; it counts only after they type a code sent to it. |
+| Q8 | 2FA is required for admin, manager and cs. The emailed code is available to all three. |
 
 ## Waiting on Ofir
 
@@ -46,14 +49,10 @@ Roadmap (`docs/mobile/ROADMAP.md`) and app blueprint (`docs/mobile/APP_BLUEPRINT
 - Next action: run `docs/mobile/device-tests/5.md` on the iPhone and the iPad with the Bluetooth scanner and send back the ✓ / ✗ list → Ofir. Decides D4.
 - Done so far: script written (52 steps; needs 3 real orders to pick and 9 real boxes to pack). Expected failures from code reading are listed at its end.
 
-### New questions from the approved blueprint (Q6–Q8)
+### Read the changed blueprint sections and the mockups
 - Owner now: Ofir      State: blocked
-- Next action: answer — Q6 SMS through a managed verification service (recommended) or our own sending number · Q7 the person enters their own phone number at set-up (recommended) or an admin enters it · Q8 2FA required for admin, manager and cs (recommended; what D3's wording implies) or admin only as today → Ofir. Also read the two blueprint sections marked "new" (Scanit, SMS 2FA).
-
-### SMS provider for 2FA codes (from D3)
-- Owner now: Ofir      State: blocked
-- Done so far: nothing built; today 2FA is authenticator-app only. SMS needs a paid provider account, a sending number approved for US business texting, and its credentials in Railway variables (entered by Ofir, never in the repo or chat).
-- Next action: say which provider to build against, or ask for a short comparison → Ofir. Blocks the SMS part of M2 and therefore SEC-2.
+- Done so far: specs and mockups aligned by ios-designer (PR for `design/specs-to-blueprint`); app-planner is correcting the blueprint for the email code (rev 2).
+- Next action: look at `docs/mobile/mockups/tabbar.png`, `today-*.png`, `scanit*.png`, `sign-in.png` and say what to change; read the blueprint sections marked as changed (Scanit, email code) → Ofir.
 
 ### Mailbox and domain
 - Owner now: Ofir      State: todo
@@ -62,10 +61,15 @@ Roadmap (`docs/mobile/ROADMAP.md`) and app blueprint (`docs/mobile/APP_BLUEPRINT
 ## In flight
 
 ### M1b. Align screen specs to the approved blueprint
-- Owner now: ios-designer      State: in progress
+- Owner now: Ofir (review)      State: in review
 - PR / branch: `design/specs-to-blueprint`
-- Done so far: blueprint approved version written by app-planner (Scanit and SMS sections are marked "new": written after Ofir's approval, he has not read them yet).
-- Next action: in the blueprint's order — `DESIGN_SYSTEM.md` (tab map, no More, indigo only), new `scanit.md`, `today.md`, `track.md` (video), `me.md` → Account, `cleanup.md`, `pick.md`, `pack.md`, withdraw `more.md`, mark the eight waiting specs, mockups → ios-designer. `sign-in.md` (SMS step, set-up screen) waits for Q7 and Q8.
+- Done so far: `DESIGN_SYSTEM.md` (tabs per role, no More, indigo only), new `scanit.md`, `today.md`, `track.md`, `me.md` (native Account), `cleanup.md`, `pick.md`, `pack.md`, `sign-in.md` (email code or authenticator, native set-up), `more.md` withdrawn, banners on the waiting specs. Mockups with rendered PNGs: tab bar per role, Today (worker, host, manager, admin, dark), Scanit, Sign-in.
+- Not verified: nothing ran on a device or in Safari; Spanish copy is a first draft; no mockup yet for Track, Cleanup, Account, Pack; server facts are from reading `app.py`.
+- Next action: Ofir reviews the mockups; mockups for Track, Cleanup and Account → ios-designer when the blueprint rev 2 is in.
+
+### Blueprint rev 2 (email code; gaps found by ios-designer)
+- Owner now: app-planner      State: in progress
+- Next action: replace SMS with the emailed code throughout `APP_BLUEPRINT.md` and settle the gaps ios-designer reported (what `/api/today` returns per role, Cleanup's endpoint, opening an order in Pick from another tab, limits for videos waiting to upload, how a badge-only worker deletes an account, `/m/` pages opened in a phone browser, video formats in Track) → app-planner.
 
 ## Up next (by milestone — see `docs/mobile/ROADMAP.md`)
 
@@ -80,7 +84,7 @@ Roadmap (`docs/mobile/ROADMAP.md`) and app blueprint (`docs/mobile/APP_BLUEPRINT
 - Done so far: findings and failing demonstrations exist (`tests/test_security_mobile_baseline.py`, strict xfail). Before the demo company: SEC-1, SEC-2, SEC-3, SEC-4, SEC-7. Before outside sellers: SEC-5, SEC-6.
 - Not verified: production configuration; the desktop routes outside the app's own calls.
 - Next action: one shared-logic PR per finding, first line says so → programmer; then qa, then security-reviewer.
-- Blocked on: PR #39 merged. SEC-2 additionally waits for SMS 2FA (D3), which needs a spec (product-engineer → architect) and Ofir's provider choice.
+- Blocked on: PR #39 merged. SEC-2 additionally waits for the emailed 2FA code (D3), which needs a spec (product-engineer → architect); staff accounts have no email field today.
 
 ### M3. Demo company + reviewer accounts
 - Owner now: programmer      State: blocked

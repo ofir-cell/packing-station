@@ -1,6 +1,6 @@
 # Roadmap — from today to an approved App Store app
 
-_Written Nov 10 2026 by the lead session. **Approved by Ofir on Nov 10 2026**, with the decisions recorded in `BOARD.md` → "Decided by Ofir". Changes Ofir's answers made to the first version: SMS 2FA added to M2 (his condition for the badge change), Scanit added to M5, reviewer logins are manager + worker, unlisted and US-only, indigo only, public pages on liveopshub.com._
+_Written Nov 10 2026 by the lead session. **Approved by Ofir on Nov 10 2026**, with the decisions recorded in `BOARD.md` → "Decided by Ofir". Changes Ofir's answers made to the first version: a 2FA code by email added to M2 (his condition for the badge change; first answered as SMS, changed to email the same evening), Scanit added to M5, reviewer logins are manager + worker, unlisted and US-only, indigo only, public pages on liveopshub.com._
 
 Sources: `docs/mobile/REVIEW-2026-11-10.md` (app-review: a submission today would be rejected) and `docs/security/2026-11-10-mobile-baseline.md` (security-reviewer: BLOCK for outside sellers and BLOCK for a no-2FA demo account; company isolation itself holds on every endpoint the app calls). Finding ids below (R1…, K1…, SEC-1…) refer to those two reports.
 
@@ -45,10 +45,10 @@ What touches the live warehouse: **M2 and M3 change shared server logic** (`app.
 ## M2 — Server security fixes (shared logic)
 
 - **Built, before the demo company can exist:** SEC-1 (2FA on effective roles, not only the primary role), SEC-2 (badge sign-in for floor roles only), SEC-3 (2FA exemption honoured only in a company flagged as sandbox), SEC-4 (per-company outbound fence at every transport: email, carriers, TikTok, AI, barcode lookup, printing), SEC-7 (deletion and company wipe need the password).
-- **Also built here (Ofir's condition for SEC-2):** 2FA by SMS code, offered in addition to the authenticator app — spec first (product-engineer → architect), then programmer. It adds an SMS provider (a new outside service: policy, privacy answers, and the sandbox must never send through it) and stores phone numbers. SEC-2 merges only after it works.
+- **Also built here (Ofir's condition for SEC-2):** a 2FA code sent by email, offered next to the authenticator app, for admin, manager and cs — spec first (product-engineer → architect), then programmer. Staff accounts get an email address that the person enters and confirms; codes are sent through the existing mail transport, never from the sandbox company; no self-service password reset by email. No SMS and no phone numbers. SEC-2 merges only after it works.
 - **Built, before any outside seller (recommended now, same owner):** SEC-5 (carrier account number never returned; rate calls behind the buy gate), SEC-6 (deleting a company removes its tokens and stored files).
 - **Agents:** programmer (one PR per finding) → qa (invariants) → security-reviewer (verdict per PR).
-- **Ofir:** chooses the SMS provider and enters its credentials in Railway. After each merge, on the phone and at a station: a worker still signs in by badge; an admin is asked for password + 2FA.
+- **Ofir:** after each merge, on the phone and at a station: a worker still signs in by badge; an admin, a manager and a cs user are asked for password + a code (email or authenticator).
 - **Done when:** the matching demonstrations in `tests/test_security_mobile_baseline.py` pass with their `xfail` markers removed, the full suite is green, and security-reviewer returns CLEAR on each PR.
 
 ## M3 — Demo company and reviewer logins
@@ -60,7 +60,7 @@ What touches the live warehouse: **M2 and M3 change shared server logic** (`app.
 
 ## M4 — Native shell
 
-- **Built:** native sign-in with Privacy and Terms links; native Account screen (name, role, company, sign out, delete account, privacy, terms, support); tab bar built from the user's roles (Pick hidden for roles that cannot pick; Dashboard becomes an admin-only "Manage" tab and is never the launch tab); signed-out Pack no longer opens the camera; SEC-15 and SEC-16 (exact-host checks, bridge ignores sub-frames); remove the unused photo-library permission string; iPhone-only target if the M1 device round says so; the SMS code step in sign-in and enrolment.
+- **Built:** native sign-in with Privacy and Terms links; native Account screen (name, role, company, sign out, delete account, privacy, terms, support); tab bar built from the user's roles (Pick hidden for roles that cannot pick; Dashboard becomes an admin-only "Manage" tab and is never the launch tab); signed-out Pack no longer opens the camera; SEC-15 and SEC-16 (exact-host checks, bridge ignores sub-frames); remove the unused photo-library permission string; iPhone-only target if the M1 device round says so; the emailed-code step in sign-in and the native set-up screen.
 - **Agents:** from the approved blueprint (M1b): ios-designer (specs: `sign-in.md`, `me.md`, tab rules) → ios-engineer → programmer only if an endpoint is missing (own PR) → security-reviewer → app-review.
 - **Ofir on the phone:** each TestFlight build — sign in, open Account, sign out, sign in as a worker and as an admin and see different tabs. Account deletion is tried only on the demo company.
 - **Done when:** `iOS build` green, device script for that build proven, security-reviewer CLEAR, app-review marks K1, K2, K7 closed.
