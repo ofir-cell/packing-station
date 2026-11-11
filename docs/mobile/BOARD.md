@@ -16,52 +16,111 @@ Entry format — newest first inside each section:
 
 ## Waiting on Ofir (decisions)
 
-### Demo company for Apple's reviewer signs in without 2FA
-- Owner now: Ofir      State: blocked
-- Done so far: nothing built. Apple's reviewer cannot receive a 2FA code, so without a login that skips it the app is rejected (baseline review, finding 1).
-- Next action: approve or reject "2FA is skipped only for one isolated demo company with seeded fake data that cannot reach real companies or send anything outside" → Ofir. On approval: programmer builds it, security-reviewer must return CLEAR before merge.
+Roadmap: `docs/mobile/ROADMAP.md` (milestones M0–M8). Reviews behind it: `docs/mobile/REVIEW-2026-11-10.md`, `docs/security/2026-11-10-mobile-baseline.md`.
 
-### Brand colour in the app
+### Approve the roadmap
+- Owner now: Ofir      State: blocked
+- Done so far: app-review and security-reviewer ran on `main` @ b032603 (Nov 10 2026); roadmap written from their findings. Tests: 376 passed, 14 xfailed (the 14 are the open security demonstrations).
+- Next action: approve or change `docs/mobile/ROADMAP.md` → Ofir. Nothing is built before that.
+
+### D1. Demo company for Apple's reviewer signs in without 2FA
+- Owner now: Ofir      State: blocked
+- Done so far: nothing built. Without it the app is rejected (R1). Security-reviewer's conditions: the exemption lives on a sandbox company, not on a user; nothing can leave that company; deletion is simulated; resettable (12-point checklist in the security report).
+- Next action: yes / no → Ofir. Blocks M3.
+
+### D2. Role of the reviewer account
+- Owner now: Ofir      State: blocked
+- Done so far: reviewers disagree. app-review: an admin login plus a worker login, so Apple sees every account type. security-reviewer: the no-2FA account must not be admin; a manager-level role plus a worker.
+- Next action: choose → Ofir. Lead's recommendation: manager + worker. It costs nothing with Apple if the admin-only Manage tab is described in the notes, and a no-2FA admin is the one account an attacker would want.
+
+### D3. Badge sign-in only for floor roles (SEC-2)
+- Owner now: Ofir      State: blocked
+- Done so far: today a badge alone opens an admin session if the badge holder is an admin (proven by test). The fix means admins, managers and CS sign in with password + 2FA; workers and pickers keep the badge.
+- Next action: confirm this is acceptable on the floor, or name the roles that must keep badge sign-in → Ofir. Blocks M2.
+
+### D4. iPad in version 1.0
+- Owner now: Ofir      State: blocked
+- Done so far: iPad is declared, so Apple reviews it and requires 13-inch screenshots; nothing on iPad is proven on a device.
+- Next action: decide after the M1 device round — keep iPad only if it passes; otherwise ship 1.0 iPhone-only → Ofir.
+
+### D5. Unlisted or public listing, and which countries
+- Owner now: Ofir      State: blocked
+- Done so far: app-review recommends unlisted for 1.0 (customers install by link; still goes through App Review). US-only storefront keeps the "request access" sentence; worldwide needs it removed (K8).
+- Next action: choose both → Ofir. Blocks M6.
+
+### D6. Public pages on liveopshub.com
+- Owner now: Ofir      State: blocked
+- Done so far: privacy, terms, support and marketing URLs given to Apple are on getwhatnot.com, a domain built on another company's trademark (K9).
+- Next action: confirm liveopshub.com is yours and may serve the public pages (the server address can move later) → Ofir. Blocks M6.
+
+### D7. Privacy policy wording and a public support contact
+- Owner now: Ofir      State: blocked
+- Done so far: the policy says TikTok access is read-only (the app creates labels) and "encrypted credentials" (they are not); subprocessors are missing; the support URL is a sales form (K4, K10, security report "Privacy answers vs. reality").
+- Next action: approve corrected wording when release-manager drafts it (legal text — yours to sign off) and give the support email to publish → Ofir. Blocks M6.
+
+### D8. Brand colour in the app
 - Owner now: Ofir      State: blocked
 - Done so far: `/m/` screens use each company's own brand colour, as the desktop site does. Mockups Ofir approved were indigo/violet; a company whose colour is pink sees pink.
-- Next action: choose — keep per-company colour (current), or always LiveOpsHub indigo inside the app → Ofir.
+- Next action: choose — keep per-company colour (current), or always LiveOpsHub indigo inside the app → Ofir. Needed before M5 screens and screenshots.
 
 ## In flight
 
-_Nothing in flight._
+_Nothing in flight. Building starts when the roadmap is approved._
 
-## Up next (in order)
+## Up next (by milestone — see `docs/mobile/ROADMAP.md`)
 
-### 1. Native Account screen
-- Owner now: ios-engineer      State: todo
-- Done so far: none. Required by Apple (account deletion reachable in-app, privacy policy, sign out).
-- Next action: build an Account tab in `ios/` — name, role, company, sign out, delete account (existing server flow), privacy policy and terms links → ios-engineer; then security-reviewer + app-review.
-
-### 2. Demo company + reviewer accounts
-- Owner now: programmer      State: blocked
-- Blocked on: Ofir's 2FA decision above.
-
-### 3. Hide the Pick tab for roles that cannot pick
-- Owner now: ios-engineer      State: todo
-- Done so far: a Host sees "Access denied" in the Pick tab. `/api/mobile/session` already returns the user's roles.
-- Next action: show Pick only when the session's roles include picker / worker / cs / admin / manager → ios-engineer.
-
-### 4. `/m/today` (worker home) and `/m/track`
-- Owner now: mobile-engineer      State: todo
-- Done so far: specs exist (`docs/mobile/screens/today.md`, `track.md`). `/m/pick` is the reference implementation.
-- Next action: build `/m/today`, then `/m/track`, each with a browser check like `scripts/m_pick_check.py` → mobile-engineer; then mobile-qa.
-
-### 5. `/m/cleanup` (table clean-out)
-- Owner now: mobile-engineer      State: todo
-- Done so far: `/m/pick` sends a picker to the desktop `/admin/cleanup`, which returns to `/m/pick` in the app. Spec exists (`docs/mobile/screens/cleanup.md`).
-- Next action: build `/m/cleanup` and point `/m/pick`'s two gates at it → mobile-engineer.
-
-### 6. First on-device test script
+### M1. First on-device test script (current build 5)
 - Owner now: device-test-lead      State: todo
 - Done so far: build 5 is installed on Ofir's iPhone and opens. Nothing else is proven — see `docs/mobile/device-tests/PROVEN.md`.
-- Next action: write `docs/mobile/device-tests/5.md` covering the Bluetooth scanner (Pick and Pack), camera scan, packing video on iPhone and on iPad in both orientations → device-test-lead; Ofir runs it.
+- Next action: write `docs/mobile/device-tests/5.md` (sign-in, Pick, Bluetooth scanner on Pick and Pack, camera scan, packing video on iPhone and on iPad in every orientation, Wi-Fi off) → device-test-lead; Ofir runs it. Result answers D4.
+
+### M2. Server security fixes
+- Owner now: programmer      State: blocked
+- Done so far: findings and failing demonstrations exist (`tests/test_security_mobile_baseline.py`, strict xfail). Before the demo company: SEC-1, SEC-2, SEC-3, SEC-4, SEC-7. Before outside sellers: SEC-5, SEC-6.
+- Not verified: production configuration; the desktop routes outside the app's own calls.
+- Next action: one shared-logic PR per finding, first line says so → programmer; then qa, then security-reviewer.
+- Blocked on: roadmap approval; D3 for SEC-2.
+
+### M3. Demo company + reviewer accounts
+- Owner now: programmer      State: blocked
+- Done so far: none. Requirements: security report, "Requirements for the demo/reviewer company".
+- Next action: build the sandbox company, seed, reset and label PDF → programmer; security-reviewer must return CLEAR; app-review confirms R1 and K3 closed.
+- Blocked on: D1, D2, and M2 (SEC-1, 2, 3, 4, 7).
+
+### M4. Native shell: sign-in, Account, role-built tabs
+- Owner now: ios-designer      State: blocked
+- Done so far: specs `docs/mobile/screens/sign-in.md`, `me.md` exist; `/api/mobile/session` returns the user's roles; `LegalLinks.swift` exists but is unused.
+- Next action: confirm the specs cover native sign-in with legal links, Account (sign out, delete, privacy, terms, support) and the tab rules (Pick hidden for roles that cannot pick; Dashboard becomes admin-only "Manage", never the launch tab) → ios-designer; then ios-engineer builds, incl. signed-out Pack (K7), SEC-15, SEC-16; then security-reviewer + app-review.
+- Blocked on: roadmap approval.
+
+### M5. `/m/today`, `/m/track`, `/m/cleanup`
+- Owner now: mobile-engineer      State: blocked
+- Done so far: specs exist (`today.md`, `track.md`, `cleanup.md`). `/m/pick` is the reference implementation.
+- Next action: build `/m/today` (launch screen), then `/m/track`, then `/m/cleanup` and point `/m/pick`'s two gates at it, each with a browser check → mobile-engineer; then mobile-qa.
+- Blocked on: roadmap approval; D8 for colour.
+
+### M6. Listing, policy and public pages
+- Owner now: release-manager      State: blocked
+- Done so far: `ios/APP_STORE.md` exists but describes screens the build does not have, lists wrong screenshot sizes and a privacy table that no longer matches the manifest (R3, K11).
+- Next action: draft corrected policy wording, support page, description, privacy answers, age-rating answers and reviewer notes → release-manager; page changes → programmer.
+- Blocked on: D5, D6, D7; screenshots wait for M3–M5.
+
+### M7. Submission rehearsal → Ofir submits
+- Owner now: app-review      State: blocked
+- Next action: full device script on the release build in the demo company → device-test-lead / Ofir; app-review APPROVE and security-reviewer CLEAR; Ofir submits.
+- Blocked on: M1–M6.
+
+### M8. Outside sellers
+- Owner now: programmer      State: blocked
+- Next action: SEC-8 to SEC-14, security pass over the desktop routes reachable from the Manage tab, production configuration check with Ofir.
+- Blocked on: Apple's approval; no open BLOCK-EXTERNAL finding.
 
 ## Done
+
+### App Review and security baselines, roadmap (Nov 10 2026)
+- app-review: `docs/mobile/REVIEW-2026-11-10.md` — a submission today would be rejected (R1 demo access, R2 web wrapper, R3 listing does not match the build).
+- security-reviewer: `docs/security/2026-11-10-mobile-baseline.md` — company isolation holds on every endpoint the app calls; 4 findings block outside sellers, 3 block the demo account. Evidence: `python3 -m pytest -q tests` → 376 passed, 14 xfailed.
+- Not verified: anything Swift (read only), production configuration, whether the public URLs answer.
 
 ### TestFlight pipeline (Nov 10 2026)
 - PR #36, #37 merged. `.github/workflows/testflight.yml` uploads on every push to `main` touching `ios/`. Builds 4 and 5 uploaded and processed. Evidence: run 42935296933 (success).
