@@ -2296,6 +2296,11 @@ _NO_LABEL_MSG=("Buying shipping labels is turned off for this workspace, because
                "shipping account isn't yours. Connect your own carrier account to ship, "
                "or contact support.")
 
+def _carrier_err(e):
+    """Carrier error text for a browser — the shared account number is never echoed (SEC-5)."""
+    msg=str(e)
+    return msg.replace(UPS_ACCOUNT_NUMBER,"[account]") if UPS_ACCOUNT_NUMBER else msg
+
 # ── TikTok Shop API (live order sync) ──────────────────────────────
 # App credentials come from the TikTok Shop Partner Center app ("LiveOpsHub").
 # Set TIKTOK_APP_KEY / TIKTOK_APP_SECRET in the environment (never in code).
@@ -15151,6 +15156,7 @@ def _ship_from():
 @req_role("admin","cs")
 def api_giveaway_rates(gid):
     """Get EasyPost rates for shipping this giveaway's prize."""
+    if not _can_buy_labels(): return jsonify({"ok":False,"error":_NO_LABEL_MSG}),403   # SEC-5: shared carrier account = owner orgs only
     if not EASYPOST_ENABLED:
         return jsonify({"ok":False,"error":"ShipStation not configured — set SHIPSTATION_API_KEY on Railway."})
     d=request.get_json() or {}
@@ -15172,7 +15178,7 @@ def api_giveaway_rates(gid):
     try:
         sid,rates=_ship_rates(to, frm, weight, d)
     except Exception as e:
-        return jsonify({"ok":False,"error":str(e)})
+        return jsonify({"ok":False,"error":_carrier_err(e)})
     return jsonify({"ok":True,"shipment_id":sid,"rates":rates})
 
 @app.route("/api/giveaway/<int:gid>/buy-label",methods=["POST"])
@@ -15380,15 +15386,17 @@ def _easypost_rates(to, frm, weight, dims):
 @req_role("admin","cs")
 def api_ship_carriers():
     """Diagnostic: which carriers are available for rate/label. UPS direct takes priority."""
+    if not _can_buy_labels(): return jsonify({"ok":False,"error":_NO_LABEL_MSG}),403   # SEC-5: shared carrier account = owner orgs only
     if UPS_ENABLED:
         # UPS direct — verify the OAuth credentials actually work by fetching a token.
+        # The account number itself never goes to a browser (SEC-5): fixed id + a boolean.
         try:
             _ups_token()
             return jsonify({"ok":True,"provider":"ups","count":1,
-                "carriers":[{"carrier_id":UPS_ACCOUNT_NUMBER,"carrier_code":"ups",
-                             "name":"UPS (direct account "+UPS_ACCOUNT_NUMBER+")","services":len(UPS_SERVICE_NAMES)}]})
+                "carriers":[{"carrier_id":"ups-direct","carrier_code":"ups","account_connected":True,
+                             "name":"UPS (direct account)","services":len(UPS_SERVICE_NAMES)}]})
         except Exception as e:
-            return jsonify({"ok":False,"provider":"ups","error":str(e)})
+            return jsonify({"ok":False,"provider":"ups","error":_carrier_err(e)})
     if not SHIPSTATION_ENABLED:
         return jsonify({"ok":False,"error":"No carrier configured — set UPS_CLIENT_ID/SECRET/ACCOUNT_NUMBER (or SHIPSTATION_API_KEY)."})
     try:
@@ -15404,12 +15412,13 @@ def api_ship_carriers():
         return jsonify({"ok":True,"count":len(cs),"carriers":cs,
                         "restricted":bool(pref),"preferred":sorted(pref)})
     except Exception as e:
-        return jsonify({"ok":False,"error":str(e)})
+        return jsonify({"ok":False,"error":_carrier_err(e)})
 
 @app.route("/api/ship/carriers/prefer",methods=["POST"])
 @req_role("admin")
 def api_ship_carriers_prefer():
     """Save which carrier IDs to rate against. Empty list = use all connected carriers."""
+    if not _can_buy_labels(): return jsonify({"ok":False,"error":_NO_LABEL_MSG}),403   # SEC-5: shared carrier account = owner orgs only
     d=request.get_json() or {}
     ids=[str(x).strip() for x in (d.get("ids") or []) if str(x).strip()]
     _set_setting("ship_carrier_ids", json.dumps(ids))
@@ -15420,6 +15429,7 @@ def api_ship_carriers_prefer():
 @app.route("/api/label/rates",methods=["POST"])
 @req_role("admin","cs")
 def api_label_rates():
+    if not _can_buy_labels(): return jsonify({"ok":False,"error":_NO_LABEL_MSG}),403   # SEC-5: shared carrier account = owner orgs only
     if not EASYPOST_ENABLED: return jsonify({"ok":False,"error":"ShipStation not configured — set SHIPSTATION_API_KEY."})
     d=request.get_json() or {}
     to=d.get("to_address") or {}
@@ -15437,7 +15447,7 @@ def api_label_rates():
         try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
         except Exception: msg="HTTP "+str(e.code)
         return jsonify({"ok":False,"error":"ShipStation: "+str(msg)})
-    except Exception as e: return jsonify({"ok":False,"error":str(e)})
+    except Exception as e: return jsonify({"ok":False,"error":_carrier_err(e)})
     return jsonify({"ok":True,"shipment_id":sid,"rates":rates})
 
 def _label_claim_ensure(c):
@@ -15640,6 +15650,7 @@ def api_label_buy():
 def api_label_rates_multi():
     """Rates for a multi-box supplier shipment. One EasyPost shipment per box; we
     return only services available on EVERY box, with the summed total."""
+    if not _can_buy_labels(): return jsonify({"ok":False,"error":_NO_LABEL_MSG}),403   # SEC-5: shared carrier account = owner orgs only
     if not EASYPOST_ENABLED: return jsonify({"ok":False,"error":"ShipStation not configured — set SHIPSTATION_API_KEY."})
     d=request.get_json() or {}
     to=d.get("to_address") or {}
@@ -15662,7 +15673,7 @@ def api_label_rates_multi():
         try: msg=json.loads(e.read().decode()).get("error",{}).get("message",str(e))
         except Exception: msg="HTTP "+str(e.code)
         return jsonify({"ok":False,"error":"ShipStation: "+str(msg)})
-    except Exception as e: return jsonify({"ok":False,"error":str(e)})
+    except Exception as e: return jsonify({"ok":False,"error":_carrier_err(e)})
     nb=len(legs); combo={}
     for leg in legs:
         for r in leg["rates"]:
