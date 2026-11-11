@@ -1,3 +1,5 @@
+> **Being re-specified: native sign-in with authenticator or SMS code — waiting for Ofir's answers to Q7 and Q8 on the board.**
+
 # Sign-in screens — `/login` (`LOGIN_HTML`), `/badge-login` (`BADGE_LOGIN_HTML`), `/welcome` (`WELCOME_HTML`)
 
 **User:** a worker starting a shift (badge), an admin or manager (username/password), and anyone on first launch of the app.
