@@ -262,7 +262,6 @@ def test_sec5_owner_carrier_account_not_disclosed_to_other_orgs(appmod, two_orgs
         assert "ZZ99TEST" not in c.get("/api/ship/carriers").get_data(as_text=True), role
 
 
-@pytest.mark.xfail(strict=True, reason="SEC-6: deleting an org leaves its TikTok tokens (and R2 media) behind")
 def test_sec6_org_wipe_removes_platform_rows_and_media(appmod, monkeypatch):
     A = appmod
     org = _mk_org(A, "gone")
@@ -273,10 +272,15 @@ def test_sec6_org_wipe_removes_platform_rows_and_media(appmod, monkeypatch):
 
     class FakeR2:                                         # records what the wipe asks storage to do
         calls = []
-        def __getattr__(self, name):
+        left = [org + "/videos/S1_TRK.webm"]              # one stored object of the org (an empty
+        def __getattr__(self, name):                      # store gives the wipe nothing to delete)
             def f(*a, **k):
                 FakeR2.calls.append(name)
-                return {"Contents": [], "KeyCount": 0}
+                if name.startswith("delete"):
+                    FakeR2.left = []
+                    return {}
+                keys = [x for x in FakeR2.left if x.startswith(k.get("Prefix", "\0"))]
+                return {"Contents": [{"Key": x} for x in keys], "KeyCount": len(keys)}
             return f
     with A.update_json(A.USERS_FILE) as users:            # leave exactly one admin
         for k in [k for k, v in users.items() if v.get("org") == org and k != org + "-admin"]:

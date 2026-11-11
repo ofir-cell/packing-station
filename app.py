@@ -581,6 +581,18 @@ def pdb_init():
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY(org_id, session_id)
     )""")
+    # SEC-6: one row per deleted company. The id can never be created again (its
+    # storage prefix and platform rows must not be inherited), and the row carries the
+    # cleanup state so an interrupted deletion is finished by the hourly loop.
+    # state: 'pending' (retry will finish it) | 'partial' (needs a human) | 'deleted'.
+    c.execute("""CREATE TABLE IF NOT EXISTS org_tombstones(
+        org_id TEXT PRIMARY KEY,
+        state TEXT NOT NULL DEFAULT 'pending',
+        requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        finished_at TEXT,
+        attempts INTEGER DEFAULT 0,
+        detail TEXT
+    )""")
     c.commit(); c.close()
 
 pdb_init()
@@ -686,6 +698,8 @@ def cleanup_all_orgs():
         except Exception as e: print("Cleanup error for",org,":",e,flush=True)
     try: total["tiktok_purged_shops"]=_tt_retention_purge()
     except Exception as e: print("TikTok retention purge error:",e,flush=True)
+    try: total["org_deletes_resumed"]=_org_delete_resume_pending()
+    except Exception as e: print("Org delete resume error:",e,flush=True)
     return total
 
 def cleanup_loop():
@@ -4794,25 +4808,224 @@ def login_page():
         return redirect("/")
     return LOGIN_HTML
 
-def _delete_org_data(org):
-    """Permanently delete a tenant: its data folder, its organizations row, and its
-    users.json entries. Used when the last admin self-deletes their account. Guarded
-    so it can only remove a folder INSIDE the orgs directory."""
-    if not org: return
+# ── Company deletion (SEC-6) ──────────────────────────────────────────────────
+# Platform tables that carry an org_id but are the platform owner's own records
+# (audit trail, payment ledger) or the deletion bookkeeping itself: never purged here.
+_ORG_DELETE_KEEP_TABLES=("organizations","org_tombstones","platform_audit","payments","tickets")
+# Top-level key names used by something other than "<org>/..." in the buckets (the
+# founding tenant's pre-namespacing media, backups, ticket files). A company with one
+# of these ids cannot have "<org>/" deleted without matching somebody else's objects.
+_R2_RESERVED_TOP=("videos","photos","documents","labels","products","invoices",
+                  "hire_uploads","backups","support")
+_BACKUP_DOWS=("mon","tue","wed","thu","fri","sat","sun")
+_ORG_DELETE_ID_RE=re.compile(r'^[A-Za-z0-9][A-Za-z0-9_\-]{0,63}$')   # one path segment, nothing else
+ORG_DELETE_BUDGET_SEC=int(os.environ.get("ORG_DELETE_BUDGET_SEC",60))  # storage time per attempt
+
+def org_id_tombstoned(org):
+    """True if a company with this id was deleted (the id may never be reused)."""
+    c=pdb()
+    try: return bool(c.execute("SELECT 1 FROM org_tombstones WHERE org_id=?",(org,)).fetchone())
+    finally: c.close()
+
+def _org_storage_targets(org):
+    """Every (bucket, prefix) that holds ONLY this company's objects. Each prefix ends
+    with '/' right after the org segment, so org 'ab' can never match 'abc/...'."""
+    out=[]
+    for b in (R2_BUCKET, R2_HR_BUCKET):
+        if (b, org+"/") not in out: out.append((b, org+"/"))
+    out+=[(R2_BUCKET, "backups/%s/%s/"%(dow,org)) for dow in _BACKUP_DOWS]
+    return out
+
+def _r2_delete_prefix(bucket, prefix, deadline):
+    """Delete every object whose key starts with `prefix`. Re-lists from the start after
+    each batch (so it is safe to re-run), re-checks every key against the prefix before
+    deleting, and stops at `deadline`. Returns {"bucket","prefix","deleted","done","error"}."""
+    out={"bucket":bucket,"prefix":prefix,"deleted":0,"done":False,"error":None}
+    if not prefix or not prefix.endswith("/") or prefix.startswith("/"):
+        out["error"]="refused: unsafe prefix"; return out
+    last=None
+    try:
+        while True:
+            if time.time()>=deadline:
+                out["error"]="time budget used up; will be retried"; return out
+            resp=r2.list_objects_v2(Bucket=bucket,Prefix=prefix,MaxKeys=1000) or {}
+            listed=[o.get("Key") for o in (resp.get("Contents") or [])]
+            keys=[k for k in listed if isinstance(k,str) and k.startswith(prefix)]
+            if len(keys)!=len(listed):
+                out["error"]="listing returned keys outside the prefix; stopped"; return out
+            if not keys:
+                out["done"]=True; return out
+            if keys==last:
+                out["error"]="objects still listed after delete; stopped"; return out
+            dr=r2.delete_objects(Bucket=bucket,Delete={"Objects":[{"Key":k} for k in keys],"Quiet":True}) or {}
+            errs=dr.get("Errors") or []
+            out["deleted"]+=len(keys)-len(errs)
+            if errs:
+                out["error"]="%d object(s) refused deletion (%s)"%(len(errs),str(errs[0].get("Code") or "")[:40]); return out
+            last=keys
+    except Exception as e:
+        out["error"]=("%s: %s"%(type(e).__name__,e))[:200]; return out
+
+def _org_purge_platform_rows(org):
+    """Delete every platform.db row keyed to this company. Tables are discovered from the
+    live schema (any table with an org_id column), so the ones created lazily
+    (tiktok_control, tiktok_products, ...) and future ones are covered. Returns {table: n}."""
+    n={}
+    c=pdb()
+    try:
+        tabs=[r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
+        have={t:{r[1] for r in c.execute('PRAGMA table_info("%s")'%t.replace('"','""')).fetchall()} for t in tabs}
+        # Webhook events that arrived before the shop was mapped to an org (org_id '')
+        # still hold buyer data: drop them for shops that ONLY this company connected.
+        if "tiktok_shops" in have and "tiktok_events" in have:
+            for r in c.execute("SELECT shop_id FROM tiktok_shops WHERE org_id=?",(org,)).fetchall():
+                if not c.execute("SELECT 1 FROM tiktok_shops WHERE shop_id=? AND org_id<>?",(r[0],org)).fetchone():
+                    k=c.execute("DELETE FROM tiktok_events WHERE shop_id=? AND COALESCE(org_id,'')=''",(r[0],)).rowcount
+                    if k: n["tiktok_events(unmapped)"]=n.get("tiktok_events(unmapped)",0)+k
+        for t in tabs:
+            if t in _ORG_DELETE_KEEP_TABLES or "org_id" not in have[t]: continue
+            k=c.execute('DELETE FROM "%s" WHERE org_id=?'%t.replace('"','""'),(org,)).rowcount
+            if k: n[t]=k
+        c.commit()
+    finally:
+        c.close()
+    return n
+
+def _org_purge_tickets(org):
+    """Delete the company's support tickets, their messages and attachment files. A
+    ticket whose stored file could not be deleted is kept (rows + key) so a retry can
+    still find it. Returns (tickets_deleted, [errors])."""
     import shutil
+    done=0; errs=[]
+    c=pdb()
     try:
-        d=org_path(org)
-        if os.path.isdir(d) and os.path.abspath(d).startswith(os.path.abspath(ORGS_DIR)+os.sep):
-            shutil.rmtree(d, ignore_errors=True)
-    except Exception: pass
-    try:
-        c=pdb(); c.execute("DELETE FROM organizations WHERE org_id=?",(org,)); c.commit(); c.close()
-    except Exception: pass
-    try:
+        for tid in [r[0] for r in c.execute("SELECT id FROM tickets WHERE org_id=?",(org,)).fetchall()]:
+            ok=True
+            for a in c.execute("SELECT storage_key FROM ticket_attachments WHERE ticket_id=?",(tid,)).fetchall():
+                key=a[0] or ""
+                if r2 and key.startswith("support/%d/"%tid):
+                    try: r2.delete_object(Bucket=R2_BUCKET,Key=key)
+                    except Exception as e:
+                        ok=False; errs.append(("ticket %d file: %s"%(tid,type(e).__name__))[:120])
+            d=os.path.join(DATA_DIR,"support",str(int(tid)))
+            if os.path.isdir(d): shutil.rmtree(d,ignore_errors=True)
+            if not ok: continue
+            c.execute("DELETE FROM ticket_attachments WHERE ticket_id=?",(tid,))
+            c.execute("DELETE FROM ticket_messages WHERE ticket_id=?",(tid,))
+            c.execute("DELETE FROM tickets WHERE id=? AND org_id=?",(tid,org))
+            c.commit(); done+=1
+    finally:
+        c.close()
+    return done,errs
+
+def _org_purge_local_files(org):
+    """Remove the company's files on the volume: its private folder, its flat hire
+    uploads and its legacy backup copies. Exact names only."""
+    import shutil
+    d=org_path(org)
+    if os.path.isdir(d) and os.path.dirname(os.path.abspath(d))==os.path.abspath(ORGS_DIR):
+        shutil.rmtree(d, ignore_errors=True)
+        if os.path.isdir(d): raise RuntimeError("org folder could not be removed")
+    # Flat local hire files are named "<org>__hire_uploads__...". Ids made by the app
+    # never contain '_', so this is exact; an id with '_' is skipped by the caller.
+    if "_" not in org and os.path.isdir(HIRE_LOCAL_UPLOAD_DIR):
+        pre=org+"__hire_uploads__"
+        for fn in os.listdir(HIRE_LOCAL_UPLOAD_DIR):
+            if fn.startswith(pre):
+                try: os.remove(os.path.join(HIRE_LOCAL_UPLOAD_DIR,fn))
+                except FileNotFoundError: pass
+    for dow in _BACKUP_DOWS:
+        b=os.path.join(DATA_DIR,"backups",dow,org)
+        if os.path.isdir(b): shutil.rmtree(b, ignore_errors=True)
+
+def _delete_org_data(org, budget_sec=None):
+    """Permanently delete a tenant (used when the last admin self-deletes their account,
+    and by the hourly loop to finish an interrupted deletion). Idempotent: every step is
+    safe to repeat, and the tombstone row records what is still left.
+
+    Order matters: the tombstone + organizations row + logins go first, so the company
+    stops existing for its users (sessions are revoked on their next request) and for
+    the schedulers before the slow storage work starts.
+
+    Returns {"ok": company is gone for its users, "complete": nothing left to clean,
+             "state", "platform_rows", "storage", "skipped", "errors"}."""
+    res={"ok":False,"complete":False,"state":None,"org":org,"platform_rows":{},
+         "storage":[],"skipped":[],"errors":[]}
+    org=str(org or "")
+    if not org or org==PLATFORM_ORG or not _ORG_DELETE_ID_RE.match(org):
+        res["errors"].append("refused: not a tenant org id"); return res
+    deadline=time.time()+(ORG_DELETE_BUDGET_SEC if budget_sec is None else budget_sec)
+    with _flock("orgdel_"+org):        # one worker at a time per company
+        # 1) tombstone + directory row, atomically: from here the id cannot be re-created
+        c=pdb()
+        try:
+            c.execute("""INSERT INTO org_tombstones(org_id,state,attempts) VALUES(?,'pending',1)
+                         ON CONFLICT(org_id) DO UPDATE SET attempts=attempts+1""",(org,))
+            c.execute("DELETE FROM organizations WHERE org_id=?",(org,))
+            c.commit()
+        finally:
+            c.close()
+        # 2) logins
         with update_json(USERS_FILE) as users:
             for k in [k for k,v in list(users.items()) if (v.get("org") or DEFAULT_ORG)==org]:
                 del users[k]
-    except Exception: pass
+        res["ok"]=True
+        # 3) platform rows (TikTok tokens first among them)
+        try: res["platform_rows"]=_org_purge_platform_rows(org)
+        except Exception as e: res["errors"].append(("platform rows: %s: %s"%(type(e).__name__,e))[:200])
+        try:
+            n,terr=_org_purge_tickets(org)
+            if n: res["platform_rows"]["tickets"]=n
+            res["errors"]+=terr
+        except Exception as e: res["errors"].append(("tickets: %s: %s"%(type(e).__name__,e))[:200])
+        # 4) files on the volume
+        try: _org_purge_local_files(org)
+        except Exception as e: res["errors"].append(("local files: %s: %s"%(type(e).__name__,e))[:200])
+        if "_" in org:
+            res["skipped"].append("local hire uploads (org id contains '_': names cannot be matched exactly)")
+        # 5) object storage
+        if r2:
+            for bucket,prefix in _org_storage_targets(org):
+                if prefix==org+"/" and org in _R2_RESERVED_TOP:
+                    res["skipped"].append("storage prefix %s (org id equals a shared top-level key name)"%prefix)
+                    continue
+                one=_r2_delete_prefix(bucket,prefix,deadline)
+                res["storage"].append(one)
+                if one["error"]: res["errors"].append("storage %s: %s"%(prefix,one["error"]))
+        if org==DEFAULT_ORG:
+            res["skipped"].append("founding tenant's pre-namespacing keys (videos/, photos/, documents/, labels/, hire_uploads/) left in place")
+        # 6) record the outcome
+        res["complete"]=not res["errors"] and not res["skipped"]
+        res["state"]="pending" if res["errors"] else ("partial" if res["skipped"] else "deleted")
+        try:
+            c=pdb()
+            c.execute("UPDATE org_tombstones SET state=?, finished_at=?, detail=? WHERE org_id=?",
+                      (res["state"], datetime.now().isoformat(timespec="seconds") if res["state"]!="pending" else None,
+                       json.dumps(res)[:8000], org))
+            c.commit(); c.close()
+        except Exception as e:
+            res["complete"]=False; res["errors"].append(("tombstone update: %s"%type(e).__name__)[:80])
+    plog("system","org_delete",org,"state=%s storage_deleted=%d errors=%d skipped=%d"%(
+        res["state"],sum(x["deleted"] for x in res["storage"]),len(res["errors"]),len(res["skipped"])))
+    return res
+
+def _org_delete_resume_pending():
+    """Finish deletions that died or ran out of time (hourly loop, one elected worker).
+    Never touches an id that has an organizations row again, nor the founding tenant."""
+    c=pdb()
+    try:
+        ids=[r[0] for r in c.execute("""SELECT t.org_id FROM org_tombstones t
+                 WHERE t.state='pending'
+                   AND NOT EXISTS(SELECT 1 FROM organizations o WHERE o.org_id=t.org_id)""").fetchall()]
+    finally:
+        c.close()
+    n=0
+    for org in ids:
+        if org==DEFAULT_ORG: continue
+        try:
+            _delete_org_data(org); n+=1
+        except Exception as e: print("org delete resume failed for",org,":",e,flush=True)
+    return n
 
 @app.route("/api/account/delete", methods=["POST"])
 @req_login
@@ -4835,14 +5048,25 @@ def api_account_delete():
             return jsonify({"ok":False,"need_org_confirm":True,
                 "message":"You're the last admin — deleting your account will delete this organization's data. Resend with wipe_org=true to confirm."}),409
         del users[u]
-    org_deleted=False
+    org_deleted=False; cleanup=None
     if last_admin and wipe_org:
-        try: _delete_org_data(_org); org_deleted=True
-        except Exception: pass
+        try:
+            _res=_delete_org_data(_org); org_deleted=bool(_res.get("ok"))
+            cleanup={"complete":bool(_res.get("complete")),"state":_res.get("state"),
+                     "storage_objects_deleted":sum(x["deleted"] for x in _res.get("storage",[])),
+                     "left":len(_res.get("errors",[]))+len(_res.get("skipped",[]))}
+        except Exception as e:
+            print("org delete failed for",_org,":",repr(e),flush=True)
+            cleanup={"complete":False,"state":"pending" if org_id_tombstoned(_org) else "failed","storage_objects_deleted":0,"left":1}
     try: alog("account.delete","user=%s org_deleted=%s"%(u,org_deleted))
     except Exception: pass
     session.clear()
-    return jsonify({"ok":True,"deleted_user":u,"org_deleted":org_deleted})
+    out={"ok":True,"deleted_user":u,"org_deleted":org_deleted}
+    if cleanup is not None:
+        # complete=false: the company is gone for its users, but some stored data is
+        # still being removed (retried hourly) or needs the platform owner.
+        out["org_cleanup"]=cleanup
+    return jsonify(out)
 
 @app.route("/logout")
 def logout(): session.clear(); return redirect("/")
@@ -13045,8 +13269,9 @@ def api_intake_provision(iid):
     # org_id: admin override → slug(company); make globally unique.
     base=_slug_org_id(d.get("org_id") or it.get("company_name"))
     cc=pdb(); org_id=base; n=1
-    while cc.execute("SELECT 1 FROM organizations WHERE org_id=?",(org_id,)).fetchone():
-        n+=1; org_id=base+str(n)
+    while cc.execute("""SELECT 1 FROM organizations WHERE org_id=?
+                        UNION ALL SELECT 1 FROM org_tombstones WHERE org_id=?""",(org_id,org_id)).fetchone():
+        n+=1; org_id=base+str(n)     # taken, or belonged to a deleted company (SEC-6)
     cc.close()
     # admin username: override → preferred → slug(company)+"admin"; unique globally.
     users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
@@ -13391,6 +13616,8 @@ def _create_tenant(org_id, company, admin_user, admin_name="Admin", admin_pw=Non
     c=pdb()
     if c.execute("SELECT 1 FROM organizations WHERE org_id=?",(org_id,)).fetchone():
         c.close(); return False,"That Org ID already exists"
+    if c.execute("SELECT 1 FROM org_tombstones WHERE org_id=?",(org_id,)).fetchone():
+        c.close(); return False,"That Org ID belonged to a deleted company and cannot be reused"
     users=ldj(USERS_FILE) if os.path.exists(USERS_FILE) else {}
     if admin_user in users:
         c.close(); return False,"That admin username is already taken (usernames are global)"
