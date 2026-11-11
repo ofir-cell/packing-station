@@ -63,6 +63,11 @@ Roadmap: `docs/mobile/ROADMAP.md` (milestones M0–M8). Reviews behind it: `docs
 - Done so far: `/m/` screens use each company's own brand colour, as the desktop site does. Mockups Ofir approved were indigo/violet; a company whose colour is pink sees pink.
 - Next action: choose — keep per-company colour (current), or always LiveOpsHub indigo inside the app → Ofir. Needed before M5 screens and screenshots.
 
+### Approve the app blueprint and answer Q1–Q5
+- Owner now: Ofir      State: blocked
+- Done so far: `docs/mobile/APP_BLUEPRINT.md` (draft). Proposed: every role opens on Today; worker / manager / cs get Today · Pick · Pack · Account; host gets Today · Account; admin also gets Manage (the desktop site). No More tab. 1.0 = native sign-in, Today, Pick, Cleanup, Pack, Track, Account, Manage for admin; everything else waits for 1.1.
+- Next action: approve or change, and answer — Q1 Manage for admin only (recommended) or also manager and cs · Q2 Track inside Today (recommended) or its own tab · Q3 News and My Schedule after 1.0 (recommended) or in it · Q4 host gets Today + Account only (recommended) or Scanit is built now · Q5 packing video shown in Track for cs / manager / admin (recommended) or the listing sentence is cut → Ofir.
+
 ## In flight
 
 _Nothing in flight. Building starts when the roadmap is approved._
@@ -74,11 +79,18 @@ _Nothing in flight. Building starts when the roadmap is approved._
 - Done so far: build 5 is installed on Ofir's iPhone and opens. Nothing else is proven — see `docs/mobile/device-tests/PROVEN.md`.
 - Next action: write `docs/mobile/device-tests/5.md` (sign-in, Pick, Bluetooth scanner on Pick and Pack, camera scan, packing video on iPhone and on iPad in every orientation, Wi-Fi off) → device-test-lead; Ofir runs it. Result answers D4.
 
-### M1b. App blueprint (new agent: app-planner)
-- Owner now: app-planner      State: blocked
-- Done so far: agent defined (`.claude/agents/app-planner.md`). Known contradictions it must settle: `screens/more.md` plans a fifth "More" tab and `/api/mobile/nav`, the roadmap plans Today / Pick / Pack / Account + admin-only Manage; `ios/APP_STORE.md` describes screens that do not exist.
-- Next action: write `docs/mobile/APP_BLUEPRINT.md` (tabs and launch screen per role, screen inventory with native / `/m/` / Manage / not-in-app, end-to-end flows, 1.0 scope line, open questions) → app-planner; Ofir approves; then ios-designer aligns the specs.
-- Blocked on: Ofir's go-ahead to run it. Blocks M4 and M5 (they build from the blueprint).
+### M1b. Align screen specs to the blueprint
+- Owner now: ios-designer      State: blocked
+- Done so far: app-planner wrote `docs/mobile/APP_BLUEPRINT.md` (draft, Nov 10 2026) and listed every contradiction: `more.md` (withdraw), `DESIGN_SYSTEM.md` §3.1–3.5 and §8–10, `today.md`, `track.md`, `pick.md`, `cleanup.md`, `sign-in.md`, `me.md`, `pack.md`, and the eight specs that wait for 1.1.
+- Not verified: the blueprint is from reading code only; N4, N8 and N10 (blueprint §3) are unreproduced.
+- Next action: after Ofir approves the blueprint, bring the specs and mockups in line with it → ios-designer; app-review reads blueprint §2 and §6 for 4.2 and for the per-role tab sets.
+- Blocked on: Ofir's approval of the blueprint (entry above). Blocks M4 and M5.
+
+### M1b. Pieces 1.0 needs that do not exist (from the blueprint)
+- Owner now: programmer / ios-engineer / mobile-engineer      State: blocked
+- Done so far: named in blueprint §3. programmer: `/api/mobile/session` returns capabilities (`can.pick/pack/track/manage`), 2FA-setup, billing-locked, sandbox and support contact, and is reachable behind the 2FA-setup and billing gates (N3, N4, shared-logic PR); packing-video link from a lookup (N10). ios-engineer: Pack keeps the recording and retries when the upload fails (N8) — today it appears to delete it. mobile-engineer: `/m/pick` no longer links to desktop `/admin/cleanup` and `/me` (N7).
+- Next action: each becomes its own PR inside M2 / M4 / M5 once the blueprint is approved.
+- Blocked on: roadmap and blueprint approval.
 
 ### M2. Server security fixes
 - Owner now: programmer      State: blocked
