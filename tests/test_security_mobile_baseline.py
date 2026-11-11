@@ -188,7 +188,8 @@ def test_holds_support_tickets_are_per_org(appmod, two_orgs):
 
 # ───────────────── open findings (strict xfail) ─────────────────
 
-@pytest.mark.xfail(strict=True, reason="SEC-1: admin powers through extra_roles skip the mandatory 2FA")
+# SEC-1 fixed (2FA is decided on the effective roles) — runs as a normal test now.
+# More cases: tests/test_sec1_2fa_effective_roles.py
 def test_sec1_extra_role_admin_must_enroll_2fa(appmod, two_orgs):
     A = appmod; orga, _ = two_orgs
     adm = _as(A, orga + "-admin")
