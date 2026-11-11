@@ -762,12 +762,14 @@ def _gen_recovery_codes(n=8):
     return plain, [_h(p) for p in plain]
 
 def _twofa_required(user):
-    """2FA is mandatory for admins (org policy). Returns True if this account must have it."""
+    """2FA is mandatory for admins (org policy). Returns True if this account must have it.
+    Decided on the EFFECTIVE roles (primary + extra_roles): the role decorators grant admin
+    from either, so the 2FA requirement must follow both (SEC-1)."""
     u=user or {}
     # "twofa_exempt" exists only for the App Store review demo account; it is never set
     # from the UI (edit users.json / platform console), so it can't be self-granted.
     if u.get("twofa_exempt") is True: return False
-    return u.get("role")=="admin"
+    return "admin" in _effective_roles(u)
 
 # Precomputed bcrypt hash used to equalize login timing on unknown usernames,
 # so an attacker can't tell "user exists" from response speed.
@@ -3961,6 +3963,13 @@ def _session_revocation():
         if sorted(live)!=sorted(session.get("roles") or []):
             session["role"]=rec.get("role")
             session["roles"]=live
+            # The role set changed mid-session: decide the 2FA enrollment hold again on the
+            # new effective roles, so a user who just gained admin (primary or extra) is held
+            # on this very request, and one who lost it is released (SEC-1).
+            if _twofa_required(rec) and not rec.get("twofa_enabled"):
+                session["must_setup_2fa"]=True
+                return _twofa_setup_gate()
+            session.pop("must_setup_2fa",None)
     except Exception as _e:
         print("session revocation check skipped:",_e,flush=True)
         return
@@ -5452,9 +5461,11 @@ def analytics_page():
 @app.route("/me")
 @req_login
 def me_page():
+    # __ROLE__ in ME_HTML only decides whether the 2FA section is shown. An admin through
+    # extra_roles must see it too, or the enrollment hold would leave them no way to enroll.
     return (ME_HTML
         .replace("__NAVBAR__", _navbar("me"))
-        .replace("__ROLE__", esc(session.get("role","")))
+        .replace("__ROLE__", "admin" if "admin" in session_roles() else esc(session.get("role","")))
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
 @app.route("/api/me/stats")
