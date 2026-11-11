@@ -251,7 +251,6 @@ def test_sec4_sandbox_org_sends_nothing_outside(appmod, monkeypatch):
     assert sent == []
 
 
-@pytest.mark.xfail(strict=True, reason="SEC-5: the owner's carrier account number is shown to every tenant's admin/cs/manager")
 def test_sec5_owner_carrier_account_not_disclosed_to_other_orgs(appmod, two_orgs, monkeypatch):
     A = appmod; _, orgb = two_orgs
     monkeypatch.setattr(A, "UPS_ENABLED", True)
