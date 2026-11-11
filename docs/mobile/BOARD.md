@@ -14,54 +14,119 @@ Entry format — newest first inside each section:
 - Blocked on: <who / what decision> (omit if not blocked)
 ```
 
-## Waiting on Ofir (decisions)
+## Decided by Ofir (Nov 10 2026)
 
-### Demo company for Apple's reviewer signs in without 2FA
-- Owner now: Ofir      State: blocked
-- Done so far: nothing built. Apple's reviewer cannot receive a 2FA code, so without a login that skips it the app is rejected (baseline review, finding 1).
-- Next action: approve or reject "2FA is skipped only for one isolated demo company with seeded fake data that cannot reach real companies or send anything outside" → Ofir. On approval: programmer builds it, security-reviewer must return CLEAR before merge.
+Roadmap (`docs/mobile/ROADMAP.md`) and app blueprint (`docs/mobile/APP_BLUEPRINT.md`) **approved** with these answers:
 
-### Brand colour in the app
+| # | Decision |
+|---|---|
+| D1 | Yes: an isolated demo (sandbox) company signs in without 2FA for Apple's reviewer. |
+| D2 | Reviewer logins are **manager + worker**. No admin demo account. |
+| D3 | Badge sign-in only for floor roles — **on condition that 2FA by SMS code exists first**, offered in addition to the authenticator app. |
+| D4 | iPad in 1.0 is decided by the first device round (M1): it stays only if every iPad step passes. |
+| D5 | **Unlisted** distribution, **US storefront only**. |
+| D6 | liveopshub.com is Ofir's; the public pages (privacy, terms, support, marketing) move there. |
+| D7 | Public support contact: **support@liveopshub.com**. Policy wording still needs Ofir's sign-off when drafted. |
+| D8 | **Always LiveOpsHub indigo** inside the app. |
+| Q1 | Manage tab for **admin only**. |
+| Q2 | Track lives **inside Today**. |
+| Q3 | News and My Schedule wait for 1.1. |
+| Q4 | **Scanit (the host's tool) is built for 1.0.** |
+| Q5 | Packing video is viewable from Track for cs / manager / admin. |
+
+## Waiting on Ofir
+
+### Merge PR #39 (documents and tests only)
 - Owner now: Ofir      State: blocked
-- Done so far: `/m/` screens use each company's own brand colour, as the desktop site does. Mockups Ofir approved were indigo/violet; a company whose colour is pink sees pink.
-- Next action: choose — keep per-company colour (current), or always LiveOpsHub indigo inside the app → Ofir.
+- Done so far: roadmap, blueprint, both reviews, the security demonstrations (`tests/test_security_mobile_baseline.py`), the app-planner agent, this board.
+- Next action: merge → Ofir. Code PRs for M2 branch from a `main` that has those tests. The merge redeploys the server with no behaviour change; no TestFlight build.
+
+### Run the first device script (M1)
+- Owner now: Ofir      State: blocked
+- Next action: run `docs/mobile/device-tests/5.md` on the iPhone and the iPad with the Bluetooth scanner and send back the ✓ / ✗ list → Ofir. Decides D4.
+- Done so far: script written (52 steps; needs 3 real orders to pick and 9 real boxes to pack). Expected failures from code reading are listed at its end.
+
+### New questions from the approved blueprint (Q6–Q8)
+- Owner now: Ofir      State: blocked
+- Next action: answer — Q6 SMS through a managed verification service (recommended) or our own sending number · Q7 the person enters their own phone number at set-up (recommended) or an admin enters it · Q8 2FA required for admin, manager and cs (recommended; what D3's wording implies) or admin only as today → Ofir. Also read the two blueprint sections marked "new" (Scanit, SMS 2FA).
+
+### SMS provider for 2FA codes (from D3)
+- Owner now: Ofir      State: blocked
+- Done so far: nothing built; today 2FA is authenticator-app only. SMS needs a paid provider account, a sending number approved for US business texting, and its credentials in Railway variables (entered by Ofir, never in the repo or chat).
+- Next action: say which provider to build against, or ask for a short comparison → Ofir. Blocks the SMS part of M2 and therefore SEC-2.
+
+### Mailbox and domain
+- Owner now: Ofir      State: todo
+- Next action: open the support@liveopshub.com mailbox; be ready to point liveopshub.com (DNS) at the public pages when release-manager and programmer have them (M6) → Ofir.
 
 ## In flight
 
-_Nothing in flight._
+### M1b. Align screen specs to the approved blueprint
+- Owner now: ios-designer      State: in progress
+- PR / branch: `design/specs-to-blueprint`
+- Done so far: blueprint approved version written by app-planner (Scanit and SMS sections are marked "new": written after Ofir's approval, he has not read them yet).
+- Next action: in the blueprint's order — `DESIGN_SYSTEM.md` (tab map, no More, indigo only), new `scanit.md`, `today.md`, `track.md` (video), `me.md` → Account, `cleanup.md`, `pick.md`, `pack.md`, withdraw `more.md`, mark the eight waiting specs, mockups → ios-designer. `sign-in.md` (SMS step, set-up screen) waits for Q7 and Q8.
 
-## Up next (in order)
+## Up next (by milestone — see `docs/mobile/ROADMAP.md`)
 
-### 1. Native Account screen
-- Owner now: ios-engineer      State: todo
-- Done so far: none. Required by Apple (account deletion reachable in-app, privacy policy, sign out).
-- Next action: build an Account tab in `ios/` — name, role, company, sign out, delete account (existing server flow), privacy policy and terms links → ios-engineer; then security-reviewer + app-review.
+### M1b. Pieces 1.0 needs that do not exist (from the blueprint)
+- Owner now: programmer / ios-engineer / mobile-engineer      State: blocked
+- Done so far: named in blueprint §3. programmer: `/api/mobile/session` returns capabilities (`can.pick/pack/track/manage`), 2FA-setup, billing-locked, sandbox and support contact, and is reachable behind the 2FA-setup and billing gates (N3, N4, shared-logic PR); packing-video link from a lookup (N10). ios-engineer: Pack keeps the recording and retries when the upload fails (N8) — today it appears to delete it. mobile-engineer: `/m/pick` no longer links to desktop `/admin/cleanup` and `/me` (N7).
+- Next action: each becomes its own PR inside M2 / M4 / M5 once the blueprint is approved.
+- Blocked on: PR #39 merged (server pieces); aligned specs (app pieces).
 
-### 2. Demo company + reviewer accounts
+### M2. Server security fixes
 - Owner now: programmer      State: blocked
-- Blocked on: Ofir's 2FA decision above.
+- Done so far: findings and failing demonstrations exist (`tests/test_security_mobile_baseline.py`, strict xfail). Before the demo company: SEC-1, SEC-2, SEC-3, SEC-4, SEC-7. Before outside sellers: SEC-5, SEC-6.
+- Not verified: production configuration; the desktop routes outside the app's own calls.
+- Next action: one shared-logic PR per finding, first line says so → programmer; then qa, then security-reviewer.
+- Blocked on: PR #39 merged. SEC-2 additionally waits for SMS 2FA (D3), which needs a spec (product-engineer → architect) and Ofir's provider choice.
 
-### 3. Hide the Pick tab for roles that cannot pick
-- Owner now: ios-engineer      State: todo
-- Done so far: a Host sees "Access denied" in the Pick tab. `/api/mobile/session` already returns the user's roles.
-- Next action: show Pick only when the session's roles include picker / worker / cs / admin / manager → ios-engineer.
+### M3. Demo company + reviewer accounts
+- Owner now: programmer      State: blocked
+- Done so far: none. Requirements: security report, "Requirements for the demo/reviewer company".
+- Next action: build the sandbox company, seed, reset and label PDF → programmer; security-reviewer must return CLEAR; app-review confirms R1 and K3 closed.
+- Blocked on: M2 (SEC-1, 2, 3, 4, 7). Reviewer logins: manager + worker (D2).
 
-### 4. `/m/today` (worker home) and `/m/track`
-- Owner now: mobile-engineer      State: todo
-- Done so far: specs exist (`docs/mobile/screens/today.md`, `track.md`). `/m/pick` is the reference implementation.
-- Next action: build `/m/today`, then `/m/track`, each with a browser check like `scripts/m_pick_check.py` → mobile-engineer; then mobile-qa.
+### M4. Native shell: sign-in, Account, role-built tabs
+- Owner now: ios-designer      State: blocked
+- Done so far: specs `docs/mobile/screens/sign-in.md`, `me.md` exist; `/api/mobile/session` returns the user's roles; `LegalLinks.swift` exists but is unused.
+- Next action: confirm the specs cover native sign-in with legal links, Account (sign out, delete, privacy, terms, support) and the tab rules (Pick hidden for roles that cannot pick; Dashboard becomes admin-only "Manage", never the launch tab) → ios-designer; then ios-engineer builds, incl. signed-out Pack (K7), SEC-15, SEC-16; then security-reviewer + app-review.
+- Blocked on: M1b (specs aligned to the approved blueprint).
 
-### 5. `/m/cleanup` (table clean-out)
-- Owner now: mobile-engineer      State: todo
-- Done so far: `/m/pick` sends a picker to the desktop `/admin/cleanup`, which returns to `/m/pick` in the app. Spec exists (`docs/mobile/screens/cleanup.md`).
-- Next action: build `/m/cleanup` and point `/m/pick`'s two gates at it → mobile-engineer.
+### M5. `/m/today`, `/m/track`, `/m/cleanup`
+- Owner now: mobile-engineer      State: blocked
+- Done so far: specs exist (`today.md`, `track.md`, `cleanup.md`). `/m/pick` is the reference implementation.
+- Next action: build `/m/today` (launch screen), then `/m/track`, then `/m/cleanup` and point `/m/pick`'s two gates at it, each with a browser check → mobile-engineer; then mobile-qa.
+- Blocked on: M1b (specs aligned to the approved blueprint). Colour: indigo (D8). Scanit joins this milestone (Q4).
 
-### 6. First on-device test script
-- Owner now: device-test-lead      State: todo
-- Done so far: build 5 is installed on Ofir's iPhone and opens. Nothing else is proven — see `docs/mobile/device-tests/PROVEN.md`.
-- Next action: write `docs/mobile/device-tests/5.md` covering the Bluetooth scanner (Pick and Pack), camera scan, packing video on iPhone and on iPad in both orientations → device-test-lead; Ofir runs it.
+### M6. Listing, policy and public pages
+- Owner now: release-manager      State: blocked
+- Done so far: `ios/APP_STORE.md` exists but describes screens the build does not have, lists wrong screenshot sizes and a privacy table that no longer matches the manifest (R3, K11).
+- Next action: draft corrected policy wording, support page, description, privacy answers, age-rating answers and reviewer notes → release-manager; page changes → programmer.
+- Decided: unlisted, US only, liveopshub.com, support@liveopshub.com. Blocked on: Ofir's sign-off on the drafted policy wording; screenshots wait for M3–M5.
+
+### M7. Submission rehearsal → Ofir submits
+- Owner now: app-review      State: blocked
+- Next action: full device script on the release build in the demo company → device-test-lead / Ofir; app-review APPROVE and security-reviewer CLEAR; Ofir submits.
+- Blocked on: M1–M6.
+
+### M8. Outside sellers
+- Owner now: programmer      State: blocked
+- Next action: SEC-8 to SEC-14, security pass over the desktop routes reachable from the Manage tab, production configuration check with Ofir.
+- Blocked on: Apple's approval; no open BLOCK-EXTERNAL finding.
 
 ## Done
+
+### App blueprint approved; first device script written (Nov 10 2026)
+- `docs/mobile/APP_BLUEPRINT.md` approved by Ofir with D1–D8 and Q1–Q5; app-planner folded the answers in. Tabs: worker / manager / cs Today · Pick · Pack · Account; host Today · Scanit · Account; admin adds Manage.
+- `docs/mobile/device-tests/5.md` written by device-test-lead. Not run yet.
+- Not verified: every code claim in both is from reading.
+
+### App Review and security baselines, roadmap (Nov 10 2026)
+- app-review: `docs/mobile/REVIEW-2026-11-10.md` — a submission today would be rejected (R1 demo access, R2 web wrapper, R3 listing does not match the build).
+- security-reviewer: `docs/security/2026-11-10-mobile-baseline.md` — company isolation holds on every endpoint the app calls; 4 findings block outside sellers, 3 block the demo account. Evidence: `python3 -m pytest -q tests` → 376 passed, 14 xfailed.
+- Not verified: anything Swift (read only), production configuration, whether the public URLs answer.
 
 ### TestFlight pipeline (Nov 10 2026)
 - PR #36, #37 merged. `.github/workflows/testflight.yml` uploads on every push to `main` touching `ios/`. Builds 4 and 5 uploaded and processed. Evidence: run 42935296933 (success).
