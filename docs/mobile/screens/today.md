@@ -1,7 +1,7 @@
 # Today — `/m/today` (launch screen, tab 1, every role)
 
 **Blueprint:** S3, §2 (launch screen), flows 4.3, 4.5, 4.6, 4.8, 4.9, rules 5.1, 5.5, 5.8. **Release: 1.0.**
-**Mockup:** [`../mockups/today.html`](../mockups/today.html) → `today-worker.png`, `today-host.png`, `today-manager.png`, `today-worker-dark.png`
+**Mockup:** [`../mockups/today.html`](../mockups/today.html) → `today-gallery.png` (all variants with notes), `today-worker.png`, `today-worker-dark.png`, `today-host.png`, `today-manager.png`, `today-admin.png`
 **Data:** `GET /api/today` (role-aware), `GET /api/me/stats` (my packed today), `GET /api/pick/my-stats` (my picked today; only for accounts with `can.pick`), capabilities and `sandbox` from the session (blueprint N3).
 **User:** everyone, at the start of a shift and between tasks.
 **Purpose:** "What should I do now?" — my numbers, the job I was doing, a label lookup, the floor right now. Managers and admins also see where each open show stands.
@@ -23,11 +23,11 @@ A scan made while Today is in front (Bluetooth scanner, nothing tapped) **is a l
 **A. Hero — "You today"** (`.m-card--hero`, not tappable): eyebrow "YOU TODAY"; two numbers side by side, each 28px/800 with a 13px label: **{packed}** "packed" · **{picked}** "picked". No rank, no team line.
 
 **B. Continue** (`.m-section`, header "Continue"; shown only when there is something to continue): `.m-list`, `.m-row--lead`:
-- lead `checklist` · title "Keep picking {show}" · sub "{left} left to pick" · chevron → `openTab('pick')` (Pick already opens on the remembered show).
+- lead `checklist` · title "Keep picking {show}" (wraps to 2 lines; show names are long) · sub "{left} left to pick" · chevron → `openTab('pick')` (Pick already opens on the remembered show).
 - The show is the one Pick remembers for this device (`localStorage.pickShow`), shown only if it still has orders to pick. No remembered show → the section is omitted; the Pick tab is one tap away.
 
 **C. Look up** (`.m-section`, header "Look up"): `.m-list`, one row:
-- lead `magnifyingglass` · title **"Look up a label"** · sub "Scan or type a tracking or order number" · chevron → Track (`/m/track`, pushed).
+- lead `magnifyingglass` · title **"Look up a label"** · sub "By tracking or order number" · chevron → Track (`/m/track`, pushed).
 
 **D. Floor now** (`.m-section`, header "Floor now"): `.m-stats` 2 columns — **Orders to pick** (`backlog.orders`) · **Waiting to pack** (`floor.waiting_to_pack`). Under them, when `tables_to_clean` > 0, a `.m-list` row: lead `archivebox` · title "{n} table(s) to clear before picking" · chevron → Table cleanup (`/m/cleanup`, pushed).
 
@@ -35,7 +35,7 @@ Workers do not see the per-show list, issues, or sales.
 
 ## Variant: cs
 As worker (A–D), plus one row in **C. Look up**, under "Look up a label":
-- lead `barcode.viewfinder` · title **"Scanit"** · sub "Scan a product for its price and notes" · chevron → Scanit (`/m/scanit?from=today`, pushed).
+- lead `barcode.viewfinder` · title **"Scanit"** · sub "Product prices and notes" · chevron → Scanit (`/m/scanit?from=today`, pushed).
 
 ## Variant: manager (also the demo second login)
 **A. Hero — "The floor today"**: eyebrow "THE FLOOR TODAY"; **{floor.packed_today}** "packed" · **{floor.picked_today}** "picked"; footer line 13px: "{pickers_online} picking · {packers_online} packing now".
@@ -96,8 +96,8 @@ Refresh: pull to refresh (native), and a silent re-read when the tab becomes vis
 | {n} left to pick | {n} por recoger |
 | Look up | Buscar |
 | Look up a label | Buscar una etiqueta |
-| Scan or type a tracking or order number | Escanea o escribe un número de rastreo o de pedido |
-| Scanit — Scan a product for its price and notes | Scanit — Escanea un producto para ver su precio y notas |
+| By tracking or order number | Por número de rastreo o de pedido |
+| Scanit — Product prices and notes | Scanit — Precios y notas de productos |
 | Floor now | El piso ahora |
 | Orders to pick · Waiting to pack · Open issues · Tables to clear | Pedidos por recoger · Esperando empaque · Problemas abiertos · Mesas por despejar |
 | Open shows · Most overdue first | Shows abiertos · Los más atrasados primero |

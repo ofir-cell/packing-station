@@ -1,7 +1,7 @@
 # Scanit — `/m/scanit` (data: `GET /api/scanit/scan?code=`, `GET /api/scanit/item?sku=`)
 
 **Blueprint:** S13, flow 4.9, rules 5.1, 5.8, 5.12, pieces N6, N9, N15, N17. **Release: 1.0. Read-only.**
-**Mockup:** [`../mockups/scanit.html`](../mockups/scanit.html) → `scanit.png`, `scanit-dark.png`, `scanit-ipad.png`
+**Mockup:** [`../mockups/scanit.html`](../mockups/scanit.html) → `scanit-gallery.png` (all states with notes), `scanit-ready.png`, `scanit.png`, `scanit-dark.png`, `scanit-looking.png`, `scanit-problems.png`, `scanit-ipad.png`
 **User:** a host on air. The phone or iPad stands beside her; one hand holds the product; she glances at the screen from arm's length and must never have to touch it between products. Also opened by cs, manager and admin to check a product.
 **Purpose:** scan the product in her hand → read its name, retail price, our target price and its notes, and know which of those are checked facts and which are guesses before she says them on air.
 
@@ -49,7 +49,7 @@ The card replaces the ready block. Top to bottom:
 6. **Sticky action bar** unchanged: "Scan product" + keyboard. The next scan from any input replaces the card; the previous product moves into the list.
 
 ### On a stand: iPad and landscape (width ≥ 700px)
-Two columns inside the centred column: left = picture (200×200), name (28px), category, the two price tiles with **44px** values; right = Notes at **22px** and, under them, "Scanned this session". The action bar stays at the bottom, the primary button capped at 604px as on Pick. Portrait and both landscapes use the same rule (size class, not device). Nothing exists only on iPad.
+Two columns inside the centred column: left = picture (120×120) beside the name (24px, up to 4 lines) and category, then the two price tiles **one above the other** with **44px** values (side by side they would clip "$128.00" in a half-width column); right = Notes at **22px** and, under them, "Scanned this session". The action bar stays at the bottom, the primary button capped at 604px as on Pick. Portrait and both landscapes use the same rule (size class, not device). Nothing exists only on iPad.
 
 ## Source labels (blueprint rule 5.12)
 A host must be able to tell a checked fact from a guess at a glance. Checked sources are plain text; anything else carries a pill with a word, never colour alone.

@@ -13,8 +13,8 @@ Rows are system list rows (44pt minimum, Dynamic Type), tint = LiveOpsHub indigo
    - Demo company: a second line in the group, amber, "Demo company — sample data."
 2. **Preferences**
    - **Language** — trailing value "English" / "Español"; opens a pushed list with the two choices and a checkmark. Default: the device language. Applies at once to native screens and to the `/m/` web views (they reload).
-3. **Security** — shown only when the session says two-step verification applies to this account (blueprint S12, Q8)
-   - **Two-step verification** — trailing value "On" / "Off" → the native set-up screen (S12; its spec is part of the sign-in re-specification and waits for Q7 and Q8).
+3. **Security** — shown only when the session says two-step verification applies to this account (admin, manager, cs)
+   - **Two-step verification** — trailing value "On" / "Off" → the native two-step screen (S12, specified in [`sign-in.md`](sign-in.md) §3: email code or authenticator app).
    - Demo company: the row is disabled with the footer "Not available in the demo company."
 4. **Help and legal**
    - **Support** — trailing "support@liveopshub.com" → opens a mail draft to that address; if the device has no mail account, an alert shows the address with "Copy".
@@ -30,7 +30,7 @@ No appearance or theme row (the app follows the system light/dark setting). No n
 1. Large title "Delete account". Warning haptic on appear.
 2. **What happens** — a short text block. The wording mirrors the privacy policy and **waits for Ofir's sign-off** (board D7); placeholder until then: "Your account and sign-in are permanently deleted. Work you recorded — packed and picked orders and their packing videos — stays with {company} as part of its records."
 3. **Password** — secure field, label "Password", `textContentType(.password)`; footer "Enter your password to confirm it's you."
-4. **Two-step code** — only when the account has two-step verification on: a 6-digit field, and "Send me a code by text message" when a phone number is on file (blueprint flow 4.7 step 2). Its exact behaviour follows the sign-in spec once Q7/Q8 are answered.
+4. **Two-step code** — only when the account has two-step verification on: a 6-digit field, and "Email me a code" when the account has a confirmed email address (blueprint flow 4.7 step 2, read with the email decision). It behaves as the second step in [`sign-in.md`](sign-in.md) §2: wait before "Send again", wrong and expired codes.
 5. **Delete my account** — full-width destructive button, disabled until the password field is not empty → confirmation dialog: "Delete your account? This can't be undone." · [Delete account] (destructive) · [Cancel].
 6. **Last admin of a company** — the server answers that confirming also deletes the company (`need_org_confirm`): a second dialog that names it, "This also deletes {company} and all its data — orders, videos and every user. This can't be undone." · [Delete {company}] (destructive) · [Cancel].
 7. Success → signed out → Sign-in with one line: "Your account was deleted."
@@ -55,7 +55,7 @@ Account / Cuenta · Language / Idioma · Two-step verification / Verificación e
 ## Open points
 - A worker who only ever signs in by badge may not know a password; the delete screen needs one (blueprint §9 "not verified"). → app-planner.
 - The "what happens" text and the company-deletion sentence are policy wording. → Ofir (D7).
-- Whether Security is shown to worker and host in 1.0 depends on Q8; the spec shows the group only when the session says so.
+- Security is shown to admin, manager and cs (two-step verification is required for them); the spec shows the group only when the session says so, so a worker or host does not see it in 1.0.
 
 ## Acceptance (app-review K1, K2, K4)
 Privacy, Terms and Support are each one tap from the Account tab. Delete account is visible without scrolling on a 390×844 screen for a worker, is reachable when the subscription is inactive, and cannot be completed without the password. Nothing on this screen opens a desktop page.
