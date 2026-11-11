@@ -51,8 +51,13 @@ Roadmap (`docs/mobile/ROADMAP.md`) and app blueprint (`docs/mobile/APP_BLUEPRINT
 
 ### Read the changed blueprint sections and the mockups
 - Owner now: Ofir      State: blocked
-- Done so far: specs and mockups aligned by ios-designer (PR for `design/specs-to-blueprint`); app-planner is correcting the blueprint for the email code (rev 2).
+- Done so far: specs and mockups aligned by ios-designer (PR for `design/specs-to-blueprint`); blueprint rev 2 written by app-planner (email code; gaps settled).
 - Next action: look at `docs/mobile/mockups/tabbar.png`, `today-*.png`, `scanit*.png`, `sign-in.png` and say what to change; read the blueprint sections marked as changed (Scanit, email code) → Ofir.
+
+### Q9. Which address sends the 2FA code emails
+- Owner now: Ofir      State: blocked
+- Done so far: app-planner could not see the production mail set-up; today's configured sender may be a Gmail address or another brand, which risks the codes landing in junk.
+- Next action: choose — a liveopshub.com sender (recommended; a few DNS records, done together with moving the public pages) or today's configured sender → Ofir.
 
 ### Mailbox and domain
 - Owner now: Ofir      State: todo
@@ -67,9 +72,11 @@ Roadmap (`docs/mobile/ROADMAP.md`) and app blueprint (`docs/mobile/APP_BLUEPRINT
 - Not verified: nothing ran on a device or in Safari; Spanish copy is a first draft; no mockup yet for Track, Cleanup, Account, Pack; server facts are from reading `app.py`.
 - Next action: Ofir reviews the mockups; mockups for Track, Cleanup and Account → ios-designer when the blueprint rev 2 is in.
 
-### Blueprint rev 2 (email code; gaps found by ios-designer)
-- Owner now: app-planner      State: in progress
-- Next action: replace SMS with the emailed code throughout `APP_BLUEPRINT.md` and settle the gaps ios-designer reported (what `/api/today` returns per role, Cleanup's endpoint, opening an order in Pick from another tab, limits for videos waiting to upload, how a badge-only worker deletes an account, `/m/` pages opened in a phone browser, video formats in Track) → app-planner.
+### Spec touch-ups after blueprint rev 2
+- Owner now: ios-designer      State: todo
+- Done so far: blueprint rev 2 written by app-planner (email code throughout; gaps settled — see its change log and §8.1).
+- Next action: `sign-in.md` (§3.2 "address on file", §3.5, the 5-minute number), `me.md` (a badge-only worker deletes the account with a fresh scan of their own badge), `today.md` (`open_shows`, browser avatar), `track.md` (Open in Pick, video formats), `pack.md` (videos waiting to upload: kept on the device, at most 10, retried automatically), `DESIGN_SYSTEM.md` §3.4, §3.6, §8, DS-3; mockups for Track, Cleanup and Account → ios-designer, together with Ofir's comments on the first mockups.
+- Blocked on: Ofir's comments on the mockups (so both go in one pass).
 
 ## Up next (by milestone — see `docs/mobile/ROADMAP.md`)
 
