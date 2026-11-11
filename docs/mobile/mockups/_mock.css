@@ -1,0 +1,56 @@
+/* Mockup-only scaffolding (prefix mk-). NOT product CSS and not to be copied into mobile/.
+   The screens themselves are styled by the real files, linked from each mockup:
+     ../../../mobile/static/mobile.css   (components, m- classes)
+     ../../../mobile/static/shell.css    (base tokens = LiveOpsHub indigo, /m/ page chrome)
+   What this file adds is only what the native app draws AROUND an /m/ page — status bar,
+   native tab bar, home indicator — and the gallery page that lays several phones side by side. */
+
+/* ── screen mode: one phone-sized page (loaded inside an iframe of the gallery) ── */
+html.mk-screen{--m-safe-top:54px;--m-tabbar-h:83px}          /* simulate the notch and the native tab bar */
+html.mk-screen body{min-height:100vh}
+html.mk-screen.mk-notabs{--m-tabbar-h:0px;--m-safe-bottom:34px}
+.mk-status{position:fixed;top:0;left:0;right:0;height:54px;z-index:70;display:flex;align-items:flex-end;justify-content:space-between;
+  padding:0 30px 9px;font:600 16px/1 -apple-system,'DM Sans',system-ui,sans-serif;color:var(--text);pointer-events:none;box-sizing:border-box}
+.mk-status i{display:block;width:66px;height:12px;border-radius:3px;background:currentColor;opacity:.85}
+.mk-island{position:fixed;top:11px;left:50%;transform:translateX(-50%);width:124px;height:36px;border-radius:20px;background:#000;z-index:71}
+.mk-home{position:fixed;bottom:8px;left:50%;transform:translateX(-50%);width:139px;height:5px;border-radius:3px;background:var(--text);z-index:82}
+
+/* The NATIVE tab bar (SwiftUI TabView), drawn here so the mockup shows the whole phone. */
+.mk-tabbar{position:fixed;left:0;right:0;bottom:0;height:83px;z-index:80;display:flex;padding:0 4px 34px;box-sizing:border-box;
+  background:var(--m-material);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);box-shadow:0 -.5px 0 var(--border)}
+.mk-tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding-top:7px;gap:3px;min-width:0;
+  font:600 10px/1.1 -apple-system,'DM Sans',system-ui,sans-serif;color:var(--text-dim);letter-spacing:.01em}
+.mk-tab svg{width:27px;height:27px}
+.mk-tab.on{color:var(--mk-tint)}
+:root{--mk-tint:#4f46e5}
+html.theme-dark{--mk-tint:#a5b4fc}                            /* native tint in dark = brand ink (DESIGN_SYSTEM §1.6) */
+
+/* iPad (regular width): iPadOS places the tab bar near the top. */
+@media (min-width:700px){
+  html.mk-screen{--m-safe-top:84px;--m-tabbar-h:0px}
+  html.mk-screen .mk-island,html.mk-screen .mk-home{display:none}
+  html.mk-screen .mk-status{height:24px;padding:0 18px 4px;font-size:13px}
+  html.mk-screen .mk-tabbar{top:30px;bottom:auto;left:50%;right:auto;transform:translateX(-50%);height:44px;padding:4px;border-radius:22px;gap:2px;
+    background:var(--surface-strong);box-shadow:none}
+  html.mk-screen .mk-tab{flex:0 0 auto;flex-direction:row;gap:6px;padding:0 16px;height:36px;align-items:center;border-radius:18px;font-size:15px;color:var(--text)}
+  html.mk-screen .mk-tab svg{width:18px;height:18px}
+  html.mk-screen .mk-tab.on{background:var(--bg);color:var(--mk-tint)}
+}
+
+/* ── gallery mode: the page a person opens ── */
+html.mk-gallery,html.mk-gallery body{background:#e9ebf2;margin:0}
+html.mk-gallery body{font:15px/1.45 -apple-system,'DM Sans',system-ui,sans-serif;color:#141a26;padding:20px 16px 48px}
+.mk-head{max-width:1100px;margin:0 auto 20px}
+.mk-head h1{font-size:24px;margin:0 0 6px;font-weight:800;letter-spacing:-.01em}
+.mk-head p{margin:0 0 4px;color:#566072}
+.mk-head a{color:#3730a3;font-weight:600}
+.mk-wrap{display:flex;flex-wrap:wrap;gap:36px 28px;justify-content:center;align-items:flex-start}
+.mk-cell{width:min(390px,100%);}
+.mk-cell.mk-wide{width:min(1024px,100%)}
+.mk-cap{font-weight:800;font-size:17px;margin:0 0 2px}
+.mk-sub{color:#566072;font-size:13px;margin:0 0 10px;min-height:2.6em}
+.mk-phone{display:block;width:100%;border:0;border-radius:44px;background:#fff;box-shadow:0 0 0 9px #14141a,0 24px 50px rgba(20,26,38,.28);margin:9px 0 22px}
+.mk-wide .mk-phone{border-radius:22px}
+.mk-notes{margin:0;padding:0 0 0 22px;font-size:14px;color:#2b3342}
+.mk-notes li{margin:0 0 6px}
+.mk-notes code{font-size:12.5px;background:#dfe2ec;border-radius:4px;padding:1px 4px}

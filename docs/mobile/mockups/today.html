@@ -1,0 +1,244 @@
+<!DOCTYPE html><html lang="en" class="m"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Mockup · Today (/m/today) · worker, host, manager, admin</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&display=swap" rel="stylesheet">
+<!-- The real mobile CSS, straight from the product folder: -->
+<link rel="stylesheet" href="../../../mobile/static/mobile.css">
+<link rel="stylesheet" href="../../../mobile/static/shell.css">
+<!-- Mockup scaffolding only (phone frame, native tab bar, gallery): -->
+<link rel="stylesheet" href="_mock.css">
+<style>
+/* Screen-local CSS proposed for /m/today (prefix td-). Everything else is m- classes. */
+.td-hero{margin:var(--m-2) var(--m-gutter) 0;position:relative;overflow:hidden}
+.td-hero::after{content:"";position:absolute;right:-40px;top:-60px;width:180px;height:180px;border-radius:50%;background:rgba(255,255,255,.10);pointer-events:none}
+.td-hero__eyebrow{font-size:var(--m-fs-footnote);font-weight:700;opacity:.85;letter-spacing:.02em;text-transform:uppercase}
+.td-hero__nums{display:flex;gap:var(--m-8);margin-top:var(--m-3)}
+.td-hero__nums b{display:block;font-size:var(--m-fs-largetitle);font-weight:800;letter-spacing:-.02em;line-height:1.05;font-variant-numeric:tabular-nums}
+.td-hero__nums span{font-size:var(--m-fs-footnote);opacity:.88;font-weight:600}
+.td-hero__foot{margin-top:var(--m-3);font-size:var(--m-fs-footnote);opacity:.88;font-weight:600}
+.td-plain{margin:var(--m-2) var(--m-gutter) 0}
+.td-plain h2{font-size:var(--m-fs-title2);font-weight:800;letter-spacing:-.01em;margin:0 0 var(--m-1)}
+.td-plain p{margin:0;font-size:var(--m-fs-subhead);color:var(--text-muted)}
+.td-big{min-height:64px}
+.td-big .m-row__title{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.td-show{align-items:flex-start;flex-direction:column;gap:6px;padding-top:14px;padding-bottom:14px}
+.td-show .m-row__title{width:100%}
+.td-show .m-progress{width:100%;height:8px}
+.td-show__counts{display:flex;flex-wrap:wrap;align-items:center;gap:6px var(--m-2);font-size:var(--m-fs-subhead);font-weight:600;color:var(--text)}
+.td-show__counts i{font-style:normal;color:var(--text-muted);font-weight:400}
+.td-more{display:block;width:100%;min-height:44px;border:0;background:var(--bg);color:var(--brand-ink);font:inherit;font-weight:600;box-shadow:inset 0 .5px 0 var(--border)}
+</style>
+<script src="_mock.js"></script>
+</head><body>
+
+<div class="mk-head">
+  <h1>Today — <code>/m/today</code></h1>
+  <p>Spec: <a href="../screens/today.md">screens/today.md</a> · Blueprint S3. Launch screen for every role. Tab root: no back button, no action bar.</p>
+  <p>Add <code>?dark=1</code> for dark mode. Colour is LiveOpsHub indigo for every company (D8). The tab bar at the bottom is the <b>native</b> bar, drawn here only to show the whole phone.</p>
+</div>
+
+<!-- ═════════ WORKER (also the demo floor login) ═════════ -->
+<template data-v="worker" data-role="worker" data-tab="today" data-title="Worker" data-sub="Shown as the demo floor login, so the demo banner is on.">
+<main class="m-screen">
+  <header class="m-navbar"><div class="m-navbar__row">
+    <div class="m-navbar__title">Today</div>
+    <div class="m-navbar__actions"><button type="button" class="m-iconbtn" aria-label="Account"><span class="m-avatar">AP</span></button></div>
+  </div></header>
+  <div class="m-largetitle"><h1>Good evening, Ana</h1><p>Tuesday, Nov 10 · Demo Beauty Co.</p></div>
+  <div class="m-banner m-banner--warn"><i data-ic="warn"></i><span>Demo company — sample data. Nothing here is real or leaves the app.</span></div>
+
+  <div class="m-card m-card--hero td-hero">
+    <div class="td-hero__eyebrow">You today</div>
+    <div class="td-hero__nums"><div><b>38</b><span>packed</span></div><div><b>52</b><span>picked</span></div></div>
+  </div>
+
+  <section class="m-section">
+    <div class="m-section__header"><span>Continue</span></div>
+    <div class="m-list">
+      <a class="m-row m-row--lead td-big" href="#"><span class="m-row__lead"><i data-ic="checklist"></i></span>
+        <span class="m-row__body"><span class="m-row__title">Keep picking Peach LIVE · Nov 10 Evening</span><span class="m-row__sub">14 left to pick</span></span>
+        <span class="m-row__trail"><i data-ic="chev"></i></span></a>
+    </div>
+  </section>
+
+  <section class="m-section">
+    <div class="m-section__header"><span>Look up</span></div>
+    <div class="m-list">
+      <a class="m-row m-row--lead td-big" href="#"><span class="m-row__lead"><i data-ic="search"></i></span>
+        <span class="m-row__body"><span class="m-row__title">Look up a label</span><span class="m-row__sub">By tracking or order number</span></span>
+        <span class="m-row__trail"><i data-ic="chev"></i></span></a>
+    </div>
+  </section>
+
+  <section class="m-section">
+    <div class="m-section__header"><span>Floor now</span></div>
+    <div class="m-stats">
+      <div class="m-stat"><div class="m-stat__label">Orders to pick</div><div class="m-stat__value">48</div></div>
+      <div class="m-stat"><div class="m-stat__label">Waiting to pack</div><div class="m-stat__value">21</div></div>
+    </div>
+  </section>
+</main>
+</template>
+<ol data-notes="worker">
+  <li>Avatar (44×44, label "Account") calls <code>openTab('account')</code>. It never opens the desktop <code>/me</code>.</li>
+  <li>Demo banner (<code>.m-banner--warn</code>) only when the session says <code>sandbox</code>.</li>
+  <li>Hero: my packed and picked today. No rank, no leaderboard link (not in 1.0).</li>
+  <li>"Keep picking …" calls <code>openTab('pick')</code>; shown only when Pick remembers a show that still has orders.</li>
+  <li>"Look up a label" pushes <code>/m/track</code>. A Bluetooth scan made on this screen is a lookup too.</li>
+  <li>No "For you" rows (onboarding, news, schedule, documents): those screens are not in 1.0.</li>
+</ol>
+
+<!-- ═════════ HOST ═════════ -->
+<template data-v="host" data-role="host" data-tab="today" data-title="Host" data-sub="Three tabs: Today · Scanit · Account. One tap to Scanit.">
+<main class="m-screen">
+  <header class="m-navbar"><div class="m-navbar__row">
+    <div class="m-navbar__title">Today</div>
+    <div class="m-navbar__actions"><button type="button" class="m-iconbtn" aria-label="Account"><span class="m-avatar">TZ</span></button></div>
+  </div></header>
+  <div class="m-largetitle"><h1>Good evening, Talia</h1><p>Tuesday, Nov 10 · Northside Beauty</p></div>
+
+  <div class="m-card td-plain">
+    <h2>Ready for your live?</h2>
+    <p>Scan each product to see its retail price, our target price and its notes.</p>
+  </div>
+
+  <section class="m-section">
+    <div class="m-list">
+      <a class="m-row m-row--lead td-big" href="#"><span class="m-row__lead"><i data-ic="barcode"></i></span>
+        <span class="m-row__body"><span class="m-row__title">Open Scanit</span><span class="m-row__sub">Scan a product</span></span>
+        <span class="m-row__trail"><i data-ic="chev"></i></span></a>
+    </div>
+  </section>
+</main>
+</template>
+<ol data-notes="host">
+  <li>No numbers, no shows, no label lookup: a host has nothing to do with orders (blueprint rule 5.7).</li>
+  <li>"Open Scanit" calls <code>openTab('scanit')</code>. During a live the app simply stays on the Scanit tab.</li>
+  <li>Nothing else on the screen — no "coming soon", no pointer to the website (blueprint §6).</li>
+  <li>For Ofir and app-review to weigh: this is a short launch screen. The alternative (launch a host straight on Scanit) is not what the blueprint says.</li>
+</ol>
+
+<!-- ═════════ MANAGER (also the demo second login) ═════════ -->
+<template data-v="manager" data-role="manager" data-tab="today" data-h="1240" data-title="Manager" data-sub="Tall frame: shows the whole scrolled page. Same four tabs as a worker.">
+<main class="m-screen">
+  <header class="m-navbar"><div class="m-navbar__row">
+    <div class="m-navbar__title">Today</div>
+    <div class="m-navbar__actions"><button type="button" class="m-iconbtn" aria-label="Account"><span class="m-avatar">MR</span></button></div>
+  </div></header>
+  <div class="m-largetitle"><h1>Good evening, Maya</h1><p>Tuesday, Nov 10 · Northside Beauty</p></div>
+
+  <div class="m-card m-card--hero td-hero">
+    <div class="td-hero__eyebrow">The floor today</div>
+    <div class="td-hero__nums"><div><b>412</b><span>packed</span></div><div><b>468</b><span>picked</span></div></div>
+    <div class="td-hero__foot">3 picking · 4 packing now</div>
+  </div>
+
+  <section class="m-section">
+    <div class="m-section__header"><span>Look up</span></div>
+    <div class="m-list">
+      <a class="m-row m-row--lead td-big" href="#"><span class="m-row__lead"><i data-ic="search"></i></span>
+        <span class="m-row__body"><span class="m-row__title">Look up a label</span><span class="m-row__sub">By tracking or order number</span></span>
+        <span class="m-row__trail"><i data-ic="chev"></i></span></a>
+      <a class="m-row m-row--lead td-big" href="#"><span class="m-row__lead"><i data-ic="barcode"></i></span>
+        <span class="m-row__body"><span class="m-row__title">Scanit</span><span class="m-row__sub">Product prices and notes</span></span>
+        <span class="m-row__trail"><i data-ic="chev"></i></span></a>
+    </div>
+  </section>
+
+  <section class="m-section">
+    <div class="m-section__header"><span>Open shows · 3</span><span style="text-transform:none;letter-spacing:0;font-weight:600">Most overdue first</span></div>
+    <div class="m-list">
+      <div class="m-row td-show">
+        <div class="m-row__title">Peach LIVE · Nov 8 Evening</div>
+        <div class="m-row__sub">Nov 8 · 214 orders</div>
+        <div class="m-progress" role="progressbar" aria-label="71% packed, 12% picked"><span class="m-progress__c" style="width:71%"></span><span class="m-progress__b" style="width:12%"></span></div>
+        <div class="td-show__counts"><span class="m-pill m-pill--cancelled">9 overdue</span><span>36 to pick <i>·</i> 26 to pack</span><span class="m-pill m-pill--issue">2 issues</span></div>
+      </div>
+      <div class="m-row td-show">
+        <div class="m-row__title">Hera Night Drop · Nov 9</div>
+        <div class="m-row__sub">Nov 9 · 187 orders</div>
+        <div class="m-progress" role="progressbar" aria-label="44% packed, 25% picked"><span class="m-progress__c" style="width:44%"></span><span class="m-progress__b" style="width:25%"></span></div>
+        <div class="td-show__counts"><span>58 to pick <i>·</i> 47 to pack</span><span class="m-pill m-pill--issue">1 issue</span></div>
+      </div>
+      <div class="m-row td-show">
+        <div class="m-row__title">Peach LIVE · Nov 10 Evening</div>
+        <div class="m-row__sub">Nov 10 · 96 orders</div>
+        <div class="m-progress" role="progressbar" aria-label="0% packed, 15% picked"><span class="m-progress__c" style="width:0%"></span><span class="m-progress__b" style="width:15%"></span></div>
+        <div class="td-show__counts"><span>82 to pick <i>·</i> 14 to pack</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="m-section">
+    <div class="m-section__header"><span>Floor now</span></div>
+    <div class="m-stats">
+      <div class="m-stat"><div class="m-stat__label">Orders to pick</div><div class="m-stat__value">176</div></div>
+      <div class="m-stat"><div class="m-stat__label">Waiting to pack</div><div class="m-stat__value">87</div></div>
+      <div class="m-stat m-stat--warn"><div class="m-stat__label">Open issues</div><div class="m-stat__value">3</div></div>
+      <div class="m-stat"><div class="m-stat__label">Tables to clear</div><div class="m-stat__value">1</div></div>
+    </div>
+  </section>
+</main>
+</template>
+<ol data-notes="manager">
+  <li>Hero shows the floor, not the person.</li>
+  <li>"Scanit" row: cs, manager and admin reach Scanit from here (pushed, with a back button); only a host has it as a tab.</li>
+  <li>Open shows are <b>read-only</b> in 1.0: no chevron, no tap. To act, use the Pick or Pack tab.</li>
+  <li>Counts are words + numbers; "overdue" uses the red dash pill, "issues" the orange "!" pill — never colour alone. Bar: green = packed, teal = picked.</li>
+  <li><b>Needs server data that does not exist yet:</b> "to pack" and "issues" per show (see the spec's hand-off list).</li>
+  <li>Admin = this screen + one "Sales today" row under the hero, and a fifth tab, Manage.</li>
+</ol>
+
+<!-- ═════════ ADMIN (top of the page only) ═════════ -->
+<template data-v="admin" data-role="admin" data-tab="today" data-title="Admin" data-sub="Manager's Today + Sales today. Five tabs: Manage is added.">
+<main class="m-screen">
+  <header class="m-navbar"><div class="m-navbar__row">
+    <div class="m-navbar__title">Today</div>
+    <div class="m-navbar__actions"><button type="button" class="m-iconbtn" aria-label="Account"><span class="m-avatar">DK</span></button></div>
+  </div></header>
+  <div class="m-largetitle"><h1>Good evening, Dana</h1><p>Tuesday, Nov 10 · Northside Beauty</p></div>
+
+  <div class="m-card m-card--hero td-hero">
+    <div class="td-hero__eyebrow">The floor today</div>
+    <div class="td-hero__nums"><div><b>412</b><span>packed</span></div><div><b>468</b><span>picked</span></div></div>
+    <div class="td-hero__foot">3 picking · 4 packing now</div>
+  </div>
+
+  <section class="m-section">
+    <div class="m-section__header"><span>Sales today</span></div>
+    <div class="m-list">
+      <div class="m-row"><span class="m-row__body"><span class="m-row__title">96 orders sold</span></span><span class="m-row__trail"><span class="m-row__value">$4,318.50</span></span></div>
+    </div>
+  </section>
+
+  <section class="m-section">
+    <div class="m-section__header"><span>Look up</span></div>
+    <div class="m-list">
+      <a class="m-row m-row--lead td-big" href="#"><span class="m-row__lead"><i data-ic="search"></i></span>
+        <span class="m-row__body"><span class="m-row__title">Look up a label</span><span class="m-row__sub">By tracking or order number</span></span>
+        <span class="m-row__trail"><i data-ic="chev"></i></span></a>
+      <a class="m-row m-row--lead td-big" href="#"><span class="m-row__lead"><i data-ic="barcode"></i></span>
+        <span class="m-row__body"><span class="m-row__title">Scanit</span><span class="m-row__sub">Product prices and notes</span></span>
+        <span class="m-row__trail"><i data-ic="chev"></i></span></a>
+    </div>
+  </section>
+
+  <section class="m-section">
+    <div class="m-section__header"><span>Open shows · 3</span><span style="text-transform:none;letter-spacing:0;font-weight:600">Most overdue first</span></div>
+    <div class="m-list">
+      <div class="m-row td-show">
+        <div class="m-row__title">Peach LIVE · Nov 8 Evening</div>
+        <div class="m-row__sub">Nov 8 · 214 orders</div>
+        <div class="m-progress"><span class="m-progress__c" style="width:71%"></span><span class="m-progress__b" style="width:12%"></span></div>
+        <div class="td-show__counts"><span class="m-pill m-pill--cancelled">9 overdue</span><span>36 to pick <i>·</i> 26 to pack</span></div>
+      </div>
+    </div>
+  </section>
+</main>
+</template>
+<ol data-notes="admin">
+  <li>"Sales today" is one quiet row, not tappable. First thing to cut if 1.0 must shrink (blueprint §6).</li>
+  <li>Today has no row that opens Manage; Manage is its own tab and never the launch tab.</li>
+</ol>
+
+</body></html>
