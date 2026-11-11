@@ -14,7 +14,7 @@ settings:
     MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.10"
-    DEVELOPMENT_TEAM: ""          # ← your Apple Team ID (Btrade LLC), e.g. ABCDE12345
+    DEVELOPMENT_TEAM: "4B4X663V8J"   # BTRADE LLC
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 
@@ -28,7 +28,7 @@ targets:
     info:
       path: LiveOpsHub/Info.plist
       properties:
-        CFBundleDisplayName: LiveOpsHub
+        CFBundleDisplayName: Live Ops Hub
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         API_BASE_URL: https://www.getwhatnot.com
@@ -50,8 +50,8 @@ targets:
         ITSAppUsesNonExemptEncryption: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.liveopshub.app
-        TARGETED_DEVICE_FAMILY: "1,2"
+        PRODUCT_BUNDLE_IDENTIFIER: com.liveopshub.ios
+        TARGETED_DEVICE_FAMILY: "1,2"        # iPhone + iPad (camera follows the device orientation)
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         GENERATE_INFOPLIST_FILE: NO

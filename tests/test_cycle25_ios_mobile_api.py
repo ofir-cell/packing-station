@@ -140,3 +140,34 @@ def test_signed_out_browser_still_starts_on_badge_login(client):
 def test_badge_page_offers_camera_scan_only_inside_app(client):
     html = client.get("/badge-login").get_data(as_text=True)
     assert "window.LOHubNative&&LOHubNative.scan" in html     # guarded: hidden in browsers
+
+
+def test_csp_allows_only_the_pinned_2fa_qr_script(client):
+    csp = client.get("/login").headers.get("Content-Security-Policy", "")
+    script = next(d for d in csp.split(";") if d.strip().startswith("script-src"))
+    assert "https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" in script
+    assert "https://cdnjs.cloudflare.com " not in script + " "   # not the whole CDN
+
+
+# ── App Review fixes ──────────────────────────────────────────────────────────
+def test_billing_in_ios_app_has_no_prices_or_buy_buttons(client, appmod):
+    _sess(client, appmod, "a_" + uuid.uuid4().hex[:6], "admin")
+    html = client.get("/billing", headers={"User-Agent": IOS_UA}).get_data(as_text=True)
+    assert "$149" not in html and "Choose Pro" not in html and "managed by your company admin" in html
+    web = client.get("/billing").get_data(as_text=True)
+    assert "$149" in web                                   # browsers unchanged
+
+
+def test_twofa_exempt_only_when_explicitly_true(appmod):
+    assert appmod._twofa_required({"role": "admin"})
+    assert not appmod._twofa_required({"role": "admin", "twofa_exempt": True})
+    assert appmod._twofa_required({"role": "admin", "twofa_exempt": "yes"})   # must be literal True
+
+
+def test_account_delete_allowed_during_2fa_setup(client, appmod):
+    uname = "a_" + uuid.uuid4().hex[:6]
+    h = _sess(client, appmod, uname, "worker")
+    with client.session_transaction() as s:
+        s["must_setup_2fa"] = True
+    r = client.post("/api/account/delete", json={}, headers=h)
+    assert r.status_code == 200 and r.get_json()["ok"]

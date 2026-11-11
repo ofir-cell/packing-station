@@ -1,7 +1,13 @@
 import SwiftUI
 
 /// Scan a label → see what goes in the box → record → upload. Then the next label.
-/// Same flow as the web packing station, with the phone camera doing both jobs.
+/// Same flow as the web packing station.
+///
+/// The label can be scanned three ways: the device camera, a Bluetooth/USB handheld
+/// scanner (works at any moment, nothing to tap), or typing the number.
+/// With a handheld scanner the whole station is hands-free, as on the web station:
+/// scan a label → recording starts → scan again → the video is saved (and if that
+/// second scan was the NEXT box's label, that box opens straight away).
 struct PackFlowView: View {
     /// Set when the dashboard asks to pack a specific label (LOHubNative.pack(code)).
     var initialTracking: String? = nil
@@ -43,6 +49,7 @@ struct PackFlowView: View {
             .alert("Couldn't continue", isPresented: .constant(error != nil)) {
                 Button("OK") { error = nil }
             } message: { Text(error ?? "") }
+            .background(HardwareScannerCapture { code in hardwareScan(code) })
         }
         .task {
             if let t = initialTracking, !t.isEmpty, case .scan = step {
@@ -80,6 +87,8 @@ struct PackFlowView: View {
             .clipShape(RoundedRectangle(cornerRadius: 16))
 
             Text("Scan the shipping label").font(.headline)
+            Text("Use the camera or a Bluetooth scanner")
+                .font(.footnote).foregroundStyle(.secondary)
             ManualCodeEntry { code in Task { await lookup(code) } }
         }
         .padding()
@@ -91,7 +100,7 @@ struct PackFlowView: View {
         let order = box.value
         return VStack(spacing: 12) {
             ZStack(alignment: .topLeading) {
-                CameraPreview(session: recorder.session)
+                CameraPreview(session: recorder.session, camera: recorder.camera)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                 if recorder.state == .recording {
                     Label(timeString(recorder.elapsed), systemImage: "record.circle.fill")
@@ -157,6 +166,35 @@ struct PackFlowView: View {
     }
 
     // MARK: Actions
+
+    /// A scan from a Bluetooth/USB handheld scanner. What it does depends on where the
+    /// packer is, mirroring the web station:
+    ///  - waiting for a label, or on the "Packed" screen → open that order
+    ///  - recording → stop and save; if it was a different label, open that one next
+    ///  - order shown but not recording yet, or busy saving → ignored
+    private func hardwareScan(_ raw: String) {
+        let code = Self.sanitize(raw)
+        guard !code.isEmpty else { return }
+        error = nil                                   // a new scan dismisses the last error
+        switch step {
+        case .scan:
+            Task { await lookup(code) }
+        case .done:
+            reset()
+            Task { await lookup(code) }
+        case .order(let box) where recorder.state == .recording:
+            let current = Self.sanitize(box.value.shipment?.trackingCode ?? box.value.shipment?.shipmentId ?? "")
+            let sameLabel = !current.isEmpty && (code == current || code.hasSuffix(current) || current.hasSuffix(code))
+            Task {
+                await stopAndUpload(box)
+                guard case .done = step, !sameLabel else { return }
+                reset()
+                await lookup(code)
+            }
+        default:
+            break
+        }
+    }
 
     private func lookup(_ raw: String) async {
         guard case .scan = step else { return }

@@ -1,14 +1,26 @@
 # LiveOpsHub for iOS
 
-Native SwiftUI client for the LiveOpsHub (getwhatnot.com) backend. iPhone + iPad, iOS 17+.
+SwiftUI app for the LiveOpsHub (getwhatnot.com) backend. iPhone + iPad, iOS 17+.
 
-| Tab | What it does | Server endpoints |
+| Tab | What it is | Served by |
 |---|---|---|
-| **Pack** | Scan a shipping label → see the box contents → record the packing video → upload. Auto-records after each scan (toggle in the toolbar). | `GET /api/shipment/<code>`, `POST /api/upload` |
-| **Pick** | Pick queue by show, tap items off, scan a label to jump to its order, mark order picked. Respects the cleanout / cancelled-items / already-picked gates. | `GET /api/pick/queue`, `GET /api/pick/<sid>`, `POST /api/pick/item/<id>/toggle`, `POST /api/pick/complete/<sid>` |
-| **Lookup** | Scan or type any label: status, who picked/packed it, items. | `GET /api/shipment/<code>` |
-| **Today** | Your packs today / this month / rank; for admin & CS, to-pick / to-pack per show. | `GET /api/me/stats`, `GET /api/home/fulfillment` |
-| **Account** | TikTok Shop connections (admin, in-app web view), privacy, terms, support, sign out, **delete account** (Apple 5.1.1(v)). | `/admin/tiktok`, `POST /api/account/delete` |
+| **Dashboard** | The real web dashboard, signed in — every screen the site has. Sign-in happens here. | `/` (web view) |
+| **Pick** | The mobile Pick screen, built for the phone: choose a show, scan a label, tick items, done. Same server, same data and rules as the desktop `/pick`. | `/m/pick` (web view; code in `mobile/`) |
+| **Pack** | Native. Scan a shipping label → see the box contents → record the packing video → upload. Auto-records after each scan (toggle in the toolbar). | `GET /api/shipment/<code>`, `POST /api/upload` |
+
+## Scanning
+
+Three ways, on every scan screen:
+
+- **Bluetooth (or USB) handheld scanner.** Pair it in iOS Settings › Bluetooth in its keyboard (HID) mode. It then works at any moment, with nothing to tap: on **Pack** (`Components/HardwareScanner.swift`) and on **Pick** (`mobile/static/mobile.js`).
+  On Pack the station is hands-free, like the web station: scan a label → recording starts → scan again → the video is saved; if that second scan was the next box's label, that box opens.
+  While a scanner is connected iOS hides the on-screen keyboard; most scanners have a button (or a double-press) that brings it back.
+- **Camera** (VisionKit) — the Pack tab's viewfinder, and `LOHubNative.scan()` from web pages.
+- **Typing** the number.
+
+## iPad
+
+Supported in every orientation. The packing video and the camera preview follow how the device is held (`AVCaptureDevice.RotationCoordinator`), so an iPad on a stand in landscape records an upright landscape video.
 
 ## How it talks to the server
 
@@ -28,17 +40,20 @@ open LiveOpsHub.xcodeproj
 ```
 
 1. Target **LiveOpsHub → Signing & Capabilities** → Team: **Btrade LLC**. (Or put the Team ID in `project.yml` → `DEVELOPMENT_TEAM` and re-run `xcodegen`.)
-2. Bundle ID is `com.liveopshub.app`. Change it in `project.yml` first if you want another — it can't be changed after the first App Store upload.
+2. Bundle ID is `com.liveopshub.ios`, registered to BTRADE LLC (team `4B4X663V8J`) on Nov 10 2026. It can't be changed after the first App Store upload. (`com.liveopshub.app` was already taken at Apple.)
 3. Run on a real iPhone (the simulator has no camera; scanning falls back to typing).
 
 `project.yml` is the source of truth; the `.xcodeproj` is generated and git-ignored.
 
 ## Ship to TestFlight / App Store
 
-1. App Store Connect → **My Apps → +** → New App: iOS, name "LiveOpsHub", bundle `com.liveopshub.app`, SKU `liveopshub-ios`.
-2. Xcode → **Product → Archive** (destination "Any iOS Device") → **Distribute App → App Store Connect → Upload**.
-3. Build appears in TestFlight in ~15 min → add internal testers (your warehouse team) → test on the floor.
-4. Fill the listing from `APP_STORE.md` → **Submit for Review**.
+The App Store Connect record already exists: **Live Ops Hub**, iOS, bundle `com.liveopshub.ios`, SKU `liveopshub-ios`, company name BTRADE LLC.
+
+**Automatic (no Mac needed).** `.github/workflows/testflight.yml` archives, signs and uploads a build whenever iOS code lands on `main`, or on demand from Actions → TestFlight → Run workflow. It needs three repository secrets (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`) from an App Store Connect API key with the Admin role — the steps are at the top of that file. Build numbers come from the workflow run number.
+
+**By hand, from Xcode.** Product → Archive (destination "Any iOS Device") → Distribute App → App Store Connect → Upload.
+
+Either way the build appears under TestFlight after Apple processes it (10–20 min). Add internal testers there (your warehouse team) and test on the floor. For the store listing, fill it from `APP_STORE.md` → Submit for Review.
 
 ## CI
 

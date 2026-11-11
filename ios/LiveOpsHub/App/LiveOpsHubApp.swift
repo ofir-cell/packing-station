@@ -10,25 +10,33 @@ struct LiveOpsHubApp: App {
     }
 }
 
-/// Two tabs: the real LiveOpsHub dashboard (web, signed in, every screen the site has)
-/// and the native Pack station (camera scanner + packing video).
+/// Three tabs:
+///  - Dashboard: the real LiveOpsHub dashboard (web, signed in, every screen the site has)
+///  - Pick: the mobile Pick screen (/m/pick — built for the phone, same server and data)
+///  - Pack: the native Pack station (camera or Bluetooth scanner + packing video)
 struct RootView: View {
-    enum Tab: Hashable { case dashboard, pack }
+    enum Tab: Hashable { case dashboard, pick, pack }
 
     @StateObject private var dashboard = DashboardController()
+    @StateObject private var pick = DashboardController()
     @State private var tab: Tab = .dashboard
     @State private var scanRequest: ScanRequest?
     @State private var packTracking: String?
     @State private var packOpenID = UUID()
     @State private var updateRequired = false
 
-    struct ScanRequest: Identifiable { let id: String }
+    /// A page asked for the camera scanner; the answer goes back to that same page.
+    struct ScanRequest: Identifiable { let id: String; let web: WKWebView }
 
     var body: some View {
         TabView(selection: $tab) {
-            dashboardTab
+            webTab(dashboard, startPath: "/")
                 .tabItem { Label("Dashboard", systemImage: "square.grid.2x2") }
                 .tag(Tab.dashboard)
+
+            webTab(pick, startPath: Self.pickPath, mobileHome: Self.pickPath)
+                .tabItem { Label("Pick", systemImage: "checklist") }
+                .tag(Tab.pick)
 
             PackFlowView(initialTracking: packTracking)
                 .id(packOpenID)
@@ -36,11 +44,20 @@ struct RootView: View {
                 .tag(Tab.pack)
         }
         .onChange(of: tab) { _, t in
-            if t == .pack { Task { await WebSession.shared.syncCookiesToNative() } }
+            switch t {
+            case .pack:
+                Task { await WebSession.shared.syncCookiesToNative() }
+            case .pick:
+                // Signed in on the Dashboard tab since this tab last loaded? Come back to Pick.
+                pick.ensure(prefix: "/m/", path: Self.pickPath)
+                pick.focus()
+            case .dashboard:
+                break
+            }
         }
         .sheet(item: $scanRequest) { req in
             ScannerSheet { code in
-                dashboard.evaluate(NativeBridge.resolveScanJS(id: req.id, code: code))
+                req.web.evaluateJavaScript(NativeBridge.resolveScanJS(id: req.id, code: code))
                 scanRequest = nil
             }
         }
@@ -52,29 +69,19 @@ struct RootView: View {
         .task { await checkVersion() }
     }
 
-    private var dashboardTab: some View {
-        ZStack(alignment: .top) {
-            DashboardWebView(controller: dashboard, startPath: "/") { msg, _ in
-                handle(msg)
-            }
-            .ignoresSafeArea(edges: .bottom)
+    static let pickPath = "/m/pick"
 
-            if dashboard.isLoading && dashboard.progress < 1 {
-                ProgressView(value: dashboard.progress)
-                    .progressViewStyle(.linear)
-                    .tint(.accentColor)
-            }
-
-            if let err = dashboard.loadError {
-                OfflineView(message: err) { dashboard.loadError = nil; dashboard.reload() }
-            }
+    /// A web tab with its loading bar and offline state.
+    private func webTab(_ controller: DashboardController, startPath: String, mobileHome: String? = nil) -> some View {
+        WebTab(controller: controller, startPath: startPath, mobileHome: mobileHome) { msg, web in
+            handle(msg, from: web)
         }
     }
 
-    private func handle(_ msg: NativeBridge.Message) {
+    private func handle(_ msg: NativeBridge.Message, from web: WKWebView) {
         switch msg {
         case .scan(let id):
-            scanRequest = ScanRequest(id: id)
+            scanRequest = ScanRequest(id: id, web: web)
         case .pack(let tracking):
             packTracking = tracking
             packOpenID = UUID()
@@ -106,6 +113,33 @@ struct RootView: View {
 }
 
 struct DownloadItem: Identifiable { let url: URL; var id: String { url.path } }
+
+/// One web tab: the page, a thin loading bar, and an offline state with Retry.
+/// It observes its own controller so the bar and the offline state update live.
+struct WebTab: View {
+    @ObservedObject var controller: DashboardController
+    var startPath: String
+    var mobileHome: String?
+    var onNativeMessage: (NativeBridge.Message, WKWebView) -> Void
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            DashboardWebView(controller: controller, startPath: startPath, mobileHome: mobileHome,
+                             onNativeMessage: onNativeMessage)
+                .ignoresSafeArea(edges: .bottom)
+
+            if controller.isLoading && controller.progress < 1 {
+                ProgressView(value: controller.progress)
+                    .progressViewStyle(.linear)
+                    .tint(.accentColor)
+            }
+
+            if let err = controller.loadError {
+                OfflineView(message: err) { controller.loadError = nil; controller.reload() }
+            }
+        }
+    }
+}
 
 /// Native camera scanner for `LOHubNative.scan()` calls from the web app.
 struct ScannerSheet: View {
