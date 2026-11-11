@@ -51,10 +51,17 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
+      # App Store Connect only accepts builds made with Xcode 26 / the iOS 26 SDK or later.
+      - name: Select Xcode (26 or later)
         run: |
-          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          XC="$(ls -d /Applications/Xcode_[2-9][0-9]*.app 2>/dev/null | grep -Ev 'Xcode_(1[0-9]|2[0-5])[._]' | grep -vi beta | sort -V | tail -1)"
+          if [ -z "$XC" ]; then
+            echo "::error::No Xcode 26+ on this runner. Installed:"; ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$XC"
           xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos
 
       - name: Generate Xcode project
         run: |
