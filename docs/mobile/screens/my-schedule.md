@@ -1,3 +1,5 @@
+> **Not in 1.0 — waits for 1.1; back button and entry point to be re-specified then.** Blueprint §3.2: 1.1, second. Until it is taken up, nothing below is built; paths, `‹ More` back buttons, badges and "language is in More" in this file are out of date (APP_BLUEPRINT §3.2, §8.2).
+
 # My Schedule — `/my-schedule` · `MYSCHEDULE_HTML`
 
 **User:** a worker checking upcoming shifts.
