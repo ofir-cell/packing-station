@@ -272,12 +272,16 @@ def test_sec6_org_wipe_removes_platform_rows_and_media(appmod, monkeypatch):
 
     class FakeR2:                                         # records what the wipe asks storage to do
         calls = []
-        left = [org + "/videos/S1_TRK.webm"]              # one stored object of the org (an empty
-        def __getattr__(self, name):                      # store gives the wipe nothing to delete)
+        deleted = set()
+        left = [org + "/videos/S1_TRK.webm",              # one stored object of the org (an empty store
+                "x" + org + "/videos/S1_TRK.webm"]        # gives the wipe nothing to delete) + another org's
+        def __getattr__(self, name):
             def f(*a, **k):
                 FakeR2.calls.append(name)
                 if name.startswith("delete"):
-                    FakeR2.left = []
+                    gone = {o["Key"] for o in (k.get("Delete") or {}).get("Objects", [])} | ({k["Key"]} if "Key" in k else set())
+                    FakeR2.deleted |= gone
+                    FakeR2.left = [x for x in FakeR2.left if x not in gone]
                     return {}
                 keys = [x for x in FakeR2.left if x.startswith(k.get("Prefix", "\0"))]
                 return {"Contents": [{"Key": x} for x in keys], "KeyCount": len(keys)}
@@ -298,6 +302,8 @@ def test_sec6_org_wipe_removes_platform_rows_and_media(appmod, monkeypatch):
         problems.append("TikTok shop tokens of the deleted org are still stored")
     if not any(n.startswith("delete") for n in FakeR2.calls):
         problems.append("storage was never asked to delete the org's objects (calls: %r)" % FakeR2.calls)
+    if FakeR2.deleted != {org + "/videos/S1_TRK.webm"}:
+        problems.append("deleted keys are not exactly the org's one object: %r" % sorted(FakeR2.deleted))
     assert not problems, problems
 
 

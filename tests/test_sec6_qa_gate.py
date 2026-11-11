@@ -123,7 +123,7 @@ def _mk_org(A, org, fake=None):
     with open(os.path.join(b, "shipments.db"), "wb") as fh:
         fh.write(b"backup of " + org.encode())
     if fake is not None:
-        for b_, k in _org_keys(org, tid):
+        for b_, k in _org_keys(org, tid) | _backup_keys(org):
             fake.objects[b_].add(k)
     return tid
 
@@ -139,9 +139,14 @@ def _org_keys(org, tid):
         (MAIN, org + "/labels/l.pdf"), (MAIN, org + "/documents/d.pdf"),
         (MAIN, org + "/products/sku.png"), (MAIN, org + "/invoices/po1.pdf"),
         (MAIN, org + "/hire_uploads/1/2/id_front_a.jpg"), (HR, org + "/hire_uploads/1/2/id_front_a.jpg"),
-        (MAIN, "backups/mon/" + org + "/shipments.db"), (MAIN, "backups/sun/" + org + "/giveaways.db"),
         (MAIN, "support/%d/ab12_shot.png" % tid),
     }
+
+
+def _backup_keys(org):
+    """Backup copies are NOT deleted with the company (they expire by backup retention),
+    so they count as "everything else" in every snapshot below."""
+    return {(MAIN, "backups/mon/" + org + "/shipments.db"), (MAIN, "backups/sun/" + org + "/giveaways.db")}
 
 
 SHARED_KEYS = {(MAIN, "videos/S1_LEGACY.webm"), (MAIN, "photos/S1_LEGACY.jpg"), (MAIN, "documents/legacy.pdf"),
@@ -175,8 +180,7 @@ def _files_snapshot(A, exclude_org, exclude_tid):
     """sha1 of every file on the volume that is NOT `exclude_org`'s (control-plane files
     that every deletion legitimately rewrites are left out)."""
     root = A.DATA_DIR; out = {}
-    skip_dirs = {os.path.join("orgs", exclude_org), os.path.join("support", str(exclude_tid))} | {
-        os.path.join("backups", d, exclude_org) for d in A._BACKUP_DOWS}
+    skip_dirs = {os.path.join("orgs", exclude_org), os.path.join("support", str(exclude_tid))}
     for dp, dns, fns in os.walk(root):
         rel = os.path.relpath(dp, root)
         if rel in skip_dirs:
@@ -273,8 +277,9 @@ def test_deleting_one_org_never_touches_a_similarly_named_one(appmod, fake, whic
     assert after["platform"] == before["platform"]
     assert after["files"] == before["files"]
     # only this org's exact prefixes were ever listed; every deleted key is this org's
-    assert {(b, p) for n, b, p in fake.calls if n == "list"} == \
-        {(MAIN, org + "/"), (HR, org + "/")} | {(MAIN, "backups/%s/%s/" % (d, org)) for d in A._BACKUP_DOWS}
+    assert {(b, p) for n, b, p in fake.calls if n == "list"} == {(MAIN, org + "/"), (HR, org + "/")}
+    assert _backup_keys(org) <= fake.all_keys()            # backup copies stay
+    assert os.path.exists(os.path.join(A.DATA_DIR, "backups", "mon", org, "shipments.db"))
     own = {k for _, k in _org_keys(org, tid)}
     for n, b, what in fake.mutating_calls():
         assert set(what if isinstance(what, tuple) else (what,)) <= own, (n, what)
@@ -562,8 +567,6 @@ def _kill_at(A, fake, m, step):
         fake.kill_on = ("delete_objects", 1)
     elif step == "storage_second_bucket":
         fake.kill_on = ("delete_objects", 2)
-    elif step == "storage_backups":
-        fake.kill_on = ("delete_objects", 3)
     elif step == "record_outcome":
         real = A.json.dumps
         def dumps(o, *a, **k):
@@ -577,7 +580,7 @@ def _kill_at(A, fake, m, step):
 
 
 STEPS = ["logins", "platform_rows", "tickets", "ticket_file", "local_files", "storage_first_list",
-         "storage_first_delete", "storage_second_bucket", "storage_backups", "record_outcome", "audit_line"]
+         "storage_first_delete", "storage_second_bucket", "record_outcome", "audit_line"]
 
 
 @pytest.mark.parametrize("step", STEPS)
@@ -690,8 +693,7 @@ def test_local_delete_targets_stay_inside_the_data_root(appmod, fake, monkeypatc
     A._delete_org_data(org)
     root = os.path.abspath(A.DATA_DIR)
     allowed = {os.path.join(root, "orgs", org), os.path.join(root, "support", str(tid)),
-               os.path.join(root, "hire_uploads", org + "__hire_uploads__1__2__id_front.jpg")} | {
-               os.path.join(root, "backups", dw, org) for dw in A._BACKUP_DOWS}
+               os.path.join(root, "hire_uploads", org + "__hire_uploads__1__2__id_front.jpg")}
     assert seen and set(seen) <= allowed, set(seen) - allowed
 
 
@@ -864,9 +866,6 @@ def _child(phase, data_dir):
     return json.loads(p.stdout)
 
 
-@pytest.mark.xfail(strict=True, reason="QA-SEC6-1: the founding (live warehouse) org is not refused by company deletion; "
-                   "its last admin's wipe now also removes its media, HR documents and backup copies, it gets a "
-                   "tombstone, and the next boot re-creates it empty while the tombstone says it was deleted")
 def test_founding_org_is_not_left_both_deleted_and_live(tmp_path):
     w = _child("wipe", tmp_path)
     b = _child("boot", tmp_path)
@@ -876,9 +875,6 @@ def test_founding_org_is_not_left_both_deleted_and_live(tmp_path):
     assert refused or stays_deleted, info
 
 
-@pytest.mark.xfail(strict=True, reason="QA-SEC6-2: a founding-org deletion that dies after its first step leaves the "
-                   "logins working (a missing organizations row is tolerated for the founding org) and the hourly "
-                   "loop skips it, so it is never finished")
 def test_founding_org_interrupted_deletion_is_not_left_half_done(tmp_path):
     k = _child("kill", tmp_path)
     info = textwrap.shorten(json.dumps(k), 1500)
@@ -887,8 +883,6 @@ def test_founding_org_interrupted_deletion_is_not_left_half_done(tmp_path):
     assert untouched or locked_out, info
 
 
-@pytest.mark.xfail(strict=True, reason="QA-SEC6-3: the id check uses '$', which also matches before a trailing newline, "
-                   "so 'ab\\n' passes as an org id (harmless to other orgs: every match is exact; it only makes a junk tombstone)")
 def test_org_id_with_trailing_newline_is_refused(appmod, fake):
     A = appmod
     try:
