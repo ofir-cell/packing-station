@@ -1,3 +1,5 @@
+> **Not in 1.0 — waits for 1.1; back button and entry point to be re-specified then.** Blueprint §3.2: 1.1. Until it is taken up, nothing below is built; paths, `‹ More` back buttons, badges and "language is in More" in this file are out of date (APP_BLUEPRINT §3.2, §8.2).
+
 # Leaderboard — `/leaderboard` · `LEADERBOARD_HTML`
 
 **User:** workers (motivation); managers check it too.

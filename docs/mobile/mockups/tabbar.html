@@ -1,0 +1,72 @@
+<!DOCTYPE html><html lang="en" class="m"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Mockup · Tab bar per role</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&display=swap" rel="stylesheet">
+<!-- Tokens come from the real mobile CSS (indigo, light and dark): -->
+<link rel="stylesheet" href="../../../mobile/static/mobile.css">
+<link rel="stylesheet" href="../../../mobile/static/shell.css">
+<link rel="stylesheet" href="_mock.css">
+<style>
+/* This page draws the NATIVE tab bar five times, so the bars are laid out in the page
+   instead of fixed to a phone. Dark strips repeat the dark token values from mobile.css
+   (html.m.theme-dark) on a wrapper, because that selector only exists on <html>. */
+.tb-role{width:min(390px,100%)}
+.tb-strip{position:relative;height:150px;border-radius:0 0 40px 40px;overflow:hidden;background:var(--surface);box-shadow:0 0 0 9px #14141a;margin:9px 0 26px}
+.tb-strip .mk-tabbar{position:absolute}
+.tb-strip .mk-home{position:absolute}
+.tb-strip__body{padding:14px 16px;font-size:13px;color:var(--text-muted)}
+.tb-strip__body b{display:block;color:var(--text);font-size:17px;font-weight:700}
+.tb-dark{--bg:#1c1c22;--surface:#0d0d12;--surface-strong:#2a2a33;--border:rgba(255,255,255,.10);--text:#f4f4f7;--text-muted:#a7a9b6;--text-dim:#9496a3;
+  --m-material:rgba(28,28,34,.78);--mk-tint:#a5b4fc}
+.tb-none{display:flex;align-items:center;justify-content:center;height:150px;border-radius:0 0 40px 40px;background:var(--surface);box-shadow:0 0 0 9px #14141a;margin:9px 0 26px;
+  text-align:center;padding:0 24px;font-size:15px;color:var(--text-muted)}
+table.tb{display:table!important;border-collapse:collapse;margin:8px 0 0;font-size:14px;background:#fff;border-radius:12px;overflow:hidden;width:100%}
+table.tb th,table.tb td{padding:8px 10px;text-align:left;border-bottom:1px solid #e3e5ec;font-size:14px!important}
+table.tb th{background:#f2f3f7}
+</style>
+<script src="_mock.js"></script>
+</head><body>
+<div class="mk-head">
+  <h1>Tab bar per role</h1>
+  <p>Source: <a href="../APP_BLUEPRINT.md">APP_BLUEPRINT §2</a> · <a href="../DESIGN_SYSTEM.md">DESIGN_SYSTEM §3</a>. The bar is native (SwiftUI <code>TabView</code>), built once per account from what the server says the account may do. Today is always the launch tab. No More tab. No badges in 1.0.</p>
+  <p>Colour: LiveOpsHub indigo for every company — selected tab #4F46E5 in light, #A5B4FC in dark. Each role is shown in light, then dark.</p>
+</div>
+<div class="mk-wrap" id="roles"></div>
+<div class="mk-head" style="margin-top:28px">
+  <table class="tb">
+    <tr><th>Tab</th><th>Opens</th><th>Who has it</th></tr>
+    <tr><td>Today</td><td><code>/m/today</code> — launch screen</td><td>everyone</td></tr>
+    <tr><td>Pick</td><td><code>/m/pick</code></td><td>worker, cs, manager, admin</td></tr>
+    <tr><td>Pack</td><td>native Pack</td><td>worker, cs, manager, admin</td></tr>
+    <tr><td>Scanit</td><td><code>/m/scanit</code></td><td>host only as a tab; cs, manager, admin open it from Today</td></tr>
+    <tr><td>Manage</td><td>the web console under a native title</td><td>admin only; never the launch tab</td></tr>
+    <tr><td>Account</td><td>native Account</td><td>everyone, always last</td></tr>
+  </table>
+  <ol class="mk-notes" style="margin-top:14px">
+    <li>Manager and cs have exactly the worker's four tabs; what differs is the content of Today.</li>
+    <li>The demo logins are a worker and a manager: Apple's reviewer never sees Manage.</li>
+    <li>The platform owner (superadmin) gets no tabs: one native screen, "The platform console is on the web", with Sign out.</li>
+    <li>On iPad the same tabs appear near the top of the screen (iPadOS places them); no sidebar in 1.0.</li>
+    <li>Icons here are stand-ins for the SF Symbols <code>house</code>, <code>checklist</code>, <code>shippingbox</code>, <code>barcode.viewfinder</code>, <code>gearshape</code>, <code>person.crop.circle</code>.</li>
+  </ol>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var roles = [
+    ['worker', 'Worker', 'Today · Pick · Pack · Account'],
+    ['manager', 'Warehouse manager', 'Today · Pick · Pack · Account'],
+    ['cs', 'Customer service', 'Today · Pick · Pack · Account'],
+    ['host', 'Host', 'Today · Scanit · Account'],
+    ['admin', 'Admin', 'Today · Pick · Pack · Manage · Account']
+  ];
+  var out = document.getElementById('roles');
+  roles.forEach(function (r) {
+    var strip = function (dark) {
+      return '<div class="tb-strip' + (dark ? ' tb-dark' : '') + '"><div class="tb-strip__body"><b>' + r[1] + '</b>' + (dark ? 'Dark' : 'Light') + ' · launches on Today</div>' +
+        MK.tabbar(r[0], 'today') + '<div class="mk-home"></div></div>';
+    };
+    out.insertAdjacentHTML('beforeend', '<section class="tb-role"><p class="mk-cap">' + r[1] + '</p><p class="mk-sub">' + r[2] + '</p>' + strip(false) + strip(true) + '</section>');
+  });
+});
+</script>
+</body></html>

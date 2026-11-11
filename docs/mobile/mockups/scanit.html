@@ -1,0 +1,230 @@
+<!DOCTYPE html><html lang="en" class="m"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Mockup · Scanit (/m/scanit)</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&display=swap" rel="stylesheet">
+<!-- The real mobile CSS, straight from the product folder: -->
+<link rel="stylesheet" href="../../../mobile/static/mobile.css">
+<link rel="stylesheet" href="../../../mobile/static/shell.css">
+<!-- Mockup scaffolding only (phone frame, native tab bar, gallery): -->
+<link rel="stylesheet" href="_mock.css">
+<style>
+/* Screen-local CSS proposed for /m/scanit (prefix sc-). Everything else is m- classes. */
+.sc-flags{display:flex;flex-wrap:wrap;gap:var(--m-2);margin:var(--m-2) var(--m-gutter) 0}
+.sc-card{display:flex;gap:var(--m-3);margin:var(--m-2) var(--m-gutter) 0;align-items:flex-start}
+.sc-pic{flex:0 0 112px;width:112px;height:112px;border-radius:var(--m-r-md);background:var(--surface);display:flex;align-items:center;justify-content:center;color:var(--text-dim);overflow:hidden}
+.sc-pic svg{width:44px;height:44px}
+.sc-pic img{width:100%;height:100%;object-fit:contain}
+.sc-name{font-size:var(--m-fs-title2);font-weight:800;letter-spacing:-.01em;line-height:1.2;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.sc-meta{margin-top:4px;font-size:var(--m-fs-subhead);color:var(--text-muted)}
+.sc-code{margin-top:2px;font-size:var(--m-fs-footnote);color:var(--text-muted);font-variant-numeric:tabular-nums}
+.sc-prices{margin:var(--m-3) var(--m-gutter) 0}
+.sc-price .m-stat__value{font-size:var(--m-fs-largetitle)}
+.sc-price--target .m-stat__value{color:var(--brand-ink)}
+.sc-src{margin-top:6px;font-size:var(--m-fs-footnote);color:var(--text-muted);display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;line-height:1.3}
+.sc-looking{display:flex;align-items:center;gap:var(--m-2);margin:var(--m-3) var(--m-gutter) 0;font-size:var(--m-fs-subhead);font-weight:600;color:var(--text-muted)}
+.sc-spin{width:16px;height:16px;border-radius:50%;border:2px solid var(--surface-strong);border-top-color:var(--brand);animation:sc-spin .9s linear infinite}
+@keyframes sc-spin{to{transform:rotate(360deg)}}
+.sc-note{display:block}
+.sc-note small{display:block;font-size:var(--m-fs-footnote);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px}
+.sc-note span{font-size:1.1875rem;font-weight:600;line-height:1.3}
+.sc-point{align-items:flex-start}
+.sc-point::after{content:"";order:-1;flex:0 0 6px;width:6px;height:6px;border-radius:50%;background:var(--brand);margin-top:.6em}
+.sc-point span{font-size:1.1875rem;font-weight:600;line-height:1.3}
+.sc-notesrc{text-transform:none;letter-spacing:0;font-weight:600;display:flex;align-items:center;gap:6px}
+.sc-thumb{background:var(--surface);color:var(--text-dim)}
+.sc-skel-val{height:38px;width:70%;margin-top:4px}
+.sc-skel-row{height:58px;margin:0}
+.sc-skel-row + .sc-skel-row{margin-top:1px}
+.sc-banner-code{display:block;font-variant-numeric:tabular-nums;font-weight:700;margin:2px 0}
+/* On a stand: iPad and landscape — two columns, larger type */
+@media (min-width:700px){
+  .sc-cols{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:0 var(--m-2);align-items:start}
+  .sc-pic{flex-basis:120px;width:120px;height:120px}
+  .sc-name{font-size:1.5rem;-webkit-line-clamp:4}
+  .sc-prices{grid-template-columns:minmax(0,1fr)}
+  .sc-price .m-stat__value{font-size:2.75rem}
+  .sc-note span,.sc-point span{font-size:1.375rem}
+  .sc-cols .m-section:first-child{margin-top:var(--m-2)}
+}
+</style>
+<script src="_mock.js"></script>
+</head><body>
+
+<div class="mk-head">
+  <h1>Scanit — <code>/m/scanit</code></h1>
+  <p>Spec: <a href="../screens/scanit.md">screens/scanit.md</a> · Blueprint S13, flow 4.9. Read-only in 1.0. Tab root for a host; pushed from Today for cs, manager and admin.</p>
+  <p>Add <code>?dark=1</code> for dark mode. Products, prices and notes are invented sample data. The tab bar is the <b>native</b> bar, drawn here only to show the whole phone.</p>
+</div>
+
+<!-- ═════════ READY (host, tab root) ═════════ -->
+<template data-v="ready" data-role="host" data-tab="scanit" data-title="1 · Ready (host)" data-sub="Tab root: no back button. The screen stays awake.">
+<main class="m-screen m-screen--has-actionbar">
+  <header class="m-navbar"><div class="m-navbar__row">
+    <div class="m-navbar__title">Scanit</div>
+    <div class="m-navbar__actions"><button type="button" class="m-iconbtn" aria-label="Account"><span class="m-avatar">TZ</span></button></div>
+  </div></header>
+  <div class="m-largetitle"><h1>Scanit</h1><p>Scan a product to see its price and notes.</p></div>
+  <div class="m-banner m-banner--ok"><i data-ic="check"></i><span>Scanner ready — scan a product any time</span></div>
+  <div class="m-empty" style="margin-top:48px">
+    <div class="m-empty__icon"><i data-ic="barcode"></i></div>
+    <div class="m-empty__title">Ready to scan</div>
+    <div class="m-empty__body">Scan the barcode on the product, or tap Scan product.</div>
+  </div>
+</main>
+<div class="m-actionbar">
+  <button type="button" class="m-btn m-btn--lg m-btn--primary"><i data-ic="barcode"></i><span>Scan product</span></button>
+  <button type="button" class="m-btn m-btn--lg m-btn--secondary m-actionbar__aux" aria-label="Type a barcode or SKU"><i data-ic="keyboard"></i></button>
+</div>
+</template>
+<ol data-notes="ready">
+  <li>Three inputs: Bluetooth scanner with nothing tapped, "Scan product" (camera), keyboard button (type a barcode or SKU).</li>
+  <li>"Scanner ready" appears once a hardware scanner has been seen on this device.</li>
+  <li>The page asks the shell to keep the screen awake while it is in front (bridge, N6).</li>
+</ol>
+
+<!-- ═════════ CARD (host) — fragrance notes, estimated price ═════════ -->
+<template data-v="card" data-role="host" data-tab="scanit" data-scrolled data-title="2 · Product card (host)" data-sub="A checked target price next to an estimated retail price.">
+<main class="m-screen m-screen--has-actionbar">
+  <header class="m-navbar"><div class="m-navbar__row">
+    <div class="m-navbar__title">Scanit</div>
+    <div class="m-navbar__actions"><button type="button" class="m-iconbtn" aria-label="Account"><span class="m-avatar">TZ</span></button></div>
+  </div></header>
+  <div class="sc-cols">
+   <div>
+    <div class="m-card sc-card">
+      <div class="sc-pic"><i data-ic="tag"></i></div>
+      <div>
+        <div class="sc-name">Maison Verano Fleur d'Oranger Eau de Parfum 50 ml</div>
+        <div class="sc-meta">Fragrance</div>
+        <div class="sc-code">0 85001 23456 7</div>
+      </div>
+    </div>
+    <div class="m-stats sc-prices">
+      <div class="m-stat sc-price"><div class="m-stat__label">Retail price</div><div class="m-stat__value">$128.00</div>
+        <div class="sc-src"><span class="m-pill m-pill--pending">Estimate</span><span>Not a checked price</span></div></div>
+      <div class="m-stat sc-price sc-price--target"><div class="m-stat__label">Our target</div><div class="m-stat__value">$39.00</div>
+        <div class="sc-src"><span>Set by your team</span></div></div>
+    </div>
+   </div>
+   <div>
+    <section class="m-section">
+      <div class="m-section__header"><span>Notes</span><span class="sc-notesrc">Found on the web · maisonverano.example</span></div>
+      <div class="m-list">
+        <div class="m-row"><div class="sc-note"><small>Top</small><span>Orange blossom, bergamot</span></div></div>
+        <div class="m-row"><div class="sc-note"><small>Heart</small><span>Jasmine, neroli, white tea</span></div></div>
+        <div class="m-row"><div class="sc-note"><small>Base</small><span>White musk, cedar</span></div></div>
+      </div>
+    </section>
+    <section class="m-section">
+      <div class="m-section__header"><span>Scanned this session · 3</span></div>
+      <div class="m-list">
+        <a class="m-row m-row--lead" href="#" style="box-shadow:inset 3px 0 0 var(--brand)"><span class="m-row__lead sc-thumb"><i data-ic="tag"></i></span>
+          <span class="m-row__body"><span class="m-row__title">Maison Verano Fleur d'Oranger…</span><span class="m-row__sub">Retail $128.00 · Target $39.00</span></span><span class="m-row__trail"><i data-ic="chev"></i></span></a>
+        <a class="m-row m-row--lead" href="#"><span class="m-row__lead sc-thumb"><i data-ic="tag"></i></span>
+          <span class="m-row__body"><span class="m-row__title">Lumi Glow Vitamin C Serum 30 ml</span><span class="m-row__sub">Retail $48.00 · Target $19.00</span></span><span class="m-row__trail"><i data-ic="chev"></i></span></a>
+        <a class="m-row m-row--lead" href="#"><span class="m-row__lead sc-thumb"><i data-ic="tag"></i></span>
+          <span class="m-row__body"><span class="m-row__title">Velvet Matte Lip Kit · Rosewood</span><span class="m-row__sub">Retail $32.00 · Target $12.00</span></span><span class="m-row__trail"><i data-ic="chev"></i></span></a>
+      </div>
+    </section>
+   </div>
+  </div>
+</main>
+<div class="m-actionbar">
+  <button type="button" class="m-btn m-btn--lg m-btn--primary"><i data-ic="barcode"></i><span>Scan product</span></button>
+  <button type="button" class="m-btn m-btn--lg m-btn--secondary m-actionbar__aux" aria-label="Type a barcode or SKU"><i data-ic="keyboard"></i></button>
+</div>
+</template>
+<ol data-notes="card">
+  <li>Drawn scrolled: the large title "Scanit" has moved up into the nav bar.</li>
+  <li>Both prices at 34px so they read from arm's length. Picture is the placeholder here; a real picture fills the same 112pt square.</li>
+  <li><b>A guess never looks like a fact</b> (rule 5.12): the estimated retail price carries the amber "Estimate" pill and the words "Not a checked price". "Set by your team" has no pill.</li>
+  <li>Source of the notes is text, never a link: <code>/m/</code> screens do not open other sites.</li>
+  <li>The next scan replaces the card; earlier products stay in "Scanned this session" (memory only, gone when the app closes).</li>
+  <li>No edit, no "look up again", no favourites, no name search, no scripts.</li>
+  <li><b>For Ofir:</b> "Our target" is as large as the retail price. If the phone can be caught by the live camera, should it be smaller or unlabelled?</li>
+</ol>
+
+<!-- ═════════ LOOKING UP DETAILS (pushed from Today: manager) ═════════ -->
+<template data-v="looking" data-role="manager" data-tab="today" data-title="3 · Looking up details (manager, from Today)" data-sub="Pushed in the Today tab: back button, no Scanit tab.">
+<main class="m-screen m-screen--has-actionbar">
+  <header class="m-navbar"><div class="m-navbar__row">
+    <button type="button" class="m-navbar__back"><i data-ic="back"></i><span>Today</span></button>
+    <div class="m-navbar__title">Scanit</div>
+    <div class="m-navbar__actions" style="min-width:44px"></div>
+  </div></header>
+  <div class="sc-flags"><span class="m-pill m-pill--brand">New — added to the catalog</span></div>
+  <div class="m-card sc-card">
+    <div class="sc-pic"><i data-ic="tag"></i></div>
+    <div>
+      <div class="sc-name">Lumi Glow Vitamin C Serum 30 ml</div>
+      <div class="sc-meta">Skin care · Found in UPCitemdb</div>
+      <div class="sc-code">0 85002 11873 4</div>
+    </div>
+  </div>
+  <div class="m-stats sc-prices">
+    <div class="m-stat sc-price"><div class="m-stat__label">Retail price</div><div class="m-stat__value">$44.99</div>
+      <div class="sc-src"><span class="m-pill">Store price</span><span>UPCitemdb</span></div></div>
+    <div class="m-stat sc-price sc-price--target"><div class="m-stat__label">Our target</div><div class="m-stat__value">—</div>
+      <div class="sc-src"><span>No target price set</span></div></div>
+  </div>
+  <div class="sc-looking"><span class="sc-spin"></span><span>Looking up details…</span></div>
+  <section class="m-section">
+    <div class="m-section__header"><span>Notes</span></div>
+    <div class="m-list"><div class="m-skeleton sc-skel-row"></div><div class="m-skeleton sc-skel-row"></div></div>
+  </section>
+</main>
+<div class="m-actionbar">
+  <button type="button" class="m-btn m-btn--lg m-btn--primary"><i data-ic="barcode"></i><span>Scan product</span></button>
+  <button type="button" class="m-btn m-btn--lg m-btn--secondary m-actionbar__aux" aria-label="Type a barcode or SKU"><i data-ic="keyboard"></i></button>
+</div>
+</template>
+<ol data-notes="looking">
+  <li>Same screen for cs / manager / admin, pushed from Today: a "Today" back button and the Today tab stays selected.</li>
+  <li>First scan of a barcode the catalog did not know: pill "New — added to the catalog" and where it was found.</li>
+  <li>A database price is labelled "Store price" with the database's name — it is not the brand's retail price.</li>
+  <li>"Looking up details…": the card fills in by itself (re-read every 3 s). After 90 s or a failure it reads "No more details found." — no retry button in 1.0.</li>
+</ol>
+
+<!-- ═════════ NOT RECOGNISED + NOT A PRODUCT BARCODE ═════════ -->
+<template data-v="problems" data-role="host" data-tab="scanit" data-title="4 · Not recognised · wrong scan · offline" data-sub="Three banners shown together for the mockup; in the app one at a time.">
+<main class="m-screen m-screen--has-actionbar">
+  <header class="m-navbar"><div class="m-navbar__row">
+    <div class="m-navbar__title">Scanit</div>
+    <div class="m-navbar__actions"><button type="button" class="m-iconbtn" aria-label="Account"><span class="m-avatar">TZ</span></button></div>
+  </div></header>
+  <div class="m-largetitle"><h1>Scanit</h1></div>
+  <div class="m-banner m-banner--offline"><span><b>Scanit needs a connection.</b> The last product stays on screen.</span></div>
+  <div class="m-banner m-banner--error"><i data-ic="warn"></i><span><b>That's not a product barcode</b><span class="sc-banner-code">9400 1112 0255 1234 5678…</span>Scan the barcode on the product's box.</span></div>
+  <div class="m-banner m-banner--warn"><i data-ic="warn"></i><span><b>New product — not recognised.</b> Ask an admin to complete it.</span></div>
+  <div class="m-card sc-card">
+    <div class="sc-pic"><i data-ic="tag"></i></div>
+    <div>
+      <div class="sc-name">Barcode 0 71234 56789 0</div>
+      <div class="sc-meta">Not in the catalog yet</div>
+    </div>
+  </div>
+  <div class="m-stats sc-prices">
+    <div class="m-stat sc-price"><div class="m-stat__label">Retail price</div><div class="m-stat__value">—</div><div class="sc-src"><span>No retail price yet</span></div></div>
+    <div class="m-stat sc-price sc-price--target"><div class="m-stat__label">Our target</div><div class="m-stat__value">—</div><div class="sc-src"><span>No target price set</span></div></div>
+  </div>
+</main>
+<div class="m-actionbar">
+  <button type="button" class="m-btn m-btn--lg m-btn--primary"><i data-ic="barcode"></i><span>Scan product</span></button>
+  <button type="button" class="m-btn m-btn--lg m-btn--secondary m-actionbar__aux" aria-label="Type a barcode or SKU"><i data-ic="keyboard"></i></button>
+</div>
+</template>
+<ol data-notes="problems">
+  <li>Offline: grey banner; the last card stays. A scan while offline gets a toast, it is not dropped silently.</li>
+  <li>A shipping label, link or text: red banner with the code that was scanned and what to scan instead. Nothing is added to the catalog.</li>
+  <li>Unknown product: amber banner; the card shows the barcode, not the stored placeholder name, so nobody reads a placeholder out on air.</li>
+  <li>Not drawn: the 403 state ("Your account can't open this. Ask your manager.") and the demo banner — both are in the spec.</li>
+</ol>
+
+<!-- ═════════ iPad on a stand (landscape) ═════════ -->
+<template data-v="stand" data-use="card" data-wide data-role="host" data-tab="scanit" data-title="5 · iPad on a stand (landscape, 1024×768)" data-sub="The same page at regular width: two columns, larger type. Open scanit.html?v=card in a wide window to see it live."></template>
+<ol data-notes="stand">
+  <li>Same markup as frame 2; the layout changes by width (≥ 700px), not by device.</li>
+  <li>Prices at 44px, one above the other; notes at 22px. iPadOS draws the tab bar near the top; no sidebar in 1.0.</li>
+</ol>
+
+</body></html>
