@@ -24,6 +24,20 @@ Ofir / ops-agent report
 
 Bug fixes from `AUDIT_2026-10.md` may skip product-engineer and designer: programmer → qa → Ofir.
 
+### The site track (added Nov 12 2026)
+
+Work on the site itself — desktop screens, the server, production, security — has its own board, **`docs/site/BOARD.md`**, with four tracks: security, product, production and delivery, housekeeping. The app keeps `docs/mobile/BOARD.md`; an item lives on one board and the other points to it. The hand-over rules below ("How the agents talk to each other") apply to both boards.
+
+What changed in the flow above:
+- **PRs target `main`.** `staging` has diverged and is not a step today (site board C3); until it is rebuilt, the safety net is qa + security-reviewer + site-ops' deploy checklist + merging outside packing hours.
+- **security-reviewer** reviews any site PR that touches sign-in, sessions, roles, company isolation, deletion, uploads, webhooks or outbound calls — after qa, before Ofir.
+- **site-ops** (new) writes the deploy checklist on every server PR, keeps the open PRs mergeable and in a safe order, and owns `docs/site/PRODUCTION.md`, CI, dependency updates, staging and backups.
+
+| Agent | Writes | Never |
+|---|---|---|
+| site-ops | `docs/site/` (board queue, `PRODUCTION.md`), `.github/workflows/ci.yml`, test infrastructure, dependency files, PR deploy checklists | product behaviour; merge, deploy, roll back or change a Railway variable; see a secret; requests to production beyond a public GET |
+| security-reviewer | `docs/security/`, failing tests that show a finding | fix product code; CLEAR what it could not exercise |
+
 ## Mobile team — iPhone/iPad app (added Nov 2026)
 
 The iOS app (`ios/`) is a native SwiftUI shell around the real dashboard (WKWebView) plus native Pack (camera or Bluetooth scanner + packing video). Making the app App-Store-grade means rebuilding every screen mobile-first.

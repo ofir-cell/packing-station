@@ -1,6 +1,6 @@
 # packing-station — getwhatnot.com / Live Ops Hub
 
-Read this first in every session. Team and hand-offs: `docs/TEAM.md`. Mobile work in flight: `docs/mobile/BOARD.md`.
+Read this first in every session. Team and hand-offs: `docs/TEAM.md`. Work in flight: `docs/mobile/BOARD.md` (the iPhone/iPad app) and `docs/site/BOARD.md` (the site and server).
 
 ## What this is
 
@@ -54,7 +54,8 @@ Never report 1 or 2 as 3.
 | Need | Look in |
 |---|---|
 | Who does what, how work is handed over | `docs/TEAM.md`, `.claude/agents/` |
-| What is in flight, blocked, next | `docs/mobile/BOARD.md` |
+| What is in flight, blocked, next — the app | `docs/mobile/BOARD.md` |
+| What is in flight, blocked, next — the site and server | `docs/site/BOARD.md`, production facts in `docs/site/PRODUCTION.md` |
 | Mobile design system, screen specs, mockups | `docs/mobile/DESIGN_SYSTEM.md`, `docs/mobile/screens/`, `docs/mobile/mockups/` |
 | Reference mobile screen | `mobile/pick.html`, `mobile/static/pick.js`, `tests/test_mobile_pick.py`, `scripts/m_pick_check.py` |
 | Shared mobile layer | `mobile/static/mobile.css` (components), `shell.css` (tokens), `mobile.js` (API, sheets, scanning, language) |
