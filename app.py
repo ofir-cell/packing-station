@@ -593,6 +593,14 @@ def pdb_init():
         attempts INTEGER DEFAULT 0,
         detail TEXT
     )""")
+    # SEC-6i: backup copies of a deleted company are erased ORG_BACKUP_KEEP_DAYS after
+    # requested_at. backups_state: NULL (not tried yet) | 'erased' | 'failed' (retried
+    # hourly) | 'stuck' (attempt limit) | 'external' (copies in the dedicated backup
+    # bucket that this app may not delete). backups_detail holds reason codes only.
+    for _col,_decl in (("backups_state","TEXT"),("backups_erased_at","TEXT"),
+                       ("backups_attempts","INTEGER DEFAULT 0"),("backups_detail","TEXT")):
+        try: c.execute("ALTER TABLE org_tombstones ADD COLUMN %s %s" % (_col,_decl))
+        except sqlite3.OperationalError: pass   # already there (another worker / earlier boot)
     # The founding tenant is re-seeded above on every boot and can never be deleted,
     # so it can never be "deleted" here either.
     c.execute("DELETE FROM org_tombstones WHERE org_id=?", (DEFAULT_ORG,))
@@ -703,6 +711,8 @@ def cleanup_all_orgs():
     except Exception as e: print("TikTok retention purge error:",e,flush=True)
     try: total["org_deletes_resumed"]=_org_delete_resume_pending()
     except Exception as e: print("Org delete resume error:",e,flush=True)
+    try: total["org_backups_erased"]=_org_backups_erase_due()
+    except Exception as e: print("Org backup erase error:",type(e).__name__,flush=True)
     return total
 
 def cleanup_loop():
@@ -3398,10 +3408,24 @@ def _snapshot_db(src_path):
     d.close(); s.close()
     return tmp
 
+def _backup_org_ids():
+    """Companies the backup jobs copy: the active ones, never a deleted (tombstoned) id.
+    A copy written after the deletion would restart the 30 days its backups are kept
+    (SEC-6i). The founding tenant is always backed up. If the tombstones cannot be read
+    nothing is skipped: failing to back up a live company is the worse mistake."""
+    ids=list_org_ids()
+    try:
+        c=pdb()
+        try: dead={r[0] for r in c.execute("SELECT org_id FROM org_tombstones").fetchall()}
+        finally: c.close()
+    except Exception:
+        dead=set()
+    return [o for o in ids if o==DEFAULT_ORG or o not in dead]
+
 def _backup_all():
     dow=datetime.now().strftime('%a').lower()
     targets=[("platform.db",PLATFORM_DB),("users.json",USERS_FILE)]
-    for org in list_org_ids():
+    for org in _backup_org_ids():
         targets.append((org+"/shipments.db",shipments_db_path(org)))
         targets.append((org+"/giveaways.db",giveaway_db_path(org)))
     done=0
@@ -3481,7 +3505,7 @@ def _backup_targets():
     # the operational R2 bucket and is intentionally not re-copied here. run_backup skips
     # any path that doesn't exist, so absent files are simply omitted.
     t=[("platform.db",PLATFORM_DB),("users.json",USERS_FILE),("stations.json",STATIONS_FILE)]
-    for org in list_org_ids():
+    for org in _backup_org_ids():
         t.append((org+"/shipments.db",shipments_db_path(org)))
         t.append((org+"/giveaways.db",giveaway_db_path(org)))
         for fn in ("packing_log.csv","documents.json","announcements.json","onboarding.json"):
@@ -4878,7 +4902,8 @@ def _org_storage_targets(org):
         if (b, org+"/") not in out: out.append((b, org+"/"))
     # Backup copies ("backups/<dow>/<org>/", and the dedicated backup bucket) are NOT
     # deleted here on purpose: until deletion requires re-authentication (SEC-7) they
-    # are the only way back from a wrongful wipe. They expire by backup retention.
+    # are the only way back from a wrongful wipe. They are erased ORG_BACKUP_KEEP_DAYS
+    # after the deletion by _org_backups_erase_due (SEC-6i).
     return out
 
 def _r2_delete_prefix(bucket, prefix, deadline):
@@ -4968,8 +4993,8 @@ def _org_purge_tickets(org):
 
 def _org_purge_local_files(org):
     """Remove the company's files on the volume: its private folder and its flat hire
-    uploads. Exact names only. Backup copies under DATA_DIR/backups are left to expire
-    by backup retention (see _org_storage_targets)."""
+    uploads. Exact names only. Backup copies under DATA_DIR/backups are kept here and
+    erased ORG_BACKUP_KEEP_DAYS later (see _org_backups_erase_due)."""
     import shutil
     d=org_path(org)
     if os.path.isdir(d) and os.path.dirname(os.path.abspath(d))==os.path.abspath(ORGS_DIR):
@@ -5091,6 +5116,142 @@ def _org_delete_resume_pending():
                 if late: plog("system","org_delete_late_rows",org,",".join("%s=%d"%kv for kv in sorted(late.items()))[:300])
         except Exception as e: print("org delete resume failed for",org,":",type(e).__name__,flush=True)
     return n
+
+# ── Backup copies of a deleted company (SEC-6i) ───────────────────────────────
+# Decision (Ofir, 2026-11-11): backup copies of a deleted company are kept 30 days
+# after the deletion, then erased. Backups of companies that still exist are not
+# touched by anything below.
+ORG_BACKUP_KEEP_DAYS=30
+_ORG_BACKUP_TS="%Y-%m-%d %H:%M:%S"     # UTC, the format of org_tombstones.requested_at
+
+def _org_backup_prefixes(org):
+    """Keys of the daily backup that hold ONLY this company's copies, in R2_BUCKET:
+    'backups/<weekday>/<org>/'. Each ends with '/' right after the org segment, so org
+    'ab' never matches 'abc', and an empty or malformed id yields nothing."""
+    if not isinstance(org,str) or not _ORG_DELETE_ID_RE.match(org): return []
+    return ["backups/%s/%s/"%(d,org) for d in _BACKUP_DOWS]
+
+def _org_backups_erasable(c, org, now):
+    """True only for the id of a deleted company whose keep period is over: a plain,
+    non-reserved org id with a tombstone at least ORG_BACKUP_KEEP_DAYS old and NO
+    organizations row; never the founding tenant, an internal company or the platform."""
+    if not isinstance(org,str) or not _ORG_DELETE_ID_RE.match(org): return False
+    if org in (DEFAULT_ORG,PLATFORM_ORG) or org.lower() in _ORG_ID_RESERVED: return False
+    if c.execute("SELECT 1 FROM organizations WHERE org_id=?",(org,)).fetchone(): return False
+    cutoff=(now-timedelta(days=ORG_BACKUP_KEEP_DAYS)).strftime(_ORG_BACKUP_TS)
+    return bool(c.execute("""SELECT 1 FROM org_tombstones WHERE org_id=?
+              AND datetime(requested_at) IS NOT NULL AND datetime(requested_at)<=datetime(?)""",(org,cutoff)).fetchone())
+
+def _org_backups_erase(org, deadline, now):
+    """Erase one deleted company's backup copies everywhere this app writes them and
+    record the outcome on its tombstone. Safe to repeat and to run in two workers.
+    Returns the new backups_state, or None if nothing was attempted."""
+    import shutil
+    # checked before the id is used in a lock-file name or any path
+    if not isinstance(org,str) or not _ORG_DELETE_ID_RE.match(org): return None
+    if org in (DEFAULT_ORG,PLATFORM_ORG) or org.lower() in _ORG_ID_RESERVED: return None
+    with _flock("orgbk_"+org):          # one worker at a time per company
+        c=pdb()
+        try:
+            row=c.execute("SELECT backups_state,COALESCE(backups_attempts,0) FROM org_tombstones WHERE org_id=?",(org,)).fetchone()
+            if not row or row[0] in ("erased","stuck") or not _org_backups_erasable(c,org,now): return None
+        finally:
+            c.close()
+        if _org_delete_protected(org): return None
+        attempts=row[1]+1
+        errors=[]; left=[]; removed=0
+        # 1) daily backup, copies on the volume: DATA_DIR/backups/<weekday>/<org>/
+        for d in _BACKUP_DOWS:
+            parent=os.path.join(DATA_DIR,"backups",d); p=os.path.join(parent,org)
+            if not os.path.lexists(p): continue
+            if os.path.islink(p) or not os.path.isdir(p) or os.path.dirname(os.path.abspath(p))!=os.path.abspath(parent):
+                errors.append("local %s:unexpected_entry"%d); continue
+            shutil.rmtree(p, ignore_errors=True)
+            if os.path.lexists(p): errors.append("local %s:not_removed"%d)
+            else: removed+=1
+        # 2) daily backup, copies in the main bucket: backups/<weekday>/<org>/
+        if r2:
+            for prefix in _org_backup_prefixes(org):
+                one=_r2_delete_prefix(R2_BUCKET,prefix,deadline)
+                removed+=one["deleted"]
+                if one["error"]: errors.append("storage %s:%s"%(prefix,one["error"]))
+        # 3) dedicated backup bucket (Backup V2): db-backups/<run>/<org>/. The app
+        #    deletes there only when in-app deletes were switched on for that bucket.
+        if _BK_OK:
+            if BACKUP_PRUNE_IN_APP:
+                try:
+                    import ps_backup
+                    n,done=ps_backup.erase_org_copies(_R2BackupStore(),org,deadline=deadline)
+                    removed+=n
+                    if not done: errors.append("backup bucket:time_budget")
+                except Exception as e: errors.append("backup bucket:"+type(e).__name__)
+            else:
+                left.append("backup bucket:in_app_deletes_off")
+        state="failed" if errors else ("external" if left else "erased")
+        if state=="failed" and attempts>=ORG_DELETE_MAX_ATTEMPTS: state="stuck"   # no more automatic retries
+        c=pdb()
+        try:
+            c.execute("""UPDATE org_tombstones SET backups_state=?, backups_erased_at=?, backups_attempts=?,
+                         backups_detail=? WHERE org_id=?""",
+                      (state, now.strftime(_ORG_BACKUP_TS) if state=="erased" else None, attempts,
+                       json.dumps({"removed":removed,"errors":errors,"left":left})[:2000], org))
+            c.commit()
+        finally:
+            c.close()
+    if state!=row[0]:                   # one audit row per change of state, not per hour
+        plog("system","org_backups_erase",org,"state=%s attempts=%d removed=%d errors=%d left=%d"%(
+            state,attempts,removed,len(errors),len(left)))
+    if state in ("stuck","external") and state!=row[0]:
+        print("ORG BACKUP ERASE NEEDS ATTENTION: org=%s state=%s left=%r"%(org,state,(errors+left)[:6]),flush=True)
+    return state
+
+def _org_backups_erase_due(now=None, budget_sec=None):
+    """Hourly loop, one elected worker. For every deleted company whose deletion is at
+    least ORG_BACKUP_KEEP_DAYS old, erase its backup copies. `now` is a UTC datetime
+    (injectable for tests). One time budget for the whole pass; companies not reached
+    are done next hour, least-tried first. Returns how many ended 'erased'."""
+    now=now or datetime.utcnow()
+    deadline=time.time()+(ORG_DELETE_BUDGET_SEC if budget_sec is None else budget_sec)
+    cutoff=(now-timedelta(days=ORG_BACKUP_KEEP_DAYS)).strftime(_ORG_BACKUP_TS)
+    c=pdb()
+    try:
+        rows=[(r[0],r[1]) for r in c.execute("""SELECT t.org_id, t.backups_state FROM org_tombstones t
+                 WHERE COALESCE(t.backups_state,'') NOT IN ('erased','stuck')
+                   AND datetime(t.requested_at) IS NOT NULL AND datetime(t.requested_at)<=datetime(?)
+                   AND NOT EXISTS(SELECT 1 FROM organizations o WHERE o.org_id=t.org_id)
+                 ORDER BY COALESCE(t.backups_attempts,0), t.requested_at""",(cutoff,)).fetchall()]
+    finally:
+        c.close()
+    n=0
+    for org,state in rows:
+        if time.time()>=deadline: break
+        # 'external': nothing more this app may delete until in-app deletes are allowed
+        if state=="external" and not (_BK_OK and BACKUP_PRUNE_IN_APP): continue
+        try:
+            if _org_backups_erase(org,deadline,now)=="erased": n+=1
+        except Exception as e: print("org backup erase failed for",org,":",type(e).__name__,flush=True)
+    return n
+
+def _org_unfinished_deletions(now=None):
+    """What the platform owner sees in /api/orgs: deletions that did not finish cleanly
+    (SEC-6), and deleted companies whose backup copies are past the keep period and not
+    erased - failing, stuck, left in the dedicated backup bucket, or simply overdue
+    (two hours of grace for the hourly loop). No detail text."""
+    now=now or datetime.utcnow()
+    late=(now-timedelta(days=ORG_BACKUP_KEEP_DAYS,hours=2)).strftime(_ORG_BACKUP_TS)
+    c=pdb()
+    try:
+        return [dict(r) for r in c.execute(
+            """SELECT t.org_id,t.state,t.attempts,t.requested_at,t.finished_at,t.backups_state,t.backups_erased_at,
+                      CASE WHEN COALESCE(t.backups_state,'')<>'erased'
+                            AND NOT EXISTS(SELECT 1 FROM organizations o WHERE o.org_id=t.org_id)
+                            AND (t.backups_state IS NOT NULL OR datetime(t.requested_at) IS NULL
+                                 OR datetime(t.requested_at)<=datetime(?))
+                           THEN 1 ELSE 0 END AS backups_overdue
+               FROM org_tombstones t WHERE t.state<>'deleted' OR backups_overdue=1
+               ORDER BY t.requested_at""",(late,)).fetchall()]
+    finally:
+        c.close()
 
 @app.route("/api/account/delete", methods=["POST"])
 @req_login
@@ -13659,10 +13820,9 @@ def api_orgs_list():
     for r in rows:
         r["user_count"]=counts.get(r["org_id"],0)
         r["is_default"]=(r["org_id"]==DEFAULT_ORG)
-    # company deletions that did not finish cleanly (SEC-6): stuck / partial / pending
-    c=pdb(); unfinished=[dict(r) for r in c.execute(
-        """SELECT org_id,state,attempts,requested_at,finished_at FROM org_tombstones
-           WHERE state<>'deleted' ORDER BY requested_at""").fetchall()]; c.close()
+    # company deletions that did not finish cleanly (SEC-6): stuck / partial / pending,
+    # and deleted companies whose backup copies are overdue for erasure (SEC-6i)
+    unfinished=_org_unfinished_deletions()
     return jsonify({"ok":True,"orgs":rows,"default_org":DEFAULT_ORG,"unfinished_deletions":unfinished})
 
 @app.route("/api/orgs/create",methods=["POST"])
