@@ -17,7 +17,7 @@ import ps_backup
 
 PW = "Passw0rd!x"
 MAIN, HR = "fake-main", "fake-hr"
-DELETED_AT = datetime(2026, 1, 1, 12, 0, 0)          # UTC, written into requested_at
+DELETED_AT = datetime(2026, 12, 1, 12, 0, 0)          # UTC, written into requested_at
 DAY30 = DELETED_AT + timedelta(days=30)
 
 
@@ -166,6 +166,28 @@ def _listed(A, org, now):
 
 def test_keep_period_is_30_days(appmod):
     assert appmod.ORG_BACKUP_KEEP_DAYS == 30
+    assert appmod.ORG_BACKUP_DELETED_AT_FLOOR == datetime(2026, 11, 1)
+
+
+@pytest.mark.parametrize("ts,code", [
+    ("2026-10-31 23:59:59", "deletion_time_before_floor"), ("1970-01-01 00:00:00", "deletion_time_before_floor"),
+    ("0001-01-01 00:00:00", "deletion_time_before_floor"), (0, "deletion_time_malformed"), ("0", "deletion_time_malformed"),
+    (1, "deletion_time_malformed"), ("2026", "deletion_time_malformed"), (2460000.5, "deletion_time_malformed"),
+    ("2026-12-01T12:00:00", "deletion_time_malformed"), ("2026-12-01 12:00:00\n", "deletion_time_malformed"),
+    ("2026-13-45 99:99:99", "deletion_time_malformed"), (None, "deletion_time_malformed"), (b"\x00", "deletion_time_malformed"),
+    ("2031-01-01 00:00:00", "deletion_time_in_future")], ids=lambda v: repr(v)[:24])
+def test_untrustworthy_deletion_time_never_erases_and_is_listed_with_a_reason(world, ts, code):
+    """QA-SEC6I-1, with the production floor: nothing is 'very old' by accident."""
+    A, org, fake = world["A"], world["org"], world["fake"]
+    c = A.pdb(); c.execute("UPDATE org_tombstones SET requested_at=? WHERE org_id=?", (ts, org)); c.commit(); c.close()
+    now = datetime(2030, 6, 1)
+    assert A._org_backups_erase_due(now=now) == 0
+    assert A._org_backups_erase(org, 10 ** 12, now) is None
+    assert not fake.calls and _bk(org) <= fake.all_keys() and os.path.exists(_local(A, org))
+    row = _listed(A, org, now)[0]
+    assert row["backups_overdue"] == 1 and row["backups_reason"] == code
+    json.dumps(row)                                        # the route can always serialise it
+    assert A._org_backup_deleted_at("2026-11-01 00:00:00", now)[0] == datetime(2026, 11, 1)
 
 
 def test_not_erased_at_29_days_erased_at_30(world):
@@ -183,7 +205,7 @@ def test_not_erased_at_29_days_erased_at_30(world):
     for o in world["near"] + [A.DEFAULT_ORG, "x" + org]:   # live, look-alike and founding copies on disk
         assert os.path.exists(_local(A, o))
     t = _tomb(A, org)
-    assert t["backups_state"] == "erased" and t["backups_erased_at"] == "2026-01-31 12:00:00"
+    assert t["backups_state"] == "erased" and t["backups_erased_at"] == "2026-12-31 12:00:00"
     assert t["state"] == "deleted" and not _listed(A, org, DAY30 + timedelta(days=5))
     n = len(fake.calls)                                     # done: later passes make no storage calls
     assert A._org_backups_erase_due(now=DAY30 + timedelta(days=1)) == 0 and len(fake.calls) == n
@@ -212,7 +234,7 @@ def test_live_founding_internal_and_malformed_ids_are_never_touched(world):
     _mk_local(A, internal)
     c = A.pdb(); c.execute("UPDATE org_tombstones SET requested_at='2099-01-01 00:00:00' WHERE org_id=?", (org,)); c.commit(); c.close()
     for bad in (A.DEFAULT_ORG, live, internal, A.PLATFORM_ORG, "", "../x", "ab\n", "a/b", "mon", "backups", "Videos"):
-        _plant_tomb(A, bad, DELETED_AT - timedelta(days=400))
+        _plant_tomb(A, bad, DELETED_AT)
     before = fake.all_keys()
     try:
         assert A._org_backups_erase_due(now=DAY30) == 0
@@ -234,35 +256,55 @@ def test_garbage_deletion_time_never_erases_and_is_listed(world):
     c = A.pdb(); c.execute("UPDATE org_tombstones SET requested_at=NULL WHERE org_id=?", (org,)); c.commit(); c.close()
     assert A._org_backups_erase_due(now=DAY30 + timedelta(days=999)) == 0 and not fake.calls
     assert _bk(org) <= fake.all_keys()
-    assert _listed(A, org, DAY30)[0]["backups_overdue"] == 1
+    assert _listed(A, org, DAY30)[0]["backups_reason"] == "deletion_time_malformed"
 
 
-def test_backup_jobs_skip_a_tombstoned_org(world, monkeypatch):
+def test_backup_jobs_copy_every_live_company_and_no_deleted_one(world, monkeypatch):
     A, org, fake = world["A"], world["org"], world["fake"]
     live = world["near"][0]
-    # worst case: the deleted company's folder and database are (still / again) on the volume
-    A.provision_org(org)
-    assert os.path.exists(A.shipments_db_path(org))
-    monkeypatch.setattr(A, "list_org_ids", lambda: [A.DEFAULT_ORG, live, org])
-    assert A._backup_org_ids() == [A.DEFAULT_ORG, live]
-    fake.objects[MAIN] -= {k for _, k in _bk(org)}
-    A._backup_all()
-    puts = {k for n, b, k in fake.calls if n == "put"}
-    assert any(k.endswith("/" + live + "/shipments.db") for k in puts)
-    assert any(k.endswith("/" + A.DEFAULT_ORG + "/shipments.db") for k in puts)
-    assert not any("/" + org + "/" in k for k in puts)
-    names = [n for n, _ in A._backup_targets()]            # Backup V2 target list
-    assert live + "/shipments.db" in names and not any(n.startswith(org + "/") for n in names)
-    # a tombstone planted on the founding org never stops the warehouse's own backups
-    _plant_tomb(A, A.DEFAULT_ORG)
+    assert org not in A._backup_org_ids() and live in A._backup_org_ids()   # deleted: no organizations row
+    # QA-SEC6I-2: a company that exists is backed up even if it carries a tombstone row
+    # (hand restore), and the eraser never touches it however old that row is
+    _plant_tomb(A, live, DELETED_AT)
     try:
-        assert A.DEFAULT_ORG in A._backup_org_ids()
+        assert live in A._backup_org_ids()
+        monkeypatch.setattr(A, "list_org_ids", lambda: [A.DEFAULT_ORG, live])
+        fake.calls.clear()
+        A._backup_all()
+        puts = {k for n, b, k in fake.calls if n == "put"}
+        assert any(k.endswith("/" + live + "/shipments.db") for k in puts)
+        assert any(k.endswith("/" + A.DEFAULT_ORG + "/shipments.db") for k in puts)
+        assert not any("/" + org + "/" in k for k in puts)
+        names = [n for n, _ in A._backup_targets()]        # Backup V2 target list
+        assert live + "/shipments.db" in names and not any(n.startswith(org + "/") for n in names)
+        before = fake.all_keys(); fake.calls.clear()
+        c = A.pdb(); c.execute("UPDATE org_tombstones SET requested_at='2099-01-01 00:00:00' WHERE org_id=?", (org,)); c.commit(); c.close()
+        assert A._org_backups_erase_due(now=DAY30 + timedelta(days=400)) == 0
+        assert A._org_backups_erase(live, 10 ** 12, DAY30 + timedelta(days=400)) is None
+        assert fake.all_keys() == before and not fake.calls and os.path.exists(_local(A, live))
+        assert not [d for d in _listed(A, live, DAY30 + timedelta(days=400)) if d["backups_overdue"]]
     finally:
-        c = A.pdb(); c.execute("DELETE FROM org_tombstones WHERE org_id=?", (A.DEFAULT_ORG,)); c.commit(); c.close()
-    # tombstones unreadable: nothing is skipped (a live company is never left without a backup)
-    with monkeypatch.context() as m:
-        m.setattr(A, "pdb", lambda: (_ for _ in ()).throw(sqlite3.OperationalError("locked")))
-        assert A._backup_org_ids() == [A.DEFAULT_ORG, live, org]
+        c = A.pdb(); c.execute("DELETE FROM org_tombstones WHERE org_id=?", (live,)); c.commit(); c.close()
+
+
+def test_symlinked_weekday_folder_is_not_followed(world, tmp_path):
+    """QA-SEC6I-3: resolved paths must stay inside DATA_DIR/backups."""
+    A, org = world["A"], world["org"]
+    outside = tmp_path / "elsewhere"; (outside / org).mkdir(parents=True); (outside / org / "keep.txt").write_text("keep")
+    fri = os.path.join(A.DATA_DIR, "backups", "fri")
+    moved = None
+    if os.path.lexists(fri):
+        moved = fri + ".aside"; os.rename(fri, moved)
+    os.symlink(str(outside), fri)
+    try:
+        assert A._org_backups_erase_due(now=DAY30) == 0
+        assert (outside / org / "keep.txt").exists()
+        t = _tomb(A, org)
+        assert t["backups_state"] == "failed" and "local fri:unexpected_entry" in t["backups_detail"]
+        assert _listed(A, org, DAY30)[0]["backups_reason"] == "failed"
+    finally:
+        os.unlink(fri)
+        if moved: os.rename(moved, fri)
 
 
 def test_two_workers_at_once(world):
@@ -312,22 +354,28 @@ def test_time_budget_is_respected(world):
     assert _tomb(A, org)["backups_state"] is None
 
 
-def test_overdue_erasure_is_shown_to_the_platform_owner(world):
+def test_overdue_erasure_is_shown_to_the_platform_owner(world, monkeypatch):
     """The loop did not run: after 30 days (+2h grace) the company is listed."""
     A, org = world["A"], world["org"]
     assert not _listed(A, org, DAY30 + timedelta(hours=1))
     row = _listed(A, org, DAY30 + timedelta(hours=3))[0]
     assert row["backups_overdue"] == 1 and row["state"] == "deleted" and row["backups_state"] is None
     assert not _listed(A, world["near"][0], DAY30 + timedelta(days=99))
-    # through the route, with the real clock: the deletion is dated far in the past
+    assert row["backups_reason"] == "overdue"
+    # through the route, with the real clock: deleted 31 days ago (floor moved for the test)
+    monkeypatch.setattr(A, "ORG_BACKUP_DELETED_AT_FLOOR", datetime(2020, 1, 1))
+    c = A.pdb()
+    c.execute("UPDATE org_tombstones SET requested_at=? WHERE org_id=?",
+              ((datetime.utcnow() - timedelta(days=31)).strftime("%Y-%m-%d %H:%M:%S"), org))
+    c.commit(); c.close()
     su = A.app.test_client()
     with su.session_transaction() as s:
         s.update(user="su" + uuid.uuid4().hex[:6], role="superadmin", roles=["superadmin"], name="x", org=A.PLATFORM_ORG)
     listed = su.get("/api/orgs").get_json()["unfinished_deletions"]
     mine = [d for d in listed if d["org_id"] == org]
-    assert mine and mine[0]["backups_overdue"] == 1
+    assert mine and mine[0]["backups_overdue"] == 1 and mine[0]["backups_reason"] == "overdue"
     assert set(mine[0]) == {"org_id", "state", "attempts", "requested_at", "finished_at",
-                            "backups_state", "backups_erased_at", "backups_overdue"}
+                            "backups_state", "backups_erased_at", "backups_overdue", "backups_reason"}
 
 
 def test_hourly_cleanup_runs_the_erasure(world, monkeypatch):

@@ -102,6 +102,11 @@ def env(appmod, monkeypatch):
     monkeypatch.setattr(A, "r2", fake); monkeypatch.setattr(A, "R2_BUCKET", MAIN); monkeypatch.setattr(A, "R2_HR_BUCKET", HR)
     monkeypatch.setattr(A, "_R2BackupStore", lambda: store)
     monkeypatch.setattr(A, "_BK_OK", True); monkeypatch.setattr(A, "BACKUP_PRUNE_IN_APP", True)
+    # These tests age deletions against the real clock ("31 days ago"), which until
+    # 2026-12 is before the production floor (2026-11-01). The floor is moved for the
+    # test only; 1970 / 0001 / numeric values stay below it. (Added by the programmer
+    # with the QA-SEC6I-1 fix; the production value is asserted in test_sec6i_backup_retention.)
+    monkeypatch.setattr(A, "ORG_BACKUP_DELETED_AT_FLOOR", datetime(2020, 1, 1))
     G._login(A, "qa-no-such-user")
     # deletions left behind by earlier tests in this session are not this test's business
     c = A.pdb(); c.execute("UPDATE org_tombstones SET backups_state='erased' WHERE backups_state IS NULL OR backups_state<>'erased'")
@@ -168,10 +173,6 @@ def test_missing_malformed_or_future_deletion_time_never_erases(env, ts):
     assert fake.calls == [] and store.deleted == [] and store.puts == []
 
 
-@pytest.mark.xfail(strict=True, reason="QA-SEC6I-1: requested_at values that SQLite's datetime() reads as a Julian day "
-                   "number (0, 1, '2026', ...) or as an absurd-but-valid date (1970-01-01, 0001-01-01) count as "
-                   "'more than 30 days ago' and the backups are erased at once; there is no lower bound on the "
-                   "deletion time (only a tombstoned id with no organizations row is affected)")
 @pytest.mark.parametrize("ts", _JULIAN, ids=lambda v: repr(v)[:22])
 def test_zero_epoch_or_numeric_deletion_time_is_not_treated_as_very_old(env, ts):
     A, fake, store = env
@@ -391,10 +392,6 @@ def test_legacy_daily_backup_writes_every_live_org(env, monkeypatch):
                          live + "/giveaways.db", A.DEFAULT_ORG + "/shipments.db", A.DEFAULT_ORG + "/giveaways.db")}
 
 
-@pytest.mark.xfail(strict=True, reason="QA-SEC6I-2: a company that EXISTS (has its organizations row) but also carries a "
-                   "tombstone row (hand restore of a wrongly wiped company, restored platform.db) silently drops out of "
-                   "both backup jobs; in every consistent state the new filter changes nothing, so it only ever removes "
-                   "a live company from backups")
 def test_live_org_with_a_stray_tombstone_is_still_backed_up(env):
     A, fake, store = env
     live = "ql" + uuid.uuid4().hex[:6]; G._mk_org(A, live)
@@ -534,9 +531,6 @@ def test_local_erasure_removes_only_the_exact_org_folders(env, monkeypatch):
         assert os.path.exists(os.path.join(_local_bk(A, o, "wed"), "f.db"))
 
 
-@pytest.mark.xfail(strict=True, reason="QA-SEC6I-3 (hardening): the parent check compares un-resolved paths, so if a weekday "
-                   "folder DATA_DIR/backups/<dow> is itself a symlink, <target>/<org>/ outside the data root is removed "
-                   "(only a folder named exactly like the deleted org; needs someone to have linked the weekday folder)")
 def test_weekday_folder_that_is_a_symlink_is_not_followed(env, tmp_path):
     A, fake, store = env
     now = _now()
