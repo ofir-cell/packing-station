@@ -106,6 +106,7 @@ def env(appmod, monkeypatch):
     # 2026-12 is before the production floor (2026-11-01). The floor is moved for the
     # test only; 1970 / 0001 / numeric values stay below it. (Added by the programmer
     # with the QA-SEC6I-1 fix; the production value is asserted in test_sec6i_backup_retention.)
+    fake.prod_floor = A.ORG_BACKUP_DELETED_AT_FLOOR      # qa: the value production runs with, kept for the floor tests
     monkeypatch.setattr(A, "ORG_BACKUP_DELETED_AT_FLOOR", datetime(2020, 1, 1))
     G._login(A, "qa-no-such-user")
     # deletions left behind by earlier tests in this session are not this test's business
@@ -547,3 +548,86 @@ def test_weekday_folder_that_is_a_symlink_is_not_followed(env, tmp_path):
     finally:
         os.unlink(thu)
         if moved: os.rename(moved, thu)
+
+
+# ═════════════ re-review of 4d98279: the production floor and the accepted format ═════════════
+
+def test_production_floor_refuses_any_deletion_time_before_november_2026(env, monkeypatch):
+    """Runs with the floor production uses (the env fixture lowers it for the other
+    tests). Fails if the floor is removed or moved earlier."""
+    A, fake, store = env
+    monkeypatch.setattr(A, "ORG_BACKUP_DELETED_AT_FLOOR", fake.prod_floor)
+    far = datetime(2030, 1, 1)
+    org = _deleted_org(A, fake, store, _now())
+    for ts in ("2026-10-31 23:59:59", "2026-01-01 00:00:00", "2025-06-01 12:00:00", "2020-01-01 00:00:00", "1999-12-31 23:59:59"):
+        _set_requested(A, org, ts)
+        assert A._org_backup_deleted_at(ts, far) == (None, "deletion_time_before_floor")
+        assert A._org_backups_erase_due(now=far) == 0
+        assert _has_backups(A, fake, store, org) == (True, True, True) and fake.calls == [] and store.deleted == []
+        listed = [d for d in A._org_unfinished_deletions(far) if d["org_id"] == org]
+        assert listed and listed[0]["backups_reason"] == "deletion_time_before_floor"
+    _set_requested(A, org, "2026-11-01 00:00:00")                         # the first acceptable instant
+    assert A._org_backups_erase_due(now=datetime(2026, 11, 30, 23, 59, 59)) == 0
+    assert A._org_backups_erase_due(now=datetime(2026, 12, 1, 0, 0, 0)) == 1
+
+
+def test_time_written_by_a_real_deletion_is_accepted_under_the_production_floor(env, monkeypatch):
+    """Round trip: the only writer of requested_at is the column default of the row
+    _delete_org_data inserts. That exact value must be erasable 30 days later, or real
+    deletions would never be erased."""
+    A, fake, store = env
+    monkeypatch.setattr(A, "ORG_BACKUP_DELETED_AT_FLOOR", fake.prod_floor)
+    org = "qt" + uuid.uuid4().hex[:6]
+    G._mk_org(A, org, fake); _v2_run(A, store, [org], _now() - timedelta(days=3))
+    assert A._delete_org_data(org)["ok"]
+    fake.reset(); store.puts.clear(); store.deleted.clear()
+    written = _tomb(A, org)["requested_at"]
+    real_now = datetime.utcnow()
+    t, bad = A._org_backup_deleted_at(written, real_now)                  # accepted the very moment it is written
+    assert bad is None and abs((real_now - t).total_seconds()) < 120, (written, bad)
+    assert A._org_backups_erase_due() == 0                                 # the real clock: not due
+    assert A._org_backups_erase_due(now=t + timedelta(days=30, seconds=-1)) == 0
+    assert _has_backups(A, fake, store, org) == (True, True, True)
+    assert not [d for d in A._org_unfinished_deletions(real_now) if d["org_id"] == org]
+    assert A._org_backups_erase_due(now=t + timedelta(days=30)) == 1
+    assert _has_backups(A, fake, store, org) == (False, False, False)
+
+
+def test_requested_at_has_a_single_writer():
+    src = open(os.path.join(G.REPO, "app.py"), encoding="utf-8").read()
+    assert src.count("INSERT INTO org_tombstones") == 1
+    assert "INSERT INTO org_tombstones(org_id,state,attempts) VALUES(?,'pending',1)" in src   # requested_at = column default
+    assert "requested_at TEXT DEFAULT CURRENT_TIMESTAMP" in src
+    assert "SET requested_at" not in src and "requested_at=" not in src.replace("t.requested_at", "")
+
+
+@pytest.mark.parametrize("ts", ["2026-11-05T10:00:00", "2026-11-05 10:00:00Z", "2026-11-05T10:00:00Z", "2026-11-05 10:00:00.123",
+                                "2026-11-05 10:00:00+00:00", "2026-11-05 10:00", "2026-11-05", "2026-11-05 10:00:00 ",
+                                " 2026-11-05 10:00:00", "2026-11-05 10:00:00\n", "2026-02-30 10:00:00", "2026-11-05 24:00:00"])
+def test_every_other_shape_of_timestamp_is_refused_and_listed(env, ts):
+    """Only 'YYYY-MM-DD HH:MM:SS' (what the app writes) is trusted. Variants are never
+    erased automatically; they show up for the platform owner instead."""
+    A, fake, store = env
+    far = datetime(2030, 1, 1)
+    org = _deleted_org(A, fake, store, _now())
+    _set_requested(A, org, ts)
+    assert A._org_backup_deleted_at(ts, far) == (None, "deletion_time_malformed")
+    assert A._org_backups_erase_due(now=far) == 0 and _has_backups(A, fake, store, org) == (True, True, True)
+    listed = [d for d in A._org_unfinished_deletions(far) if d["org_id"] == org]
+    assert listed and listed[0]["backups_reason"] == "deletion_time_malformed" and listed[0]["backups_overdue"] == 1
+
+
+def test_live_org_with_an_old_tombstone_keeps_its_backups_and_stays_in_the_backup_list(env):
+    A, fake, store = env
+    now = _now()
+    live = "ql" + uuid.uuid4().hex[:6]; G._mk_org(A, live, fake); _v2_run(A, store, [live], now - timedelta(days=50))
+    _set_requested(A, live, _ago(now, days=400))
+    fake.reset(); store.deleted.clear()
+    try:
+        assert A._org_backups_erase_due(now=now) == 0
+        assert A._org_backups_erase(live, A.time.time() + 30, now) is None
+        assert _has_backups(A, fake, store, live) == (True, True, True) and fake.calls == [] and store.deleted == []
+        assert A._backup_org_ids() == A.list_org_ids() and live in A._backup_org_ids()
+        assert live + "/shipments.db" in [n for n, _ in A._backup_targets()]
+    finally:
+        c = A.pdb(); c.execute("DELETE FROM org_tombstones WHERE org_id=?", (live,)); c.commit(); c.close()
