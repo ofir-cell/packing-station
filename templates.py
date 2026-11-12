@@ -6382,7 +6382,7 @@ function renderDetail(d){
         if(hdr!==lastPart){lastPart=hdr;html+='<div class="part-hdr">'+esc(hdr)+'</div>';}
         var done=g.removed_at?'done':'';
         var when=g.removed_at?('Cleared '+g.removed_at.replace('T',' ').slice(0,16)+'<br>by '+esc(g.removed_by||'')):'';
-        html+='<div class="grp '+done+'" data-sku="'+esc(g.sku)+'" data-part="'+esc(g.part)+'">'+
+        html+='<div class="grp '+done+'" data-sku="'+esc(g.id||g.sku)+'" data-part="'+esc(g.part)+'">'+
             '<div class="g-box"></div>'+
             '<div class="g-sku">'+esc(g.sku||'?')+'</div>'+
             '<div class="g-info">'+

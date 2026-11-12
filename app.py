@@ -2716,11 +2716,16 @@ def _cleanup_groups(label):
     groups = {}
     for r in rows:
         sku = (r["sku"] or "").strip()
-        part = _extract_part(r["product_name"] or "")
-        key = (sku, part)
+        name = r["product_name"] or ""
+        part = _extract_part(name)
+        # No-SKU lines (giveaways / unknown products, shown with a "?" badge) get a
+        # stable identity from their name so distinct products don't collapse into a
+        # single blank group — and so the worker can actually mark them cleared.
+        ident = sku if sku else ("name:" + name.strip().lower())
+        key = (ident, part)
         g = groups.setdefault(key, {
-            "sku": sku, "part": part, "total_qty": 0,
-            "product_name": r["product_name"] or "",
+            "id": ident, "sku": sku, "part": part, "total_qty": 0,
+            "product_name": name,
             "order_count": 0, "orders": set(),
             "removed_at": None, "removed_by": None,
         })
@@ -2731,10 +2736,10 @@ def _cleanup_groups(label):
         if r["product_name"] and len(r["product_name"]) > len(g["product_name"]):
             g["product_name"] = r["product_name"]
     out = []
-    for (sku, part), g in groups.items():
+    for (ident, part), g in groups.items():
         g["order_count"] = len(g["orders"])
         g.pop("orders", None)
-        st = state.get((sku, part))
+        st = state.get((ident, part))
         if st:
             g["removed_at"] = st["removed_at"]
             g["removed_by"] = st["removed_by"]
@@ -12196,11 +12201,11 @@ def api_cleanup_groups(label):
 def api_cleanup_mark(label):
     """Toggle a (sku, part) cleanup row as removed/not-removed. Body: {sku, part, removed:bool}."""
     d = request.get_json() or {}
-    sku = (d.get("sku") or "").strip()
+    sku = (d.get("sku") or "").strip()   # group identifier: a real SKU, or "name:…" for a no-SKU giveaway
     part = (d.get("part") or "").strip()
     removed = bool(d.get("removed", True))
     if not sku:
-        return jsonify({"ok": False, "error": "Missing SKU"}), 400
+        return jsonify({"ok": False, "error": "Missing item identifier"}), 400
     user = session.get("name", "") or session.get("user", "")
     c = sdb()
     if removed:
