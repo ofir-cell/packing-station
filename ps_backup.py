@@ -183,6 +183,45 @@ def retention_prune(store, now=None, keep_6h=8, keep_daily=7, keep_weekly=6, dry
     return sorted(keep), deleted
 
 
+def erase_org_copies(store, org, deadline=None):
+    """Remove ONE company's files from every run: <prefix>/<run_id>/<org>/... (used for
+    a deleted company once its keep period is over). The org must equal the whole path
+    segment, so 'ab' never matches 'abc'. A run's manifest is rewritten without those
+    entries BEFORE its objects are deleted, so the run still verifies and restores for
+    every other company; repeating after a failure is safe. `deadline` is a time.time()
+    value. Returns (objects_deleted, done)."""
+    import time
+    if not isinstance(org, str) or not org or "/" in org or org in (".", "..", MANIFEST_NAME):
+        raise ValueError("not an org id")
+    by_run, manifests = {}, set()
+    for k in store.list_keys(BACKUP_PREFIX + "/"):
+        parts = k.split("/")
+        if parts[0] != BACKUP_PREFIX:
+            continue
+        if len(parts) == 3 and parts[2] == MANIFEST_NAME:
+            manifests.add(parts[1])
+        elif len(parts) >= 4 and parts[2] == org:
+            by_run.setdefault(parts[1], []).append(k)
+    deleted = 0
+    for run in sorted(by_run):
+        if deadline is not None and time.time() >= deadline:
+            return deleted, False
+        if run in manifests:
+            mkey = "%s/%s/%s" % (BACKUP_PREFIX, run, MANIFEST_NAME)
+            man = json.loads(store.get_bytes(mkey).decode())      # unreadable -> raise, retry later
+            files = man.get("files") or []
+            keep = [e for e in files if not str(e.get("name", "")).startswith(org + "/")]
+            if len(keep) != len(files):
+                man["files"] = keep
+                man["file_count"] = len(keep)
+                man["total_bytes"] = sum(e.get("bytes", 0) for e in keep)
+                store.put_bytes(mkey, json.dumps(man, indent=2).encode())
+        for k in by_run[run]:
+            store.delete(k)
+            deleted += 1
+    return deleted, True
+
+
 def restore_run(store, run_id, dest_dir, data_dir_guard=None):
     """Download a run's files into dest_dir (ISOLATED), verify every SHA-256 and run
     PRAGMA integrity_check on each DB. NEVER overwrites Production: refuses if dest_dir

@@ -14,6 +14,22 @@ for k in ("R2_BUCKET", "R2_ENDPOINT", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import app as A  # noqa: E402
+import threading  # noqa: E402
+
+# app.py starts its TikTok sweep thread at import. In a test process that thread polls
+# every "connected" shop the tests seeded: it opened connections to TikTok's real hosts
+# (with fake tokens) and, when a test had replaced app._tt_request with a fake, called
+# that fake from the background at a random moment. Tests may still call the sweep
+# themselves (main thread); the background thread does nothing here.
+_real_tt_sweep_once = A._tt_sweep_once
+
+
+def _tt_sweep_once_main_thread_only(*a, **k):
+    if threading.current_thread() is threading.main_thread():
+        return _real_tt_sweep_once(*a, **k)
+
+
+A._tt_sweep_once = _tt_sweep_once_main_thread_only
 
 
 @pytest.fixture(scope="session")
