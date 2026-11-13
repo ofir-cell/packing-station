@@ -7312,6 +7312,12 @@ def api_pick_get(sid):
             # Clean-out gate — a NEW show must have the table cleared before picking starts.
             if _show_needs_cleanout(c2, label) and not (force and role in ("admin", "cs")):
                 cleanout_required = True
+        except Exception as e:
+            # A hiccup computing the cleanup / clean-out gate must NEVER hard-stop picking —
+            # that used to bubble up as a 500 and (with no .catch on the scan) a silent hang
+            # where the label scan never finished. Log it loudly and let the pick proceed.
+            import traceback; traceback.print_exc()
+            print("pick cleanup-gate check failed for label %r: %s" % (label, e), flush=True)
         finally:
             c2.close()
     # Already-handled gate — an order that's been picked (or packed/shipped) must not

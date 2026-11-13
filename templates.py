@@ -5628,23 +5628,33 @@ setInterval(function(){
     }
 },500);
 
+function rearmScanner(){var inp=document.getElementById('scanInput');if(inp){inp.value='';inp.focus();}}
+function scanFailed(err){
+    // A server 500 or network drop used to leave the scan hanging forever with no
+    // feedback. Surface the real error, play the error tone, and re-arm the scanner so
+    // the picker can immediately try again (or report what it says).
+    sndError();
+    showToast('⚠️ '+(t('lookupfailed')||'Scan failed')+': '+((err&&err.message)||err||'server error'),true);
+    rearmScanner();
+}
+
 function lookupAndOpen(code){
     fetch('/api/pick/'+encodeURIComponent(code)).then(function(r){return r.json()}).then(function(d){
         // /api/pick/<id> takes shipment_id. The label barcode is likely tracking_code.
         // Fall back to the generic shipment lookup which accepts either.
         if(!d.ok){
             return fetch('/api/shipment/'+encodeURIComponent(code)).then(function(r){return r.json()}).then(function(d2){
-                if(!d2.ok){sndError();showToast(t('noshipment')+' "'+code+'"');return}
+                if(!d2.ok){sndError();showToast(t('noshipment')+' "'+code+'"');rearmScanner();return}
                 openDetail(d2.shipment.shipment_id);
             });
         }
         openDetail(d.shipment.shipment_id);
-    });
+    }).catch(scanFailed);
 }
 
 function openDetail(sid){
     fetch('/api/pick/'+encodeURIComponent(sid)).then(function(r){return r.json()}).then(function(d){
-        if(!d.ok){showToast(d.error||t('lookupfailed'));return}
+        if(!d.ok){sndError();showToast(d.error||t('lookupfailed'),true);rearmScanner();return}
         var s=d.shipment, items=d.items||[];
         // Hard cleanup gate — server tells us the show isn't clean yet.
         // Send the picker straight to the cleanup screen for that show.
@@ -5693,7 +5703,7 @@ function openDetail(sid){
         renderItems();
         switchState('list');
         window.scrollTo(0,0);
-    });
+    }).catch(scanFailed);
 }
 
 // Parse the show (date+name), Part number, and SKU number from an item so the
