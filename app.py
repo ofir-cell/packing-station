@@ -9811,6 +9811,51 @@ def api_live_match():
     return jsonify({"ok":True,"sticker":sticker,"auto_created":auto_created,
                     "product":{"sku":pr["sku"],"name":pr["name"],"image_url":pr.get("image_url")}})
 
+@app.route("/api/live/cost-only", methods=["POST"])
+@req_role("admin","cs","worker","picker","host")
+def api_live_cost_only():
+    """Record a ONE-OFF cost for a sold sticker that has NO barcode, without creating a
+    catalog product and without moving stock. Used after the live: the admin walks the
+    stickers that were never scanned (no barcode) and types just their unit cost. We mark
+    the sticker handled (so it leaves the waiting queue) and write its COGS into live_sales
+    so the live P&L is complete. Units and sale price come from the show's sold rows (the
+    CSV); the admin supplies only the unit cost. Idempotent per (show, sticker, part)."""
+    d=request.get_json() or {}
+    show=(d.get("show") or "").strip(); sticker=(d.get("sticker") or "").strip()
+    try: part=int(d.get("part") or 0)
+    except Exception: part=0
+    try: unit_cost=round(float(str(d.get("unit_cost") if d.get("unit_cost") is not None else d.get("cost") or 0).replace(",","").replace("$","")),4)
+    except Exception: unit_cost=-1
+    if not show or not sticker: return jsonify({"ok":False,"error":"show and sticker required"})
+    if unit_cost<0: return jsonify({"ok":False,"error":"Enter a valid cost"})
+    c=sdb()
+    # Sold qty + revenue for this (sticker, PART) straight from the show's sold items (CSV).
+    rows=c.execute("""SELECT i.quantity qty, COALESCE(i.revenue,0) rev, i.product_name nm
+                      FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                      WHERE s.import_label=? AND i.sku=? AND COALESCE(i.cancelled,0)=0""",
+                   (show,sticker)).fetchall()
+    rows=[r for r in rows if int(_sticker_part(r["nm"]) or 0)==part]
+    qty=sum(int(r["qty"] or 1) for r in rows) or 1
+    rev=sum(float(r["rev"] or 0) for r in rows)
+    unit_price=round(rev/qty,2) if qty else 0.0
+    who=session.get("name","")[:60]; now=datetime.now().isoformat(timespec='seconds')
+    synth="NOBC-"+sticker+"-P"+str(part)   # synthetic key: no catalog product is created
+    # Mark the sticker handled (leaves the waiting queue, attributed to this worker).
+    c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by)
+                 VALUES(?,?,?,?,0,?,?)
+                 ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET
+                    product_sku=excluded.product_sku,mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
+              (show,sticker,part,synth,now,who))
+    # Record the COGS once (idempotent: replace any prior cost-only row for this sticker).
+    c.execute("DELETE FROM live_sales WHERE import_label=? AND sticker_sku=? AND part=? AND product_sku=?",
+              (show,sticker,part,synth))
+    c.execute("""INSERT INTO live_sales(import_label,sticker_sku,part,product_sku,qty,unit_cost,unit_price,sold_at,sold_by)
+                 VALUES(?,?,?,?,?,?,?,?,?)""",(show,sticker,part,synth,qty,unit_cost,unit_price,now,who))
+    _match_log(c, show, sticker, part, synth, "cost_only", who)
+    c.commit(); c.close()
+    return jsonify({"ok":True,"sticker":sticker,"part":part,"qty":qty,"unit_cost":unit_cost,
+                    "cogs":round(qty*unit_cost,2),"no_barcode":True})
+
 # ══════════════════════════════════════════════════════════════════════════════
 # KITS / BUNDLES — one sold sticker that is physically several products. The sticker
 # keeps its one primary product (show_product_map); its EXTRA components live in show_kit,

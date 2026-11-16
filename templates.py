@@ -13471,6 +13471,17 @@ __NAVBAR__
       <div class="ok" id="okBox"><img id="okImg" src="" alt=""><div><div class="mt" id="okMt"></div><div class="nm" id="okNm"></div></div></div>
       <div class="err" id="errBox"></div>
       <button class="btn btn-ghost" id="kitBtn">🧩 This sticker is a bundle (scan several)</button>
+      <button class="btn btn-ghost" id="costBtn">💲 No barcode — add cost only</button>
+      <div class="kitwrap" id="costWrap" style="display:none;border-color:#bbf7d0;background:#f0fdf4">
+        <div style="font-size:13px;font-weight:800;color:#166534;margin-bottom:8px">No barcode? Just enter this sticker's unit cost — it counts toward the live's COGS. No product is created, no stock moves.</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-weight:800;color:#166534;font-size:18px">$</span>
+          <input class="inp" id="costInp" type="number" inputmode="decimal" step="0.01" min="0" placeholder="unit cost" style="flex:1">
+        </div>
+        <div class="err" id="costErr"></div>
+        <button class="btn btn-dark" id="costSave" style="margin-top:10px;background:#16a34a">✓ Save cost — next sticker</button>
+        <button class="btn btn-ghost" id="costCancel">Cancel</button>
+      </div>
       <div class="kitwrap" id="kitWrap">
         <div style="font-size:13px;font-weight:800;color:#6b21a8;margin-bottom:8px">Scan each product in this bundle — same sticker:</div>
         <div class="mchips" id="kitChips"><div class="empty">Scan the first…</div></div>
@@ -13614,6 +13625,39 @@ function kitRemove(sku){if(!CUR)return;fetch('/api/live/kit/remove',{method:'POS
 function kitExit(){kitMode=false;document.getElementById('kitWrap').style.display='none';document.getElementById('kitBtn').textContent='🧩 This sticker is a bundle (scan several)';}
 document.getElementById('kitBtn').onclick=function(){if(!CUR)return;kitMode=!kitMode;document.getElementById('kitWrap').style.display=kitMode?'block':'none';this.textContent=kitMode?'🧩 Bundle mode ON — scans add to this sticker':'🧩 This sticker is a bundle (scan several)';if(kitMode)kitLoad();focusScan();};
 document.getElementById('kitDone').onclick=function(){kitExit();if(CUR)START=numOf(CUR.sticker)+1;loadQueue(function(){render();focusScan();});};
+
+// ---- No barcode — add cost only: record the sticker's cost (COGS) without a product ----
+function costExit(){document.getElementById('costWrap').style.display='none';document.getElementById('costBtn').textContent='💲 No barcode — add cost only';}
+document.getElementById('costBtn').onclick=function(){
+  if(!CUR){return;} kitExit();
+  var w=document.getElementById('costWrap'); var open=(w.style.display!=='none');
+  w.style.display=open?'none':'block';
+  this.textContent=open?'💲 No barcode — add cost only':'💲 Cost-only mode — enter the unit cost';
+  document.getElementById('costErr').style.display='none';
+  if(!open){document.getElementById('costInp').value='';document.getElementById('costInp').focus();}
+};
+document.getElementById('costCancel').onclick=function(){costExit();focusScan();};
+function saveCostOnly(){
+  if(!CUR||busy)return;
+  var err=document.getElementById('costErr');err.style.display='none';
+  var v=parseFloat(document.getElementById('costInp').value);
+  if(isNaN(v)||v<0){err.textContent='Enter a valid unit cost';err.style.display='block';return;}
+  busy=true;
+  fetch('/api/live/cost-only',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({show:SHOW,sticker:CUR.sticker,part:curPart(),unit_cost:v})})
+   .then(function(r){return r.json()}).then(function(d){busy=false;
+     if(!d.ok){err.textContent='⚠️ '+(d.error||'Failed');err.style.display='block';return;}
+     costExit();
+     var ob=document.getElementById('okBox');
+     document.getElementById('okImg').src='';
+     document.getElementById('okMt').textContent='Sticker '+d.sticker+' · cost added (no barcode)';
+     document.getElementById('okNm').textContent=(d.qty+' × $'+d.unit_cost+' = $'+d.cogs+' COGS');
+     ob.className='ok show';
+     loadQueue(function(){render();focusScan();});
+   }).catch(function(){busy=false;err.textContent='Network error';err.style.display='block';});
+}
+document.getElementById('costSave').onclick=saveCostOnly;
+document.getElementById('costInp').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();saveCostOnly();}});
 
 // ---- Just matched · tap to fix: re-open a matched sticker; the next scan replaces its product ----
 function renderMatched(){
