@@ -4681,17 +4681,18 @@ __NAVBAR__
       <div><label>Part</label><input id="part" inputmode="numeric" placeholder="e.g. 2" autocomplete="off"></div>
     </div>
     <div class="toggle" id="dt">
-      <button data-d="SHIPPING_LABEL" class="on">🏷️ Shipping label</button>
-      <button data-d="PACKING_SLIP">📄 Packing slip</button>
+      <button data-d="BOTH" class="on">🖨️ Both</button>
+      <button data-d="SHIPPING_LABEL">🏷️ Label only</button>
+      <button data-d="PACKING_SLIP">📄 Slip only</button>
     </div>
-    <button class="btn" id="go">Get label to print</button>
+    <button class="btn" id="go">Get to print</button>
     <div class="hint">The order must be in the system (synced or CSV-imported). Combined packages print one label for all their items.</div>
   </div>
   <div class="res" id="res"></div>
 </div>
 <script>
 function esc(s){return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
-var DOC='SHIPPING_LABEL';
+var DOC='BOTH';
 document.querySelectorAll('#dt button').forEach(function(b){b.onclick=function(){
   document.querySelectorAll('#dt button').forEach(function(x){x.classList.remove('on')});
   b.classList.add('on');DOC=b.getAttribute('data-d');};});
@@ -4710,19 +4711,22 @@ function run(){
   fetch('/api/reprint',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({show:show,sticker:sticker,part:part||0,doc_type:DOC})})
    .then(function(r){return r.json()}).then(function(d){
-     btn.disabled=false;btn.textContent='Get label to print';
+     btn.disabled=false;btn.textContent='Get to print';
      if(!d.ok && (!d.packages||!d.packages.length)){res.innerHTML='<div class="err">'+esc(d.error||'Not found')+'</div>';return;}
      var html='';
      (d.packages||[]).forEach(function(p){
-       if(p.doc_url){
-         window.open(p.doc_url,'_blank');
-         html+='<div class="pkg"><div><b>'+esc(p.buyer||'—')+'</b><div class="m">'+esc(p.tracking||p.package_id)+'</div></div><a href="'+esc(p.doc_url)+'" target="_blank">Open / Print</a></div>';
-       } else {
-         html+='<div class="err">'+esc(p.buyer||p.package_id)+': '+esc(p.error||'no label')+'</div>';
-       }
+       var links='';
+       (p.docs||[]).forEach(function(doc){
+         if(doc.doc_url){ window.open(doc.doc_url,'_blank');
+           links+='<a href="'+esc(doc.doc_url)+'" target="_blank">'+esc(doc.label)+'</a>'; }
+       });
+       html+='<div class="pkg"><div><b>'+esc(p.buyer||'—')+'</b><div class="m">'+esc(p.tracking||p.package_id)+'</div></div><div style="display:flex;gap:8px;flex-wrap:wrap">'+(links||'<span class="m">no document</span>')+'</div></div>';
+       (p.docs||[]).forEach(function(doc){
+         if(!doc.doc_url){ html+='<div class="err">'+esc(doc.label)+' — '+esc(doc.error||'no document')+'</div>'; }
+       });
      });
      res.innerHTML=html;
-   }).catch(function(){btn.disabled=false;btn.textContent='Get label to print';res.innerHTML='<div class="err">Network error</div>';});
+   }).catch(function(){btn.disabled=false;btn.textContent='Get to print';res.innerHTML='<div class="err">Network error</div>';});
 }
 document.getElementById('go').onclick=run;
 document.getElementById('part').addEventListener('keydown',function(e){if(e.key==='Enter')run();});

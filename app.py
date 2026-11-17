@@ -16662,8 +16662,9 @@ def api_reprint():
     sticker=(d.get("sticker") or "").strip()
     try: part=int(d.get("part") or 0)
     except Exception: part=0
-    doc_type=(d.get("doc_type") or "SHIPPING_LABEL").strip().upper()
-    if doc_type not in ("SHIPPING_LABEL","PACKING_SLIP"): doc_type="SHIPPING_LABEL"
+    doc_type=(d.get("doc_type") or "BOTH").strip().upper()
+    if doc_type not in ("SHIPPING_LABEL","PACKING_SLIP","BOTH"): doc_type="BOTH"
+    types=["SHIPPING_LABEL","PACKING_SLIP"] if doc_type=="BOTH" else [doc_type]
     if not show or not sticker: return jsonify({"ok":False,"error":"show and sticker required"})
     org=current_org()
     c=sdb(org)
@@ -16677,17 +16678,22 @@ def api_reprint():
     if not rows:
         return jsonify({"ok":False,"not_found":True,
                         "error":"No active order for sticker %s · Part %s in this show (synced yet?)"%(sticker,part)})
+    _LBL={"SHIPPING_LABEL":"Shipping label","PACKING_SLIP":"Packing slip"}
     seen=set(); out=[]
     for r in rows:
         pid=r["shipment_id"]
         if pid in seen: continue
         seen.add(pid)
-        url,err=_tt_shipping_doc(org, pid, doc_type)
+        docs=[]
+        for t in types:
+            url,err=_tt_shipping_doc(org, pid, t)
+            docs.append({"type":t,"label":_LBL.get(t,t),"doc_url":url,"error":err})
         out.append({"package_id":pid,"tracking":r["tracking_code"],"buyer":r["buyer_name"],
-                    "status":r["status"],"doc_url":url,"error":err})
-    ok=any(o.get("doc_url") for o in out)
+                    "status":r["status"],"docs":docs})
+    ok=any(doc.get("doc_url") for p in out for doc in p["docs"])
+    _firsterr=next((doc["error"] for p in out for doc in p["docs"] if doc.get("error")), "no document")
     return jsonify({"ok":ok,"sticker":sticker,"part":part,"packages":out,
-                    "error":None if ok else (out[0]["error"] if out else "no document")})
+                    "error":None if ok else _firsterr})
 
 def _tt_is_paused(org):
     """When paused, TikTok keeps broadcasting and webhooks keep arriving (and are parked),

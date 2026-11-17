@@ -31,6 +31,9 @@ def test_resolves_sticker_and_part_to_package(appmod, client):
     pids = [p["package_id"] for p in r["packages"]]
     assert pids == ["PKG-A"]
     assert r["packages"][0]["buyer"] == "Buyer One"
+    # default is BOTH → each package carries two documents (label + packing slip)
+    kinds = [d["type"] for d in r["packages"][0]["docs"]]
+    assert kinds == ["SHIPPING_LABEL", "PACKING_SLIP"]
     # part 2 → PKG-B only
     r2 = client.post("/api/reprint", json={"show": lbl, "sticker": "584", "part": 2}, headers=hdr).get_json()
     assert [p["package_id"] for p in r2["packages"]] == ["PKG-B"]
