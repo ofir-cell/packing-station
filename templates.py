@@ -4647,7 +4647,8 @@ else showEmpty('Start typing to search','Type a username or partial name above')
 REPRINT_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Reprint Label — __BRANDMARK__</title>
-<style>__NAVBAR_CSS__
+__NAVBAR_CSS__
+<style>
 body{margin:0;background:var(--bg,#f5f3ff);font-family:'DM Sans',-apple-system,Segoe UI,Roboto,sans-serif;color:var(--text,#1a2130)}
 .wrap{max-width:640px;margin:0 auto;padding:22px 16px}
 h1{font-size:22px;font-weight:900;margin:0 0 4px}
