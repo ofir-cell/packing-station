@@ -17272,11 +17272,23 @@ def _tt_sweep_once(window_sec=7200):
             skus={r["sku"]: r["weight_g"] for r in sc.execute("SELECT sku, weight_g FROM sku_weights").fetchall()}
             _cfg=sc.execute("SELECT packaging_overhead_g FROM weight_config WHERE id=1").fetchone()
             ovh=_cfg["packaging_overhead_g"] if _cfg else 30
-            n=0
+            n=0; busy=0
             for o in orders:
-                try: _tt_apply_order(sc, o, sku_map=skus, overhead=ovh); n+=1
-                except Exception as e: _tt_log("sweep apply failed %s: %r"%(o.get("id"),e))
-            sc.commit(); sc.close()
+                # Commit PER ORDER: one short write transaction each, so the sweep never
+                # holds the write lock across hundreds of orders. The old code committed
+                # only at the very end — one long transaction that, against a busy floor,
+                # could not keep the write lock and failed EVERY order with 'database is
+                # locked'. A locked order is left for the next sweep (eventually consistent).
+                try:
+                    _tt_apply_order(sc, o, sku_map=skus, overhead=ovh)
+                    sc.commit(); n+=1
+                except Exception as e:
+                    try: sc.rollback()
+                    except Exception: pass
+                    if "locked" in str(e).lower(): busy+=1   # count, don't flood the log stream
+                    else: _tt_log("sweep apply failed %s: %r"%(o.get("id"),e))
+            sc.close()
+            if busy: _tt_log("sweep: %d order(s) deferred (database busy) for %s — retrying next sweep"%(busy,org))
             if n: _tt_log("sweep ingested %d order(s) for %s"%(n,org))
         except Exception as e:
             _tt_log("sweep failed for %s: %r"%(org,e))
