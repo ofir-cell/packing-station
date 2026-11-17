@@ -2482,18 +2482,16 @@ function loadUsers(){
             var info=users[u];
             var roleClass='role-'+(info.role==='admin'?'a':info.role==='cs'?'c':'w');
             var badgeText=info.has_badge?'<span class="has-badge">✓ Active</span>':'<span class="no-badge">— None</span>';
-            var actions='';
+            var actions='<button class="btn btn-s btn-sm" data-act="rename" data-u="'+u+'" data-n="'+(info.name||'').replace(/"/g,'&quot;')+'">✎ Rename</button>';
             if(info.role==='worker'){
                 if(info.has_badge){
-                    actions='<a class="btn btn-s btn-sm" href="/api/users/badge/pdf/'+u+'" target="_blank">🖨️ Card</a>'+
+                    actions+='<a class="btn btn-s btn-sm" href="/api/users/badge/pdf/'+u+'" target="_blank">🖨️ Card</a>'+
                         '<a class="btn btn-s btn-sm" href="/api/users/badge/label4x6/'+u+'" target="_blank">🖨️ 4×6 (CR80 card)</a>'+
                         '<button class="btn btn-d btn-sm" data-act="regen" data-u="'+u+'">↻ Regen</button>'+
                         '<button class="btn btn-d btn-sm" data-act="revoke" data-u="'+u+'">✕ Revoke</button>';
                 } else {
-                    actions='<button class="btn btn-p btn-sm" data-act="regen" data-u="'+u+'">+ Issue Badge</button>';
+                    actions+='<button class="btn btn-p btn-sm" data-act="regen" data-u="'+u+'">+ Issue Badge</button>';
                 }
-            } else {
-                actions='<span style="color:#6b7280;font-size:12px">Badges are for workers</span>';
             }
             return '<tr><td><b>'+u+'</b></td><td>'+info.name+'</td><td><span class="'+roleClass+'">'+roleLbl(info.role)+'</span></td><td>'+badgeText+'</td><td><div class="actions">'+actions+'</div></td></tr>';
         });
@@ -2502,7 +2500,15 @@ function loadUsers(){
             b.addEventListener('click',function(){
                 var u=b.dataset.u,act=b.dataset.act;
                 if(act==='revoke'&&!confirm('Revoke badge for '+u+'? They will need a password to log in.'))return;
-                if(act==='regen'){
+                if(act==='rename'){
+                    var nn=prompt('New name for '+u+':', b.dataset.n||'');
+                    if(nn===null)return; nn=nn.trim();
+                    if(!nn){toast('Enter a name',true);return;}
+                    fetch('/api/users/name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,name:nn})})
+                        .then(function(r){return r.json()}).then(function(d){
+                            if(d.ok){toast('Renamed to '+d.name);loadUsers()}else toast(d.error||'Failed',true);
+                        });
+                } else if(act==='regen'){
                     fetch('/api/users/badge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u})})
                         .then(function(r){return r.json()}).then(function(d){
                             if(d.ok){toast('Badge issued. Print it next.');loadUsers()}else toast(d.error||'Failed',true);
