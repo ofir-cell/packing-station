@@ -4696,11 +4696,14 @@ var DOC='BOTH';
 document.querySelectorAll('#dt button').forEach(function(b){b.onclick=function(){
   document.querySelectorAll('#dt button').forEach(function(x){x.classList.remove('on')});
   b.classList.add('on');DOC=b.getAttribute('data-d');};});
-fetch('/api/shows').then(function(r){return r.json()}).then(function(d){
+// Use the LIGHTWEIGHT shows endpoint (just names, no per-show cleanup/stat computation) so
+// the dropdown fills instantly instead of waiting for the heavy /api/shows rollup.
+fetch('/api/shows/recent').then(function(r){return r.json()}).then(function(d){
   var shows=Array.isArray(d)?d:(d.shows||[]);
   var sel=document.getElementById('show');
   sel.innerHTML='<option value="">Pick a live…</option>'+shows.map(function(s){
-    var n=s.name||s.label||s.import_label||''; return '<option value="'+esc(n)+'">'+esc(n)+'</option>';}).join('');
+    var n=(typeof s==='string')?s:(s.name||s.label||s.import_label||'');
+    return '<option value="'+esc(n)+'">'+esc(n)+'</option>';}).join('');
 }).catch(function(){document.getElementById('show').innerHTML='<option value="">Could not load shows</option>';});
 function run(){
   var show=document.getElementById('show').value, sticker=document.getElementById('sticker').value.trim(), part=document.getElementById('part').value.trim();
