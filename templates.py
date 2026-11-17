@@ -840,7 +840,7 @@ var mi=document.getElementById('mi'),ri=document.getElementById('ri');
 var X={w:document.getElementById('xw'),r:document.getElementById('xr'),c:document.getElementById('xc'),u:document.getElementById('xu'),d:document.getElementById('xd'),f:document.getElementById('xf'),e:document.getElementById('xe')};
 var LANG=localStorage.getItem('lang')||'en';
 var T={en:{
- camera:'Camera',switchpick:'📋 Switch to Picking',portal:'🏠 Portal',endshift:'End Shift',welcomeg:'Welcome',youareat:'You are at',
+ camera:'Camera',choosecam:'Choose camera',switchpick:'📋 Switch to Picking',portal:'🏠 Portal',endshift:'End Shift',welcomeg:'Welcome',youareat:'You are at',
  greatshift:'Have a great shift! Your camera is being set up...',scantracking:'Scan Tracking Number',scantostart:'Scan the barcode to start recording',
  waitscan:'Waiting for scan...',scannerready:'Scanner ready',recorded:'Recorded:',recording:'RECORDING',step_scan:'Scan tracking number',
  step_pack:'Pack the order in front of the camera',step_again:'Scan again to finish',lookingup:'Looking up order…',itemsinpkg:'items in package',
@@ -851,7 +851,7 @@ var T={en:{
  thankyou:'Thank you for your hard work',wonderfulday:'Have a wonderful day! See you next time 👋',nocamera:'No camera',
  countbox:'Count what you put in the box — if anything is missing, set the package aside',prepicked:'✓ Pre-picked by',justverify:'· just verify count and pack',ordernotfound:'Order not found in system',uploadfailed:"Upload failed",scanagainretry:"The recording did not save — scan the barcode again to retry"
 },es:{
- camera:'Cámara',switchpick:'📋 Cambiar a Recolección',portal:'🏠 Portal',endshift:'Terminar Turno',welcomeg:'Bienvenido',youareat:'Estás en',
+ camera:'Cámara',choosecam:'Elegir cámara',switchpick:'📋 Cambiar a Recolección',portal:'🏠 Portal',endshift:'Terminar Turno',welcomeg:'Bienvenido',youareat:'Estás en',
  greatshift:'¡Que tengas un buen turno! Tu cámara se está configurando...',scantracking:'Escanea el Número de Rastreo',scantostart:'Escanea el código para empezar a grabar',
  waitscan:'Esperando escaneo...',scannerready:'Escáner listo',recorded:'Grabados:',recording:'GRABANDO',step_scan:'Escanea el número de rastreo',
  step_pack:'Empaca el pedido frente a la cámara',step_again:'Escanea de nuevo para terminar',lookingup:'Buscando pedido…',itemsinpkg:'artículos en el paquete',
@@ -878,7 +878,69 @@ setTimeout(function(){go('r')},3000);
 document.getElementById('endBtn').addEventListener('click',function(){go('f');setTimeout(function(){location.href='/logout'},3500)});
 document.addEventListener('click',function(){if(st==='r')mi.focus();if(st==='c')ri.focus()});
 setInterval(function(){if(st==='r'&&document.activeElement!==mi)mi.focus();if(st==='c'&&document.activeElement!==ri)ri.focus()},400);
-function initCam(){navigator.mediaDevices.getUserMedia({video:{width:{ideal:854,max:1280},height:{ideal:480,max:720},frameRate:{ideal:15,max:24}},audio:false}).then(function(s){sm=s;document.getElementById('pv').srcObject=s;document.getElementById('cm').className='cam ok'}).catch(function(){document.getElementById('cm').className='cam err'})}
+// ── Camera selection ──────────────────────────────────────────────────────────
+// Chromebooks (and any laptop with a built-in webcam + a USB camera) default to the
+// INTERNAL camera. The packer wants the USB one pointed at the table. We remember the
+// chosen camera per machine (localStorage), auto-prefer an external camera the first
+// time, and the "Camera" badge is clickable to switch between them.
+var CAM_KEY='packCamId', CAMS=[], curCamId=null;
+function camConstraints(id){var v={width:{ideal:854,max:1280},height:{ideal:480,max:720},frameRate:{ideal:15,max:24}};
+  if(id)v.deviceId={exact:id}; return {video:v,audio:false};}
+function stopCam(){if(sm){try{sm.getTracks().forEach(function(t){t.stop()})}catch(e){}}}
+function savedCamId(){try{return localStorage.getItem(CAM_KEY)||null}catch(e){return null}}
+function saveCamId(id){try{id?localStorage.setItem(CAM_KEY,id):localStorage.removeItem(CAM_KEY)}catch(e){}}
+function initCam(id){
+  if(id===undefined)id=savedCamId();
+  stopCam();
+  navigator.mediaDevices.getUserMedia(camConstraints(id)).then(function(s){
+    sm=s; var vt=s.getVideoTracks&&s.getVideoTracks()[0], vst=(vt&&vt.getSettings)?vt.getSettings():{};
+    curCamId=vst.deviceId||id||null;
+    document.getElementById('pv').srcObject=s;
+    document.getElementById('cm').className='cam ok';
+    listCams(true);
+  }).catch(function(){
+    if(id){saveCamId(null);return initCam(null);}   // saved camera unplugged → fall back
+    document.getElementById('cm').className='cam err';
+  });
+}
+function isExternal(label){return label && !/built.?in|integrated|facetime|internal/i.test(label);}
+function listCams(maybeAutoPick){
+  if(!navigator.mediaDevices||!navigator.mediaDevices.enumerateDevices)return;
+  navigator.mediaDevices.enumerateDevices().then(function(ds){
+    CAMS=ds.filter(function(d){return d.kind==='videoinput'});
+    // First run on this machine with several cameras and no saved choice: prefer a USB /
+    // external camera over the built-in one, so the table-facing camera is used by default.
+    if(maybeAutoPick && !savedCamId() && CAMS.length>1){
+      var ext=CAMS.filter(function(d){return isExternal(d.label)});
+      if(ext.length===1 && ext[0].deviceId && ext[0].deviceId!==curCamId){
+        saveCamId(ext[0].deviceId); return initCam(ext[0].deviceId);
+      }
+    }
+  }).catch(function(){});
+}
+function switchCam(id){saveCamId(id); initCam(id); closeCamMenu();}
+function closeCamMenu(){var m=document.getElementById('camMenu'); if(m)m.remove();}
+function toggleCamMenu(){
+  if(document.getElementById('camMenu')){closeCamMenu();return;}
+  var m=document.createElement('div'); m.id='camMenu';
+  m.style.cssText='position:fixed;top:54px;right:14px;z-index:9999;background:#fff;border:1px solid #e4e7ec;border-radius:12px;box-shadow:0 10px 30px rgba(20,27,38,.14);padding:8px;min-width:240px;font-family:inherit';
+  var h=document.createElement('div'); h.textContent=t('choosecam'); h.style.cssText='font-weight:800;font-size:12px;color:#6b7280;padding:6px 8px';
+  m.appendChild(h);
+  if(!CAMS.length){var e=document.createElement('div');e.textContent=t('nocamera');e.style.cssText='padding:8px;color:#b45309;font-size:13px';m.appendChild(e);}
+  CAMS.forEach(function(d,i){
+    var b=document.createElement('button');
+    var lbl=d.label||((t('camera')||'Camera')+' '+(i+1));
+    b.textContent=(d.deviceId===curCamId?'✓ ':'')+lbl+(isExternal(d.label)?' · USB':'');
+    b.style.cssText='display:block;width:100%;text-align:left;border:0;background:'+(d.deviceId===curCamId?'#f0fdf4':'transparent')+';padding:10px 10px;border-radius:9px;font-size:14px;font-weight:'+(d.deviceId===curCamId?'800':'600')+';color:#1a2130;cursor:pointer;font-family:inherit';
+    b.onclick=function(){switchCam(d.deviceId)};
+    m.appendChild(b);
+  });
+  document.body.appendChild(m);
+  setTimeout(function(){document.addEventListener('click',onDocCam,{once:true})},0);
+}
+function onDocCam(e){var m=document.getElementById('camMenu'),c=document.getElementById('cm');
+  if(m&&!m.contains(e.target)&&e.target!==c&&!c.contains(e.target))closeCamMenu();}
+(function(){var cm=document.getElementById('cm'); if(cm){cm.style.cursor='pointer'; cm.title='Switch camera'; cm.addEventListener('click',function(e){e.stopPropagation();toggleCamMenu();});}})();
 initCam();
 function pickMime(){var c=['video/webm;codecs=vp8','video/webm;codecs=vp9','video/webm','video/mp4'];
   for(var i=0;i<c.length;i++){try{if(window.MediaRecorder&&MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(c[i]))return c[i]}catch(e){}}return '';}
