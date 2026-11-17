@@ -31,7 +31,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     BADGE_LOGIN_HTML, USERS_BADGES_HTML,
     ME_HTML, LEADERBOARD_HTML, HOME_HTML, DOCUMENTS_HTML, WELCOME_HTML,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
-    CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, SHOWS_HTML, PICK_HTML,
+    CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, REPRINT_HTML, SHOWS_HTML, PICK_HTML,
     ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
     INVENTORY_HTML, PURCHASING_HTML, STOCKTAKE_HTML, AUDIT_HTML, ROSTER_HTML, MYSCHEDULE_HTML, MYAVAIL_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
     PICKER_HTML, REPEAT_HTML, DATACHECK_HTML, VIDEOS_HTML, _staging_banner,
@@ -11147,6 +11147,14 @@ def sku_lookup_page():
         .replace("__NAVBAR__", _navbar("sku_lookup"))
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
+@app.route("/admin/reprint")
+@req_role("admin", "cs", "worker", "picker")
+def reprint_page():
+    return (REPRINT_HTML
+        .replace("__ROLE__", session.get("role", ""))
+        .replace("__NAVBAR__", _navbar("reprint"))
+        .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
 @app.route("/api/sku-lookup/batches")
 @req_role("admin", "cs")
 def api_sku_batches():
@@ -16612,6 +16620,74 @@ def _tt_valid_token(org, shop_id):
     except Exception as e:
         _tt_log("token refresh failed for %s/%s: %r"%(org,shop_id,e))
     return row
+
+def _tt_shop_for_org(org):
+    """The one active TikTok shop for an org as (org_id, shop_id), or None."""
+    c=pdb()
+    r=c.execute("SELECT org_id, shop_id FROM tiktok_shops WHERE org_id=? AND active=1 LIMIT 1",(org,)).fetchone()
+    c.close()
+    return dict(r) if r else None
+
+def _tt_shipping_doc(org, package_id, doc_type="SHIPPING_LABEL", size="A6"):
+    """Fetch the URL of a TikTok shipping document (SHIPPING_LABEL or PACKING_SLIP) for a
+    package. Returns (doc_url, error). Read-only; needs the shop token's fulfillment scope.
+    The package_id is the shipment_id for API-ingested orders."""
+    sh=_tt_shop_for_org(org)
+    if not sh: return (None, "no TikTok shop connected")
+    tok=_tt_valid_token(org, sh["shop_id"])
+    if not tok or not tok.get("access_token"): return (None, "no valid TikTok token")
+    tok=_tt_ensure_cipher(org, sh["shop_id"], tok)
+    params={"document_type":doc_type, "document_size":size}
+    if tok.get("shop_cipher"): params["shop_cipher"]=tok["shop_cipher"]
+    try:
+        res=_tt_request("GET", TIKTOK_API_BASE+"/fulfillment/%s/packages/%s/shipping_documents"%(TIKTOK_API_VERSION, package_id),
+                        params=params, signed=True, access_token=tok["access_token"])
+    except Exception as e:
+        return (None, "TikTok request failed: %r"%e)
+    if res.get("code"):
+        return (None, res.get("message") or ("TikTok error %s"%res.get("code")))
+    data=res.get("data") or {}
+    url=data.get("doc_url") or data.get("shipping_document_url") or data.get("url") or ""
+    return (url or None, None if url else "no document URL returned by TikTok")
+
+@app.route("/api/reprint", methods=["POST"])
+@req_role("admin","cs","worker","picker")
+def api_reprint():
+    """Reprint-by-sticker: type a sticker + part that's still sitting on the table and get the
+    URL of its TikTok shipping label (or packing slip) to print on demand. One (sticker, part)
+    maps to one order, but it may share a package (combined order) with others — each distinct
+    package is returned once. Requires the order to be in the system (synced or CSV-imported)."""
+    d=request.get_json() or {}
+    show=(d.get("show") or "").strip()
+    sticker=(d.get("sticker") or "").strip()
+    try: part=int(d.get("part") or 0)
+    except Exception: part=0
+    doc_type=(d.get("doc_type") or "SHIPPING_LABEL").strip().upper()
+    if doc_type not in ("SHIPPING_LABEL","PACKING_SLIP"): doc_type="SHIPPING_LABEL"
+    if not show or not sticker: return jsonify({"ok":False,"error":"show and sticker required"})
+    org=current_org()
+    c=sdb(org)
+    rows=[dict(r) for r in c.execute(
+        """SELECT s.shipment_id, s.tracking_code, s.buyer_name, s.status, i.product_name
+           FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+           WHERE s.import_label=? AND i.sku=? AND COALESCE(i.cancelled,0)=0""",
+        (show, sticker)).fetchall()]
+    c.close()
+    rows=[r for r in rows if int(_sticker_part(r["product_name"]) or 0)==part]
+    if not rows:
+        return jsonify({"ok":False,"not_found":True,
+                        "error":"No active order for sticker %s · Part %s in this show (synced yet?)"%(sticker,part)})
+    seen=set(); out=[]
+    for r in rows:
+        pid=r["shipment_id"]
+        if pid in seen: continue
+        seen.add(pid)
+        url,err=_tt_shipping_doc(org, pid, doc_type)
+        out.append({"package_id":pid,"tracking":r["tracking_code"],"buyer":r["buyer_name"],
+                    "status":r["status"],"doc_url":url,"error":err})
+    ok=any(o.get("doc_url") for o in out)
+    return jsonify({"ok":ok,"sticker":sticker,"part":part,"packages":out,
+                    "error":None if ok else (out[0]["error"] if out else "no document")})
 
 def _tt_is_paused(org):
     """When paused, TikTok keeps broadcasting and webhooks keep arriving (and are parked),

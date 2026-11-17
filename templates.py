@@ -129,6 +129,7 @@ def _navbar(active_page=""):
             ("productcleanup", "/admin/product-cleanup", "After-Live Cleanup") if has("admin","cs") else None,
             ("purchasing", "/admin/purchasing", "Purchasing") if has("admin","manager") else None,
             ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation") if has("admin","cs") else None,
+            ("reprint", "/admin/reprint", "Reprint Label") if has("admin","cs") else None,
             ("stocktake", "/admin/stocktake", "Stock Take") if has("admin","cs") else None,
           ])),
           ("Analytics", "📊", _vis([
@@ -4637,6 +4638,95 @@ if(_pu){qEl.value=_pu;clearBtn.classList.add('show');search(_pu);}
 else showEmpty('Start typing to search','Type a username or partial name above');
 </script>
 </body></html>'''
+
+
+# ══════════════════════════════════════════════════════════
+# REPRINT BY STICKER — type a sticker + part still on the table, pull its TikTok label
+# ══════════════════════════════════════════════════════════
+
+REPRINT_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reprint Label — __BRANDMARK__</title>
+<style>__NAVBAR_CSS__
+body{margin:0;background:var(--bg,#f5f3ff);font-family:'DM Sans',-apple-system,Segoe UI,Roboto,sans-serif;color:var(--text,#1a2130)}
+.wrap{max-width:640px;margin:0 auto;padding:22px 16px}
+h1{font-size:22px;font-weight:900;margin:0 0 4px}
+.sub{color:var(--text-muted,#6b7280);font-size:14px;margin-bottom:18px}
+.card{background:var(--surface,#fff);border:1px solid var(--border,#e4e7ec);border-radius:16px;padding:18px;margin-bottom:16px}
+label{display:block;font-size:12px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin:0 0 6px}
+select,input{width:100%;padding:12px 14px;border:1.5px solid var(--border,#e4e7ec);border-radius:11px;font-size:16px;font-family:inherit;background:#fff;color:var(--text,#1a2130);box-sizing:border-box}
+.row{display:flex;gap:10px}.row>div{flex:1}
+.btn{width:100%;margin-top:14px;padding:15px;border:0;border-radius:12px;background:#4f46e5;color:#fff;font-weight:800;font-size:17px;cursor:pointer;font-family:inherit}
+.btn:disabled{opacity:.5}
+.toggle{display:flex;gap:8px;margin-top:12px}
+.toggle button{flex:1;padding:10px;border:1.5px solid var(--border,#e4e7ec);border-radius:10px;background:#fff;font-weight:700;cursor:pointer;font-family:inherit;font-size:13px}
+.toggle button.on{background:#eef2ff;border-color:#c7d2fe;color:#4338ca}
+.res{margin-top:4px}
+.pkg{display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--surface,#fff);border:1px solid var(--border,#e4e7ec);border-radius:12px;padding:12px 14px;margin-bottom:10px}
+.pkg .m{font-family:'SF Mono',Menlo,monospace;font-size:12px;color:#6b7280}
+.pkg a{background:#16a34a;color:#fff;text-decoration:none;font-weight:800;padding:9px 14px;border-radius:10px;white-space:nowrap}
+.err{background:#fff1f2;border:1px solid #fecdd3;color:#b91c1c;border-radius:12px;padding:12px 14px;margin-top:10px;font-weight:600;font-size:14px}
+.hint{color:#6b7280;font-size:12px;margin-top:8px}
+</style></head><body>
+__NAVBAR__
+<div class="wrap">
+  <h1>🖨️ Reprint Label</h1>
+  <div class="sub">Type a sticker still on the table — pull its TikTok shipping label to reprint.</div>
+  <div class="card">
+    <label>Live / show</label>
+    <select id="show"><option value="">Loading…</option></select>
+    <div class="row" style="margin-top:14px">
+      <div><label>Sticker #</label><input id="sticker" inputmode="numeric" placeholder="e.g. 584" autocomplete="off"></div>
+      <div><label>Part</label><input id="part" inputmode="numeric" placeholder="e.g. 2" autocomplete="off"></div>
+    </div>
+    <div class="toggle" id="dt">
+      <button data-d="SHIPPING_LABEL" class="on">🏷️ Shipping label</button>
+      <button data-d="PACKING_SLIP">📄 Packing slip</button>
+    </div>
+    <button class="btn" id="go">Get label to print</button>
+    <div class="hint">The order must be in the system (synced or CSV-imported). Combined packages print one label for all their items.</div>
+  </div>
+  <div class="res" id="res"></div>
+</div>
+<script>
+function esc(s){return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+var DOC='SHIPPING_LABEL';
+document.querySelectorAll('#dt button').forEach(function(b){b.onclick=function(){
+  document.querySelectorAll('#dt button').forEach(function(x){x.classList.remove('on')});
+  b.classList.add('on');DOC=b.getAttribute('data-d');};});
+fetch('/api/shows').then(function(r){return r.json()}).then(function(d){
+  var shows=Array.isArray(d)?d:(d.shows||[]);
+  var sel=document.getElementById('show');
+  sel.innerHTML='<option value="">Pick a live…</option>'+shows.map(function(s){
+    var n=s.name||s.label||s.import_label||''; return '<option value="'+esc(n)+'">'+esc(n)+'</option>';}).join('');
+}).catch(function(){document.getElementById('show').innerHTML='<option value="">Could not load shows</option>';});
+function run(){
+  var show=document.getElementById('show').value, sticker=document.getElementById('sticker').value.trim(), part=document.getElementById('part').value.trim();
+  var res=document.getElementById('res'); res.innerHTML='';
+  if(!show){res.innerHTML='<div class="err">Pick a live first.</div>';return;}
+  if(!sticker){res.innerHTML='<div class="err">Enter a sticker number.</div>';return;}
+  var btn=document.getElementById('go');btn.disabled=true;btn.textContent='Fetching from TikTok…';
+  fetch('/api/reprint',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({show:show,sticker:sticker,part:part||0,doc_type:DOC})})
+   .then(function(r){return r.json()}).then(function(d){
+     btn.disabled=false;btn.textContent='Get label to print';
+     if(!d.ok && (!d.packages||!d.packages.length)){res.innerHTML='<div class="err">'+esc(d.error||'Not found')+'</div>';return;}
+     var html='';
+     (d.packages||[]).forEach(function(p){
+       if(p.doc_url){
+         window.open(p.doc_url,'_blank');
+         html+='<div class="pkg"><div><b>'+esc(p.buyer||'—')+'</b><div class="m">'+esc(p.tracking||p.package_id)+'</div></div><a href="'+esc(p.doc_url)+'" target="_blank">Open / Print</a></div>';
+       } else {
+         html+='<div class="err">'+esc(p.buyer||p.package_id)+': '+esc(p.error||'no label')+'</div>';
+       }
+     });
+     res.innerHTML=html;
+   }).catch(function(){btn.disabled=false;btn.textContent='Get label to print';res.innerHTML='<div class="err">Network error</div>';});
+}
+document.getElementById('go').onclick=run;
+document.getElementById('part').addEventListener('keydown',function(e){if(e.key==='Enter')run();});
+document.getElementById('sticker').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('part').focus();});
+</script></body></html>'''
 
 
 # ══════════════════════════════════════════════════════════
