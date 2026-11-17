@@ -7539,6 +7539,7 @@ def api_pick_complete(sid):
 # SHOW_HARD_CAP_DAYS bounds the query so we never scan the whole history.
 SHOW_WINDOW_DAYS = 30
 SHOW_HARD_CAP_DAYS = 180
+REPRINT_PULL_DAYS = 14   # how far back reprint pulls from TikTok when a sticker isn't in the system yet
 
 @app.route("/admin/shows")
 @req_role("admin","cs")
@@ -16667,17 +16668,29 @@ def api_reprint():
     types=["SHIPPING_LABEL","PACKING_SLIP"] if doc_type=="BOTH" else [doc_type]
     if not show or not sticker: return jsonify({"ok":False,"error":"show and sticker required"})
     org=current_org()
-    c=sdb(org)
-    rows=[dict(r) for r in c.execute(
-        """SELECT s.shipment_id, s.tracking_code, s.buyer_name, s.status, i.product_name
-           FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
-           WHERE s.import_label=? AND i.sku=? AND COALESCE(i.cancelled,0)=0""",
-        (show, sticker)).fetchall()]
-    c.close()
-    rows=[r for r in rows if int(_sticker_part(r["product_name"]) or 0)==part]
+    def _resolve():
+        cc=sdb(org)
+        rr=[dict(r) for r in cc.execute(
+            """SELECT s.shipment_id, s.tracking_code, s.buyer_name, s.status, i.product_name
+               FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+               WHERE s.import_label=? AND i.sku=? AND COALESCE(i.cancelled,0)=0""",
+            (show, sticker)).fetchall()]
+        cc.close()
+        return [r for r in rr if int(_sticker_part(r["product_name"]) or 0)==part]
+    rows=_resolve()
+    pulled=False
+    if not rows and _tiktok_ready() and not _tt_is_paused(org):
+        # Not in the system yet — pull this org's recent orders straight from TikTok, then
+        # look again. This makes reprint self-sufficient: no manual CSV/Sync needed first.
+        try:
+            _tt_pull_core(org, days=REPRINT_PULL_DAYS); pulled=True
+        except Exception as e:
+            _tt_log("reprint pull failed for %s: %r"%(org,e))
+        rows=_resolve()
     if not rows:
-        return jsonify({"ok":False,"not_found":True,
-                        "error":"No active order for sticker %s · Part %s in this show (synced yet?)"%(sticker,part)})
+        return jsonify({"ok":False,"not_found":True,"pulled":pulled,
+                        "error":"No active order for sticker %s · Part %s in this show%s"%(
+                            sticker, part, " (pulled from TikTok — not found; cancelled or already shipped?)" if pulled else " (TikTok not connected)")})
     _LBL={"SHIPPING_LABEL":"Shipping label","PACKING_SLIP":"Packing slip"}
     seen=set(); out=[]
     for r in rows:
@@ -16692,7 +16705,7 @@ def api_reprint():
                     "status":r["status"],"docs":docs})
     ok=any(doc.get("doc_url") for p in out for doc in p["docs"])
     _firsterr=next((doc["error"] for p in out for doc in p["docs"] if doc.get("error")), "no document")
-    return jsonify({"ok":ok,"sticker":sticker,"part":part,"packages":out,
+    return jsonify({"ok":ok,"sticker":sticker,"part":part,"packages":out,"pulled":pulled,
                     "error":None if ok else _firsterr})
 
 def _tt_is_paused(org):
