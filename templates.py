@@ -4681,9 +4681,8 @@ __NAVBAR__
       <div><label>Part</label><input id="part" inputmode="numeric" placeholder="e.g. 2" autocomplete="off"></div>
     </div>
     <div class="toggle" id="dt">
-      <button data-d="BOTH" class="on">🖨️ Both</button>
+      <button data-d="BOTH" class="on">🖨️ Label + slip</button>
       <button data-d="SHIPPING_LABEL">🏷️ Label only</button>
-      <button data-d="PACKING_SLIP">📄 Slip only</button>
     </div>
     <button class="btn" id="go">Get to print</button>
     <div class="hint">The order must be in the system (synced or CSV-imported). Combined packages print one label for all their items.</div>

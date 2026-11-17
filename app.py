@@ -16644,11 +16644,14 @@ def _tt_shipping_doc(org, package_id, doc_type="SHIPPING_LABEL", size="A6"):
         res=_tt_request("GET", TIKTOK_API_BASE+"/fulfillment/%s/packages/%s/shipping_documents"%(TIKTOK_API_VERSION, package_id),
                         params=params, signed=True, access_token=tok["access_token"])
     except Exception as e:
+        _tt_log("shipping-doc request error pkg=%s type=%s: %r"%(package_id,doc_type,e))
         return (None, "TikTok request failed: %r"%e)
     if res.get("code"):
-        return (None, res.get("message") or ("TikTok error %s"%res.get("code")))
+        _tt_log("shipping-doc pkg=%s type=%s -> code=%s msg=%s"%(package_id,doc_type,res.get("code"),res.get("message")))
+        return (None, (res.get("message") or ("TikTok error %s"%res.get("code")))+(" [code %s]"%res.get("code")))
     data=res.get("data") or {}
     url=data.get("doc_url") or data.get("shipping_document_url") or data.get("url") or ""
+    if not url: _tt_log("shipping-doc pkg=%s type=%s -> no url; data keys=%s"%(package_id,doc_type,list(data.keys())))
     return (url or None, None if url else "no document URL returned by TikTok")
 
 @app.route("/api/reprint", methods=["POST"])
@@ -16664,8 +16667,12 @@ def api_reprint():
     try: part=int(d.get("part") or 0)
     except Exception: part=0
     doc_type=(d.get("doc_type") or "BOTH").strip().upper()
-    if doc_type not in ("SHIPPING_LABEL","PACKING_SLIP","BOTH"): doc_type="BOTH"
-    types=["SHIPPING_LABEL","PACKING_SLIP"] if doc_type=="BOTH" else [doc_type]
+    # TikTok's valid document_type values: SHIPPING_LABEL, SHIPPING_LABEL_AND_PACKING_SLIP
+    # (there is no standalone packing-slip type). 'Both' = the combined document.
+    _TTDOC={"BOTH":"SHIPPING_LABEL_AND_PACKING_SLIP",
+            "SHIPPING_LABEL":"SHIPPING_LABEL",
+            "PACKING_SLIP":"SHIPPING_LABEL_AND_PACKING_SLIP"}
+    tt_type=_TTDOC.get(doc_type,"SHIPPING_LABEL_AND_PACKING_SLIP")
     if not show or not sticker: return jsonify({"ok":False,"error":"show and sticker required"})
     org=current_org()
     def _resolve():
@@ -16691,18 +16698,16 @@ def api_reprint():
         return jsonify({"ok":False,"not_found":True,"pulled":pulled,
                         "error":"No active order for sticker %s · Part %s in this show%s"%(
                             sticker, part, " (pulled from TikTok — not found; cancelled or already shipped?)" if pulled else " (TikTok not connected)")})
-    _LBL={"SHIPPING_LABEL":"Shipping label","PACKING_SLIP":"Packing slip"}
+    _LBL={"SHIPPING_LABEL_AND_PACKING_SLIP":"Label + packing slip","SHIPPING_LABEL":"Shipping label"}
     seen=set(); out=[]
     for r in rows:
         pid=r["shipment_id"]
         if pid in seen: continue
         seen.add(pid)
-        docs=[]
-        for t in types:
-            url,err=_tt_shipping_doc(org, pid, t)
-            docs.append({"type":t,"label":_LBL.get(t,t),"doc_url":url,"error":err})
+        url,err=_tt_shipping_doc(org, pid, tt_type)
         out.append({"package_id":pid,"tracking":r["tracking_code"],"buyer":r["buyer_name"],
-                    "status":r["status"],"docs":docs})
+                    "status":r["status"],
+                    "docs":[{"type":tt_type,"label":_LBL.get(tt_type,tt_type),"doc_url":url,"error":err}]})
     ok=any(doc.get("doc_url") for p in out for doc in p["docs"])
     _firsterr=next((doc["error"] for p in out for doc in p["docs"] if doc.get("error")), "no document")
     return jsonify({"ok":ok,"sticker":sticker,"part":part,"packages":out,"pulled":pulled,
