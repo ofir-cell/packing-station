@@ -17116,6 +17116,17 @@ def _tt_apply_order(c, order, label=None, sku_map=None, overhead=None):
                    (p["picked"] if p else 0), (p["picked_at"] if p else None),
                    (p["depleted_qty"] if p else 0), (p["depleted_sku"] if p else None)))
     _recompute_shipment_weight(c, ship_id, overhead=overhead)
+    # Un-stick a stale cancellation: TikTok is the source of truth for the order lifecycle.
+    # When TikTok reports this order ACTIVE (not cancelled) but we still hold it 'cancelled'
+    # — e.g. a cancel that the buyer/TikTok later reversed, or an earlier cancel sweep — the
+    # items above are rebuilt as active, so clear the cancellation too. _unflip only acts when
+    # the box now has active lines, and it restores status from floor progress (and re-depletes
+    # stock if it was already packed), so a reinstated order resumes instead of staying stuck on
+    # DO NOT PACK while TikTok shows "awaiting shipment".
+    if not is_cancelled and _unflip_cancelled_shipment(c, ship_id):
+        _oev(c, ship_id, "uncancelled",
+             "TikTok reports this order active again — cleared a stale local cancellation",
+             actor="tiktok-sync")
     return label
 
 def _tt_webhook_verify(body_bytes, sig_header):
