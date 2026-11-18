@@ -1346,6 +1346,11 @@ def sdb_init(org):
         "ALTER TABLE shipment_items ADD COLUMN pack_scanned_at TEXT",
         "ALTER TABLE shipments ADD COLUMN pack_check TEXT",
         "ALTER TABLE shipments ADD COLUMN pack_missing TEXT",
+        # Whatnot ships its own label PDFs in the CSV (no API yet). Store them so Reprint can
+        # open a Whatnot order's label/slip directly instead of calling TikTok. label_url = the
+        # printable sheet (slip+label or bare label); manifest_url = the combined slip+label.
+        "ALTER TABLE shipments ADD COLUMN label_url TEXT",
+        "ALTER TABLE shipments ADD COLUMN manifest_url TEXT",
         # Bilingual onboarding — Spanish translations live in *_es columns
         # alongside the English originals. NULL ES → frontend falls back to EN.
         "ALTER TABLE onboarding_steps ADD COLUMN title_es TEXT",
@@ -6009,6 +6014,12 @@ def _norm_whatnot(row):
     addr = s("shipping_address", "shipping address", "address")
     placed = s("placed_at", "placed at", "created_at", "created at", "order_date", "date")
     cancelled = s("cancelled_or_failed", "cancelled or failed", "status", "order_status")
+    _cf = cancelled.strip().lower()
+    # A Whatnot label PDF the floor can reprint. `shipment_manifest` is the combined
+    # packing-slip + label sheet (what Reprint "Label + slip" wants); `label_only` is the
+    # bare shipping label. Store both so Reprint can honor the doc-type toggle without the API.
+    _manifest = s("shipment_manifest", "shipment manifest", "manifest_url", "manifest")
+    _label_only = s("label_only", "label only", "label_url", "label", "shipping_label", "shipping label")
     # Revenue — Whatnot exports vary; try many common price column names.
     # `original_item_price` is what current Whatnot live exports use — it must stay first
     # in this list. Without it every row reads as $0, which blanks profit reporting.
@@ -6037,8 +6048,12 @@ def _norm_whatnot(row):
         "buyer_name": _parse_buyer_name(addr),
         "address":    addr,
         "postal":     s("postal_code", "postal code", "zip", "zipcode", "zip code"),
-        "status":     "cancelled" if cancelled.lower() in ("cancelled","failed","canceled") else "to_ship",
-        "cancel_reason": cancelled if cancelled.lower() in ("cancelled","failed","canceled") else "",
+        # "failed" is a Whatnot order that never completed (payment/fulfilment fell through) — we
+        # drop these entirely on import. "cancelled" is a genuine cancellation → Table Cleanup.
+        "status":     "failed" if _cf == "failed" else ("cancelled" if _cf in ("cancelled","canceled") else "to_ship"),
+        "cancel_reason": cancelled if _cf in ("cancelled","canceled") else "",
+        "manifest_url": _manifest,
+        "label_url":  _label_only or _manifest,
         "created_at": placed[:10],
         "created_time": placed,
         "state":      s("state", "province"),
@@ -6184,11 +6199,17 @@ def api_shipments_import():
     import_batch = "imp_" + datetime.now().strftime("%Y%m%d_%H%M%S")
     by_pkg = {}
     skipped = 0
+    failed_dropped = 0
     cancelled_inline = []  # cancelled rows in a TO SHIP file (rare)
     for n in norm:
         pkg = n["package_id"]
         if not pkg:
             skipped += 1
+            continue
+        # Whatnot "failed" orders never completed — don't import them at all (no shipment,
+        # no cleanup item). Only genuine cancellations route to Table Cleanup.
+        if n["status"].lower() == "failed":
+            failed_dropped += 1
             continue
         if n["status"].lower().startswith("cancel"):
             cancelled_inline.append(n)
@@ -6298,6 +6319,10 @@ def api_shipments_import():
                 if _synth!=pkg_id:
                     c.execute("DELETE FROM shipment_items WHERE shipment_id=?", (_synth,))
                     c.execute("DELETE FROM shipments WHERE shipment_id=?", (_synth,))
+            # Whatnot ships its label/slip PDFs in the CSV — carry them onto the shipment so
+            # Reprint can open them without an API (only Whatnot rows set these; TikTok → None).
+            lbl_url = next((n.get("label_url") for n in group if (n.get("label_url") or "").strip()), None)
+            mfst_url = next((n.get("manifest_url") for n in group if (n.get("manifest_url") or "").strip()), None)
             existing = c.execute("SELECT shipment_id FROM shipments WHERE shipment_id=?", (pkg_id,)).fetchone()
             if existing:
                 c.execute("""UPDATE shipments
@@ -6306,6 +6331,8 @@ def api_shipments_import():
                                  show_date=?, platform=?, import_batch=COALESCE(import_batch,?),
                                  import_label=?,
                                  shipping_fee=?,
+                                 label_url=COALESCE(?,label_url),
+                                 manifest_url=COALESCE(?,manifest_url),
                                  delivery_status=COALESCE(?,delivery_status),
                                  delivery_detail=COALESCE(?,delivery_detail),
                                  delivered_at=COALESCE(?,delivered_at),
@@ -6314,6 +6341,7 @@ def api_shipments_import():
                           (tracking, first["buyer_username"], first["buyer_name"],
                            first["address"], first["postal"], owner_show_date,
                            platform, import_batch, owner_label, ship_fee,
+                           lbl_url, mfst_url,
                            dvs, dvd, dva, dtrk, pkg_id))
                 if is_gv:   # move a still-pending giveaway out of the pipeline
                     c.execute("UPDATE shipments SET status='giveaway' WHERE shipment_id=? AND status='pending'", (pkg_id,))
@@ -6322,11 +6350,13 @@ def api_shipments_import():
                 c.execute("""INSERT INTO shipments
                     (shipment_id, tracking_code, buyer_username, buyer_name, address_full,
                      postal_code, show_date, status, platform, import_batch, import_label, shipping_fee,
+                     label_url, manifest_url,
                      delivery_status, delivery_detail, delivered_at, tracked_at)
-                    VALUES (?,?,?,?,?,?,?, ?, ?, ?, ?, ?, ?,?,?,?)""",
+                    VALUES (?,?,?,?,?,?,?, ?, ?, ?, ?, ?, ?,?, ?,?,?,?)""",
                     (pkg_id, tracking, first["buyer_username"], first["buyer_name"],
                      first["address"], first["postal"], owner_show_date, new_status,
                      platform, import_batch, owner_label, ship_fee,
+                     lbl_url, mfst_url,
                      dvs, dvd, dva, dtrk))
                 inserted += 1
             # Replace items for this shipment.
@@ -16922,7 +16952,8 @@ def api_reprint():
     def _resolve():
         cc=sdb(org)
         rr=[dict(r) for r in cc.execute(
-            """SELECT s.shipment_id, s.tracking_code, s.buyer_name, s.status, i.product_name
+            """SELECT s.shipment_id, s.tracking_code, s.buyer_name, s.status, s.platform,
+                      s.label_url, s.manifest_url, i.product_name
                FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
                WHERE s.import_label=? AND i.sku=? AND COALESCE(i.cancelled,0)=0""",
             (show, sticker)).fetchall()]
@@ -16948,7 +16979,16 @@ def api_reprint():
         pid=r["shipment_id"]
         if pid in seen: continue
         seen.add(pid)
-        url,err=_tt_shipping_doc(org, pid, tt_type)
+        if (r.get("platform") or "").lower()=="whatnot":
+            # Whatnot ships its label PDFs in the CSV — serve the stored URL, no API call.
+            # 'Label + slip' → the combined manifest; 'Shipping label' → the bare label.
+            if tt_type=="SHIPPING_LABEL":
+                url=(r.get("label_url") or r.get("manifest_url") or "").strip() or None
+            else:
+                url=(r.get("manifest_url") or r.get("label_url") or "").strip() or None
+            err=None if url else "No Whatnot label stored for this order (re-import the Whatnot CSV)"
+        else:
+            url,err=_tt_shipping_doc(org, pid, tt_type)
         out.append({"package_id":pid,"tracking":r["tracking_code"],"buyer":r["buyer_name"],
                     "status":r["status"],
                     "docs":[{"type":tt_type,"label":_LBL.get(tt_type,tt_type),"doc_url":url,"error":err}]})
