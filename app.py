@@ -7368,6 +7368,76 @@ def api_pick_item_toggle(item_id):
     c.commit(); c.close()
     return jsonify({"ok": True, "picked": new_state})
 
+@app.route("/api/pick/item/<int:item_id>/scan", methods=["POST"])
+@req_role("picker","worker","admin","cs")
+def api_pick_item_scan(item_id):
+    """Scan the product's OWN barcode to pick this sold sticker. Links the sticker→product the
+    same way Live Match does (show_product_map + products), auto-creating the product from the
+    barcode when it's unknown, then marks the item picked. This builds the product DB and the
+    per-show sold-products data, so analytics can compute real COGS / profit per product. If the
+    product is already in inventory, its cost is returned."""
+    d=request.get_json() or {}
+    code=(d.get("code") or "").strip()
+    if not code: return jsonify({"ok":False,"error":"Scan a barcode"})
+    c=sdb()
+    row=c.execute("""SELECT i.id,i.shipment_id,i.sku,i.product_name,COALESCE(i.picked,0) picked,
+                            s.status ship_status, s.import_label
+                     FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                     WHERE i.id=?""",(item_id,)).fetchone()
+    if not row: c.close(); return jsonify({"ok":False,"error":"Item not found"})
+    if (row["ship_status"] or "")=="cancelled":
+        c.close(); return jsonify({"ok":False,"error":"This order was cancelled -- its items can't be picked"})
+    prod=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
+    auto=False
+    if not prod:
+        prod,auto,_=_resolve_or_create_product_by_barcode(c, code, who=session.get("name",""))
+    if not prod:
+        c.close(); return jsonify({"ok":False,"error":"Scan a product barcode","not_found":True})
+    label=row["import_label"]; sticker=(row["sku"] or "").strip()
+    part=_part_num(row["product_name"] or "")
+    now=datetime.now().isoformat(timespec='seconds'); who=session.get("name","")[:60]
+    # Link the sold sticker to this product — the same pipeline Live Match feeds, so the
+    # product DB, the show's sold-products data and COGS all come from one place.
+    if label and sticker:
+        c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by)
+                     VALUES(?,?,?,?,0,?,?)
+                     ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET
+                        product_sku=excluded.product_sku,mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
+                  (label,sticker,part,prod["sku"],now,who))
+        _match_log(c, label, sticker, part, prod["sku"], "pick_scan", who)
+    c.execute("UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP WHERE id=?",(item_id,))
+    c.execute("""UPDATE shipments SET pick_started_by=?, pick_started_at=CURRENT_TIMESTAMP
+                 WHERE shipment_id=? AND COALESCE(pick_started_by,'')=''""",(who,row["shipment_id"]))
+    _oev(c, row["shipment_id"], "item_scanned",
+         ("#"+sticker+" " if sticker else "")+(prod["name"] or ""), actor=who)
+    pr=dict(prod); c.commit(); c.close()
+    is_admin=session.get("role")=="admin"
+    return jsonify({"ok":True,"picked":1,"auto_created":auto,
+                    "product":{"sku":pr["sku"],"name":pr.get("name"),"image_url":pr.get("image_url"),
+                               "in_stock":(pr.get("on_hand") or 0)>0,
+                               "cost":(round(pr["avg_cost"],2) if (is_admin and (pr.get("avg_cost") or 0)) else None)}})
+
+@app.route("/api/pick/item/<int:item_id>/skip", methods=["POST"])
+@req_role("picker","worker","admin","cs")
+def api_pick_item_skip(item_id):
+    """Pick a sold sticker that has NO barcode: mark it picked WITHOUT linking a product. It
+    stays unlinked, so it shows up in the show's 'needs product / cost' queue (Live Mode) to be
+    completed later — keeping the per-product P&L honest."""
+    c=sdb()
+    row=c.execute("""SELECT i.id,i.shipment_id,i.sku,i.product_name,s.status ship_status
+                     FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id WHERE i.id=?""",(item_id,)).fetchone()
+    if not row: c.close(); return jsonify({"ok":False,"error":"Item not found"})
+    if (row["ship_status"] or "")=="cancelled":
+        c.close(); return jsonify({"ok":False,"error":"This order was cancelled -- its items can't be picked"})
+    who=session.get("name","")[:60]
+    c.execute("UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP WHERE id=?",(item_id,))
+    c.execute("""UPDATE shipments SET pick_started_by=?, pick_started_at=CURRENT_TIMESTAMP
+                 WHERE shipment_id=? AND COALESCE(pick_started_by,'')=''""",(who,row["shipment_id"]))
+    _oev(c, row["shipment_id"], "item_skipped_nobarcode",
+         ("#"+(row["sku"] or "")+" ")+(row["product_name"] or ""), actor=who)
+    c.commit(); c.close()
+    return jsonify({"ok":True,"picked":1,"needs_product":True})
+
 @app.route("/api/pick/my-stats")
 @req_role("picker", "worker", "admin", "cs")
 def api_pick_my_stats():

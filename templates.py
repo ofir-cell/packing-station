@@ -5505,6 +5505,27 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   </div>
 
   <!-- STATE C: Checklist -->
+  <style>
+  .scan-cur{background:#fff;border:2px solid var(--brand,#d9748f);border-radius:20px;padding:20px 18px;text-align:center;box-shadow:0 10px 30px rgba(217,116,143,.14);margin:4px 0 14px}
+  .scan-big{font-size:64px;font-weight:900;line-height:1;color:var(--brand-ink,#b25570);font-variant-numeric:tabular-nums}
+  .scan-part{display:inline-block;margin-top:9px;background:#ede9fe;color:#6d28d9;font-weight:900;font-size:13px;padding:4px 12px;border-radius:20px;letter-spacing:.5px}
+  .scan-nm{margin-top:10px;font-size:16px;font-weight:700;color:var(--text,#1a2130)}
+  .scan-hint{background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;border-radius:12px;padding:10px 14px;font-size:13px;font-weight:600;margin-bottom:10px}
+  .scan-row{display:flex;align-items:center;gap:10px;background:#fff;border:2px solid var(--brand,#d9748f);border-radius:16px;padding:15px 18px;margin-bottom:10px}
+  .scan-ic{font-size:24px}
+  .scan-row input{flex:1;border:0;outline:0;font-size:20px;font-weight:800;color:var(--brand-ink,#b25570);font-family:'SF Mono',Menlo,monospace;background:transparent}
+  .scan-row input::placeholder{color:#c9a9b5;font-family:inherit;font-weight:600;font-size:15px}
+  .scan-dot{width:9px;height:9px;border-radius:50%;background:#16a34a;animation:scdot 1.3s infinite}
+  @keyframes scdot{0%,100%{opacity:.35}50%{opacity:1}}
+  .scan-skip{width:100%;padding:13px;border:1.5px dashed #d6c7cd;border-radius:14px;background:#fff;color:var(--text-muted,#6b7280);font-weight:800;font-size:15px;cursor:pointer;font-family:inherit;margin-bottom:22px}
+  .scan-alldone{background:rgba(16,185,129,.14);border:1px solid rgba(16,185,129,.4);color:#059669;border-radius:16px;padding:18px;text-align:center;font-weight:900;font-size:17px;margin:4px 0 18px}
+  .scan-sec{font-size:12px;font-weight:800;color:var(--text-muted,#6b7280);text-transform:uppercase;letter-spacing:.5px;margin:0 2px 10px}
+  .scan-done-row{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--border,#e9e3e6);border-radius:14px;padding:10px 14px;margin-bottom:9px}
+  .sdr-sk{min-width:50px;text-align:center;font-weight:900;font-size:19px;color:var(--brand-ink,#b25570);background:#fbeef2;border-radius:10px;padding:6px 8px}
+  .sdr-mid{flex:1}.sdr-t{font-weight:800;font-size:15px}.sdr-s{font-size:12px;color:var(--text-muted,#6b7280)}
+  .scan-tag{font-size:11px;font-weight:800;padding:3px 9px;border-radius:20px;white-space:nowrap}
+  .scan-tag.ok{background:#dcfce7;color:#166534}.scan-tag.warn{background:#fef3c7;color:#92400e}
+  </style>
   <div id="listView">
     <div class="list-head">
       <button class="back-btn" id="backBtn" data-i18n="backscan">← Cancel — back to scan</button>
@@ -5560,7 +5581,7 @@ var T={en:{
  showhelp:"Pick the show you'll be collecting orders for. You can switch later if you change tables.",
  readyscan:'Ready to scan',aimscan:'Aim the scanner at the barcode on the packing label.',waitscan:'Waiting for scan…',
  scannerready:'Scanner ready',st_session:'this session',st_today:'today total',st_week:'past 7 days',
- backscan:'← Cancel — back to scan',of:'of',pickedw:'picked',tapitems:'Tap items above as you pick them',
+ backscan:'← Cancel — back to scan',of:'of',pickedw:'picked',tapitems:'Scan items above as you pick them',
  reportproblem:'🚧 Report a problem with this order',problemtitle:'Problem with this order',
  problemhelp:'Tell the manager what\\'s wrong so they can fix it. The order moves to the "Issues" queue and you can continue picking the next one.',
  p_missing:'Item missing',p_damaged:'Damaged',p_wrongsku:'Wrong SKU',p_cantfind:"Can't find",
@@ -5569,13 +5590,17 @@ var T={en:{
  gotitscan:'Got it — back to scan',donebring:'✓ Done — bring to packer',moretopick:'more to pick',
  combined:'⚠️ COMBINED ORDER',shows:'SHOWS',combinedsub:'Items come from different shows — pick each TABLE SET below in order',
  tableset:'TABLE SET',giveaway:'GIVEAWAY',gotomanager:'GO TO MANAGER TO GET IT',alreadypicked:'Already picked by',
- clearcancelled:'Clear cancelled items off the table first',noshipment:'No shipment for',lookupfailed:'Lookup failed'
+ clearcancelled:'Clear cancelled items off the table first',noshipment:'No shipment for',lookupfailed:'Lookup failed',
+ scanhint:"Scan each product's barcode to pick it. No barcode? Tap Skip.",scanproduct:'Scan the product barcode…',
+ skipnobarcode:'⤼ Skip — no barcode on this product',pickedsofar:'Picked so far',scannedw:'Scanned',leftw:'left',
+ needscost:'skipped · needs product & cost',addcostt:'add cost',instockt:'✓ in stock',newprod:'new product',
+ allscanned:'All items scanned ✓',costonfile:'cost on file',matchedw:'matched',notrecognized:'Not a known barcode — try again'
 },es:{
  switchpack:'📦 Cambiar a Empaque',logout:'Salir',step1:'Paso 1',whichshow:'¿Qué show estás recolectando?',
  showhelp:'Elige el show del que recolectarás pedidos. Puedes cambiar después si cambias de mesa.',
  readyscan:'Listo para escanear',aimscan:'Apunta el escáner al código de barras de la etiqueta de envío.',waitscan:'Esperando escaneo…',
  scannerready:'Escáner listo',st_session:'esta sesión',st_today:'total de hoy',st_week:'últimos 7 días',
- backscan:'← Cancelar — volver a escanear',of:'de',pickedw:'recolectados',tapitems:'Toca los artículos a medida que los recolectas',
+ backscan:'← Cancelar — volver a escanear',of:'de',pickedw:'recolectados',tapitems:'Escanea los artículos a medida que los recolectas',
  reportproblem:'🚧 Reportar un problema con este pedido',problemtitle:'Problema con este pedido',
  problemhelp:'Dile al gerente qué está mal para que lo arregle. El pedido pasa a la cola de "Problemas" y puedes seguir con el siguiente.',
  p_missing:'Falta artículo',p_damaged:'Dañado',p_wrongsku:'SKU incorrecto',p_cantfind:'No lo encuentro',
@@ -5584,7 +5609,11 @@ var T={en:{
  gotitscan:'Entendido — volver a escanear',donebring:'✓ Listo — llévalo al empacador',moretopick:'por recolectar',
  combined:'⚠️ PEDIDO COMBINADO',shows:'SHOWS',combinedsub:'Los artículos son de shows distintos — recolecta cada SET DE MESAS abajo en orden',
  tableset:'SET DE MESAS',giveaway:'REGALO',gotomanager:'VE AL GERENTE POR ESTE REGALO',alreadypicked:'Ya recolectado por',
- clearcancelled:'Primero retira los artículos cancelados de la mesa',noshipment:'No hay envío para',lookupfailed:'Búsqueda fallida'
+ clearcancelled:'Primero retira los artículos cancelados de la mesa',noshipment:'No hay envío para',lookupfailed:'Búsqueda fallida',
+ scanhint:'Escanea el código de cada producto para recolectarlo. ¿Sin código? Toca Saltar.',scanproduct:'Escanea el código del producto…',
+ skipnobarcode:'⤼ Saltar — este producto no tiene código',pickedsofar:'Recolectados',scannedw:'Escaneados',leftw:'restantes',
+ needscost:'saltado · falta producto y costo',addcostt:'agregar costo',instockt:'✓ en stock',newprod:'producto nuevo',
+ allscanned:'Todos escaneados ✓',costonfile:'costo registrado',matchedw:'vinculado',notrecognized:'Código no reconocido — intenta de nuevo'
 }};
 function t(k){return (T[LANG]&&T[LANG][k])||T.en[k]||k}
 function toggleLang(){LANG=(LANG==='en'?'es':'en');localStorage.setItem('lang',LANG);location.reload()}
@@ -5897,25 +5926,40 @@ function renderItems(){
     });
     arr.sort(function(a,b){return (a.date-b.date)||(a.part-b.part)||(a.sku-b.sku)||0});
     var shows=[];arr.forEach(function(x){if(shows.indexOf(x.base)<0)shows.push(x.base)});
-    var multi=shows.length>1, lastBase=null, setIdx=0, html='';
+    var multi=shows.length>1, html='';
     if(multi){
         html+='<div style="margin-bottom:12px;padding:13px 14px;border-radius:12px;background:rgba(251,191,36,.18);border:2px solid rgba(251,191,36,.6);color:#b45309;font-weight:900;font-size:15px;text-align:center;letter-spacing:.3px">'+t('combined')+' · '+shows.length+' '+t('shows')+'<div style="font-weight:600;font-size:12px;color:var(--text-muted);margin-top:4px">'+t('combinedsub')+'</div></div>';
     }
-    arr.forEach(function(x){
-        if(multi && x.base!==lastBase){
-            setIdx++; lastBase=x.base;
-            html+='<div style="margin:16px 0 8px;padding:9px 13px;border-radius:10px;background:rgba(217,116,143,.16);border:1px solid rgba(217,116,143,.35);color:var(--brand);font-weight:800;font-size:14px;display:flex;justify-content:space-between;gap:8px"><span>📋 '+t('tableset')+' '+setIdx+'</span><span style="font-weight:600;color:var(--text-muted)">'+escapeHtml(x.base)+'</span></div>';
-        }
-        var it=x.it, cls='pi'+(it.cancelled?' cancelled':(it.picked?' done':''));
-        html+='<div class="'+cls+'" data-id="'+it.id+'">'+
-            '<div class="pi-box"></div>'+
-            '<div class="pi-info">'+
-                '<div class="pi-sku">'+escapeHtml(it.sku||'?')+'</div>'+
-                '<div class="pi-name">'+renderProductName(it.product_name||'')+(it.cancelled?' · CANCELLED':'')+'</div>'+
+    // ── Guided scan-to-pick: present ONE unpicked sticker at a time; the picker must scan the
+    // product's barcode to pick it (links it to the product + builds COGS), or Skip if no barcode.
+    var curx=null;
+    for(var ci=0;ci<arr.length;ci++){ if(!arr[ci].it.picked){ curx=arr[ci]; break; } }
+    if(curx){
+        var cit=curx.it;
+        if(multi){ html+='<div style="margin:4px 0 10px;padding:9px 13px;border-radius:10px;background:rgba(217,116,143,.16);border:1px solid rgba(217,116,143,.35);color:var(--brand);font-weight:800;font-size:13px">📋 '+t('tableset')+' — '+escapeHtml(curx.base)+'</div>'; }
+        html+='<div class="scan-hint">'+t('scanhint')+'</div>'+
+            '<div class="scan-cur">'+
+                '<div class="scan-big">'+escapeHtml(cit.sku||'?')+'</div>'+
+                (curx.part<9999?('<div class="scan-part">PART '+curx.part+'</div>'):'')+
+                '<div class="scan-nm">'+renderProductName(cit.product_name||'')+'</div>'+
             '</div>'+
-            '<div class="pi-qty">×'+(it.quantity||1)+'</div>'+
-        '</div>';
-    });
+            '<div class="scan-row"><span class="scan-ic">🔳</span><input id="pickScanInput" placeholder="'+t('scanproduct')+'" autocomplete="off"><span class="scan-dot"></span></div>'+
+            '<button class="scan-skip" id="pickSkipBtn" data-id="'+cit.id+'">'+t('skipnobarcode')+'</button>';
+    } else if(arr.length){
+        html+='<div class="scan-alldone">'+t('allscanned')+'</div>';
+    }
+    // Picked so far — what's been scanned/skipped, newest effort visible for a quick re-check.
+    var donex=arr.filter(function(x){return x.it.picked});
+    if(donex.length){
+        html+='<div class="scan-sec">'+t('pickedsofar')+'</div>';
+        donex.forEach(function(x){
+            var it=x.it, p=it._prod, sk=it._skipped;
+            var tag= sk ? ('<span class="scan-tag warn">'+t('addcostt')+'</span>') : ((p&&p.in_stock)?('<span class="scan-tag ok">'+t('instockt')+'</span>'):(p&&p.auto?('<span class="scan-tag warn">'+t('newprod')+'</span>'):''));
+            var title= (!sk && p && p.name) ? escapeHtml(p.name) : renderProductName(it.product_name||'');
+            var sub= sk ? t('needscost') : (p ? ('✓ '+t('matchedw')+(p.cost!=null?(' · '+t('costonfile')):'')) : '✓');
+            html+='<div class="scan-done-row"><div class="sdr-sk">'+escapeHtml(it.sku||'?')+'</div><div class="sdr-mid"><div class="sdr-t">'+title+'</div><div class="sdr-s">'+sub+'</div></div>'+tag+'</div>';
+        });
+    }
     // Attached giveaways — checked off like any other product before the order is done.
     if(gvs.length){
         html+='<div style="margin:16px 0 8px;padding:9px 13px;border-radius:10px;background:rgba(16,185,129,.14);border:1px solid rgba(16,185,129,.4);color:#059669;font-weight:800;font-size:14px">🎁 '+t('giveaway')+' — '+t('gotomanager')+'</div>';
@@ -5931,11 +5975,21 @@ function renderItems(){
         });
     }
     document.getElementById('itemsList').innerHTML=html;
-    document.getElementById('itemsList').querySelectorAll('.pi').forEach(function(el){
-        if(el.classList.contains('cancelled'))return;
-        if(el.classList.contains('gv')){el.addEventListener('click',function(){toggleGiveaway(parseInt(el.dataset.gid))});return;}
-        el.addEventListener('click',function(){toggleItem(parseInt(el.dataset.id))});
+    // Giveaways are still tap-to-add (you fetch them from the manager, not scan them).
+    document.getElementById('itemsList').querySelectorAll('.pi.gv').forEach(function(el){
+        el.addEventListener('click',function(){toggleGiveaway(parseInt(el.dataset.gid))});
     });
+    var _si=document.getElementById('pickScanInput');
+    if(_si){
+        _si.focus();
+        _si.addEventListener('keydown',function(e){
+            if(e.key!=='Enter')return;
+            var v=this.value.trim(); this.value='';
+            if(v && curx) doScanPick(curx.it.id, v);
+        });
+    }
+    var _sk=document.getElementById('pickSkipBtn');
+    if(_sk){ _sk.addEventListener('click',function(){ doSkipPick(parseInt(_sk.dataset.id)); }); }
     var btn=document.getElementById('doneBtn');
     if(pickedN===total && total>0){
         btn.classList.remove('idle');
@@ -5954,6 +6008,28 @@ function toggleItem(itemId){
         if(d.picked)sndCheck();else sndClick();
         renderItems();
     });
+}
+// Scan the product's barcode to pick this sticker — links it to the product (builds the
+// product DB + COGS), then advances to the next unpicked sticker.
+function doScanPick(itemId,code){
+    fetch('/api/pick/item/'+itemId+'/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code})})
+     .then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){ sndError(); showToast(d.error||t('notrecognized'),true); var si=document.getElementById('pickScanInput'); if(si)si.focus(); return; }
+        var it=currentItems.find(function(x){return x.id===itemId});
+        if(it){ it.picked=1; it._skipped=false; it._prod=d.product?{name:d.product.name,in_stock:d.product.in_stock,cost:d.product.cost,auto:d.auto_created}:null; }
+        sndCheck(); renderItems();
+     }).catch(function(){ sndError(); showToast(t('lookupfailed'),true); });
+}
+// Skip (product has no barcode) — mark picked without linking; it stays in the show's
+// 'needs product / cost' queue so the P&L can be completed later.
+function doSkipPick(itemId){
+    fetch('/api/pick/item/'+itemId+'/skip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})})
+     .then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){ sndError(); showToast(d.error||'Error',true); return; }
+        var it=currentItems.find(function(x){return x.id===itemId});
+        if(it){ it.picked=1; it._skipped=true; it._prod=null; }
+        sndClick(); renderItems();
+     });
 }
 function toggleGiveaway(gid){
     var g=(currentGiveaways||[]).find(function(x){return x.id===gid});
