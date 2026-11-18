@@ -1368,6 +1368,11 @@ def sdb_init(org):
         "ALTER TABLE products ADD COLUMN info_status TEXT",
         "ALTER TABLE products ADD COLUMN info_checked_at TEXT",
         "ALTER TABLE products ADD COLUMN info_attempts INTEGER DEFAULT 0",
+        # Barcode-DB enrichment (name/image/MSRP from the online barcode databases — no AI).
+        # Kept SEPARATE from the scanit AI state above so the two never fight over one column.
+        "ALTER TABLE products ADD COLUMN bc_status TEXT",
+        "ALTER TABLE products ADD COLUMN bc_checked_at TEXT",
+        "ALTER TABLE products ADD COLUMN bc_attempts INTEGER DEFAULT 0",
         "ALTER TABLE products ADD COLUMN image_key TEXT",
         "ALTER TABLE products ADD COLUMN supplier TEXT",
         "ALTER TABLE products ADD COLUMN reorder_point INTEGER DEFAULT 0",
@@ -1580,6 +1585,9 @@ def sdb_init(org):
                   "ALTER TABLE products ADD COLUMN info_status TEXT",
                   "ALTER TABLE products ADD COLUMN info_checked_at TEXT",
                   "ALTER TABLE products ADD COLUMN info_attempts INTEGER DEFAULT 0",
+                  "ALTER TABLE products ADD COLUMN bc_status TEXT",
+                  "ALTER TABLE products ADD COLUMN bc_checked_at TEXT",
+                  "ALTER TABLE products ADD COLUMN bc_attempts INTEGER DEFAULT 0",
                   "ALTER TABLE products ADD COLUMN archived INTEGER DEFAULT 0",
                   "ALTER TABLE products ADD COLUMN archived_at TEXT",
                   "ALTER TABLE products ADD COLUMN archived_by TEXT"):
@@ -16470,13 +16478,13 @@ def _scanit_lookup_info_inner(org, sku):
             c.close()
 
 # ── Background product-enrichment drainer ───────────────────────────────────────
-# A scan (picking stub or scanit) creates the product INSTANTLY with no network, leaving it at
-# info_status='' — i.e. queued. Instead of enriching inside the request (which starved the workers
-# during a live — cycle-54), this single leader-locked loop drains the queue slowly across the day:
-# a few products per minute, reusing the existing throttled _scanit_start_lookup (semaphore-limited,
-# per-product claim lock, daily backoff). So scanning never waits on HTTP, and content fills in the
-# background at a healthy pace. Tunables (env): ENRICH_TICK_SEC, ENRICH_PER_TICK, ENRICH_MAX_AGE_DAYS.
-# Kill-switch: BARCODE_ENRICH_QUEUE=0.
+# A scan (picking stub or scanit) creates the product INSTANTLY with no network, leaving it queued
+# (bc_status=''). Instead of enriching inside the request (which starved the workers during a live —
+# cycle-54), this single leader-locked loop drains the queue slowly across the day: a few products
+# per minute, each filling NAME + IMAGE + MSRP(if any) from the online barcode databases — NO AI,
+# so it costs nothing and doesn't depend on Anthropic credit. Scanning never waits on HTTP; content
+# fills in the background at a healthy pace. Tunables (env): ENRICH_TICK_SEC, ENRICH_PER_TICK,
+# ENRICH_MAX_AGE_DAYS. Kill-switches: BARCODE_ENRICH_QUEUE=0 (queue), BARCODE_ONLINE_LOOKUP=0 (lookups).
 try: ENRICH_TICK_SEC=max(5,int(os.environ.get("ENRICH_TICK_SEC","20") or 20))
 except Exception: ENRICH_TICK_SEC=20
 try: ENRICH_PER_TICK=max(1,int(os.environ.get("ENRICH_PER_TICK","1") or 1))
@@ -16487,15 +16495,30 @@ except Exception: ENRICH_MAX_AGE_DAYS=30
 def _enrich_queue_on():
     return os.environ.get("BARCODE_ENRICH_QUEUE","1").strip().lower() not in ("0","false","no","off")
 
+def _barcode_enrich_wants(r):
+    """Try a barcode-DB lookup once per product: only when it still looks incomplete (stub name or
+    no image) AND we haven't just tried. A failed lookup retries after a day, up to 3 times, then
+    stops (the barcode simply isn't in the databases). 'done' is final."""
+    if not r: return False
+    code=re.sub(r'\D','',(r["barcode"] or ""))
+    if len(code)<8: return False                       # only real UPC/EAN — never internal SKUs
+    st=(r["bc_status"] or "")
+    if st=="done": return False
+    if st=="looking" and (r["bc_checked_at"] or "")>= _scanit_stale_cutoff(): return False
+    if st=="failed" and (int(r["bc_attempts"] or 0)>=3 or
+            (r["bc_checked_at"] or "")>(datetime.now()-timedelta(days=1)).isoformat(timespec="seconds")):
+        return False
+    incomplete=(r["name"] or "").startswith("New product") or not (r["image_url"] or "").strip()
+    return incomplete
+
 def _enrich_pick_candidates(org, limit):
-    """Up to `limit` SKUs that still need enrichment, newest first (a just-scanned product gets its
-    name soonest), bounded to the last ENRICH_MAX_AGE_DAYS so the backlog can't balloon into a huge
-    token bill. Uses the same _scanit_wants_lookup gate the on-scan path uses."""
+    """Up to `limit` SKUs needing a barcode-DB lookup, newest first (a just-scanned product gets its
+    name soonest), bounded to the last ENRICH_MAX_AGE_DAYS so an old backlog can't flood the APIs."""
     cutoff=(datetime.now()-timedelta(days=ENRICH_MAX_AGE_DAYS)).isoformat(timespec="seconds")
     c=sdb(org)
     try:
         rows=c.execute("""SELECT * FROM products
-                          WHERE COALESCE(info_status,'') IN ('','failed')
+                          WHERE COALESCE(bc_status,'') IN ('','failed')
                             AND COALESCE(updated_at,created_at,'') >= ?
                           ORDER BY COALESCE(updated_at,created_at) DESC
                           LIMIT ?""",(cutoff, limit*8)).fetchall()
@@ -16503,15 +16526,57 @@ def _enrich_pick_candidates(org, limit):
         c.close()
     out=[]
     for r in rows:
-        if _scanit_wants_lookup(r):
+        if _barcode_enrich_wants(r):
             out.append(r["sku"])
             if len(out)>=limit: break
     return out
 
+def _barcode_enrich_one(org, sku):
+    """Fill NAME / IMAGE / CATEGORY / MSRP for one product from the online barcode databases.
+    Only fills BLANKS — never overwrites a real name, a manual price, or an existing image. No AI."""
+    c=sdb(org)
+    try:
+        r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()
+        if not r: return
+        # claim it so another tick/worker won't double-fetch the same barcode
+        c.execute("UPDATE products SET bc_status='looking', bc_checked_at=?, bc_attempts=COALESCE(bc_attempts,0)+1 WHERE sku=?",
+                  (datetime.now().isoformat(timespec="seconds"), sku)); c.commit()
+        code=r["barcode"] or ""
+    finally:
+        c.close()
+    info=None
+    try: info=_barcode_lookup_online(code)
+    except Exception as e: print("barcode enrich lookup failed",sku,":",e,flush=True)
+    now=datetime.now().isoformat(timespec="seconds")
+    c=sdb(org)
+    try:
+        r=c.execute("SELECT * FROM products WHERE sku=?",(sku,)).fetchone()
+        if not r: return
+        if not (info and info.get("name")):
+            c.execute("UPDATE products SET bc_status='failed', bc_checked_at=? WHERE sku=?",(now,sku)); c.commit()
+            return
+        # fill blanks only
+        if (r["name"] or "").startswith("New product") and info.get("name"):
+            c.execute("UPDATE products SET name=? WHERE sku=?",(info["name"][:160],sku))
+        if not (r["image_url"] or "").strip() and info.get("image"):
+            c.execute("UPDATE products SET image_url=? WHERE sku=?",(info["image"],sku))
+        if (not (r["category"] or "").strip() or (r["category"] or "")=="Needs review") and info.get("category"):
+            c.execute("UPDATE products SET category=? WHERE sku=?",(info["category"],sku))
+        # MSRP only if we have none yet and nothing better is on file (manual/web beat a DB price)
+        price=0
+        try: price=round(float(info.get("price") or 0),2)
+        except Exception: price=0
+        if price>0 and float(r["retail_price"] or 0)<=0 and not (r["msrp_source"] or "").startswith(("manual","http")):
+            c.execute("UPDATE products SET retail_price=?, msrp_source=? WHERE sku=?",
+                      (price, "db:"+(info.get("source") or "barcode"), sku))
+        c.execute("UPDATE products SET bc_status='done', bc_checked_at=? WHERE sku=?",(now,sku)); c.commit()
+    finally:
+        c.close()
+
 def _enrich_loop():
     while True:
         time.sleep(ENRICH_TICK_SEC)
-        if not _enrich_queue_on() or not anthropic_client:
+        if not _enrich_queue_on():
             continue
         try:
             # Only ONE worker drains per tick: claim a short lease on a shared marker inside the
@@ -16526,14 +16591,14 @@ def _enrich_loop():
                 continue
             for _org in list_org_ids():
                 for sku in _enrich_pick_candidates(_org, ENRICH_PER_TICK):
-                    try: _scanit_start_lookup(_org, sku)   # threads + semaphore + per-product claim
-                    except Exception as e: print("enrich start failed",_org,sku,":",e,flush=True)
+                    try: _barcode_enrich_one(_org, sku)   # name/image/MSRP from barcode DBs, no AI
+                    except Exception as e: print("barcode enrich failed",_org,sku,":",e,flush=True)
         except Exception as e:
             print("enrich loop error:",e,flush=True)
 
 if not STAGING_SAFE:
     threading.Thread(target=_enrich_loop,daemon=True,name="enrich-drainer").start()
-    print("[enrich] background product-enrichment drainer started (tick=%ss, per_tick=%s, max_age=%sd)"
+    print("[enrich] background barcode-DB enrichment drainer started (tick=%ss, per_tick=%s, max_age=%sd)"
           %(ENRICH_TICK_SEC,ENRICH_PER_TICK,ENRICH_MAX_AGE_DAYS),flush=True)
 
 @app.route("/api/scanit/scan")
