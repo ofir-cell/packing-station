@@ -2329,6 +2329,16 @@ TIKTOK_SERVICE_ID=os.environ.get("TIKTOK_SERVICE_ID","").strip()
 TIKTOK_AUTH_BASE=os.environ.get("TIKTOK_AUTH_BASE","https://auth.tiktok-shops.com").rstrip("/")
 TIKTOK_API_BASE=os.environ.get("TIKTOK_API_BASE","https://open-api.tiktokglobalshop.com").rstrip("/")
 TIKTOK_API_VERSION=os.environ.get("TIKTOK_API_VERSION","202309").strip()
+
+# ── Whatnot Seller API (Phase 0: read-only connect + probe) ──────────────────────
+# REST, Bearer auth. The Personal Access Token (prefix wn_pat_tk_) is a SECRET: it is read ONLY
+# from the WHATNOT_API_TOKEN env var (a Railway variable entered by Ofir) — never asked for in
+# chat, never stored in the DB, never logged. Everything here is read-only; no ingestion yet.
+WHATNOT_API_BASE=os.environ.get("WHATNOT_API_BASE","https://api.whatnot.com/seller-api/rest/v2").rstrip("/")
+def _wn_token():
+    return (os.environ.get("WHATNOT_API_TOKEN","") or "").strip()
+def _wn_ready():
+    return bool(_wn_token())
 # Where the seller is sent to grant access. The app's redirect URL (set in
 # Partner Center) must be https://getwhatnot.com/api/tiktok/callback.
 # Custom (self-developed) apps have no Service ID; TikTok instead shows a full
@@ -16942,6 +16952,108 @@ def _tt_request(method, url, params=None, headers=None, body=None, signed=False,
             if attempt < _TT_MAX_RETRIES:
                 time.sleep(min(2**attempt, 8)); attempt+=1; continue
             raise
+
+# ── Whatnot Seller API request helper + read-only probe (Phase 0) ────────────────
+def _wn_request(method, path, params=None, timeout=15):
+    """One Bearer-authed REST call to the Whatnot Seller API. Returns (status_code, json|None).
+    Retries 429/5xx a couple of times. The token is never logged. Read-only use only here."""
+    tok=_wn_token()
+    if not tok: return (0, {"error":"WHATNOT_API_TOKEN not set"})
+    url=WHATNOT_API_BASE+("" if path.startswith("/") else "/")+path
+    if params:
+        url += ("?"+_up.urlencode(params))
+    attempt=0
+    while True:
+        req=_ur.Request(url, method=method, headers={
+            "Authorization":"Bearer "+tok, "Accept":"application/json",
+            "User-Agent":"LiveOpsHub/1.0 (+fulfillment)"})
+        try:
+            with _ur.urlopen(req, timeout=timeout) as r:
+                body=r.read().decode("utf-8","replace")
+                try: return (r.status, json.loads(body) if body else None)
+                except Exception: return (r.status, {"raw":body[:500]})
+        except _ue.HTTPError as e:
+            if e.code in (429,500,502,503,504) and attempt<2:
+                time.sleep(min(2**attempt,5)); attempt+=1; continue
+            try: data=json.loads(e.read().decode("utf-8","replace") or "{}")
+            except Exception: data={"error":"HTTP %d"%e.code}
+            return (e.code, data)
+        except Exception as e:
+            if attempt<2: time.sleep(min(2**attempt,5)); attempt+=1; continue
+            return (0, {"error":str(e)[:200]})
+
+def _wn_first(data):
+    """List endpoints may return a bare array or an envelope ({data:[...]} / {orders:[...]}). Pull
+    the first record either way."""
+    if isinstance(data, list): return data[0] if data else None
+    if isinstance(data, dict):
+        for k in ("data","orders","shipments","results","items"):
+            v=data.get(k)
+            if isinstance(v, list): return v[0] if v else None
+        return data or None
+    return None
+
+def _wn_field_report(obj, fields):
+    """For each field: 'present' (non-null), 'null', or 'missing'. NEVER returns the value — so a
+    probe can prove PII access without leaking any customer data into the UI, chat or logs."""
+    out={}
+    for f in fields:
+        if not isinstance(obj, dict) or f not in obj: out[f]="missing"
+        elif obj.get(f) in (None,"",[],{}): out[f]="null"
+        else: out[f]="present"
+    return out
+
+@app.route("/api/whatnot/probe")
+@req_true_admin
+def api_whatnot_probe():
+    """READ-ONLY diagnostic (admin only). Confirms the token works and reports — without ever
+    exposing customer data — whether the PII-gated fields (buyer / address / label documents)
+    come back populated or null, so we know if this account is approved for customer data.
+    Needs WHATNOT_API_TOKEN set in Railway. No ingestion, no writes."""
+    if not _wn_ready():
+        return jsonify({"ok":False,"error":"WHATNOT_API_TOKEN not set in Railway variables."})
+    report={"ok":True,"base":WHATNOT_API_BASE}
+    # 1) whoami — the SELLER behind the token (that's you, not a customer)
+    sc,me=_wn_request("GET","/users/me")
+    report["users_me"]={"status":sc,
+        "seller_id":(me or {}).get("id") or (me or {}).get("seller_id"),
+        "username":(me or {}).get("username") or (me or {}).get("name"),
+        "keys":sorted(list(me.keys()))[:40] if isinstance(me,dict) else None}
+    if sc in (401,403):
+        report["ok"]=False; report["auth_error"]="Token rejected (%d) — check the token and its scopes."%sc
+        return jsonify(report)
+    # 2) one order → is buyer (PII) present? plus the non-PII shape (status, show link, line items)
+    sc,ol=_wn_request("GET","/orders",params={"limit":1})
+    o=_wn_first(ol)
+    oid=(o or {}).get("id") or (o or {}).get("order_id")
+    od=o
+    if oid:
+        sc2,od2=_wn_request("GET","/orders/%s"%oid)
+        if isinstance(od2,dict): od=od2
+    report["orders"]={"list_status":sc,"sample_order_id":("present" if oid else "none"),
+        "pii_fields":_wn_field_report(od or {},["buyer","customer","buyer_username"]),
+        "non_pii_keys":sorted(list(od.keys()))[:50] if isinstance(od,dict) else None}
+    # 3) one shipment → are recipient / destination_address / documents (PII) present?
+    sc,sl=_wn_request("GET","/shipments",params={"limit":1})
+    s=_wn_first(sl)
+    sid=(s or {}).get("id") or (s or {}).get("shipment_id")
+    sd=s
+    if sid:
+        sc2,sd2=_wn_request("GET","/shipments/%s"%sid)
+        if isinstance(sd2,dict): sd=sd2
+    report["shipments"]={"list_status":sc,"sample_shipment_id":("present" if sid else "none"),
+        "pii_fields":_wn_field_report(sd or {},["recipient","destination_address","documents","address"]),
+        "non_pii_keys":sorted(list(sd.keys()))[:50] if isinstance(sd,dict) else None}
+    # 4) shows — confirms we can read lives (no PII)
+    sc,shl=_wn_request("GET","/shows",params={"limit":1})
+    report["shows"]={"list_status":sc,"sample":("present" if _wn_first(shl) else "none")}
+    # Verdict on the one question that matters
+    pii=dict(report["orders"]["pii_fields"]); pii.update(report["shipments"]["pii_fields"])
+    any_present=any(v=="present" for v in pii.values())
+    report["pii_access"]=("approved" if any_present else
+                          "NOT approved (buyer/address/documents are null) — core pick/pack still works; "
+                          "label+address need Whatnot customer-data approval")
+    return jsonify(report)
 
 def _tt_token_exchange(auth_code):
     return _tt_request("GET", TIKTOK_AUTH_BASE+"/api/v2/token/get",
