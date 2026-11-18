@@ -5536,6 +5536,14 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
       <div class="progress-text"><b id="pickedCount">0</b> <span data-i18n="of">of</span> <span id="totalCount">0</span> <span data-i18n="pickedw">picked</span></div>
       <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
     </div>
+    <!-- Guided scan-to-pick. The scan input is PERMANENT (never rebuilt) so focus is never lost
+         between items — the picker scans hands-free without tapping the screen. -->
+    <div id="scanTopInfo"></div>
+    <div class="scan-hint" id="scanHintRow" style="display:none"></div>
+    <div class="scan-cur" id="scanCur" style="display:none"><div class="scan-big" id="scanBig">—</div><div class="scan-part" id="scanPart" style="display:none"></div><div class="scan-nm" id="scanNm"></div></div>
+    <div class="scan-row" id="scanRow" style="display:none"><span class="scan-ic">🔳</span><input id="pickScanInput" autocomplete="off" inputmode="none"><span class="scan-dot"></span></div>
+    <button class="scan-skip" id="pickSkipBtn" style="display:none"></button>
+    <div class="scan-alldone" id="scanAllDone" style="display:none"></div>
     <div class="items-list" id="itemsList"></div>
   </div>
 </div>
@@ -5629,7 +5637,7 @@ var _urlShow=new URLSearchParams(location.search).get('show')||'';
 var currentShow=_urlShow||localStorage.getItem('pickShow')||'';
 if(_urlShow){try{localStorage.setItem('pickShow',_urlShow);}catch(e){}
   try{history.replaceState(null,'',location.pathname);}catch(e){}}
-var currentDetail=null,currentItems=[],currentGiveaways=[],sessionCount=0;
+var currentDetail=null,currentItems=[],currentGiveaways=[],sessionCount=0,curItemId=null;
 var availableShows=[];
 
 // ─── Audio feedback (Web Audio API). Mobile Safari needs a user gesture to start. ───
@@ -5926,28 +5934,38 @@ function renderItems(){
     });
     arr.sort(function(a,b){return (a.date-b.date)||(a.part-b.part)||(a.sku-b.sku)||0});
     var shows=[];arr.forEach(function(x){if(shows.indexOf(x.base)<0)shows.push(x.base)});
-    var multi=shows.length>1, html='';
-    if(multi){
-        html+='<div style="margin-bottom:12px;padding:13px 14px;border-radius:12px;background:rgba(251,191,36,.18);border:2px solid rgba(251,191,36,.6);color:#b45309;font-weight:900;font-size:15px;text-align:center;letter-spacing:.3px">'+t('combined')+' · '+shows.length+' '+t('shows')+'<div style="font-weight:600;font-size:12px;color:var(--text-muted);margin-top:4px">'+t('combinedsub')+'</div></div>';
-    }
-    // ── Guided scan-to-pick: present ONE unpicked sticker at a time; the picker must scan the
-    // product's barcode to pick it (links it to the product + builds COGS), or Skip if no barcode.
+    var multi=shows.length>1;
     var curx=null;
     for(var ci=0;ci<arr.length;ci++){ if(!arr[ci].it.picked){ curx=arr[ci]; break; } }
-    if(curx){
-        var cit=curx.it;
-        if(multi){ html+='<div style="margin:4px 0 10px;padding:9px 13px;border-radius:10px;background:rgba(217,116,143,.16);border:1px solid rgba(217,116,143,.35);color:var(--brand);font-weight:800;font-size:13px">📋 '+t('tableset')+' — '+escapeHtml(curx.base)+'</div>'; }
-        html+='<div class="scan-hint">'+t('scanhint')+'</div>'+
-            '<div class="scan-cur">'+
-                '<div class="scan-big">'+escapeHtml(cit.sku||'?')+'</div>'+
-                (curx.part<9999?('<div class="scan-part">PART '+curx.part+'</div>'):'')+
-                '<div class="scan-nm">'+renderProductName(cit.product_name||'')+'</div>'+
-            '</div>'+
-            '<div class="scan-row"><span class="scan-ic">🔳</span><input id="pickScanInput" placeholder="'+t('scanproduct')+'" autocomplete="off"><span class="scan-dot"></span></div>'+
-            '<button class="scan-skip" id="pickSkipBtn" data-id="'+cit.id+'">'+t('skipnobarcode')+'</button>';
-    } else if(arr.length){
-        html+='<div class="scan-alldone">'+t('allscanned')+'</div>';
+    // Combined-order banner + the current item's table-set (which show it's from).
+    var topHtml='';
+    if(multi){
+        topHtml+='<div style="margin-bottom:12px;padding:13px 14px;border-radius:12px;background:rgba(251,191,36,.18);border:2px solid rgba(251,191,36,.6);color:#b45309;font-weight:900;font-size:15px;text-align:center;letter-spacing:.3px">'+t('combined')+' · '+shows.length+' '+t('shows')+'<div style="font-weight:600;font-size:12px;color:var(--text-muted);margin-top:4px">'+t('combinedsub')+'</div></div>';
+        if(curx){ topHtml+='<div style="margin:4px 0 10px;padding:9px 13px;border-radius:10px;background:rgba(217,116,143,.16);border:1px solid rgba(217,116,143,.35);color:var(--brand);font-weight:800;font-size:13px">📋 '+t('tableset')+' — '+escapeHtml(curx.base)+'</div>'; }
     }
+    document.getElementById('scanTopInfo').innerHTML=topHtml;
+    // Update the PERMANENT current-item card + scan row — never rebuilt, so the scan input keeps
+    // focus between items and the picker never has to tap the screen.
+    var _curCard=document.getElementById('scanCur'), _hint=document.getElementById('scanHintRow'),
+        _row=document.getElementById('scanRow'), _skip=document.getElementById('pickSkipBtn'),
+        _all=document.getElementById('scanAllDone'), _inp=document.getElementById('pickScanInput');
+    if(curx){
+        var cit=curx.it; curItemId=cit.id;
+        document.getElementById('scanBig').textContent=cit.sku||'?';
+        var _pb=document.getElementById('scanPart');
+        if(curx.part<9999){ _pb.textContent='PART '+curx.part; _pb.style.display='inline-block'; } else { _pb.style.display='none'; }
+        document.getElementById('scanNm').innerHTML=renderProductName(cit.product_name||'');
+        if(_inp)_inp.placeholder=t('scanproduct');
+        _hint.textContent=t('scanhint'); _hint.style.display='block';
+        _curCard.style.display='block'; _row.style.display='flex';
+        _skip.textContent=t('skipnobarcode'); _skip.style.display='block';
+        _all.style.display='none';
+    } else {
+        curItemId=null;
+        _curCard.style.display='none'; _row.style.display='none'; _skip.style.display='none'; _hint.style.display='none';
+        if(arr.length){ _all.textContent=t('allscanned'); _all.style.display='block'; } else { _all.style.display='none'; }
+    }
+    var html='';
     // Picked so far — what's been scanned/skipped, newest effort visible for a quick re-check.
     var donex=arr.filter(function(x){return x.it.picked});
     if(donex.length){
@@ -5979,17 +5997,7 @@ function renderItems(){
     document.getElementById('itemsList').querySelectorAll('.pi.gv').forEach(function(el){
         el.addEventListener('click',function(){toggleGiveaway(parseInt(el.dataset.gid))});
     });
-    var _si=document.getElementById('pickScanInput');
-    if(_si){
-        _si.focus();
-        _si.addEventListener('keydown',function(e){
-            if(e.key!=='Enter')return;
-            var v=this.value.trim(); this.value='';
-            if(v && curx) doScanPick(curx.it.id, v);
-        });
-    }
-    var _sk=document.getElementById('pickSkipBtn');
-    if(_sk){ _sk.addEventListener('click',function(){ doSkipPick(parseInt(_sk.dataset.id)); }); }
+    if(curx && _inp){ try{ _inp.focus(); }catch(e){} }   // keep focus on the scanner, hands-free
     var btn=document.getElementById('doneBtn');
     if(pickedN===total && total>0){
         btn.classList.remove('idle');
@@ -6076,6 +6084,26 @@ document.getElementById('backBtn').addEventListener('click',function(){
     switchState('scan');
 });
 document.getElementById('doneBtn').addEventListener('click',completePick);
+
+// Scan input + skip are wired ONCE (the elements are permanent, never rebuilt) so the scanner
+// keeps focus between items — the picker scans product after product without touching the screen.
+(function(){
+  var inp=document.getElementById('pickScanInput');
+  if(inp){ inp.addEventListener('keydown',function(e){
+    if(e.key!=='Enter')return; e.preventDefault();
+    var v=this.value.trim(); this.value='';
+    if(v && curItemId) doScanPick(curItemId, v);
+  }); }
+  var sk=document.getElementById('pickSkipBtn');
+  if(sk){ sk.addEventListener('click',function(){ if(curItemId) doSkipPick(curItemId); }); }
+})();
+// Safety net: while an order is open, keep the scanner focused so a scan is never dropped.
+setInterval(function(){
+  if(document.getElementById('listView').classList.contains('on')){
+    var inp=document.getElementById('pickScanInput');
+    if(inp && inp.offsetParent!==null && document.activeElement!==inp){ try{ inp.focus(); }catch(e){} }
+  }
+},700);
 
 // ─── Issue reporting ───
 var issueModal=document.getElementById('issueModal');
