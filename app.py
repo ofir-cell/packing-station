@@ -8848,7 +8848,12 @@ def api_product_gen_barcode(sku):
 
 def _barcode_lookup_online(code):
     """Look a barcode up in online databases. Returns a dict {code,name,brand,category,
-    image,source} or None. Shared by the lookup API and the scan auto-create flow."""
+    image,source} or None. Shared by the lookup API and the scan auto-create flow.
+    NEVER call this on the picker's hot path — it makes up to 4 sequential external HTTP
+    calls (6s each) and will starve the workers during a busy live. Kill-switch: set env
+    BARCODE_ONLINE_LOOKUP=0 to disable all online lookups instantly (no deploy needed)."""
+    if (os.environ.get("BARCODE_ONLINE_LOOKUP","1").strip().lower() in ("0","false","no","off")):
+        return None
     digits=re.sub(r'\D','',code or "")[:14]
     if len(digits)<8: return None
     import urllib.request as _u, json as _j
@@ -8913,18 +8918,23 @@ def _barcode_lookup_online(code):
             "category":(res.get("category") or "").strip()[:60],"image":img[:500],
             "price":(price if price>0 else 0),"source":res.get("source","")}
 
-def _resolve_or_create_product_by_barcode(c, code, who=""):
-    """Find a product by barcode/sku; if missing, pull it from the online barcode DBs and
-    create it so a live scan never dead-ends on 'not found'. Returns (product_row, created,
-    source). If nothing is found online a stub is created (flagged for admin to complete)."""
+def _resolve_or_create_product_by_barcode(c, code, who="", online=False):
+    """Find a product by barcode/sku; if missing, create it so a live scan never dead-ends on
+    'not found'. Returns (product_row, created, source).
+    online=False (the default, and ALWAYS what the picker's scan path uses) creates the product
+    as a stub instantly — NO external HTTP — because online enrichment makes up to 4 sequential
+    6s calls and will starve the workers during a busy live (this caused a full outage). The stub
+    is flagged 'Needs review' and gets enriched later from the product screen / barcode lookup API.
+    online=True is only for off-hot-path callers that can afford to wait."""
     code=(code or "").strip()
     if not code: return (None, False, "")
     row=c.execute("SELECT * FROM products WHERE barcode=? OR sku=?",(code,code)).fetchone()
     if row: return (row, False, "")
     now=datetime.now().isoformat(timespec='seconds')
     info=None
-    try: info=_barcode_lookup_online(code)
-    except Exception as e: print("auto-create lookup failed:",e,flush=True)
+    if online:
+        try: info=_barcode_lookup_online(code)
+        except Exception as e: print("auto-create lookup failed:",e,flush=True)
     if info:
         name=info["name"]; cat=info.get("category") or ""; img=info.get("image") or ""; src=info.get("source","")
         retail=info.get("price") or 0
