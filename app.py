@@ -7671,6 +7671,12 @@ def api_pick_complete(sid):
 # SHOW_HARD_CAP_DAYS bounds the query so we never scan the whole history.
 SHOW_WINDOW_DAYS = 30
 SHOW_HARD_CAP_DAYS = 180
+# The Shows board loads a short window by default and extends a week at a time via a
+# "Load more" button, so the page is light even with a long history. Shows still being
+# worked (any pending order) ALWAYS appear regardless of age — only finished (DONE) shows
+# age out of the window — so no back-dated / open show can ever vanish from the floor.
+SHOW_DEFAULT_DAYS = 7
+SHOW_LOAD_STEP_DAYS = 7
 REPRINT_PULL_DAYS = 14   # how far back reprint pulls from TikTok when a sticker isn't in the system yet
 
 @app.route("/admin/shows")
@@ -7684,10 +7690,17 @@ def shows_admin_page():
 @app.route("/api/shows")
 @req_role("admin","cs","picker","worker")
 def api_shows():
-    """Return distinct shows (import_label) from the last 5 days, with rollup
-    stats per show. Used by the Shows page, the import autocomplete, and the picker."""
-    cutoff_dt = (datetime.now() - timedelta(days=SHOW_WINDOW_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
-    cap_dt = (datetime.now() - timedelta(days=SHOW_HARD_CAP_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    """Return distinct shows (import_label), with rollup stats per show. Used by the Shows
+    page, the import autocomplete, and the picker.
+    `days` (query param, default SHOW_DEFAULT_DAYS) sets how far back FINISHED shows are shown;
+    the Shows board bumps it a week at a time via 'Load more'. Shows with pending work always
+    appear regardless of age (bounded by the hard cap), so the floor never loses an open show."""
+    try: win_days = int(request.args.get("days") or SHOW_DEFAULT_DAYS)
+    except Exception: win_days = SHOW_DEFAULT_DAYS
+    win_days = max(1, min(win_days, SHOW_HARD_CAP_DAYS))
+    _now = datetime.now()
+    cutoff_dt = (_now - timedelta(days=win_days)).strftime("%Y-%m-%d %H:%M:%S")
+    cap_dt = (_now - timedelta(days=SHOW_HARD_CAP_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     c = sdb()
     _cleanout_ensure(c)   # add columns + grandfather existing shows before we read show_state
     _now_ts = int(time.time())
@@ -7719,15 +7732,20 @@ def api_shows():
     done_map = {r["import_label"]: dict(r) for r in c.execute("SELECT * FROM show_state").fetchall()}
     # First→last ORDER time per show (when the live actually ran), from the item timestamps.
     span_map = {}
+    # Bound by the hard cap so this JOIN never scans the whole order history (it used to
+    # scan every shipment+item ever on each page load — the main cause of slow Shows loads).
+    # Shows older than the cap are never displayed anyway, so their span isn't needed.
     for r in c.execute("""SELECT s.import_label lbl, MIN(i.created_time) mn, MAX(i.created_time) mx
                           FROM shipments s JOIN shipment_items i ON i.shipment_id=s.shipment_id
                           WHERE s.import_label IS NOT NULL AND s.import_label!=''
+                            AND s.imported_at >= ?
                             AND i.created_time IS NOT NULL AND i.created_time!=''
-                          GROUP BY s.import_label""").fetchall():
+                          GROUP BY s.import_label""", (cap_dt,)).fetchall():
         span_map[r["lbl"]] = (r["mn"], r["mx"])
     c.close()
     # Attach cleanup status so the picker can warn / block on unclean shows.
     out = []
+    hidden_older = 0   # finished shows aged out of the current window but within the hard cap
     for r in rows:
         d = dict(r)
         sp = span_map.get(d["name"])
@@ -7738,6 +7756,7 @@ def api_shows():
         _is_done = bool(_st and _st.get("done"))
         # Unfinished shows always show (any age); DONE shows age out of the window.
         if _is_done and (d["last_import"] or "") < cutoff_dt:
+            hidden_older += 1
             continue
         cp = _cleanup_progress(d["name"])
         _whatnot_only = ((d.get("platform_count") or 0) == 1 and (d.get("platform") or "").lower() == "whatnot")
@@ -7757,6 +7776,12 @@ def api_shows():
         d["cleanout_at"] = (st.get("cleanout_at") if st else None)
         d["needs_cleanout"] = bool((d.get("pending") or 0) > 0 and not (st and st.get("cleanout_at")) and not _whatnot_only)
         out.append(d)
+    # The Shows board passes ?meta=1 to also learn whether a wider window would reveal more
+    # (so it can show/hide "Load more"). Every other caller still gets the bare array as before.
+    if request.args.get("meta"):
+        return jsonify({"shows": out, "days": win_days,
+                        "has_more": hidden_older > 0 and win_days < SHOW_HARD_CAP_DAYS,
+                        "step": SHOW_LOAD_STEP_DAYS, "cap": SHOW_HARD_CAP_DAYS})
     return jsonify(out)
 
 @app.route("/api/show/cleanout", methods=["POST"])

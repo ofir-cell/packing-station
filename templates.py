@@ -5071,6 +5071,10 @@ __NAVBAR__
   </div>
 
   <div id="grid"></div>
+  <div id="loadMoreWrap" style="text-align:center;margin-top:18px;display:none">
+    <button id="loadMoreBtn" style="padding:12px 22px;border:1.5px solid var(--border,#e4e7ec);border-radius:12px;background:#fff;color:var(--text,#1a2130);font-weight:800;font-size:15px;cursor:pointer;font-family:inherit">↓ Load older shows (+1 week)</button>
+    <div id="loadMoreHint" style="font-size:12px;color:var(--text-dim,#6b7280);margin-top:8px"></div>
+  </div>
 </div>
 
 <div class="bulkbar" id="bulkbar">
@@ -5091,7 +5095,27 @@ function dueHtml(sh){
 
 var SHOWS=[];
 var SEL={};
-function loadShows(){fetch('/api/shows').then(function(r){return r.json()}).then(function(shows){SHOWS=shows||[];renderKpis();renderGrid();});}
+// The board loads one week by default and extends a week per "Load more" click, so it stays
+// light over a long history. Shows with pending work always come back regardless of age.
+var SHOW_DAYS=7, SHOW_STEP=7, SHOW_CAP=180, SHOW_HAS_MORE=false, SHOW_LOADING=false;
+function loadShows(){
+  SHOW_LOADING=true; updateLoadMore();
+  fetch('/api/shows?meta=1&days='+SHOW_DAYS).then(function(r){return r.json()}).then(function(d){
+    SHOW_LOADING=false;
+    if(d&&d.shows){ SHOWS=d.shows; SHOW_HAS_MORE=!!d.has_more; SHOW_STEP=d.step||7; SHOW_CAP=d.cap||180; if(d.days)SHOW_DAYS=d.days; }
+    else { SHOWS=d||[]; SHOW_HAS_MORE=false; }   // defensive: bare-array fallback
+    renderKpis();renderGrid();updateLoadMore();
+  }).catch(function(){ SHOW_LOADING=false; updateLoadMore(); });
+}
+function loadMoreShows(){ if(SHOW_LOADING)return; SHOW_DAYS=Math.min(SHOW_DAYS+SHOW_STEP, SHOW_CAP); loadShows(); }
+function updateLoadMore(){
+  var wrap=document.getElementById('loadMoreWrap'); if(!wrap)return;
+  var btn=document.getElementById('loadMoreBtn'), hint=document.getElementById('loadMoreHint');
+  if(SHOW_HAS_MORE){ wrap.style.display='block'; btn.disabled=SHOW_LOADING;
+    btn.textContent=SHOW_LOADING?'Loading…':'↓ Load older shows (+1 week)';
+    hint.textContent='Showing finished shows from the last '+SHOW_DAYS+' days. Open shows always appear.'; }
+  else { wrap.style.display='none'; }
+}
 function renderKpis(){
   var t=0,p=0,d=0,s=0,x=0;
   SHOWS.forEach(function(sh){t+=sh.shipments;p+=sh.pending||0;d+=sh.packed||0;s+=sh.shipped||0;x+=sh.cancelled||0});
@@ -5212,6 +5236,7 @@ document.getElementById('selAll').addEventListener('change',function(){
   shown.forEach(function(s){if(on)SEL[s.name]=true;else delete SEL[s.name];});
   renderList();
 });
+document.getElementById('loadMoreBtn').addEventListener('click',loadMoreShows);
 loadShows();
 function toggleDone(ev,name,done){
   ev.preventDefault();ev.stopPropagation();
