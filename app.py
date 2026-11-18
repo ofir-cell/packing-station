@@ -1527,6 +1527,13 @@ def sdb_init(org):
     c.execute("CREATE INDEX IF NOT EXISTS idx_items_sku ON shipment_items(sku)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_items_order ON shipment_items(order_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_ship_batch ON shipments(import_batch)")
+    # import_label drives every show rollup (Shows board, picker, cleanup-per-show). Without
+    # this index each "WHERE import_label=?" was a full shipments scan — the dominant cost of
+    # loading Shows once a tenant had a year of orders (≈8× slower on 60k rows in benchmarks).
+    c.execute("CREATE INDEX IF NOT EXISTS idx_ship_label ON shipments(import_label)")
+    # The cleanup-per-show query filters cancelled items by their parent show; a partial index
+    # on just the cancelled lines keeps that lookup tiny regardless of total order volume.
+    c.execute("CREATE INDEX IF NOT EXISTS idx_items_cancelled ON shipment_items(shipment_id) WHERE cancelled=1")
     # Per-show manual state: lets a manager mark a show DONE after verifying pending.
     c.execute("""CREATE TABLE IF NOT EXISTS show_state(
         import_label TEXT PRIMARY KEY,
