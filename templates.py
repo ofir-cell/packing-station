@@ -5602,7 +5602,8 @@ var T={en:{
  scanhint:"Scan each product's barcode to pick it. No barcode? Tap Skip.",scanproduct:'Scan the product barcode…',
  skipnobarcode:'⤼ Skip — no barcode on this product',pickedsofar:'Picked so far',scannedw:'Scanned',leftw:'left',
  needscost:'skipped · needs product & cost',addcostt:'add cost',instockt:'✓ in stock',newprod:'new product',
- allscanned:'All items scanned ✓',costonfile:'cost on file',matchedw:'matched',notrecognized:'Not a known barcode — try again'
+ allscanned:'All items scanned ✓',costonfile:'cost on file',matchedw:'matched',notrecognized:'Not a known barcode — try again',
+ rescanbtn:'✎ Re-scan',fixingnow:'Re-scan this one — the next scan replaces its product'
 },es:{
  switchpack:'📦 Cambiar a Empaque',logout:'Salir',step1:'Paso 1',whichshow:'¿Qué show estás recolectando?',
  showhelp:'Elige el show del que recolectarás pedidos. Puedes cambiar después si cambias de mesa.',
@@ -5621,7 +5622,8 @@ var T={en:{
  scanhint:'Escanea el código de cada producto para recolectarlo. ¿Sin código? Toca Saltar.',scanproduct:'Escanea el código del producto…',
  skipnobarcode:'⤼ Saltar — este producto no tiene código',pickedsofar:'Recolectados',scannedw:'Escaneados',leftw:'restantes',
  needscost:'saltado · falta producto y costo',addcostt:'agregar costo',instockt:'✓ en stock',newprod:'producto nuevo',
- allscanned:'Todos escaneados ✓',costonfile:'costo registrado',matchedw:'vinculado',notrecognized:'Código no reconocido — intenta de nuevo'
+ allscanned:'Todos escaneados ✓',costonfile:'costo registrado',matchedw:'vinculado',notrecognized:'Código no reconocido — intenta de nuevo',
+ rescanbtn:'✎ Re-escanear',fixingnow:'Re-escanea este — el próximo escaneo reemplaza su producto'
 }};
 function t(k){return (T[LANG]&&T[LANG][k])||T.en[k]||k}
 function toggleLang(){LANG=(LANG==='en'?'es':'en');localStorage.setItem('lang',LANG);location.reload()}
@@ -5637,7 +5639,7 @@ var _urlShow=new URLSearchParams(location.search).get('show')||'';
 var currentShow=_urlShow||localStorage.getItem('pickShow')||'';
 if(_urlShow){try{localStorage.setItem('pickShow',_urlShow);}catch(e){}
   try{history.replaceState(null,'',location.pathname);}catch(e){}}
-var currentDetail=null,currentItems=[],currentGiveaways=[],sessionCount=0,curItemId=null;
+var currentDetail=null,currentItems=[],currentGiveaways=[],sessionCount=0,curItemId=null,fixItemId=null;
 var availableShows=[];
 
 // ─── Audio feedback (Web Audio API). Mobile Safari needs a user gesture to start. ───
@@ -5936,7 +5938,9 @@ function renderItems(){
     var shows=[];arr.forEach(function(x){if(shows.indexOf(x.base)<0)shows.push(x.base)});
     var multi=shows.length>1;
     var curx=null;
-    for(var ci=0;ci<arr.length;ci++){ if(!arr[ci].it.picked){ curx=arr[ci]; break; } }
+    // Re-scan mode: a tapped item becomes the current target even if it sits later in the order.
+    if(fixItemId!=null){ for(var fi=0;fi<arr.length;fi++){ if(arr[fi].it.id===fixItemId){ curx=arr[fi]; break; } } }
+    if(!curx){ for(var ci=0;ci<arr.length;ci++){ if(!arr[ci].it.picked){ curx=arr[ci]; break; } } }
     // Combined-order banner + the current item's table-set (which show it's from).
     var topHtml='';
     if(multi){
@@ -5956,7 +5960,7 @@ function renderItems(){
         if(curx.part<9999){ _pb.textContent='PART '+curx.part; _pb.style.display='inline-block'; } else { _pb.style.display='none'; }
         document.getElementById('scanNm').innerHTML=renderProductName(cit.product_name||'');
         if(_inp)_inp.placeholder=t('scanproduct');
-        _hint.textContent=t('scanhint'); _hint.style.display='block';
+        _hint.textContent=(fixItemId!=null)?t('fixingnow'):t('scanhint'); _hint.style.display='block';
         _curCard.style.display='block'; _row.style.display='flex';
         _skip.textContent=t('skipnobarcode'); _skip.style.display='block';
         _all.style.display='none';
@@ -5975,7 +5979,8 @@ function renderItems(){
             var tag= sk ? ('<span class="scan-tag warn">'+t('addcostt')+'</span>') : ((p&&p.in_stock)?('<span class="scan-tag ok">'+t('instockt')+'</span>'):(p&&p.auto?('<span class="scan-tag warn">'+t('newprod')+'</span>'):''));
             var title= (!sk && p && p.name) ? escapeHtml(p.name) : renderProductName(it.product_name||'');
             var sub= sk ? t('needscost') : (p ? ('✓ '+t('matchedw')+(p.cost!=null?(' · '+t('costonfile')):'')) : '✓');
-            html+='<div class="scan-done-row"><div class="sdr-sk">'+escapeHtml(it.sku||'?')+'</div><div class="sdr-mid"><div class="sdr-t">'+title+'</div><div class="sdr-s">'+sub+'</div></div>'+tag+'</div>';
+            var fixb='<button class="scan-fix" data-fix="'+it.id+'" style="margin-left:8px;border:1px solid var(--border,#e9e3e6);background:#fff;border-radius:9px;padding:6px 10px;font-weight:800;font-size:12px;color:var(--brand-ink,#b25570);cursor:pointer;font-family:inherit;white-space:nowrap">'+t('rescanbtn')+'</button>';
+            html+='<div class="scan-done-row"><div class="sdr-sk">'+escapeHtml(it.sku||'?')+'</div><div class="sdr-mid"><div class="sdr-t">'+title+'</div><div class="sdr-s">'+sub+'</div></div>'+tag+fixb+'</div>';
         });
     }
     // Attached giveaways — checked off like any other product before the order is done.
@@ -5996,6 +6001,9 @@ function renderItems(){
     // Giveaways are still tap-to-add (you fetch them from the manager, not scan them).
     document.getElementById('itemsList').querySelectorAll('.pi.gv').forEach(function(el){
         el.addEventListener('click',function(){toggleGiveaway(parseInt(el.dataset.gid))});
+    });
+    document.getElementById('itemsList').querySelectorAll('[data-fix]').forEach(function(el){
+        el.addEventListener('click',function(ev){ ev.stopPropagation(); fixPickItem(parseInt(el.getAttribute('data-fix'))); });
     });
     if(curx && _inp){ try{ _inp.focus(); }catch(e){} }   // keep focus on the scanner, hands-free
     var btn=document.getElementById('doneBtn');
@@ -6025,8 +6033,18 @@ function doScanPick(itemId,code){
         if(!d.ok){ sndError(); showToast(d.error||t('notrecognized'),true); var si=document.getElementById('pickScanInput'); if(si)si.focus(); return; }
         var it=currentItems.find(function(x){return x.id===itemId});
         if(it){ it.picked=1; it._skipped=false; it._prod=d.product?{name:d.product.name,in_stock:d.product.in_stock,cost:d.product.cost,auto:d.auto_created}:null; }
-        sndCheck(); renderItems();
+        fixItemId=null; sndCheck(); renderItems();
      }).catch(function(){ sndError(); showToast(t('lookupfailed'),true); });
+}
+// Re-scan: a product scanned by mistake. Un-pick it, make it the current target; the next scan
+// replaces its product link (show_product_map upsert overwrites the old one).
+function fixPickItem(itemId){
+    fetch('/api/pick/item/'+itemId+'/toggle',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+        var it=currentItems.find(function(x){return x.id===itemId});
+        if(it){ it.picked=0; it._prod=null; it._skipped=false; }
+        fixItemId=itemId; sndClick(); renderItems();
+        var inp=document.getElementById('pickScanInput'); if(inp){try{inp.focus();}catch(e){}}
+    });
 }
 // Skip (product has no barcode) — mark picked without linking; it stays in the show's
 // 'needs product / cost' queue so the P&L can be completed later.
@@ -6036,7 +6054,7 @@ function doSkipPick(itemId){
         if(!d.ok){ sndError(); showToast(d.error||'Error',true); return; }
         var it=currentItems.find(function(x){return x.id===itemId});
         if(it){ it.picked=1; it._skipped=true; it._prod=null; }
-        sndClick(); renderItems();
+        fixItemId=null; sndClick(); renderItems();
      });
 }
 function toggleGiveaway(gid){
