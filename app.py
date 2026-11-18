@@ -16469,6 +16469,73 @@ def _scanit_lookup_info_inner(org, sku):
         finally:
             c.close()
 
+# ── Background product-enrichment drainer ───────────────────────────────────────
+# A scan (picking stub or scanit) creates the product INSTANTLY with no network, leaving it at
+# info_status='' — i.e. queued. Instead of enriching inside the request (which starved the workers
+# during a live — cycle-54), this single leader-locked loop drains the queue slowly across the day:
+# a few products per minute, reusing the existing throttled _scanit_start_lookup (semaphore-limited,
+# per-product claim lock, daily backoff). So scanning never waits on HTTP, and content fills in the
+# background at a healthy pace. Tunables (env): ENRICH_TICK_SEC, ENRICH_PER_TICK, ENRICH_MAX_AGE_DAYS.
+# Kill-switch: BARCODE_ENRICH_QUEUE=0.
+try: ENRICH_TICK_SEC=max(5,int(os.environ.get("ENRICH_TICK_SEC","20") or 20))
+except Exception: ENRICH_TICK_SEC=20
+try: ENRICH_PER_TICK=max(1,int(os.environ.get("ENRICH_PER_TICK","1") or 1))
+except Exception: ENRICH_PER_TICK=1
+try: ENRICH_MAX_AGE_DAYS=max(1,int(os.environ.get("ENRICH_MAX_AGE_DAYS","30") or 30))
+except Exception: ENRICH_MAX_AGE_DAYS=30
+
+def _enrich_queue_on():
+    return os.environ.get("BARCODE_ENRICH_QUEUE","1").strip().lower() not in ("0","false","no","off")
+
+def _enrich_pick_candidates(org, limit):
+    """Up to `limit` SKUs that still need enrichment, newest first (a just-scanned product gets its
+    name soonest), bounded to the last ENRICH_MAX_AGE_DAYS so the backlog can't balloon into a huge
+    token bill. Uses the same _scanit_wants_lookup gate the on-scan path uses."""
+    cutoff=(datetime.now()-timedelta(days=ENRICH_MAX_AGE_DAYS)).isoformat(timespec="seconds")
+    c=sdb(org)
+    try:
+        rows=c.execute("""SELECT * FROM products
+                          WHERE COALESCE(info_status,'') IN ('','failed')
+                            AND COALESCE(updated_at,created_at,'') >= ?
+                          ORDER BY COALESCE(updated_at,created_at) DESC
+                          LIMIT ?""",(cutoff, limit*8)).fetchall()
+    finally:
+        c.close()
+    out=[]
+    for r in rows:
+        if _scanit_wants_lookup(r):
+            out.append(r["sku"])
+            if len(out)>=limit: break
+    return out
+
+def _enrich_loop():
+    while True:
+        time.sleep(ENRICH_TICK_SEC)
+        if not _enrich_queue_on() or not anthropic_client:
+            continue
+        try:
+            # Only ONE worker drains per tick: claim a short lease on a shared marker inside the
+            # cross-process lock (same pattern as the tracking/backup schedulers).
+            claimed=False
+            marker=os.path.join(DATA_DIR,".enrich_last")
+            with _flock("enrich_leader"):
+                last=os.path.getmtime(marker) if os.path.exists(marker) else 0
+                if time.time()-last >= ENRICH_TICK_SEC*0.8:
+                    open(marker,"w").close(); claimed=True
+            if not claimed:
+                continue
+            for _org in list_org_ids():
+                for sku in _enrich_pick_candidates(_org, ENRICH_PER_TICK):
+                    try: _scanit_start_lookup(_org, sku)   # threads + semaphore + per-product claim
+                    except Exception as e: print("enrich start failed",_org,sku,":",e,flush=True)
+        except Exception as e:
+            print("enrich loop error:",e,flush=True)
+
+if not STAGING_SAFE:
+    threading.Thread(target=_enrich_loop,daemon=True,name="enrich-drainer").start()
+    print("[enrich] background product-enrichment drainer started (tick=%ss, per_tick=%s, max_age=%sd)"
+          %(ENRICH_TICK_SEC,ENRICH_PER_TICK,ENRICH_MAX_AGE_DAYS),flush=True)
+
 @app.route("/api/scanit/scan")
 @req_role("admin","cs","host","manager")
 def api_scanit_scan():
