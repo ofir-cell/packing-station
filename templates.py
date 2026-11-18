@@ -129,7 +129,7 @@ def _navbar(active_page=""):
             ("productcleanup", "/admin/product-cleanup", "After-Live Cleanup") if has("admin","cs") else None,
             ("purchasing", "/admin/purchasing", "Purchasing") if has("admin","manager") else None,
             ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation") if has("admin","cs") else None,
-            ("reprint", "/admin/reprint", "Reprint Label") if has("admin","cs") else None,
+            ("reprint", "/admin/reprint", "Reprint Label") if has("admin","cs","manager") else None,
             ("stocktake", "/admin/stocktake", "Stock Take") if has("admin","cs") else None,
           ])),
           ("Analytics", "📊", _vis([

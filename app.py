@@ -11170,7 +11170,7 @@ def api_product_label(sku):
         return ("Label generation failed: "+str(e), 500)
 
 @app.route("/api/shows/recent")
-@req_role("admin","cs","picker","worker")
+@req_role("admin","cs","manager","picker","worker")
 def api_shows_recent():
     """Lightweight — just distinct show names from the last 5 days, for
     autocomplete dropdowns. Same data, slimmer payload."""
@@ -11219,7 +11219,7 @@ def sku_lookup_page():
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
 @app.route("/admin/reprint")
-@req_role("admin", "cs", "worker", "picker")
+@req_role("admin", "cs", "manager", "worker", "picker")
 def reprint_page():
     return (REPRINT_HTML
         .replace("__ROLE__", session.get("role", ""))
@@ -16725,7 +16725,7 @@ def _tt_shipping_doc(org, package_id, doc_type="SHIPPING_LABEL", size="A6"):
     return (url or None, None if url else "no document URL returned by TikTok")
 
 @app.route("/api/reprint", methods=["POST"])
-@req_role("admin","cs","worker","picker")
+@req_role("admin","cs","manager","worker","picker")
 def api_reprint():
     """Reprint-by-sticker: type a sticker + part that's still sitting on the table and get the
     URL of its TikTok shipping label (or packing slip) to print on demand. One (sticker, part)
