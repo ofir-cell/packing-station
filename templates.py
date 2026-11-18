@@ -4350,10 +4350,20 @@ function runImport(force){
     btn.disabled=false;btn.textContent='Import';
     if(d.ok){
       res.className='modal-result show';
-      res.innerHTML='<b>✓ Import complete</b><br>'+
-        '<b>'+d.shipments_new+'</b> new shipments · <b>'+d.shipments_updated+'</b> updated<br>'+
-        '<b>'+d.items+'</b> items · <b>'+d.skipped_rows+'</b> rows skipped (cancelled/failed)<br>'+
-        '<b>'+d.unique_skus+'</b> unique products · <b>'+d.skus_missing_weight+'</b> still need weights set';
+      if(d.format==='cancellation'){
+        // A cancellations file returns its OWN counts — show those, not the orders-import summary
+        // (otherwise every number reads "undefined" and you can't tell it worked).
+        var matched=(d.orders_matched_existing||0), added=(d.orders_inserted_as_cancelled||0);
+        res.innerHTML='<b>✓ Cancellations applied</b><br>'+
+          '<b>'+matched+'</b> matched existing orders · <b>'+added+'</b> added as cancelled<br>'+
+          '<b>'+(d.shipments_recomputed||0)+'</b> shipments updated'+
+          ((matched+added)===0?'<br><span style="opacity:.85">⚠️ Nothing matched — check this is the right show name and cancellations file.</span>':'<br><span style="opacity:.85">These items are flagged so workers won\\'t pack them.</span>');
+      } else {
+        res.innerHTML='<b>✓ Import complete</b><br>'+
+          '<b>'+(d.shipments_new||0)+'</b> new shipments · <b>'+(d.shipments_updated||0)+'</b> updated<br>'+
+          '<b>'+(d.items||0)+'</b> items · <b>'+(d.skipped_rows||0)+'</b> rows skipped (cancelled/failed)<br>'+
+          '<b>'+(d.unique_skus||0)+'</b> unique products · <b>'+(d.skus_missing_weight||0)+'</b> still need weights set';
+      }
       loadShipments();
       return;
     }
