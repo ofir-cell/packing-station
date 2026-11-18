@@ -92,7 +92,9 @@ def _navbar(active_page=""):
 
     # ── Grouped sidebar (role-gated). One accordion group per area; several can
     #    stay open at once. Items a role can't see are dropped; empty groups vanish. ──
-    def _vis(items): return [it for it in items if it]
+    from flask import g as _g
+    _blocked = getattr(_g, "blocked_pages", None) or set()
+    def _vis(items): return [it for it in items if it and it[0] not in _blocked]
     today = None; flat = None; groups = []
     if role == "superadmin":
         flat = [("organizations", "/admin/organizations", "🏢 Organizations"),
@@ -155,6 +157,7 @@ def _navbar(active_page=""):
             ("setup", "/setup", "Company setup") if has("admin") else None,
             ("settings", "/admin/settings", "Settings") if has("admin") else None,
             ("permissions", "/admin/permissions", "Permissions & PIN") if has("admin") else None,
+            ("access", "/admin/access", "Access Management") if has("admin") else None,
             ("audit", "/admin/audit", "Audit log") if has("admin") else None,
             ("datacheck", "/admin/data-check", "Data check") if has("admin") else None,
           ])),
@@ -8087,6 +8090,117 @@ load();loadHealth();
 
 
 # ── PERMISSIONS — manager PIN + who-can-do-what ──
+ACCESS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Access — __BRANDMARK__</title>
+__NAVBAR_CSS__
+<style>
+body{margin:0;background:var(--bg,#f5f3ff);font-family:'DM Sans',-apple-system,Segoe UI,Roboto,sans-serif;color:var(--text,#1a2130)}
+.wrap{max-width:900px;margin:0 auto;padding:22px 16px 60px}
+h1{font-size:23px;font-weight:900;margin:0 0 4px}.sub{color:var(--text-muted,#6b7280);font-size:14px;margin-bottom:18px}
+.card{background:var(--surface,#fff);border:1px solid var(--border,#e4e7ec);border-radius:16px;padding:18px;margin-bottom:16px}
+label{font-size:12px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
+input,select{padding:10px 12px;border:1.5px solid var(--border,#e4e7ec);border-radius:10px;font-size:15px;font-family:inherit;background:#fff;color:var(--text,#1a2130)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+.btn{padding:11px 16px;border:0;border-radius:11px;background:#4f46e5;color:#fff;font-weight:800;font-size:15px;cursor:pointer;font-family:inherit}
+.btn.sec{background:#fff;border:1.5px solid var(--border,#e4e7ec);color:var(--text,#1a2130)}
+.btn:disabled{opacity:.5}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.tab{padding:9px 14px;border:1.5px solid var(--border,#e4e7ec);border-radius:11px;background:#fff;font-weight:800;font-size:14px;cursor:pointer;display:flex;align-items:center;gap:8px}
+.tab.on{background:#eef2ff;border-color:#c7d2fe;color:#4338ca}
+.tab .b{font-size:11px;font-weight:700;color:#9aa1ab}
+.tab .x{color:#b91c1c;font-weight:900;cursor:pointer}
+.grp{font-size:12px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin:16px 0 8px}
+.pgs{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+@media(max-width:620px){.pgs{grid-template-columns:1fr}}
+.pg{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--border,#e4e7ec);border-radius:11px;padding:11px 13px;font-weight:600;font-size:14px;cursor:pointer}
+.pg input{width:20px;height:20px}
+.note{background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;border-radius:12px;padding:11px 14px;font-size:13px;font-weight:600;margin-bottom:14px}
+.savebar{position:sticky;bottom:0;background:linear-gradient(transparent,var(--bg,#f5f3ff) 40%);padding:14px 0;margin-top:10px}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#111827;color:#fff;padding:12px 20px;border-radius:12px;font-weight:700;display:none;z-index:50}
+</style></head><body>
+__NAVBAR__
+<div class="wrap">
+  <h1>🔐 Access Management</h1>
+  <div class="sub">Control which screens each role can open, and create custom roles. Base roles set the security tier; this hides screens on top. Admin always sees everything.</div>
+
+  <div class="card">
+    <label>Create a custom role</label>
+    <div class="row" style="margin-top:8px">
+      <div><div style="font-size:11px;color:#9aa1ab;font-weight:700;margin-bottom:3px">Name</div><input id="nrName" placeholder="e.g. Packer Lead"></div>
+      <div><div style="font-size:11px;color:#9aa1ab;font-weight:700;margin-bottom:3px">Based on (security tier)</div><select id="nrBase"></select></div>
+      <button class="btn" id="nrAdd">+ Create role</button>
+    </div>
+    <div style="font-size:12px;color:#6b7280;margin-top:8px">A custom role inherits its base tier's security, then you choose which screens it sees below.</div>
+  </div>
+
+  <div class="card">
+    <label>Roles</label>
+    <div class="tabs" id="tabs" style="margin-top:8px"></div>
+    <div id="pane"></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+function esc(s){return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function toast(m){var t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(function(){t.style.display='none'},2200)}
+var DATA=null, CUR=null, BLOCKED={};
+function load(){fetch('/api/access').then(function(r){return r.json()}).then(function(d){
+  DATA=d; BLOCKED=JSON.parse(JSON.stringify(d.blocked||{}));
+  var bs=document.getElementById('nrBase'); bs.innerHTML=d.base_roles.map(function(b){return '<option value="'+b.key+'">'+esc(b.label)+'</option>'}).join('');
+  if(!CUR){ var firstNon=d.roles.filter(function(r){return r.key!=='admin'})[0]; CUR=firstNon?firstNon.key:d.roles[0].key; }
+  renderTabs(); renderPane();
+});}
+function renderTabs(){
+  document.getElementById('tabs').innerHTML=DATA.roles.map(function(r){
+    var del=r.custom?'<span class="x" data-del="'+esc(r.key)+'" title="Delete role">✕</span>':'';
+    return '<button class="tab'+(r.key===CUR?' on':'')+'" data-k="'+esc(r.key)+'"><span>'+esc(r.label)+'</span><span class="b">'+(r.custom?('↳ '+esc(r.base)):'base')+'</span>'+del+'</button>';
+  }).join('');
+  document.querySelectorAll('#tabs .tab').forEach(function(t){t.addEventListener('click',function(e){
+    if(e.target.classList.contains('x'))return; CUR=t.getAttribute('data-k'); renderTabs(); renderPane();
+  });});
+  document.querySelectorAll('#tabs .x').forEach(function(x){x.addEventListener('click',function(){
+    var k=x.getAttribute('data-del'); if(!confirm('Delete this role? Users on it fall back to its base tier.'))return;
+    fetch('/api/access/role',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'delete',key:k})})
+      .then(function(r){return r.json()}).then(function(d){ if(d.ok){ if(CUR===k)CUR=null; toast('Role deleted'); load(); } else toast(d.error||'Failed'); });
+  });});
+}
+function renderPane(){
+  var role=DATA.roles.find(function(r){return r.key===CUR}); if(!role){document.getElementById('pane').innerHTML='';return;}
+  var base=role.custom?role.base:role.key;
+  if(base==='admin'){ document.getElementById('pane').innerHTML='<div class="note">👑 Admin sees every screen — nothing to restrict here.</div>'; return; }
+  var bl=BLOCKED[CUR]||[];
+  var groups=[]; DATA.pages.forEach(function(p){ if(groups.indexOf(p.group)<0)groups.push(p.group); });
+  var html='<div class="note">Checked = this role can open the screen. Unchecked = hidden & blocked. (Only screens the base tier already allows are enforceable.)</div>';
+  groups.forEach(function(g){
+    html+='<div class="grp">'+esc(g)+'</div><div class="pgs">';
+    DATA.pages.filter(function(p){return p.group===g}).forEach(function(p){
+      var on=bl.indexOf(p.key)<0;
+      html+='<label class="pg"><input type="checkbox" data-pg="'+esc(p.key)+'"'+(on?' checked':'')+'><span>'+esc(p.label)+'</span></label>';
+    });
+    html+='</div>';
+  });
+  html+='<div class="savebar"><button class="btn" id="saveBtn">Save access for '+esc(role.label)+'</button></div>';
+  document.getElementById('pane').innerHTML=html;
+  document.querySelectorAll('#pane input[data-pg]').forEach(function(cb){cb.addEventListener('change',function(){
+    var pg=cb.getAttribute('data-pg'); var arr=BLOCKED[CUR]||[];
+    if(cb.checked){ arr=arr.filter(function(x){return x!==pg}); } else if(arr.indexOf(pg)<0){ arr.push(pg); }
+    BLOCKED[CUR]=arr;
+  });});
+  document.getElementById('saveBtn').addEventListener('click',function(){
+    fetch('/api/access/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({blocked:BLOCKED})})
+      .then(function(r){return r.json()}).then(function(d){ toast(d.ok?'✓ Saved':(d.error||'Failed')); });
+  });
+}
+document.getElementById('nrAdd').addEventListener('click',function(){
+  var name=document.getElementById('nrName').value.trim(), base=document.getElementById('nrBase').value;
+  if(!name){toast('Enter a role name');return;}
+  fetch('/api/access/role',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'create',label:name,base:base})})
+    .then(function(r){return r.json()}).then(function(d){ if(d.ok){ document.getElementById('nrName').value=''; CUR=d.key; toast('Role created'); load(); } else toast(d.error||'Failed'); });
+});
+load();
+</script></body></html>'''
+
+
 PERMISSIONS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ''' + _FONT + '''

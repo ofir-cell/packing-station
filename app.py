@@ -32,7 +32,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     ME_HTML, LEADERBOARD_HTML, HOME_HTML, DOCUMENTS_HTML, WELCOME_HTML,
     ONBOARDING_HTML, ANNOUNCEMENTS_HTML,
     CUSTOMERS_HTML, SHIPMENTS_ADMIN_HTML, SKU_LOOKUP_HTML, REPRINT_HTML, SHOWS_HTML, PICK_HTML,
-    ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML,
+    ISSUES_HTML, CLEANUP_HTML, SHIPPING_STATUS_HTML, PERMISSIONS_HTML, ACCESS_HTML,
     INVENTORY_HTML, PURCHASING_HTML, STOCKTAKE_HTML, AUDIT_HTML, ROSTER_HTML, MYSCHEDULE_HTML, MYAVAIL_HTML, PROFIT_HTML, INBOUND_HTML, PRESHOW_HTML, HOSTS_HTML, PACKER_HTML, SETTINGS_HTML, GEO_HTML,
     PICKER_HTML, REPEAT_HTML, DATACHECK_HTML, VIDEOS_HTML, _staging_banner,
     OPERATIONS_HTML, ORGANIZATIONS_HTML, SUPPORT_HTML, PLATFORM_SUPPORT_HTML,
@@ -3970,6 +3970,27 @@ def _session_revocation():
         print("session revocation check skipped:",_e,flush=True)
         return
 
+@app.before_request
+def _page_access_gate():
+    """Per-screen access (deny layer). Computes the set of screens the signed-in role may NOT
+    open (for the navbar to hide), and 403s a direct request to a blocked page route. Deny-only:
+    it never grants beyond req_role, admin is never blocked, core screens are always reachable."""
+    try:
+        if "user" not in session: return
+        role=session.get("role","")
+        if not role or role=="superadmin": return
+        p=request.path or "/"
+        if p.startswith(("/static/","/guide-asset/","/api/")): return
+        org=session.get("org",DEFAULT_ORG)
+        blocked=set(k for (k,u,l,grp) in PAGES if _page_blocked(role,k,org))
+        g.blocked_pages=blocked
+        pk=_PATH_TO_PAGE.get(p)
+        if pk and pk in blocked:
+            return _role_fail()
+    except Exception as _e:
+        print("page access gate skipped:",_e,flush=True)
+        return
+
 _BILLING_MSG={
     "trial_expired":"Your 7-day trial has ended. Choose a plan and we'll send you an invoice to keep going.",
     "period_ended":"Your paid period has ended. Once we receive your renewal payment, access is restored immediately.",
@@ -4079,9 +4100,20 @@ def req_login(f):
         return f(*a,**k)
     return d
 def _effective_roles(info):
-    """A user's full role set: primary role + any extra_roles (deduped)."""
+    """A user's full role set for SECURITY gates: primary role + any extra_roles, with each
+    CUSTOM role also expanded to its base tier so req_role (which only knows the 5 base roles)
+    still enforces correctly. The raw primary role (custom or base) stays in session['role'] and
+    drives the per-screen access (deny) layer."""
     rs=[info.get("role")] + list(info.get("extra_roles") or [])
-    return [r for r in dict.fromkeys(rs) if r]
+    out=[]
+    for r in rs:
+        if not r: continue
+        out.append(r)
+        try:
+            b=_role_base(r, info.get("org"))
+            if b and b!=r: out.append(b)
+        except Exception: pass
+    return [r for r in dict.fromkeys(out) if r]
 
 def session_roles():
     return session.get("roles") or ([session.get("role")] if session.get("role") else [])
@@ -7757,6 +7789,91 @@ _PERM_LABELS={
     "manage_users":"Manage users & badges",
     "attach_giveaway":"Attach a giveaway to an order",
 }
+
+# ── Access management (Shopify-style) ───────────────────────────────────────────
+# A screen where the admin manages, per role, which SCREENS each role may open, and
+# can create custom roles. SAFETY MODEL: the 5 base roles are the hard server gate
+# (req_role); a custom role inherits a base role's security TIER. Page access is a
+# DENY layer on top — it can only HIDE/BLOCK screens, never grant beyond the tier —
+# so it can never open a hole or lock 'admin' out. 'admin' is never blockable, and the
+# core personal screens are always reachable.
+ACCESS_FILE = os.path.join(DATA_DIR, "access.json")
+BASE_ROLES = ["admin", "manager", "cs", "host", "worker"]
+# Every screen the access matrix can govern: (key, url, label, group).
+PAGES = [
+    ("live","/admin/live","Live Mode","Live & orders"),
+    ("matchlog","/admin/match-log","Match Log","Live & orders"),
+    ("scanit","/scanit","Scanit","Live & orders"),
+    ("preshow","/admin/preshow","Match Products","Live & orders"),
+    ("pack","/","Pack station","Live & orders"),
+    ("pick","/pick","Picking","Live & orders"),
+    ("shows","/admin/shows","Shows & orders","Live & orders"),
+    ("combine","/admin/combine","Combine & Labels","Live & orders"),
+    ("tiktok","/admin/tiktok","TikTok Shop","Live & orders"),
+    ("shipments","/admin/shipments","Shipments","Fulfillment"),
+    ("shipstatus","/shipping-status","Shipment Health","Fulfillment"),
+    ("track","/admin/track","Track","Fulfillment"),
+    ("cleanup","/admin/cleanup","Table Cleanup","Fulfillment"),
+    ("issues","/admin/issues","Picking / Packing Issues","Fulfillment"),
+    ("giveaway","/giveaway","Giveaways","Fulfillment"),
+    ("inbound","/admin/inbound","Inbound Labels","Fulfillment"),
+    ("customers","/customers","Customers","Fulfillment"),
+    ("videos","/admin/videos","Packing Videos","Fulfillment"),
+    ("inventory","/admin/inventory","Inventory","Inventory"),
+    ("productcleanup","/admin/product-cleanup","After-Live Cleanup","Inventory"),
+    ("purchasing","/admin/purchasing","Purchasing","Inventory"),
+    ("sku_lookup","/admin/sku-lookup","SKU Reconciliation","Inventory"),
+    ("reprint","/admin/reprint","Reprint Label","Inventory"),
+    ("stocktake","/admin/stocktake","Stock Take","Inventory"),
+    ("packer","/admin/packer-analytics","Warehouse Analytics","Analytics"),
+    ("hosts","/admin/hosts","Host Analytics","Analytics"),
+    ("profit","/admin/profit","Profit","Analytics"),
+    ("geo","/admin/geo-analytics","Geography","Analytics"),
+    ("analytics","/analytics","Analytics","Analytics"),
+    ("repeat","/admin/repeat-customers","Repeat Customers","Analytics"),
+    ("hires","/admin/hires","New Hires","Team"),
+    ("equipment","/admin/equipment","Equipment","Resources"),
+    ("guides","/guides","Guides","Resources"),
+    ("support","/support","Support","Resources"),
+    ("leaderboard","/leaderboard","Leaderboard","Me"),
+]
+# Screens that must never be blocked (self-management, user/role admin, lock-out risks).
+_PAGE_NEVER_BLOCK = {"me","onboarding","documents","announcements","home","users","badges",
+                     "setup","settings","permissions","access","audit","datacheck"}
+_PATH_TO_PAGE = {url: key for (key, url, label, grp) in PAGES}
+
+def _access(org=None):
+    """This org's access config: {'roles': {custom_key:{base,label}}, 'blocked': {role_key:[pages]}}."""
+    org = org or current_org()
+    d = ldj(ACCESS_FILE) or {}
+    a = d.get(org) or {}
+    return {"roles": a.get("roles") or {}, "blocked": a.get("blocked") or {}}
+
+def _access_save(org, roles, blocked):
+    with update_json(ACCESS_FILE, {}) as d:
+        d[org] = {"roles": roles, "blocked": blocked}
+
+def _role_base(role_key, org=None):
+    """The base security tier a role maps to (a base role → itself; a custom role → its base)."""
+    if role_key in BASE_ROLES: return role_key
+    r = _access(org)["roles"].get(role_key)
+    return (r or {}).get("base") or "worker"
+
+def _all_role_keys(org=None):
+    """Base roles + this org's custom roles, for the matrix UI."""
+    return BASE_ROLES + [k for k in _access(org)["roles"].keys() if k not in BASE_ROLES]
+
+def _page_blocked(role_key, page_key, org=None):
+    """True if this role may NOT open this screen. Admin is never blocked; core screens never
+    blocked. Everything else: blocked only if the admin explicitly put it on the role's deny-list
+    (or its base role's deny-list, which a custom role inherits)."""
+    if not page_key or page_key in _PAGE_NEVER_BLOCK: return False
+    base = _role_base(role_key, org)
+    if base == "admin": return False
+    bl = _access(org)["blocked"]
+    if page_key in (bl.get(role_key) or []): return True
+    if role_key != base and page_key in (bl.get(base) or []): return True
+    return False
 def _get_setting(key, default=None):
     c=sdb(); r=c.execute("SELECT value FROM settings WHERE key=?",(key,)).fetchone(); c.close()
     return r["value"] if r else default
@@ -8117,6 +8234,63 @@ def api_permissions_pin():
         return jsonify({"ok":False,"error":"PIN must be at least 4 digits"})
     _set_setting("manager_pin_hash", bcrypt.hashpw(pin.encode(),bcrypt.gensalt()).decode())
     return jsonify({"ok":True})
+
+# ── Access management (roles × screens) ─────────────────────────────────────────
+@app.route("/admin/access")
+@req_true_admin
+def access_page():
+    return (ACCESS_HTML.replace("__NAME__",esc(session.get("name","")))
+            .replace("__NAVBAR__",_navbar("access")).replace("__NAVBAR_CSS__",_NAVBAR_CSS))
+
+@app.route("/api/access")
+@req_true_admin
+def api_access_get():
+    org=current_org(); a=_access(org); roles=[]
+    for k in _all_role_keys(org):
+        if k in BASE_ROLES:
+            roles.append({"key":k,"label":ROLE_LABELS.get(k,k),"base":k,"custom":False})
+        else:
+            r=a["roles"].get(k) or {}
+            roles.append({"key":k,"label":r.get("label") or k,"base":r.get("base") or "worker","custom":True})
+    return jsonify({"ok":True,"roles":roles,
+                    "pages":[{"key":k,"label":l,"group":grp} for (k,u,l,grp) in PAGES],
+                    "blocked":a["blocked"],
+                    "base_roles":[{"key":k,"label":ROLE_LABELS.get(k,k)} for k in BASE_ROLES]})
+
+@app.route("/api/access/save",methods=["POST"])
+@req_true_admin
+def api_access_save():
+    org=current_org(); d=request.get_json() or {}
+    inb=d.get("blocked") or {}; pagekeys={k for (k,u,l,grp) in PAGES}; clean={}
+    for role,lst in inb.items():
+        if role=="admin": continue                      # admin is never blockable
+        pk=[p for p in (lst or []) if p in pagekeys and p not in _PAGE_NEVER_BLOCK]
+        if pk: clean[role]=pk
+    a=_access(org); _access_save(org, a["roles"], clean)
+    alog("access.save","per-screen access updated")
+    return jsonify({"ok":True})
+
+@app.route("/api/access/role",methods=["POST"])
+@req_true_admin
+def api_access_role():
+    org=current_org(); d=request.get_json() or {}
+    action=(d.get("action") or "create").strip()
+    a=_access(org); roles=dict(a["roles"])
+    if action=="delete":
+        key=(d.get("key") or "").strip()
+        if key in BASE_ROLES: return jsonify({"ok":False,"error":"Base roles can't be deleted"})
+        roles.pop(key,None)
+        bl={r:v for r,v in a["blocked"].items() if r!=key}
+        _access_save(org, roles, bl); alog("access.role","deleted "+key)
+        return jsonify({"ok":True})
+    label=(d.get("label") or "").strip()[:40]; base=(d.get("base") or "worker").strip()
+    if not label: return jsonify({"ok":False,"error":"Enter a role name"})
+    if base not in BASE_ROLES: return jsonify({"ok":False,"error":"Pick a base tier"})
+    key=re.sub(r'[^a-z0-9_]','',label.lower().replace(' ','_'))[:32] or ("role_"+secrets.token_hex(3))
+    if key in BASE_ROLES or key in roles: key=key+"_"+secrets.token_hex(2)
+    roles[key]={"base":base,"label":label}
+    _access_save(org, roles, a["blocked"]); alog("access.role","created "+key+" (base="+base+")")
+    return jsonify({"ok":True,"key":key,"label":label,"base":base})
 
 # ══════════════════════════════════════════════════════════
 # INVENTORY & COSTING — catalog, receiving (weighted-avg), profit
@@ -12765,7 +12939,7 @@ def api_add():
     if not u or not p: return jsonify({"ok":False,"error":"Required"})
     if not re.match(r'^[a-z0-9_\-]{2,32}$',u):
         return jsonify({"ok":False,"error":"Username: lowercase letters, digits, _ -, 2-32 chars"})
-    if role not in VALID_ROLES:
+    if role not in VALID_ROLES and role not in _access(current_org())["roles"]:
         return jsonify({"ok":False,"error":"Invalid role"})
     # Extra roles let one person do several jobs (e.g. picker + host).
     _valid_extra=set(VALID_ROLES)
@@ -12800,7 +12974,7 @@ def api_user_roles():
     d=request.get_json() or {}
     u=(d.get("username") or "").strip().lower()
     role=(d.get("role") or "").strip()
-    if role not in VALID_ROLES:
+    if role not in VALID_ROLES and role not in _access(current_org())["roles"]:
         return jsonify({"ok":False,"error":"Invalid role"})
     _valid_extra=set(VALID_ROLES)
     extra=[r for r in (d.get("extra_roles") or []) if r in _valid_extra and r!=role]
