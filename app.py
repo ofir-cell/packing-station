@@ -7923,9 +7923,15 @@ _PAGE_NEVER_BLOCK = {"me","onboarding","documents","announcements","home","users
 _PATH_TO_PAGE = {url: key for (key, url, label, grp) in PAGES}
 
 def _access(org=None):
-    """This org's access config: {'roles': {custom_key:{base,label}}, 'blocked': {role_key:[pages]}}."""
+    """This org's access config: {'roles': {custom_key:{base,label}}, 'blocked': {role_key:[pages]}}.
+    Tolerates a missing/corrupt access.json (the common case before anything is saved): returns an
+    empty config instead of raising — otherwise the whole Access Management screen 500s and shows
+    no roles, which is exactly what happened in production."""
     org = org or current_org()
-    d = ldj(ACCESS_FILE) or {}
+    try:
+        d = ldj(ACCESS_FILE) or {}
+    except Exception:
+        d = {}
     a = d.get(org) or {}
     return {"roles": a.get("roles") or {}, "blocked": a.get("blocked") or {}}
 

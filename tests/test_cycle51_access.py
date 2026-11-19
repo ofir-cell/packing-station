@@ -57,3 +57,13 @@ def test_create_and_delete_custom_role(appmod, client):
     assert A._role_base(key, A.DEFAULT_ORG) == "manager"
     r2 = client.post("/api/access/role", json={"action": "delete", "key": key}, headers=hdr).get_json()
     assert r2["ok"] is True and key not in A._access(A.DEFAULT_ORG)["roles"]
+
+
+def test_access_survives_missing_file(appmod, tmp_path, monkeypatch):
+    """The Access screen 500'd in production because _access crashed when access.json didn't exist
+    yet. It must return an empty config instead, so the roles still render."""
+    A = appmod
+    monkeypatch.setattr(A, "ACCESS_FILE", str(tmp_path / "does_not_exist.json"))
+    cfg = A._access(A.DEFAULT_ORG)
+    assert cfg == {"roles": {}, "blocked": {}}
+    assert "worker" in A._all_role_keys(A.DEFAULT_ORG)   # base roles still list
