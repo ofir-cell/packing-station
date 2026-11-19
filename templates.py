@@ -14738,7 +14738,7 @@ function wire(el){
       .then(function(r){return r.json();}).then(function(d){
         btn.disabled=false;
         if(!d.ok){say(d.error||'Could not save',false);return;}
-        say('Saved',true);
+        say(d.cogs_backfilled>0?('Saved · COGS updated for '+d.cogs_backfilled+' past sale'+(d.cogs_backfilled>1?'s':'')):'Saved',true);
         fetch('/api/product-cleanup?show='+encodeURIComponent(SHOW)).then(function(r){return r.json();}).then(function(n){
           DATA=n; var nx=item(sku);
           document.getElementById('bartxt').textContent=n.done+' of '+n.total+' done';

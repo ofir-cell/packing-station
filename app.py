@@ -8759,6 +8759,27 @@ def _gen_barcode():
         return "20"+str(int(time.time()))[-10:]
     finally: c.close()
 
+def _backfill_zero_cogs(c, sku, cost):
+    """When a product finally gets a cost (typically filled on the After-Live Cleanup screen,
+    after the live), fill in the COGS of its past sales that were recorded with NO cost yet
+    (live_sales.unit_cost = 0) so that live's profit stops under-counting cost. Only touches
+    zero-cost rows — a real cost already snapshotted at sale time is never rewritten. Also
+    aligns the matching 'live sale' stock-move cost. Returns how many sale rows were filled."""
+    try: cost=round(float(cost or 0),4)
+    except Exception: return 0
+    if cost<=0 or not sku: return 0
+    n=0
+    try:
+        n=c.execute("UPDATE live_sales SET unit_cost=? WHERE product_sku=? AND COALESCE(unit_cost,0)=0",
+                    (cost,sku)).rowcount
+    except Exception as e:
+        print("cogs backfill (live_sales) failed for",sku,":",e,flush=True)
+    try:
+        c.execute("UPDATE stock_moves SET unit_cost=? WHERE sku=? AND COALESCE(unit_cost,0)=0 AND COALESCE(note,'') LIKE 'live sale%'",
+                  (cost,sku))
+    except Exception: pass
+    return n or 0
+
 @app.route("/api/products",methods=["POST"])
 @req_role("admin","cs")
 def api_product_save():
@@ -8797,8 +8818,14 @@ def api_product_save():
         c.execute("UPDATE products SET parent_sku=?,variant_name=? WHERE sku=?",
                   (psku,(d.get("variant_name") or "").strip() or None,sku))
     # Cost + on-hand are admin-only. A manual on-hand change is logged as a stock move.
+    cogs_backfilled=0
     if is_admin and d.get("cost") not in (None,""):
-        c.execute("UPDATE products SET avg_cost=? WHERE sku=?",(round(float(d.get("cost")),4),sku))
+        _cost=round(float(d.get("cost")),4)
+        c.execute("UPDATE products SET avg_cost=? WHERE sku=?",(_cost,sku))
+        # Retroactive COGS: this is the After-Live Cleanup case — a product sold during a live
+        # with no cost yet. Fill the COGS of its past sales that were recorded at unit_cost=0 so
+        # that live's profit stops under-counting cost. Never touches a real cost already snapshot.
+        cogs_backfilled=_backfill_zero_cogs(c, sku, _cost)
     if is_admin and d.get("on_hand") not in (None,""):
         new_oh=int(float(d.get("on_hand")))
         old_oh=(exists["on_hand"] if exists else 0) or 0
@@ -8809,7 +8836,7 @@ def api_product_save():
                       (sku,new_oh-old_oh,round(float(exists["avg_cost"] if exists else 0) or 0,4),
                        "manual adjustment",session.get("user")))
     c.commit(); c.close()
-    return jsonify({"ok":True,"sku":sku})
+    return jsonify({"ok":True,"sku":sku,"cogs_backfilled":cogs_backfilled})
 
 @app.route("/api/products/bulk",methods=["POST"])
 @req_role("admin","cs")
