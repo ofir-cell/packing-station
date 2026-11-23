@@ -1666,8 +1666,13 @@ def sdb_init(org):
         depleted_qty INTEGER DEFAULT 0,
         mapped_at TEXT DEFAULT CURRENT_TIMESTAMP,
         mapped_by TEXT,
+        photo_url TEXT,
         PRIMARY KEY (import_label, sticker_sku, part)
     )""")
+    # A worker can photograph the physical item on the table (esp. when it has no barcode), keyed
+    # by its live sticker — so an unmatched item can still be identified and completed later.
+    try: c.execute("ALTER TABLE show_product_map ADD COLUMN photo_url TEXT")
+    except Exception: pass
     # Inbound shipments — labels bought for supplier → warehouse shipments.
     c.execute("""CREATE TABLE IF NOT EXISTS inbound_shipments(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -7483,6 +7488,24 @@ def api_pick_item_scan(item_id):
     label=row["import_label"]; sticker=(row["sku"] or "").strip()
     part=_part_num(row["product_name"] or "")
     now=datetime.now().isoformat(timespec='seconds'); who=session.get("name","")[:60]
+    # VERIFY against the expected product: if this sticker was already matched (in Live Mode or an
+    # earlier pick) to a DIFFERENT product, the wrong item was pulled. Warn — but allow override,
+    # since the mapping itself could be wrong. Confirmed picks (override) and first-time picks pass.
+    override=bool(d.get("override"))
+    if label and sticker and not override:
+        exp=c.execute("""SELECT m.product_sku psku, p.name exp_name, p.image_url exp_img
+                         FROM show_product_map m LEFT JOIN products p ON p.sku=m.product_sku
+                         WHERE m.import_label=? AND m.sticker_sku=? AND m.part=? AND COALESCE(m.product_sku,'')<>''""",
+                      (label,sticker,part)).fetchone()
+        if exp and exp["psku"] and exp["psku"]!=prod["sku"]:
+            c.close()
+            return jsonify({"ok":False,"mismatch":True,
+                "expected":{"sku":exp["psku"],"name":exp["exp_name"],
+                            "image_url":exp["exp_img"],
+                            "photo_view_url":_sticker_photo_viewurl(label,sticker,part)},
+                "scanned":{"sku":prod["sku"],"name":prod["name"]},
+                "error":"Wrong product — this sticker expects “%s”. Scan it, or confirm to override."
+                        %(exp["exp_name"] or exp["psku"])})
     # Link the sold sticker to this product — the same pipeline Live Match feeds, so the
     # product DB, the show's sold-products data and COGS all come from one place.
     if label and sticker:
@@ -10574,6 +10597,120 @@ def api_live_scan():
     if _is_admin: _p["unit_cost"]=cost   # cost is admin-only
     return jsonify({"ok":True,"product":_p,"qty":qty,"sticker":sticker,"totals":tot,
                     "auto_created":auto_created,"auto_source":auto_source})
+
+_STICKER_IMG_EXT={"jpg","jpeg","png","webp","gif","heic"}
+
+def _sticker_photo_viewurl(label, sticker, part):
+    import urllib.parse as _u
+    return "/live-photo?show=%s&sticker=%s&part=%s&v=%d"%(
+        _u.quote(label or ""), _u.quote(str(sticker or "")), int(part or 0), int(time.time()))
+
+def _sticker_sortkey(s):
+    s=(str(s) if s is not None else "").strip()
+    try: return (0, int(s))
+    except Exception: return (1, s)
+
+@app.route("/api/live/sticker-photo",methods=["POST"])
+@req_role("admin","cs","worker","picker")
+def api_live_sticker_photo():
+    """A floor worker photographs the physical item on the table, keyed by its live STICKER — so an
+    unmatched / no-barcode item can still be identified and completed later. Stores the image and
+    stamps show_product_map.photo_url for (show, sticker, part), creating the map row if needed.
+    No product and no stock are touched."""
+    show=(request.form.get("show") or "").strip()
+    sticker=(request.form.get("sticker") or "").strip()
+    try: part=int(request.form.get("part") or 0)
+    except Exception: part=0
+    if not show or not sticker: return jsonify({"ok":False,"error":"show and sticker required"})
+    f=request.files.get("file")
+    if not f or not f.filename: return jsonify({"ok":False,"error":"Take a photo"})
+    ext=f.filename.rsplit(".",1)[-1].lower() if "." in f.filename else "jpg"
+    if ext not in _STICKER_IMG_EXT: return jsonify({"ok":False,"error":"Use a photo (JPG/PNG/HEIC)"})
+    org=current_org(); who=session.get("name","")[:60]
+    safe=secure_filename("%s-%s-P%d"%(show,sticker,part)) or ("s"+sticker)
+    key=f"{org}/stickers/{safe}.{ext}"
+    if r2:
+        r2.upload_fileobj(f.stream,R2_BUCKET,key,ExtraArgs={"ContentType":f.mimetype or "image/"+ext})
+    else:
+        d=org_path(org,"stickers"); os.makedirs(d,exist_ok=True)
+        f.save(os.path.join(d,safe+"."+ext)); key=safe+"."+ext
+    now=datetime.now().isoformat(timespec='seconds')
+    c=sdb()
+    c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by,photo_url)
+                 VALUES(?,?,?,'',0,?,?,?)
+                 ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET photo_url=excluded.photo_url,
+                    mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
+              (show,sticker,part,now,who,key))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"photo_view_url":_sticker_photo_viewurl(show,sticker,part)})
+
+@app.route("/live-photo")
+@req_login
+def live_photo():
+    show=(request.args.get("show") or "").strip()
+    sticker=(request.args.get("sticker") or "").strip()
+    try: part=int(request.args.get("part") or 0)
+    except Exception: part=0
+    c=sdb(); r=c.execute("SELECT photo_url FROM show_product_map WHERE import_label=? AND sticker_sku=? AND part=?",
+                         (show,sticker,part)).fetchone(); c.close()
+    key=r["photo_url"] if r else None
+    if not key: return ("",404)
+    if r2 and "/" in key:
+        try:
+            url=r2.generate_presigned_url("get_object",Params={"Bucket":R2_BUCKET,"Key":key},ExpiresIn=R2_PRESIGN_TTL)
+            return redirect(url)
+        except Exception: return ("",404)
+    p=org_path(current_org(),"stickers",key)
+    if not os.path.exists(p): return ("",404)
+    return send_file(p)
+
+@app.route("/api/live/gaps")
+@req_role("admin","cs","worker","picker")
+def api_live_gaps():
+    """Sold stickers in a show that still need work — keyed by STICKER (not barcode), so a worker
+    can find the physical item on the table. For each: matched to a product? does it have a cost?
+    is there a photo (sticker photo or product image)? Only gaps are returned, lowest part/sticker
+    first. Batched (3 queries total) so a big live doesn't hammer the DB."""
+    show=(request.args.get("show") or "").strip()
+    if not show: return jsonify({"ok":False,"error":"show required"})
+    is_admin=session.get("role")=="admin"
+    c=sdb()
+    maps={}
+    for mr in c.execute("SELECT sticker_sku,part,product_sku,photo_url FROM show_product_map WHERE import_label=?",(show,)).fetchall():
+        maps[((mr["sticker_sku"] or "").strip(), int(mr["part"] or 0))]=mr
+    skus=set(v["product_sku"] for v in maps.values() if (v["product_sku"] or ""))
+    prods={}
+    if skus:
+        qm=",".join("?"*len(skus))
+        for pr in c.execute("SELECT sku,name,barcode,avg_cost,image_url FROM products WHERE sku IN (%s)"%qm, list(skus)).fetchall():
+            prods[pr["sku"]]=pr
+    sold=c.execute("""SELECT i.sku sticker, i.product_name nm, SUM(i.quantity) qty
+                      FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id
+                      WHERE s.import_label=? AND COALESCE(i.cancelled,0)=0 AND COALESCE(i.sku,'')<>''
+                      GROUP BY i.sku, i.product_name""",(show,)).fetchall()
+    c.close()
+    out=[]
+    for r in sold:
+        sticker=(r["sticker"] or "").strip()
+        part=int(_sticker_part(r["nm"]) or 0)
+        m=maps.get((sticker,part))
+        psku=(m["product_sku"] if m else "") or ""
+        has_photo=bool(m and (m["photo_url"] or ""))
+        p=prods.get(psku) if psku else None
+        matched=bool(p)
+        img_ok=has_photo or bool(p and (p["image_url"] or ""))
+        missing=[]
+        if not matched: missing.append("product")
+        if is_admin and matched and not (p["avg_cost"] or 0): missing.append("cost")
+        if not img_ok: missing.append("photo")
+        if not missing: continue
+        out.append({"sticker":sticker,"part":part,"qty":r["qty"] or 0,
+                    "product_sku":psku or None,"product_name":(p["name"] if p else None),
+                    "has_photo":has_photo,
+                    "photo_view_url":(_sticker_photo_viewurl(show,sticker,part) if has_photo else None),
+                    "missing":missing})
+    out.sort(key=lambda x:(x["part"], _sticker_sortkey(x["sticker"])))
+    return jsonify({"ok":True,"show":show,"gaps":out,"total":len(out)})
 
 @app.route("/api/live/summary")
 @req_role("admin","cs","worker","picker")
