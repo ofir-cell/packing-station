@@ -21178,9 +21178,10 @@ def _ticket_webhook_env():
     url=_hdr_clean(os.environ.get("TICKETS_WEBHOOK_URL",""))
     auth=_hdr_clean(os.environ.get("TICKETS_WEBHOOK_AUTH",""))
     secret=(os.environ.get("TICKETS_WEBHOOK_SECRET","") or "").strip()
-    auth_hdr=None
-    if auth:
-        auth_hdr=auth if (" " in auth) else ("Bearer "+auth)   # sent exactly as stored
+    # Sent EXACTLY as stored (per the receiver's spec) — no auto "Bearer" wrapping. Put the full
+    # header value in TICKETS_WEBHOOK_AUTH, e.g. "Bearer <token>" or a raw token, whichever the
+    # receiver checks.
+    auth_hdr=auth or None
     return url, auth_hdr, secret.encode("utf-8")
 
 def _ticket_webhook_post(url, body, headers, retries=3):

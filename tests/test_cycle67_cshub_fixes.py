@@ -146,9 +146,9 @@ def test_webhook_env_sanitized(appmod, monkeypatch):
     assert url == "https://hook.example.com/x" and "\n" not in url
     assert auth == "Bearer tok123" and "\n" not in auth
     assert secret == b"s3cret"
-    # a bare token (no scheme) is wrapped as Bearer
+    # sent EXACTLY as stored — no auto "Bearer" wrapping (receiver's spec decides the format)
     monkeypatch.setenv("TICKETS_WEBHOOK_AUTH", "tok999")
-    assert A._ticket_webhook_env()[1] == "Bearer tok999"
+    assert A._ticket_webhook_env()[1] == "tok999"
 
 
 def test_resend_webhook_requires_decision(appmod, client):
