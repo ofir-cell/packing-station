@@ -14004,24 +14004,24 @@ __NAVBAR__
       <div id="gapsList"><div class="empty">—</div></div>
     </div>
 
-    <div class="card" id="bulkPanel" style="display:none;border:2px solid #ddd6fe;background:#faf5ff">
-      <div style="font-weight:800;margin-bottom:4px">⇄ Bulk — same product (or bundle) for a whole range</div>
-      <div style="font-size:13px;color:#6b21a8;margin-bottom:10px">Scan <b>one</b> product → all stickers get it. Scan <b>several</b> → every sticker becomes that bundle.</div>
-      <div style="display:flex;gap:10px;margin-bottom:12px">
+    <div class="card" id="bulkPanel" style="display:none;border:2px solid #c4b5fd;background:#faf5ff;box-shadow:0 8px 24px rgba(124,58,237,.18)">
+      <div style="font-weight:900;color:#6b21a8;margin-bottom:8px">⇄ Bulk range — scan a product or 📷 for #from–#to</div>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
         <input class="inp" id="bFrom" type="number" inputmode="numeric" placeholder="from #" style="flex:1">
         <input class="inp" id="bTo" type="number" inputmode="numeric" placeholder="to #" style="flex:1">
       </div>
-      <div class="scanlbl" id="bCount">Scan the product(s) for this range</div>
-      <div style="display:flex;gap:8px">
-        <input class="inp" id="bScan" placeholder="Scan product…" autocomplete="off" style="flex:1">
+      <div style="display:flex;gap:8px;align-items:stretch">
+        <input class="inp" id="bScan" placeholder="Scan / type product…" autocomplete="off" style="flex:1">
+        <button class="btn btn-dark" id="bPhoto" title="One photo for the whole range" style="white-space:nowrap;background:#2563eb;min-width:52px;font-size:19px;padding:0 14px">📷</button>
         <button class="btn btn-ghost" id="bAdd" style="white-space:nowrap">+ Add</button>
       </div>
-      <div class="mchips" id="bChips" style="margin-top:10px"><div class="empty">No products yet — scan or type a barcode, then + Add</div></div>
+      <div class="mchips" id="bChips" style="margin-top:8px"><div class="empty">Scan a barcode to bind a product, or tap 📷 for photo-only</div></div>
       <div class="err" id="bErr"></div>
-      <button class="btn btn-dark" id="bApply" style="margin-top:12px">Apply to range</button>
-      <button class="btn btn-ghost" id="bPhoto" style="margin-top:8px;border-color:#bfdbfe;color:#1e40af">📷 Photo only — apply one photo to the whole range</button>
       <input id="bPhotoInp" type="file" accept="image/*" capture="environment" style="display:none">
-      <button class="btn btn-ghost" id="bCancel">Cancel</button>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn btn-dark" id="bApply" style="flex:1">Apply to range</button>
+        <button class="btn btn-ghost" id="bCancel" style="white-space:nowrap">Cancel</button>
+      </div>
     </div>
 
     <div class="chgrow">
