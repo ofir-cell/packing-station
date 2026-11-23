@@ -651,6 +651,17 @@ def _apikey_has(ident, scope):
 def _gen_apikey():
     return _APIKEY_PREFIX+secrets.token_urlsafe(32)
 
+def _read_org_for(scope, *roles):
+    """Resolve the org to read for an API read endpoint that accepts BOTH a staff session and a
+    scoped key. Returns the org_id to query, or None if neither is authorized. Callers return a
+    JSON 401 on None (never an HTML login redirect — these are API routes)."""
+    ident=_apikey_identity()
+    if ident and _apikey_has(ident,scope):
+        return ident["org"]
+    if session.get("user") and (not roles or any(r in session_roles() for r in roles)):
+        return session.get("org", DEFAULT_ORG)
+    return None
+
 def plog(actor,action,org_id="",detail=""):
     """Append a row to the platform audit trail. Best-effort (never raises)."""
     try:
@@ -1813,6 +1824,9 @@ def sdb_init(org):
         username TEXT PRIMARY KEY, flag TEXT DEFAULT '',   -- '' / watch / vip / blocked
         tags TEXT DEFAULT '',                              -- JSON list
         updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    # cycle-67: store the tracking number the ticket was matched on.
+    try: c.execute("ALTER TABLE tickets ADD COLUMN tracking TEXT")
+    except Exception: pass
     c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_status ON tickets(status)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_conv ON tickets(platform_conversation_key)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_updated ON tickets(updated_at)")
@@ -4072,6 +4086,9 @@ def _csrf_protect():
         sig=(request.headers.get("Authorization","") or "").strip()
         k=_returns_ai_key()
         if k and sig.lower().startswith("bearer ") and hmac.compare_digest(sig[7:].strip(), k):
+            return
+        # A scoped API key with a returns scope is bearer-authed (no cookie) → CSRF n/a.
+        if _returns_scoped_ident():
             return
     # The CS Hub tickets API is bearer-key authenticated for the AI (no ambient cookie), so CSRF
     # doesn't apply. Bypass ONLY for a valid scoped key; a cookie session still needs the token.
@@ -7243,13 +7260,16 @@ def customers_page():
         .replace("__NAVBAR_CSS__", _NAVBAR_CSS))
 
 @app.route("/api/customers/search")
-@req_role("admin", "cs")
 def api_customers_search():
-    """Fuzzy search across buyer_username and buyer_name. Min 2 chars."""
+    """Fuzzy search across buyer_username and buyer_name. Min 2 chars.
+    Accepts a staff session (admin/cs/manager) OR a scoped key with customers:read."""
+    org = _read_org_for("customers:read", "admin", "cs", "manager")
+    if not org:
+        return jsonify({"ok": False, "error": "auth required"}), 401
     q = (request.args.get("q") or "").strip().lower()
     if len(q) < 2:
         return jsonify([])
-    c = sdb()
+    c = sdb(org)
     rows = c.execute("""
         SELECT buyer_username,
                MAX(buyer_name) AS buyer_name,
@@ -7291,11 +7311,14 @@ _SEARCH_PAGES = [
 ]
 
 @app.route("/api/search")
-@req_role("admin", "cs")
 def api_global_search():
     """Universal search for the persistent navbar box (management roles only).
     Returns grouped results across app screens, orders, customers, products,
-    shows and employees so staff can jump anywhere without menu-hopping."""
+    shows and employees so staff can jump anywhere without menu-hopping.
+    Accepts a staff session OR a scoped key with customers:read (data groups only)."""
+    org = _read_org_for("customers:read", "admin", "cs", "manager")
+    if not org:
+        return jsonify({"ok": False, "error": "auth required"}), 401
     from urllib.parse import quote
     q = (request.args.get("q") or "").strip()
     ql = q.lower()
@@ -7316,7 +7339,7 @@ def api_global_search():
         groups.append({"type": "pages", "label": "Screens", "items": pages[:6]})
 
     if len(ql) >= 2:
-        c = sdb()
+        c = sdb(org)
         # 2) Orders / tracking — match tracking, shipment id, buyer, recipient
         try:
             orders = c.execute("""
@@ -7395,7 +7418,7 @@ def api_global_search():
                               "sub": "New hire · " + (h["role_target"] or "") + " · " + (h["status"] or ""),
                               "url": "/admin/hires/" + str(h["id"])})
         try:
-            _users = ldj(USERS_FILE)
+            _users = ldj(USERS_FILE) if session.get("user") else {}   # employees: staff sessions only
             myorg = session.get("org", DEFAULT_ORG)
             for un, info in _users.items():
                 if info.get("org", DEFAULT_ORG) != myorg:
@@ -7415,12 +7438,15 @@ def api_global_search():
     return jsonify({"ok": True, "groups": groups})
 
 @app.route("/api/customers/<username>")
-@req_role("admin", "cs")
 def api_customer_detail(username):
-    """Full profile: every shipment, items, recordings (cross-reference with packing_log.csv)."""
+    """Full profile: every shipment, items, recordings (cross-reference with packing_log.csv).
+    Accepts a staff session (admin/cs/manager) OR a scoped key with customers:read."""
+    org = _read_org_for("customers:read", "admin", "cs", "manager")
+    if not org:
+        return jsonify({"ok": False, "error": "auth required"}), 401
     if not re.match(r'^[a-zA-Z0-9._\-]+$', username) or len(username) > 64:
         return jsonify({"ok": False, "error": "Invalid username"})
-    c = sdb()
+    c = sdb(org)
     ships = c.execute("""
         SELECT * FROM shipments WHERE buyer_username=? ORDER BY show_date DESC, shipment_id DESC
     """, (username,)).fetchall()
@@ -7439,8 +7465,9 @@ def api_customer_detail(username):
     c.close()
     # Cross-reference with packing_log.csv to find recordings
     recordings = []
-    if os.path.exists(log_file()):
-        with open(log_file()) as f:
+    _lf = log_file(org)
+    if os.path.exists(_lf):
+        with open(_lf) as f:
             for row in csv.DictReader(f):
                 t = row.get("tracking_number", "")
                 if t and (t in ship_ids or t in tracking_codes):
@@ -20797,13 +20824,23 @@ def cs_hub_page():
 def _returns_ai_key():
     return (os.environ.get("RETURNS_AI_KEY","") or "").strip()
 
+def _returns_scoped_ident():
+    """A scoped API key carrying any returns scope (cycle-67, #11), else None."""
+    ident=_apikey_identity()
+    if ident and (_apikey_has(ident,"returns:read") or _apikey_has(ident,"returns:write")):
+        return ident
+    return None
+
 def _returns_actor():
-    """Who is making this call: a logged-in user (session), or the AI assistant via the bearer key.
-    Returns (actor_label, is_ai) or (None, False) if neither — so the AI's changes are audited."""
+    """Who is making this call: a logged-in user (session), the legacy global returns key, or a
+    scoped API key with a returns scope. Returns (actor_label, is_ai) — the AI's changes are audited."""
     sig=(request.headers.get("Authorization","") or "").strip()
     key=_returns_ai_key()
     if key and sig.lower().startswith("bearer ") and hmac.compare_digest(sig[7:].strip(), key):
         return ("AI", True)
+    ident=_returns_scoped_ident()
+    if ident:
+        return ("AI:"+(ident.get("label") or "key"), True)
     if session.get("user"):
         return (session.get("name") or session.get("user") or "staff", False)
     return (None, False)
@@ -20817,9 +20854,18 @@ def _req_returns_rw():
         return (None,None)
     return (actor,False)
 
+def _returns_key_can_write():
+    """A scoped key may write returns only with returns:write. Legacy global key may always write.
+    Returns True if the caller is NOT a read-only scoped key."""
+    ident=_apikey_identity()
+    if ident is None: return True
+    return _apikey_has(ident,"returns:write")
+
 def _rdb():
-    """DB connection for the returns API. A logged-in user → their org (session); the AI assistant
-    (bearer key, no session) → DEFAULT_ORG. The returns AI key is single-tenant by design."""
+    """DB connection for the returns API. A scoped key → its bound org; the legacy AI key → the
+    default org; a logged-in user → their session org."""
+    ident=_returns_scoped_ident()
+    if ident and "user" not in session: return sdb(ident["org"])
     _,is_ai=_returns_actor()
     return sdb(DEFAULT_ORG if (is_ai and "user" not in session) else None)
 
@@ -20985,6 +21031,7 @@ def api_returns_patch(cid):
     Decision is manager/AI only. Every change is written to the audit log with the actor."""
     actor,is_ai=_req_returns_rw()
     if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    if not _returns_key_can_write(): return jsonify({"ok":False,"error":"this key is returns:read only"}),403
     d=request.get_json() or {}
     c=_rdb(); row=c.execute("SELECT * FROM return_cases WHERE id=?",(cid,)).fetchone()
     if not row: c.close(); return jsonify({"ok":False,"error":"Not found"}),404
@@ -21018,6 +21065,7 @@ def api_returns_patch(cid):
 def api_returns_note(cid):
     actor,is_ai=_req_returns_rw()
     if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    if not _returns_key_can_write(): return jsonify({"ok":False,"error":"this key is returns:read only"}),403
     note=((request.get_json() or {}).get("note") or "").strip()
     if not note: return jsonify({"ok":False,"error":"empty note"})
     c=_rdb()
@@ -21092,7 +21140,8 @@ _TK_MONEY_DECISIONS={"partial_refund","full_refund","refund_with_return","reship
 # Fields the AI key may write (never a decision, assignment, money, or lane=auto).
 _TK_AI_FIELDS={"ai_summary_he","ai_recommendation","ai_amount","draft_reply_en","final_reply_en",
                "execution_result","executed_at","type","platform_order_no","order_id",
-               "shipment_id","deadline","last_customer_msg_at","risk","risk_reasons"}
+               "shipment_id","deadline","last_customer_msg_at","risk","risk_reasons",
+               "status","customer_name","tracking","import_label"}
 # Statuses the AI may move a ticket into (it executes + closes; it never self-assigns a decision).
 _TK_AI_STATUSES={"ai_ready","waiting_customer","on_hold","customer_replied","done"}
 # Fields a staff session may write.
@@ -21114,12 +21163,21 @@ def _ticket_webhook(org, event, ticket):
     auth=(os.environ.get("TICKETS_WEBHOOK_AUTH","") or "").strip()
     if auth:
         headers["Authorization"]=auth if (" " in auth) else ("Bearer "+auth)
+    tid=ticket.get("id")
+    def _logcode(txt):
+        if not tid: return
+        try:
+            cc=sdb(org); _tk_log(cc,tid,"system","webhook",event,txt); cc.commit(); cc.close()
+        except Exception: pass
     def _go():
         try:
             req=_urlreq.Request(url,data=body,method="POST",headers=headers)
-            _urlreq.urlopen(req,timeout=5)
+            r=_urlreq.urlopen(req,timeout=5)
+            _logcode("→ %d"%r.getcode())
+        except _urlerr.HTTPError as e:
+            _logcode("→ %d"%e.code); print("ticket webhook HTTP",e.code,flush=True)
         except Exception as e:
-            print("ticket webhook failed:",e,flush=True)
+            _logcode("→ failed (%s)"%type(e).__name__); print("ticket webhook failed:",e,flush=True)
     threading.Thread(target=_go,daemon=True).start()
 
 def _tickets_actor():
@@ -21150,13 +21208,18 @@ def _tk_log(c,tid,actor,action,old="",new=""):
     c.execute("INSERT INTO ticket_log(ticket_id,actor,action,old_value,new_value) VALUES(?,?,?,?,?)",
               (tid,actor or "?",action,str(old or "")[:400],str(new or "")[:400]))
 
-def _tk_has_video(row):
+def _safe_log_file(org=None):
+    """Packing-log path, or None when there's no org in context (e.g. an AI-key call)."""
+    try: return log_file(org) if org else log_file()
+    except Exception: return None
+
+def _tk_has_video(row, org=None):
     """Does the outbound order have a packing video? (missing-item claim + video = red flag.)"""
-    trk=(row.get("shipment_id") or "")+"|"+(row.get("order_id") or "")
     codes={x for x in [row.get("shipment_id"),row.get("order_id")] if x}
-    if not codes or not os.path.exists(log_file()): return False
+    lf=_safe_log_file(org)
+    if not codes or not lf or not os.path.exists(lf): return False
     try:
-        with open(log_file()) as f:
+        with open(lf) as f:
             for r in csv.DictReader(f):
                 if (r.get("tracking_number","") in codes) and (r.get("video_file") or "").strip():
                     return True
@@ -21249,13 +21312,18 @@ def _ticket_autofill(c,d):
     code=(d.get("tracking") or d.get("tracking_in") or "").strip()
     sh=_resolve_shipment_by_code(c,code) if code else None
     uname=(d.get("username") or "").strip()
-    if not sh and uname:
-        oid=(d.get("platform_order_no") or d.get("order_id") or "").strip()
-        if oid:
+    oid=(d.get("platform_order_no") or d.get("order_id") or "").strip()
+    # Match order: tracking → order no. (by buyer, then alone) → latest order for the buyer.
+    if not sh and oid:
+        if uname:
             sh=c.execute("""SELECT s.* FROM shipments s JOIN shipment_items i ON i.shipment_id=s.shipment_id
                             WHERE s.buyer_username=? AND i.order_id=? LIMIT 1""",(uname,oid)).fetchone()
         if not sh:
-            sh=c.execute("SELECT * FROM shipments WHERE buyer_username=? ORDER BY imported_at DESC LIMIT 1",(uname,)).fetchone()
+            sh=c.execute("""SELECT s.* FROM shipments s JOIN shipment_items i ON i.shipment_id=s.shipment_id
+                            WHERE i.order_id=? ORDER BY s.imported_at DESC LIMIT 1""",(oid,)).fetchone()
+    if not sh and uname:
+        sh=c.execute("SELECT * FROM shipments WHERE buyer_username=? ORDER BY imported_at DESC LIMIT 1",(uname,)).fetchone()
+    if code: out["tracking"]=code
     if sh:
         out["shipment_id"]=sh["shipment_id"]; out["platform"]=sh["platform"]
         out["import_label"]=sh["import_label"]; out["customer_name"]=sh["buyer_name"]
@@ -21269,19 +21337,85 @@ def _ticket_autofill(c,d):
         if rc: out["return_case_id"]=rc["id"]
     return out
 
-def _tk_dict(c,row,full=False):
+def _tk_jparse(v):
+    """A JSON-encoded list column → a real list; tolerate plain/empty values."""
+    if isinstance(v,(list,dict)): return v
+    if not v: return []
+    try:
+        p=json.loads(v)
+        return p if isinstance(p,list) else ([p] if p else [])
+    except Exception:
+        return [s.strip() for s in str(v).split(",") if s.strip()]
+
+def _tk_row(row):
+    """One ticket row → dict with JSON list columns parsed back to arrays (#9)."""
     d=dict(row)
+    if "risk_reasons" in d: d["risk_reasons"]=_tk_jparse(d.get("risk_reasons"))
+    if "inbound_photos" in d: d["inbound_photos"]=_tk_jparse(d.get("inbound_photos"))
+    return d
+
+def _tk_buyer_box(c,username):
+    """Buyer history for the ticket (#8): orders, $ spent, first/last, refunds/returns/RTS."""
+    b={"username":username,"orders":0,"spent":0.0,"first_order":None,"last_order":None,
+       "refunds_returns":0,"rts":0,"flag":"","tags":[]}
+    try:
+        r=c.execute("""SELECT COUNT(*) n, MIN(show_date) f, MAX(show_date) l, MAX(buyer_name) nm
+                       FROM shipments WHERE buyer_username=?""",(username,)).fetchone()
+        b["orders"]=r["n"] or 0; b["first_order"]=r["f"]; b["last_order"]=r["l"]; b["customer_name"]=r["nm"]
+        b["spent"]=c.execute("""SELECT COALESCE(SUM(i.revenue),0) s FROM shipment_items i
+                                JOIN shipments s ON s.shipment_id=i.shipment_id WHERE s.buyer_username=?""",(username,)).fetchone()["s"] or 0
+        b["refunds_returns"]=c.execute("SELECT COUNT(*) n FROM return_cases WHERE customer_username=?",(username,)).fetchone()["n"]
+        b["rts"]=c.execute("SELECT COUNT(*) n FROM return_cases WHERE customer_username=? AND LOWER(COALESCE(return_type,'')) LIKE 'rts%'",(username,)).fetchone()["n"]
+    except Exception: pass
+    fl=c.execute("SELECT flag,tags FROM customer_flags WHERE username=?",(username,)).fetchone()
+    if fl: b["flag"]=fl["flag"] or ""; b["tags"]=_tk_jparse(fl["tags"])
+    return b
+
+def _tk_order_box(c,row,org=None):
+    """Order context for the ticket (#7): tracking, delivery, packing video, related orders."""
+    o={"tracking":row["tracking"],"related":[]}
+    sid=row["shipment_id"]
+    if sid:
+        sh=c.execute("""SELECT tracking_code,delivery_status,delivery_detail,delivered_at,import_label,
+                        total_items FROM shipments WHERE shipment_id=?""",(sid,)).fetchone()
+        if sh:
+            o["tracking"]=o["tracking"] or sh["tracking_code"]
+            o["delivery_status"]=sh["delivery_status"]; o["delivery_detail"]=sh["delivery_detail"]
+            o["delivered_at"]=sh["delivered_at"]; o["import_label"]=sh["import_label"]
+    # Packing video by tracking (same cross-ref the customer page uses)
+    o["video_url"]=None
+    codes={x for x in [o.get("tracking"),sid,row["order_id"]] if x}
+    lf=_safe_log_file(org)
+    if codes and lf and os.path.exists(lf):
+        try:
+            with open(lf) as f:
+                for r in csv.DictReader(f):
+                    if r.get("tracking_number","") in codes and (r.get("video_file") or "").strip():
+                        o["video_url"]="/media/video/"+r["video_file"]; o["packed_by"]=r.get("worker",""); break
+        except Exception: pass
+    # All orders this buyer has from the same show (#7: several orders / shipments)
+    if row["username"] and row["import_label"]:
+        o["related"]=[dict(r) for r in c.execute(
+            """SELECT shipment_id,tracking_code,status,total_items FROM shipments
+               WHERE buyer_username=? AND import_label=? ORDER BY imported_at DESC LIMIT 20""",
+            (row["username"],row["import_label"])).fetchall()]
+    return o
+
+def _tk_dict(c,row,full=False,org=None):
+    d=_tk_row(row)
     if full:
-        d["messages"]=[dict(r) for r in c.execute(
-            "SELECT direction,actor,body,photos,at FROM ticket_messages WHERE ticket_id=? ORDER BY id",(row["id"],)).fetchall()]
+        msgs=[]
+        for r in c.execute("SELECT direction,actor,body,photos,at FROM ticket_messages WHERE ticket_id=? ORDER BY id",(row["id"],)).fetchall():
+            m=dict(r); m["photos"]=_tk_jparse(m.get("photos")); msgs.append(m)
+        d["messages"]=msgs
         d["log"]=[dict(r) for r in c.execute(
             "SELECT actor,action,old_value,new_value,at FROM ticket_log WHERE ticket_id=? ORDER BY id",(row["id"],)).fetchall()]
         d["warnings"]=_ticket_warnings(c,dict(row))
-        # Buyer box
+        d["order"]=_tk_order_box(c,row,org)
         if row["username"]:
-            fl=c.execute("SELECT flag,tags FROM customer_flags WHERE username=?",(row["username"],)).fetchone()
-            d["buyer_flag"]=(fl["flag"] if fl else "") or ""
-            d["buyer_tags"]=json.loads(fl["tags"]) if (fl and fl["tags"]) else []
+            b=_tk_buyer_box(c,row["username"])
+            d["buyer"]=b
+            d["buyer_flag"]=b["flag"]; d["buyer_tags"]=b["tags"]
             d["buyer_notes"]=[dict(r) for r in c.execute(
                 "SELECT note,author,created_at FROM customer_notes WHERE username=? ORDER BY id DESC LIMIT 20",(row["username"],)).fetchall()]
     return d
@@ -21317,17 +21451,23 @@ def api_cshub_create():
     uname=af.get("username") or (d.get("username") or "").strip()
     ttype=(d.get("type") or "question").strip()
     if ttype not in _TK_TYPES: ttype="question"
+    tracking=(d.get("tracking") or d.get("tracking_in") or "").strip()
     base={"platform":af.get("platform") or (d.get("platform") or "").strip(),
           "account":(d.get("account") or org),"username":uname,
           "customer_name":af.get("customer_name") or (d.get("customer_name") or "").strip(),
           "platform_order_no":(d.get("platform_order_no") or "").strip(),
           "order_id":af.get("order_id") or (d.get("order_id") or "").strip(),
           "shipment_id":af.get("shipment_id"),"return_case_id":af.get("return_case_id"),
-          "import_label":af.get("import_label"),"platform_conversation_key":key or None,
+          "import_label":af.get("import_label"),"tracking":tracking or None,
+          "platform_conversation_key":key or None,
           "type":ttype,"status":"new","deadline":af.get("deadline") or d.get("deadline"),
           "inbound_text":inbound or None,"inbound_photos":json.dumps(photos,ensure_ascii=False),
           "last_customer_msg_at":d.get("last_customer_msg_at") or now,"created_by":actor}
     risk,reasons=_ticket_risk(c,uname,{"type":ttype,"shipment_id":base["shipment_id"],"order_id":base["order_id"]})
+    # Surface an auto-fill miss so staff/AI know the order wasn't found (not a silent blank).
+    matched=bool(af.get("shipment_id"))
+    if not matched and (tracking or base["platform_order_no"] or uname):
+        reasons=list(reasons)+["No matching shipment found — order details not auto-filled"]
     base["risk"]=risk; base["risk_reasons"]=json.dumps(reasons,ensure_ascii=False)
     cols=",".join(base.keys()); qs=",".join("?" for _ in base)
     tid=c.execute("INSERT INTO tickets(%s) VALUES(%s)"%(cols,qs),list(base.values())).lastrowid
@@ -21336,7 +21476,7 @@ def api_cshub_create():
                   (tid,"in",actor,inbound,json.dumps(photos,ensure_ascii=False)))
     _tk_log(c,tid,actor,"created","",ttype)
     c.commit(); c.close()
-    return jsonify({"ok":True,"id":tid,"reopened":False,"risk":risk})
+    return jsonify({"ok":True,"id":tid,"reopened":False,"risk":risk,"matched":matched})
 
 def _tk_counts(c):
     r=lambda q,*a:c.execute(q,a).fetchone()["n"]
@@ -21368,7 +21508,7 @@ def api_cshub_list():
     elif assigned: where.append("assigned_to=?"); args.append(assigned)
     c=_tdb(ident)
     rows=c.execute("SELECT * FROM tickets WHERE %s ORDER BY id DESC LIMIT ?"%(" AND ".join(where)),args+[limit]).fetchall()
-    out=[dict(r) for r in rows]; counts=_tk_counts(c); c.close()
+    out=[_tk_row(r) for r in rows]; counts=_tk_counts(c); c.close()
     return jsonify({"ok":True,"count":len(out),"tickets":out,"counters":counts})
 
 @app.route("/api/tickets/<int:tid>")
@@ -21377,7 +21517,8 @@ def api_cshub_get(tid):
     if not actor: return jsonify({"ok":False,"error":"auth required"}),401
     c=_tdb(ident); row=c.execute("SELECT * FROM tickets WHERE id=?",(tid,)).fetchone()
     if not row: c.close(); return jsonify({"ok":False,"error":"Not found"}),404
-    out=_tk_dict(c,row,full=True); c.close()
+    org=ident["org"] if ident else session.get("org",DEFAULT_ORG)
+    out=_tk_dict(c,row,full=True,org=org); c.close()
     return jsonify({"ok":True,"ticket":out})
 
 @app.route("/api/tickets/search")
@@ -21390,7 +21531,7 @@ def api_cshub_search():
     rows=c.execute("""SELECT * FROM tickets WHERE COALESCE(voided,0)=0 AND
                       (username LIKE ? OR customer_name LIKE ? OR platform_order_no LIKE ? OR order_id LIKE ?)
                       ORDER BY id DESC LIMIT 100""",(like,like,like,like)).fetchall()
-    out=[dict(r) for r in rows]; c.close()
+    out=[_tk_row(r) for r in rows]; c.close()
     return jsonify({"ok":True,"tickets":out})
 
 @app.route("/api/tickets/<int:tid>", methods=["PATCH","POST"])
@@ -21566,7 +21707,7 @@ def api_apikeys_create():
     d=request.get_json() or {}
     label=(d.get("label") or "").strip()[:80] or "AI key"
     org=(d.get("org") or current_org()).strip()
-    scopes=d.get("scopes") or ["tickets:read","tickets:write","customers:read"]
+    scopes=d.get("scopes") or ["tickets:read","tickets:write","customers:read","returns:read"]
     if isinstance(scopes,str): scopes=[s.strip() for s in scopes.split(",") if s.strip()]
     # Never let a key be minted with money/send powers — those stay human.
     scopes=[s for s in scopes if s not in ("money","send","*") and not s.startswith("money:")]

@@ -15336,12 +15336,28 @@ function openT(id){
     var t=d.ticket;show("ticket");
     var warns=(t.warnings||[]).map(function(w){return '<div class="warn">⚠ '+esc(w)+'</div>';}).join("");
     var tags=(t.buyer_tags||[]).map(function(x){return '<span class="tagc">'+esc(x)+'</span>';}).join(" ");
-    var notes=(t.buyer_notes||[]).map(function(n){return '<div class="msg internal"><div>'+esc(n.note)+'</div><div class="m">'+esc(n.author||"")+' · '+esc((n.created_at||"").slice(0,16))+'</div></div>';}).join("")||'<span class="mut">No notes.</span>';
-    var msgs=(t.messages||[]).map(function(m){var cl=m.direction==="in"?"inn":m.direction;return '<div class="msg '+cl+'"><div>'+esc(m.body)+'</div><div class="m">'+esc(m.direction)+' · '+esc(m.actor||"")+' · '+esc((m.at||"").slice(0,16))+'</div></div>';}).join("")||'<span class="mut">No messages.</span>';
+    var notes=(t.buyer_notes||[]).map(function(n){return '<div class="msg internal"><div dir="auto">'+esc(n.note)+'</div><div class="m">'+esc(n.author||"")+' · '+esc((n.created_at||"").slice(0,16))+'</div></div>';}).join("")||'<span class="mut">No notes.</span>';
+    var msgs=(t.messages||[]).map(function(m){var cl=m.direction==="in"?"inn":m.direction;return '<div class="msg '+cl+'"><div dir="auto">'+esc(m.body)+'</div><div class="m">'+esc(m.direction)+' · '+esc(m.actor||"")+' · '+esc((m.at||"").slice(0,16))+'</div></div>';}).join("")||'<span class="mut">No messages.</span>';
     var tl=(t.log||[]).map(function(l){return '<div class="msg"><span class="m">'+esc((l.at||"").slice(0,16))+'</span> <b>'+esc(l.actor||"")+'</b> '+esc(l.action)+(l.new_value?(' → '+esc(String(l.new_value).slice(0,60))):"")+'</div>';}).join("");
     var decisions=[["send_reply","Send reply",0],["ask_photo","Ask for photo",0],["reject","Reject",0],["partial_refund","Partial refund",1],["full_refund","Full refund",1],["refund_with_return","Refund w/ return",1],["reship","Reship",1],["cancel","Cancel",1]];
     var decBtns=decisions.map(function(x){var money=x[2];var dis=(money&&!MONEY_ROLE);return '<span class="chip'+(money?" money":"")+(t.decision===x[0]?" on":"")+'" '+(dis?'style="opacity:.45;cursor:not-allowed" title="owner/manager only"':'onclick="setDecision('+t.id+",'"+x[0]+'\\')"')+'>'+x[1]+(money?" 💲":"")+'</span>';}).join("");
-    var vid=t.shipment_id?('<a href="/media/video/" onclick="return false" class="mut">video via order</a>'):"";
+    // Buyer box (#8)
+    var b=t.buyer||{};
+    var buyerStats=(t.username?(
+        '<div class="kv"><span>Orders</span><b>'+(b.orders||0)+'</b></div>'+
+        '<div class="kv"><span>$ spent</span><b>$'+(Number(b.spent||0)).toFixed(2)+'</b></div>'+
+        '<div class="kv"><span>First / last</span><b>'+esc((b.first_order||"—"))+' · '+esc((b.last_order||"—"))+'</b></div>'+
+        '<div class="kv"><span>Refunds / returns</span><b>'+(b.refunds_returns||0)+'</b></div>'+
+        '<div class="kv"><span>RTS</span><b>'+(b.rts||0)+'</b></div>'):"");
+    // Order box (#7)
+    var o=t.order||{};
+    var trk=o.tracking||t.tracking;
+    var trkHtml=trk?('<a href="https://tools.usps.com/go/TrackConfirmAction?tLabels='+encodeURIComponent(trk)+'" target="_blank">'+esc(trk)+'</a>'):"—";
+    var deliv=o.delivery_status?(esc(stLabel(o.delivery_status))+(o.delivery_detail?(' · '+esc(o.delivery_detail)):"")):"—";
+    var vidHtml=o.video_url?('<a href="'+esc(o.video_url)+'" target="_blank">▶ watch</a>'):'<span class="mut">—</span>';
+    var related=(o.related||[]);
+    var relHtml=related.length>1?('<div class="kv"><span>Orders this show</span><b>'+related.length+'</b></div>'+
+        related.map(function(r){return '<div class="mut" style="font-size:12px">'+esc(r.shipment_id)+' · '+esc(r.status||"")+' · '+(r.total_items||0)+' items</div>';}).join("")):"";
     document.getElementById("vTicket").innerHTML=
       '<button class="btn g" onclick="show(\\'inbox\\');loadInbox()">← Inbox</button>'+
       '<h1 style="margin-top:10px">Ticket #'+t.id+' <span class="st '+esc(t.status)+'">'+esc(stLabel(t.status))+'</span> <span class="dot '+(t.risk||"green")+'"></span></h1>'+
@@ -15349,29 +15365,35 @@ function openT(id){
       warns+
       '<div class="grid">'+
         '<div class="box"><h3>Buyer</h3>'+
+          '<div class="kv"><span>Name</span><b>'+esc(t.customer_name||b.customer_name||"—")+'</b></div>'+
+          buyerStats+
           '<div class="kv"><span>Flag</span><b>'+esc(t.buyer_flag||"—")+'</b></div>'+
           '<div class="chips">'+tags+'</div>'+
           '<div style="margin-top:6px"><b>Notes</b></div>'+notes+
-          '<div style="margin-top:8px"><textarea id="noteBox" placeholder="Add a buyer note…"></textarea><button class="btn" style="margin-top:6px" onclick="addNote(\\''+esc(t.username||"")+'\\')">Add note</button></div>'+
+          '<div style="margin-top:8px"><textarea id="noteBox" dir="auto" placeholder="Add a buyer note…"></textarea><button class="btn" style="margin-top:6px" onclick="addNote(\\''+esc(t.username||"")+'\\')">Add note</button></div>'+
         '</div>'+
         '<div class="box"><h3>Order</h3>'+
           '<div class="kv"><span>Order #</span><b>'+esc(t.platform_order_no||t.order_id||"—")+'</b></div>'+
           '<div class="kv"><span>Show</span><b>'+esc(t.import_label||"—")+'</b></div>'+
-          '<div class="kv"><span>Shipment</span><b>'+esc(t.shipment_id||"—")+'</b></div>'+
+          '<div class="kv"><span>Tracking</span><b>'+trkHtml+'</b></div>'+
+          '<div class="kv"><span>Delivery</span><b>'+deliv+'</b></div>'+
+          '<div class="kv"><span>Packing video</span><b>'+vidHtml+'</b></div>'+
           '<div class="kv"><span>Return case</span><b>'+(t.return_case_id?('<a href="/admin/returns">#'+t.return_case_id+'</a>'):"—")+'</b></div>'+
+          relHtml+
         '</div>'+
       '</div>'+
-      '<div class="box ai"><h3>🤖 AI Chief of Staff (Hebrew)</h3>'+
-        '<div dir="rtl" style="white-space:pre-wrap;font-size:13.5px">'+(esc(t.ai_summary_he||"")||'<span class="mut">No AI summary yet.</span>')+'</div>'+
-        (t.ai_recommendation?('<div class="kv" style="margin-top:8px"><span>Recommends</span><b>'+esc(t.ai_recommendation)+(t.ai_amount?(" · $"+t.ai_amount):"")+'</b></div>'):"")+
+      '<div class="box ai"><h3>🤖 AI Chief of Staff</h3>'+
+        '<div dir="auto" style="white-space:pre-wrap;font-size:13.5px">'+(esc(t.ai_summary_he||"")||'<span class="mut">No AI summary yet.</span>')+'</div>'+
+        (t.ai_recommendation?('<div class="kv" style="margin-top:8px"><span>Recommends</span><b dir="auto">'+esc(t.ai_recommendation)+(t.ai_amount?(" · $"+t.ai_amount):"")+'</b></div>'):"")+
+        (t.draft_reply_en?('<div style="margin-top:8px"><b>Draft reply</b><div dir="auto" style="white-space:pre-wrap;font-size:13px;color:#374151">'+esc(t.draft_reply_en)+'</div></div>'):"")+
       '</div>'+
       '<div class="box"><h3>Decision (human)</h3><div class="chips">'+decBtns+'</div>'+
         (MONEY_ROLE?('<div style="margin-top:8px"><input id="decAmt" type="number" step="0.01" placeholder="amount $" style="border:1.5px solid var(--bd);border-radius:10px;padding:8px;width:140px"> <span class="mut">for refunds</span></div>'):'<div class="mut" style="margin-top:6px">Money actions need owner/manager.</div>')+
         '<div style="margin-top:10px"><b>Instruction to AI</b><textarea id="instr" dir="auto" placeholder="לדוגמה: תציע 50% זיכוי · ask for a photo">'+esc(t.instruction_to_ai||"")+'</textarea></div>'+
-        '<div style="margin-top:8px"><b>Reply to customer (English)</b><textarea id="reply">'+esc(t.final_reply_en||t.draft_reply_en||"")+'</textarea><button class="btn" style="margin-top:6px" onclick="saveReply('+t.id+')">Save instruction + reply</button></div>'+
+        '<div style="margin-top:8px"><b>Reply to customer (English)</b><textarea id="reply" dir="auto">'+esc(t.final_reply_en||t.draft_reply_en||"")+'</textarea><button class="btn" style="margin-top:6px" onclick="saveReply('+t.id+')">Save instruction + reply</button></div>'+
       '</div>'+
       '<div class="box"><h3>Conversation</h3>'+msgs+
-        '<div style="margin-top:8px"><textarea id="intNote" placeholder="Internal note to the team…"></textarea><button class="btn" style="margin-top:6px" onclick="addInternal('+t.id+')">Add internal note</button></div>'+
+        '<div style="margin-top:8px"><textarea id="intNote" dir="auto" placeholder="Internal note to the team…"></textarea><button class="btn" style="margin-top:6px" onclick="addInternal('+t.id+')">Add internal note</button></div>'+
       '</div>'+
       '<div class="box"><h3>Timeline</h3>'+(tl||'<span class="mut">—</span>')+'</div>';
   });
@@ -15460,6 +15482,7 @@ td{padding:10px;border-bottom:1px solid #f0edf6}.mono{font-family:ui-monospace,M
       <div><label style="text-transform:none;color:#374151"><input type="checkbox" class="sc" value="tickets:read" checked style="width:auto"> tickets:read</label></div>
       <div><label style="text-transform:none;color:#374151"><input type="checkbox" class="sc" value="tickets:write" checked style="width:auto"> tickets:write</label></div>
       <div><label style="text-transform:none;color:#374151"><input type="checkbox" class="sc" value="customers:read" checked style="width:auto"> customers:read</label></div>
+      <div><label style="text-transform:none;color:#374151"><input type="checkbox" class="sc" value="returns:read" checked style="width:auto"> returns:read</label></div>
     </div>
     <button class="btn" id="create">Create key</button>
   </div>
