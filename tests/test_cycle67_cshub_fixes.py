@@ -98,6 +98,43 @@ def test_search_by_order_and_tracking(appmod, client):
     assert any(x["buyer_username"] == "searchme" for x in r2)        # #2
 
 
+def test_refill_fills_after_import(appmod, client):
+    A = appmod
+    key = _key(client, A)
+    ai = A.app.test_client(); h = {"Authorization": "Bearer " + key}
+    trk = "9361" + uuid.uuid4().hex[:12]
+    order = "15" + uuid.uuid4().hex[:8]
+    # ticket created BEFORE the shipment exists -> no auto-fill
+    tid = ai.post("/api/tickets", json={"username": "lateimport", "platform_order_no": order,
+                                        "tracking": trk, "inbound_text": "hi"}, headers=h).get_json()["id"]
+    g0 = ai.get("/api/tickets/%d" % tid, headers=h).get_json()["ticket"]
+    assert not g0.get("import_label")
+    # now the show is imported, then re-match
+    _seed(A, trk, user="lateimport", order=order)
+    r = ai.post("/api/tickets/%d/refill" % tid, json={}, headers=h).get_json()
+    assert r["ok"] and r["matched"] is True
+    g1 = ai.get("/api/tickets/%d" % tid, headers=h).get_json()["ticket"]
+    assert g1["import_label"] == "HERA Live" and g1["shipment_id"]
+
+
+def test_buyer_box_orders_and_shipments(appmod, client):
+    A = appmod
+    user = "multi" + uuid.uuid4().hex[:5]
+    c = A.sdb(A.DEFAULT_ORG)
+    for n in range(2):                      # 2 shipments, 4 line items each = 8 orders
+        sid = "S" + uuid.uuid4().hex[:8]
+        c.execute("""INSERT INTO shipments(shipment_id,status,platform,import_label,buyer_username,buyer_name,show_date)
+                     VALUES(?,'packed','whatnot','HERA Live',?,?,'2026-11-18')""", (sid, user, "Multi B"))
+        for k in range(4):
+            c.execute("INSERT INTO shipment_items(shipment_id,order_id,sku,product_name,quantity,revenue) VALUES(?,?,?,?,1,?)",
+                      (sid, "O%d-%d" % (n, k), "P", "X", 5))
+    c.commit(); c.close()
+    key = _key(client, A); ai = A.app.test_client(); h = {"Authorization": "Bearer " + key}
+    tid = ai.post("/api/tickets", json={"username": user, "inbound_text": "hi"}, headers=h).get_json()["id"]
+    b = ai.get("/api/tickets/%d" % tid, headers=h).get_json()["ticket"]["buyer"]
+    assert b["orders"] == 8 and b["shipments"] == 2 and b["spent"] == 40
+
+
 def test_returns_read_with_returns_scope(appmod, client):
     A = appmod
     key = _key(client, A, scopes=["returns:read"])

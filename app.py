@@ -21375,13 +21375,16 @@ def _tk_row(row):
     return d
 
 def _tk_buyer_box(c,username):
-    """Buyer history for the ticket (#8): orders, $ spent, first/last, refunds/returns/RTS."""
-    b={"username":username,"orders":0,"spent":0.0,"first_order":None,"last_order":None,
+    """Buyer history for the ticket (#8): orders (line items), shipments, $ spent, first/last,
+    refunds/returns/RTS. 'orders' counts line items (pulls + giveaways); 'shipments' counts parcels."""
+    b={"username":username,"orders":0,"shipments":0,"spent":0.0,"first_order":None,"last_order":None,
        "refunds_returns":0,"rts":0,"flag":"","tags":[]}
     try:
         r=c.execute("""SELECT COUNT(*) n, MIN(show_date) f, MAX(show_date) l, MAX(buyer_name) nm
                        FROM shipments WHERE buyer_username=?""",(username,)).fetchone()
-        b["orders"]=r["n"] or 0; b["first_order"]=r["f"]; b["last_order"]=r["l"]; b["customer_name"]=r["nm"]
+        b["shipments"]=r["n"] or 0; b["first_order"]=r["f"]; b["last_order"]=r["l"]; b["customer_name"]=r["nm"]
+        b["orders"]=c.execute("""SELECT COUNT(*) n FROM shipment_items i
+                                 JOIN shipments s ON s.shipment_id=i.shipment_id WHERE s.buyer_username=?""",(username,)).fetchone()["n"] or 0
         b["spent"]=c.execute("""SELECT COALESCE(SUM(i.revenue),0) s FROM shipment_items i
                                 JOIN shipments s ON s.shipment_id=i.shipment_id WHERE s.buyer_username=?""",(username,)).fetchone()["s"] or 0
         b["refunds_returns"]=c.execute("SELECT COUNT(*) n FROM return_cases WHERE customer_username=?",(username,)).fetchone()["n"]
@@ -21640,6 +21643,62 @@ def api_cshub_message(tid):
     _tk_log(c,tid,actor,"message_"+direction,"",body[:120])
     c.commit(); c.close()
     return jsonify({"ok":True})
+
+def _translate_he(text):
+    """Translate free text to Hebrew via the Anthropic client, if configured. Returns the Hebrew
+    string, or None when no provider is set up (the UI then shows a 'not configured' note)."""
+    text=(text or "").strip()
+    if not text or anthropic_client is None: return None
+    try:
+        m=anthropic_client.messages.create(
+            model=os.environ.get("TRANSLATE_MODEL","claude-3-5-haiku-latest"),
+            max_tokens=1200,
+            messages=[{"role":"user","content":
+                "Translate the following customer-service text to natural Hebrew. Return ONLY the "
+                "translation, no preface, no quotes.\n\n"+text[:4000]}])
+        parts=[b.text for b in m.content if getattr(b,"type","")=="text"]
+        return ("".join(parts)).strip() or None
+    except Exception as e:
+        print("translate failed:",e,flush=True); return None
+
+@app.route("/api/tickets/<int:tid>/translate", methods=["POST"])
+def api_cshub_translate(tid):
+    """Translate a piece of the ticket (AI summary, a message, the draft reply) to Hebrew for the
+    team — display only, computed on demand. Staff session or a tickets:read key."""
+    actor,is_ai,ident=_req_tickets("tickets:read")
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    text=((request.get_json() or {}).get("text") or "").strip()
+    if not text: return jsonify({"ok":False,"error":"no text"})
+    he=_translate_he(text)
+    if he is None:
+        return jsonify({"ok":False,"error":"Translation isn't configured (set ANTHROPIC_API_KEY)."})
+    return jsonify({"ok":True,"translated":he})
+
+@app.route("/api/tickets/<int:tid>/refill", methods=["POST"])
+def api_cshub_refill(tid):
+    """Re-run auto-fill on an existing ticket (e.g. after the show's CSV was imported). Fills any
+    empty order fields from the matched shipment without overwriting what's already set."""
+    actor,is_ai,ident=_req_tickets("tickets:write")
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    c=_tdb(ident); row=c.execute("SELECT * FROM tickets WHERE id=?",(tid,)).fetchone()
+    if not row: c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    af=_ticket_autofill(c,{"tracking":row["tracking"],"username":row["username"],
+                           "platform_order_no":row["platform_order_no"],"order_id":row["order_id"]})
+    sets=[]; args=[]
+    # Only fill columns that are currently empty (don't clobber human/AI edits).
+    for col,val in [("shipment_id",af.get("shipment_id")),("platform",af.get("platform")),
+                    ("import_label",af.get("import_label")),("customer_name",af.get("customer_name")),
+                    ("order_id",af.get("order_id")),("return_case_id",af.get("return_case_id")),
+                    ("deadline",af.get("deadline"))]:
+        if val and not (row[col] if col in row.keys() else None):
+            sets.append(col+"=?"); args.append(val); _tk_log(c,tid,actor,"refill "+col,"",val)
+    matched=bool(af.get("shipment_id"))
+    if sets:
+        sets.append("updated_at=?"); args.append(datetime.now().isoformat(timespec="seconds"))
+        c.execute("UPDATE tickets SET %s WHERE id=?"%(", ".join(sets)),args+[tid])
+        c.commit()
+    c.close()
+    return jsonify({"ok":True,"matched":matched,"filled":[s.split("=")[0] for s in sets if "=" in s]})
 
 @app.route("/api/tickets/<int:tid>/take", methods=["POST"])
 @req_role("admin","cs","manager")
