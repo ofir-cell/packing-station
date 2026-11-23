@@ -1674,6 +1674,33 @@ def sdb_init(org):
     # by its live sticker — so an unmatched item can still be identified and completed later.
     try: c.execute("ALTER TABLE show_product_map ADD COLUMN photo_url TEXT")
     except Exception: pass
+    # ── Returns module ───────────────────────────────────────────────────────────
+    # Every physical return is logged + photographed here; the AI assistant completes matching,
+    # platform CS and closing through the API. Never hard-delete a case (void with a reason).
+    c.execute("""CREATE TABLE IF NOT EXISTS return_cases(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP, received_by TEXT,
+        tracking_in TEXT, outbound_shipment_id TEXT, order_id TEXT,
+        platform TEXT, import_label TEXT, customer_username TEXT, customer_name TEXT,
+        return_type TEXT, rts_reason TEXT,
+        status TEXT DEFAULT 'received',            -- received/matched/decided/restocked/discarded/reshipped/closed/unmatched/hold/void
+        decision TEXT, decision_by TEXT, decision_at TEXT,
+        platform_request_id TEXT, platform_deadline TEXT, refund_amount REAL, refund_status TEXT,
+        reship_tracking TEXT, ai_summary TEXT, ai_tags TEXT, assigned_to TEXT,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP, voided INTEGER DEFAULT 0
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS return_items(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, case_id INTEGER, sku TEXT, product_name TEXT,
+        qty_expected INTEGER DEFAULT 0, qty_received INTEGER DEFAULT 0, condition TEXT, note TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS return_photos(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, case_id INTEGER, photo_key TEXT, label TEXT,
+        uploaded_by TEXT, uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS return_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, case_id INTEGER, actor TEXT, action TEXT,
+        old_value TEXT, new_value TEXT, at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_return_tracking ON return_cases(tracking_in)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_return_status ON return_cases(status)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_return_items_case ON return_items(case_id)")
     # Inbound shipments — labels bought for supplier → warehouse shipments.
     c.execute("""CREATE TABLE IF NOT EXISTS inbound_shipments(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3922,6 +3949,13 @@ def _csrf_protect():
         return
     if request.path in _CSRF_EXEMPT:
         return
+    # The Returns AI API authenticates with a bearer key, not an ambient cookie, so CSRF (which
+    # only guards cookie-ridden requests) doesn't apply. Bypass it ONLY for a valid key.
+    if request.path.startswith("/api/returns"):
+        sig=(request.headers.get("Authorization","") or "").strip()
+        k=_returns_ai_key()
+        if k and sig.lower().startswith("bearer ") and hmac.compare_digest(sig[7:].strip(), k):
+            return
     ck=request.cookies.get(CSRF_COOKIE)
     hd=request.headers.get(CSRF_HEADER) or (request.form.get("_csrf") if request.form else None)
     if not ck or not hd or not secrets.compare_digest(str(ck),str(hd)):
@@ -20614,6 +20648,266 @@ load();
 </script>
 </body></html>"""
     return html.replace("__NAVBAR__",nav).replace("__NAVBAR_CSS__",_NAVBAR_CSS)
+
+# ══════════════════════════════════════════════════════════
+# RETURNS MODULE — warehouse logs + photographs every return; the AI assistant matches it to the
+# platform request, handles CS and closes the case, all through this API (Phase 1: intake + API +
+# audit; AI works via a bearer key so its changes are attributed). Decision stays manual (hold).
+# ══════════════════════════════════════════════════════════
+_RET_STATUSES={"received","matched","decided","restocked","discarded","reshipped","closed","unmatched","hold","void"}
+_RET_DECISIONS={"restock","discard","reship","return_to_vendor","hold"}
+
+def _returns_ai_key():
+    return (os.environ.get("RETURNS_AI_KEY","") or "").strip()
+
+def _returns_actor():
+    """Who is making this call: a logged-in user (session), or the AI assistant via the bearer key.
+    Returns (actor_label, is_ai) or (None, False) if neither — so the AI's changes are audited."""
+    sig=(request.headers.get("Authorization","") or "").strip()
+    key=_returns_ai_key()
+    if key and sig.lower().startswith("bearer ") and hmac.compare_digest(sig[7:].strip(), key):
+        return ("AI", True)
+    if session.get("user"):
+        return (session.get("name") or session.get("user") or "staff", False)
+    return (None, False)
+
+def _req_returns_rw():
+    """Allow an admin/cs session OR the AI bearer key. Returns (actor,is_ai) or aborts 401/403."""
+    actor,is_ai=_returns_actor()
+    if is_ai: return (actor,True)
+    if not actor: return (None,None)   # caller checks
+    if session.get("role") not in ("admin","cs","worker","picker","manager"):
+        return (None,None)
+    return (actor,False)
+
+def _rdb():
+    """DB connection for the returns API. A logged-in user → their org (session); the AI assistant
+    (bearer key, no session) → DEFAULT_ORG. The returns AI key is single-tenant by design."""
+    _,is_ai=_returns_actor()
+    return sdb(DEFAULT_ORG if (is_ai and "user" not in session) else None)
+
+def _ret_log(c, case_id, actor, action, old="", new=""):
+    c.execute("INSERT INTO return_log(case_id,actor,action,old_value,new_value) VALUES(?,?,?,?,?)",
+              (case_id, actor or "?", action, str(old or "")[:300], str(new or "")[:300]))
+
+def _ret_photo_viewurl(pid):
+    return "/return-photo/%d?v=%d"%(int(pid), int(time.time()))
+
+@app.route("/api/returns", methods=["POST"])
+@req_role("admin","cs","worker","picker","manager")
+def api_returns_create():
+    """Receive a return: match the scanned/typed tracking to the original outbound shipment and open
+    a case. Items optional at intake. Photos are added via /api/returns/<id>/photo."""
+    d=request.get_json() or {}
+    trk=(d.get("tracking_in") or "").strip()
+    rtype=(d.get("return_type") or "unknown").strip()
+    rts=(d.get("rts_reason") or "").strip()
+    who=session.get("name","") or session.get("user","")
+    c=sdb()
+    m=_resolve_shipment_by_code(c, trk) if trk else None
+    # Duplicate guard — warn (don't block) if this tracking was already received.
+    dup=None
+    if trk:
+        dr=c.execute("SELECT id FROM return_cases WHERE tracking_in=? AND COALESCE(voided,0)=0 ORDER BY id DESC LIMIT 1",(trk,)).fetchone()
+        if dr and not d.get("confirm_dup"):
+            c.close(); return jsonify({"ok":False,"duplicate":True,"existing_id":dr["id"],
+                        "error":"This tracking was already received as case #%d."%dr["id"]})
+        if dr: dup=dr["id"]
+    status="matched" if m else "unmatched"
+    _oid=None
+    if m:
+        _or=c.execute("SELECT order_id FROM shipment_items WHERE shipment_id=? AND COALESCE(order_id,'')<>'' LIMIT 1",(m["shipment_id"],)).fetchone()
+        _oid=_or["order_id"] if _or else None
+    cur=c.execute("""INSERT INTO return_cases(received_by,tracking_in,outbound_shipment_id,order_id,platform,
+                      import_label,customer_username,customer_name,return_type,rts_reason,status)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                  (who, trk, (m["shipment_id"] if m else None), _oid,
+                   (m["platform"] if m else None), (m["import_label"] if m else None),
+                   (m["buyer_username"] if m else None), (m["buyer_name"] if m else None),
+                   rtype, rts or None, status))
+    cid=cur.lastrowid
+    # Items: from the request, or auto-seed the expected items from the matched order.
+    items=d.get("items")
+    if items is None and m:
+        items=[{"sku":r["sku"],"product_name":r["product_name"],"qty_expected":r["quantity"] or 1}
+               for r in c.execute("SELECT sku,product_name,quantity FROM shipment_items WHERE shipment_id=? AND COALESCE(cancelled,0)=0",(m["shipment_id"],)).fetchall()]
+    for it in (items or []):
+        c.execute("""INSERT INTO return_items(case_id,sku,product_name,qty_expected,qty_received,condition,note)
+                     VALUES(?,?,?,?,?,?,?)""",
+                  (cid,(it.get("sku") or "").strip() or None,(it.get("product_name") or "").strip() or None,
+                   int(it.get("qty_expected") or 0),int(it.get("qty_received") or 0),
+                   (it.get("condition") or "").strip() or None,(it.get("note") or "").strip() or None))
+    _ret_log(c, cid, who, "received", "", "matched" if m else "unmatched (no shipment)")
+    c.commit(); c.close()
+    return jsonify({"ok":True,"id":cid,"matched":bool(m),"status":status,"dup_of":dup})
+
+@app.route("/api/returns/<int:cid>/photo", methods=["POST"])
+@req_role("admin","cs","worker","picker","manager")
+def api_returns_photo(cid):
+    """Attach a labelled photo (outside/contents/damage/other) to a return case."""
+    f=request.files.get("file")
+    if not f or not f.filename: return jsonify({"ok":False,"error":"Take a photo"})
+    label=(request.form.get("label") or "other").strip()
+    ext=f.filename.rsplit(".",1)[-1].lower() if "." in f.filename else "jpg"
+    if ext not in _STICKER_IMG_EXT: return jsonify({"ok":False,"error":"Use a photo (JPG/PNG/HEIC)"})
+    org=current_org(); who=session.get("name","")
+    c=sdb()
+    if not c.execute("SELECT 1 FROM return_cases WHERE id=?",(cid,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"Case not found"}),404
+    pid=c.execute("INSERT INTO return_photos(case_id,photo_key,label,uploaded_by) VALUES(?,?,?,?)",
+                  (cid,"",label,who)).lastrowid
+    safe=secure_filename("ret%d-%d"%(cid,pid)) or ("ret%d"%cid)
+    key=f"{org}/returns/{safe}.{ext}"
+    if r2:
+        r2.upload_fileobj(f.stream,R2_BUCKET,key,ExtraArgs={"ContentType":f.mimetype or "image/"+ext})
+    else:
+        dd=org_path(org,"returns"); os.makedirs(dd,exist_ok=True)
+        f.save(os.path.join(dd,safe+"."+ext)); key=safe+"."+ext
+    c.execute("UPDATE return_photos SET photo_key=? WHERE id=?",(key,pid))
+    _ret_log(c, cid, who, "photo_added", "", label)
+    c.commit(); c.close()
+    return jsonify({"ok":True,"photo_id":pid,"view_url":_ret_photo_viewurl(pid)})
+
+@app.route("/return-photo/<int:pid>")
+@req_login
+def return_photo(pid):
+    c=sdb(); r=c.execute("SELECT photo_key FROM return_photos WHERE id=?",(pid,)).fetchone(); c.close()
+    key=r["photo_key"] if r else None
+    if not key: return ("",404)
+    if r2 and "/" in key:
+        try: return redirect(r2.generate_presigned_url("get_object",Params={"Bucket":R2_BUCKET,"Key":key},ExpiresIn=R2_PRESIGN_TTL))
+        except Exception: return ("",404)
+    p=org_path(current_org(),"returns",key)
+    return send_file(p) if os.path.exists(p) else ("",404)
+
+def _ret_case_dict(c, row, full=False):
+    d=dict(row)
+    if full:
+        d["items"]=[dict(r) for r in c.execute("SELECT * FROM return_items WHERE case_id=?",(row["id"],)).fetchall()]
+        d["photos"]=[{"id":p["id"],"label":p["label"],"view_url":_ret_photo_viewurl(p["id"]),
+                      "uploaded_by":p["uploaded_by"],"uploaded_at":p["uploaded_at"]}
+                     for p in c.execute("SELECT * FROM return_photos WHERE case_id=?",(row["id"],)).fetchall()]
+        d["log"]=[dict(r) for r in c.execute("SELECT actor,action,old_value,new_value,at FROM return_log WHERE case_id=? ORDER BY id",(row["id"],)).fetchall()]
+    else:
+        d["photo_count"]=c.execute("SELECT COUNT(*) n FROM return_photos WHERE case_id=?",(row["id"],)).fetchone()["n"]
+    return d
+
+@app.route("/api/returns")
+def api_returns_list():
+    """List return cases (newest first) with filters. Open to an admin/cs session OR the AI key."""
+    actor,is_ai=_req_returns_rw()
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    status=(request.args.get("status") or "").strip()
+    platform=(request.args.get("platform") or "").strip()
+    since=(request.args.get("since") or request.args.get("updated_since") or "").strip()
+    try: limit=max(1,min(500,int(request.args.get("limit") or 100)))
+    except Exception: limit=100
+    where=["COALESCE(voided,0)=0"]; args=[]
+    if status: where.append("status=?"); args.append(status)
+    if platform: where.append("platform=?"); args.append(platform)
+    if since: where.append("updated_at>=?"); args.append(since)
+    c=_rdb()
+    rows=c.execute("SELECT * FROM return_cases WHERE %s ORDER BY id DESC LIMIT ?"%(" AND ".join(where)),args+[limit]).fetchall()
+    out=[_ret_case_dict(c,r,full=False) for r in rows]
+    c.close()
+    return jsonify({"ok":True,"count":len(out),"returns":out})
+
+@app.route("/api/returns/search")
+def api_returns_search():
+    actor,is_ai=_req_returns_rw()
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    q=(request.args.get("q") or "").strip()
+    if not q: return jsonify({"ok":True,"returns":[]})
+    like="%"+q+"%"
+    c=_rdb()
+    rows=c.execute("""SELECT * FROM return_cases WHERE COALESCE(voided,0)=0 AND
+                      (tracking_in LIKE ? OR order_id LIKE ? OR customer_username LIKE ? OR customer_name LIKE ?)
+                      ORDER BY id DESC LIMIT 100""",(like,like,like,like)).fetchall()
+    out=[_ret_case_dict(c,r,full=False) for r in rows]; c.close()
+    return jsonify({"ok":True,"returns":out})
+
+@app.route("/api/returns/<int:cid>")
+def api_returns_get(cid):
+    actor,is_ai=_req_returns_rw()
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    c=_rdb(); row=c.execute("SELECT * FROM return_cases WHERE id=?",(cid,)).fetchone()
+    if not row: c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    out=_ret_case_dict(c,row,full=True); c.close()
+    return jsonify({"ok":True,"case":out})
+
+_RET_PATCH_FIELDS={"status","decision","decision_by","platform_request_id","platform_deadline",
+                   "refund_amount","refund_status","reship_tracking","ai_summary","ai_tags",
+                   "assigned_to","return_type","rts_reason","import_label"}
+
+@app.route("/api/returns/<int:cid>", methods=["PATCH","POST"])
+def api_returns_patch(cid):
+    """Update a case (status / decision / platform fields / AI tags). Admin/CS session or AI key.
+    Decision is manager/AI only. Every change is written to the audit log with the actor."""
+    actor,is_ai=_req_returns_rw()
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    d=request.get_json() or {}
+    c=_rdb(); row=c.execute("SELECT * FROM return_cases WHERE id=?",(cid,)).fetchone()
+    if not row: c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    old=dict(row)
+    # Decision is a manager/AI action, not floor staff.
+    if ("decision" in d) and not (is_ai or session.get("role") in ("admin","cs","manager")):
+        c.close(); return jsonify({"ok":False,"error":"Only a manager or the AI can set the decision"}),403
+    if "status" in d and d["status"] not in _RET_STATUSES:
+        c.close(); return jsonify({"ok":False,"error":"bad status"})
+    if "decision" in d and d["decision"] and d["decision"] not in _RET_DECISIONS:
+        c.close(); return jsonify({"ok":False,"error":"bad decision"})
+    sets=[]; args=[]
+    for f in _RET_PATCH_FIELDS:
+        if f in d:
+            sets.append(f+"=?"); args.append(d[f])
+            if str(old.get(f) or "")!=str(d[f] or ""):
+                _ret_log(c, cid, actor, "set "+f, old.get(f), d[f])
+    if "decision" in d:
+        sets.append("decision_by=?"); args.append(actor)
+        sets.append("decision_at=?"); args.append(datetime.now().isoformat(timespec="seconds"))
+    if sets:
+        sets.append("updated_at=?"); args.append(datetime.now().isoformat(timespec="seconds"))
+        c.execute("UPDATE return_cases SET %s WHERE id=?"%(", ".join(sets)), args+[cid])
+    c.commit(); c.close()
+    return jsonify({"ok":True,"id":cid})
+
+@app.route("/api/returns/<int:cid>/notes", methods=["POST"])
+def api_returns_note(cid):
+    actor,is_ai=_req_returns_rw()
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    note=((request.get_json() or {}).get("note") or "").strip()
+    if not note: return jsonify({"ok":False,"error":"empty note"})
+    c=_rdb()
+    if not c.execute("SELECT 1 FROM return_cases WHERE id=?",(cid,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    _ret_log(c, cid, actor, "note", "", note)
+    c.execute("UPDATE return_cases SET updated_at=? WHERE id=?",(datetime.now().isoformat(timespec="seconds"),cid))
+    c.commit(); c.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/returns/<int:cid>/action", methods=["POST"])
+@req_role("admin","cs","worker","picker","manager")
+def api_returns_action(cid):
+    """A physical warehouse action: restocked / discarded / reshipped — timestamped + logged.
+    'restocked' adds the received quantities back to inventory (manual, after the decision)."""
+    who=session.get("name","")
+    act=((request.get_json() or {}).get("action") or "").strip()
+    _MAP={"restocked":"restocked","discarded":"discarded","reshipped":"reshipped"}
+    if act not in _MAP: return jsonify({"ok":False,"error":"bad action"})
+    c=sdb(); row=c.execute("SELECT * FROM return_cases WHERE id=?",(cid,)).fetchone()
+    if not row: c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    if act=="restocked":
+        for it in c.execute("SELECT sku,qty_received,qty_expected FROM return_items WHERE case_id=?",(cid,)).fetchall():
+            sku=(it["sku"] or "").strip(); q=int(it["qty_received"] or it["qty_expected"] or 0)
+            if sku and q>0:
+                c.execute("UPDATE products SET on_hand=COALESCE(on_hand,0)+? WHERE sku=?",(q,sku))
+                c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_by) VALUES(?,?,0,?,?)",
+                          (sku,q,"return restock (case #%d)"%cid,who))
+    c.execute("UPDATE return_cases SET status=?, updated_at=? WHERE id=?",
+              (_MAP[act], datetime.now().isoformat(timespec="seconds"), cid))
+    _ret_log(c, cid, who, act, row["status"], _MAP[act])
+    c.commit(); c.close()
+    return jsonify({"ok":True,"status":_MAP[act]})
 
 # ══════════════════════════════════════════════════════════
 # MOBILE SCREENS (/m/...) — separate front end for the iPhone/iPad app, in mobile/.
