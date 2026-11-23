@@ -8433,6 +8433,7 @@ __NAVBAR__
       <thead><tr style="text-align:left;color:#6b7280;border-bottom:1px solid rgba(17,24,39,0.1)">
         <th style="padding:6px 8px">Supplier SKU</th><th style="padding:6px 8px">Product (from PDF)</th>
         <th style="padding:6px 8px;width:70px">Qty</th><th style="padding:6px 8px;width:90px">Unit cost</th>
+        <th style="padding:6px 8px;width:80px">Target $</th><th style="padding:6px 8px;width:80px">MSRP $</th>
         <th style="padding:6px 8px;width:220px">Your store SKU →</th>
         <th style="padding:6px 8px;width:90px">Set?</th></tr></thead>
       <tbody id="poRows"></tbody>
@@ -8683,6 +8684,8 @@ function poRenderRows(){
       '<td style="padding:6px 8px">'+esc(it.name||'')+'</td>'+
       '<td style="padding:6px 8px"><input class="poQ" data-i="'+i+'" type="number" value="'+it.qty+'" style="width:60px;padding:6px"></td>'+
       '<td style="padding:6px 8px"><input class="poC" data-i="'+i+'" type="number" step="0.01" value="'+it.unit_cost+'" style="width:80px;padding:6px"></td>'+
+      '<td style="padding:6px 8px"><input class="poT" data-i="'+i+'" type="number" step="0.01" value="'+(it.target_price||'')+'" placeholder="—" style="width:70px;padding:6px"></td>'+
+      '<td style="padding:6px 8px"><input class="poM" data-i="'+i+'" type="number" step="0.01" value="'+(it.retail_price||'')+'" placeholder="—" style="width:70px;padding:6px"></td>'+
       '<td style="padding:6px 8px"><input class="poS" data-i="'+i+'" list="storeSkus" value="'+esc(it.store_sku||'')+'" placeholder="'+esc(it.supplier_sku||'auto')+'" style="width:150px;padding:6px"> <span class="poTag" data-i="'+i+'">'+tag+'</span></td>'+
       '<td style="padding:6px 8px"><button type="button" class="btn btn-ghost btn-s poSet" data-i="'+i+'" style="padding:5px 9px">'+(it.set_units?('📦 '+it.set_units+(it.set_mode==='diff'?' diff':'')):'📦 Set')+'</button></td>'+
     '</tr>';
@@ -8694,6 +8697,8 @@ function poRenderRows(){
   })});
   tb.querySelectorAll('.poQ').forEach(function(inp){inp.addEventListener('input',function(){PO_ITEMS[+this.getAttribute('data-i')].qty=parseInt(this.value||'0')})});
   tb.querySelectorAll('.poC').forEach(function(inp){inp.addEventListener('input',function(){PO_ITEMS[+this.getAttribute('data-i')].unit_cost=parseFloat(this.value||'0')})});
+  tb.querySelectorAll('.poT').forEach(function(inp){inp.addEventListener('input',function(){PO_ITEMS[+this.getAttribute('data-i')].target_price=parseFloat(this.value||'0')})});
+  tb.querySelectorAll('.poM').forEach(function(inp){inp.addEventListener('input',function(){PO_ITEMS[+this.getAttribute('data-i')].retail_price=parseFloat(this.value||'0')})});
 }
 document.getElementById('poReadBtn').addEventListener('click',function(){
   var fi=document.getElementById('poFile');

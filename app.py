@@ -9449,12 +9449,22 @@ def api_products_import_pdf_confirm():
         if not (name or store_sku or ssku): skipped+=1; continue
         # Resolve the store SKU: explicit → supplier code → auto-generated.
         if not store_sku: store_sku = ssku or _gen_sku()
+        # A numeric SKU is a manufacturer barcode — store it in the barcode column too (fill blanks
+        # only). Target + MSRP from the review step are saved on the product (never clobber manual).
+        _bc = store_sku if re.fullmatch(r'\d{8,14}', store_sku or '') else None
+        try: _tp=round(float(str(it.get("target_price") or 0).replace("$","").replace(",","")),2)
+        except Exception: _tp=0.0
+        try: _rp=round(float(str(it.get("retail_price") or 0).replace("$","").replace(",","")),2)
+        except Exception: _rp=0.0
         existed=bool(c.execute("SELECT 1 FROM products WHERE sku=?",(store_sku,)).fetchone())
-        c.execute("""INSERT INTO products(sku,name,updated_at) VALUES(?,?,?)
+        c.execute("""INSERT INTO products(sku,name,barcode,updated_at) VALUES(?,?,?,?)
                      ON CONFLICT(sku) DO UPDATE SET
                         name=COALESCE(NULLIF(excluded.name,''),products.name),
+                        barcode=COALESCE(NULLIF(products.barcode,''),excluded.barcode),
                         updated_at=excluded.updated_at""",
-                  (store_sku,name or store_sku,now))
+                  (store_sku,name or store_sku,_bc,now))
+        if _tp>0: c.execute("UPDATE products SET target_price=? WHERE sku=?",(_tp,store_sku))
+        if _rp>0: c.execute("UPDATE products SET retail_price=?, msrp_source='manual' WHERE sku=?",(_rp,store_sku))
         if mode=="replace":
             if it.get("unit_cost") not in (None,""):
                 c.execute("UPDATE products SET on_hand=?,avg_cost=? WHERE sku=?",(qty,round(cost,4),store_sku))
@@ -9718,8 +9728,23 @@ def api_import_pdf_to_po():
         except Exception: cost=0.0
         if not (name or store_sku or ssku): continue
         if not store_sku: store_sku=ssku or _gen_sku()
+        # If the SKU is actually a manufacturer barcode (UPC/EAN, 8-14 digits), store it in the
+        # barcode column TOO — not only as the SKU — so scanning it later finds the product.
+        _bc = store_sku if re.fullmatch(r'\d{8,14}', store_sku or '') else None
+        # Target + retail (MSRP) can be set already at invoice upload.
+        try: _tp=round(float(str(it.get("target_price") or 0).replace("$","").replace(",","")),2)
+        except Exception: _tp=0.0
+        try: _rp=round(float(str(it.get("retail_price") or 0).replace("$","").replace(",","")),2)
+        except Exception: _rp=0.0
         if not c.execute("SELECT 1 FROM products WHERE sku=?",(store_sku,)).fetchone():
-            c.execute("INSERT INTO products(sku,name,updated_at) VALUES(?,?,?)",(store_sku,name or store_sku,now))
+            c.execute("""INSERT INTO products(sku,name,barcode,target_price,retail_price,msrp_source,updated_at)
+                         VALUES(?,?,?,?,?,?,?)""",
+                      (store_sku,name or store_sku,_bc,_tp,_rp,("manual" if _rp>0 else None),now))
+        else:
+            # Existing product: fill blanks only — never clobber a real barcode or a manual price.
+            if _bc: c.execute("UPDATE products SET barcode=COALESCE(NULLIF(barcode,''),?) WHERE sku=?",(_bc,store_sku))
+            if _tp>0: c.execute("UPDATE products SET target_price=? WHERE sku=?",(_tp,store_sku))
+            if _rp>0: c.execute("UPDATE products SET retail_price=?, msrp_source='manual' WHERE sku=?",(_rp,store_sku))
         cur2=c.execute("INSERT INTO po_items(po_id,sku,product_name,qty_ordered,unit_cost) VALUES(?,?,?,?,?)",
                   (poid,store_sku,name or store_sku,qty,cost)); added+=1
         # A line already flagged as a set in the invoice-review step explodes now too.
