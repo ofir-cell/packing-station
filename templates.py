@@ -5580,6 +5580,15 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
     <div class="scan-hint" id="scanHintRow" style="display:none"></div>
     <div class="scan-cur" id="scanCur" style="display:none"><div class="scan-big" id="scanBig">—</div><div class="scan-part" id="scanPart" style="display:none"></div><div class="scan-nm" id="scanNm"></div></div>
     <div class="scan-row" id="scanRow" style="display:none"><span class="scan-ic">🔳</span><input id="pickScanInput" autocomplete="off" inputmode="none"><span class="scan-dot"></span></div>
+    <div id="pickMismatch" style="display:none;border:2px solid #fca5a5;background:#fef2f2;border-radius:14px;padding:12px 14px;margin-bottom:10px">
+      <div style="font-weight:900;color:#b91c1c;font-size:15px;margin-bottom:6px">⚠️ <span id="mmTitle">Wrong product</span></div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
+        <img id="mmImg" src="" alt="" style="width:54px;height:54px;object-fit:cover;border-radius:10px;background:#f3f4f6;display:none">
+        <div style="font-size:13px;color:#374151"><div>Expected: <b id="mmExp">—</b></div><div>You scanned: <b id="mmScan">—</b></div></div>
+      </div>
+      <button class="scan-skip" id="mmRetry" style="margin-bottom:6px;border-color:#86efac;color:#166534">🔁 Scan the right product</button>
+      <button class="scan-skip" id="mmOverride" style="border-color:#fca5a5;color:#b91c1c">Pick it anyway (override)</button>
+    </div>
     <button class="scan-skip" id="pickSkipBtn" style="display:none"></button>
     <div class="scan-alldone" id="scanAllDone" style="display:none"></div>
     <div class="items-list" id="itemsList"></div>
@@ -6065,9 +6074,24 @@ function toggleItem(itemId){
 }
 // Scan the product's barcode to pick this sticker — links it to the product (builds the
 // product DB + COGS), then advances to the next unpicked sticker.
-function doScanPick(itemId,code){
-    fetch('/api/pick/item/'+itemId+'/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code})})
+function hideMismatch(){var m=document.getElementById('pickMismatch');if(m)m.style.display='none';}
+function doScanPick(itemId,code,override){
+    fetch('/api/pick/item/'+itemId+'/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,override:!!override})})
      .then(function(r){return r.json()}).then(function(d){
+        // VERIFY: the scanned product doesn't match the one matched to this sticker in Live Mode.
+        // Warn with the expected product + photo, but let the picker override (the map may be wrong).
+        if(d.mismatch){
+            sndError(); var exp=d.expected||{}, sc=d.scanned||{};
+            document.getElementById('mmExp').textContent=exp.name||exp.sku||'?';
+            document.getElementById('mmScan').textContent=sc.name||sc.sku||'?';
+            var mi=document.getElementById('mmImg'), src=exp.photo_view_url||exp.image_url||'';
+            if(src){mi.src=src;mi.style.display='block';}else{mi.style.display='none';}
+            document.getElementById('mmOverride').onclick=function(){hideMismatch();doScanPick(itemId,code,true);};
+            document.getElementById('mmRetry').onclick=function(){hideMismatch();var si=document.getElementById('pickScanInput');if(si){si.value='';si.focus();}};
+            document.getElementById('pickMismatch').style.display='block';
+            return;
+        }
+        hideMismatch();
         if(!d.ok){ sndError(); showToast(d.error||t('notrecognized'),true); var si=document.getElementById('pickScanInput'); if(si)si.focus(); return; }
         var it=currentItems.find(function(x){return x.id===itemId});
         if(it){ it.picked=1; it._skipped=false; it._prod=d.product?{name:d.product.name,in_stock:d.product.in_stock,cost:d.product.cost,auto:d.auto_created}:null; }
@@ -13913,6 +13937,15 @@ __NAVBAR__
       <div class="err" id="errBox"></div>
       <button class="btn btn-ghost" id="kitBtn">🧩 This sticker is a bundle (scan several)</button>
       <button class="btn btn-ghost" id="costBtn">💲 No barcode — add cost only</button>
+      <button class="btn btn-ghost" id="photoBtn">📷 No barcode — take a photo</button>
+      <div class="kitwrap" id="photoWrap" style="display:none;border-color:#bfdbfe;background:#eff6ff">
+        <div style="font-size:13px;font-weight:800;color:#1e40af;margin-bottom:8px">Photograph the physical item for this sticker — so it can be identified and completed later, even without a barcode.</div>
+        <input id="photoInp" type="file" accept="image/*" capture="environment" style="width:100%">
+        <img id="photoPrev" src="" alt="" style="display:none;max-width:170px;border-radius:12px;margin-top:8px">
+        <div class="err" id="photoErr"></div>
+        <button class="btn btn-dark" id="photoSave" style="margin-top:10px;background:#2563eb">✓ Save photo — next sticker</button>
+        <button class="btn btn-ghost" id="photoCancel">Cancel</button>
+      </div>
       <div class="kitwrap" id="costWrap" style="display:none;border-color:#bbf7d0;background:#f0fdf4">
         <div style="font-size:13px;font-weight:800;color:#166534;margin-bottom:8px">No barcode? Just enter this sticker's unit cost — it counts toward the live's COGS. No product is created, no stock moves.</div>
         <div style="display:flex;gap:8px;align-items:center">
@@ -13934,6 +13967,15 @@ __NAVBAR__
     <div class="card" style="padding:14px 18px">
       <div style="font-size:12px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Your matches · tap a sticker to fix it</div>
       <div class="mchips" id="matched"><div class="empty">—</div></div>
+    </div>
+
+    <div class="card" id="gapsCard" style="padding:14px 18px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px">Missing · by sticker <span id="gapsN" style="color:#b45309"></span></div>
+        <button class="btn btn-ghost" id="gapsRefresh" style="padding:5px 10px;font-size:12px">↻ Refresh</button>
+      </div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:8px">Sold stickers still missing a product, cost or photo — find the item on the table by its sticker and complete it.</div>
+      <div id="gapsList"><div class="empty">—</div></div>
     </div>
 
     <div class="card" id="bulkPanel" style="display:none;border:2px solid #ddd6fe;background:#faf5ff">
@@ -14099,6 +14141,68 @@ function saveCostOnly(){
 }
 document.getElementById('costSave').onclick=saveCostOnly;
 document.getElementById('costInp').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();saveCostOnly();}});
+
+// ---- No barcode — take a photo: capture the physical item on the iPad, keyed by its sticker ----
+function photoExit(){var w=document.getElementById('photoWrap');w.style.display='none';
+  document.getElementById('photoBtn').textContent='📷 No barcode — take a photo';
+  document.getElementById('photoInp').value='';document.getElementById('photoPrev').style.display='none';}
+document.getElementById('photoBtn').onclick=function(){
+  if(!CUR){return;} kitExit();costExit();
+  var w=document.getElementById('photoWrap');var open=(w.style.display!=='none');
+  w.style.display=open?'none':'block';
+  this.textContent=open?'📷 No barcode — take a photo':'📷 Photo mode — take the picture';
+  document.getElementById('photoErr').style.display='none';
+};
+document.getElementById('photoCancel').onclick=function(){photoExit();focusScan();};
+document.getElementById('photoInp').addEventListener('change',function(e){
+  var f=e.target.files&&e.target.files[0];var pv=document.getElementById('photoPrev');
+  if(f){pv.src=URL.createObjectURL(f);pv.style.display='block';}else pv.style.display='none';
+});
+document.getElementById('photoSave').onclick=function(){
+  if(!CUR||busy)return;
+  var err=document.getElementById('photoErr');err.style.display='none';
+  var f=document.getElementById('photoInp').files[0];
+  if(!f){err.textContent='Take a photo first';err.style.display='block';return;}
+  busy=true;
+  var fd=new FormData();fd.append('show',SHOW);fd.append('sticker',CUR.sticker);fd.append('part',curPart());fd.append('file',f);
+  fetch('/api/live/sticker-photo',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){busy=false;
+    if(!d.ok){err.textContent='⚠️ '+(d.error||'Failed');err.style.display='block';return;}
+    photoExit();
+    var ob=document.getElementById('okBox');document.getElementById('okImg').src=d.photo_view_url||'';
+    document.getElementById('okMt').textContent='Sticker '+CUR.sticker+' · photo saved';
+    document.getElementById('okNm').textContent='Identify & complete it in "Missing · by sticker" later.';
+    ob.className='ok show';
+    loadGaps();loadQueue(function(){render();focusScan();});
+  }).catch(function(){busy=false;err.textContent='Network error';err.style.display='block';});
+};
+
+// ---- Missing · by sticker: sold stickers still needing a product / cost / photo ----
+function loadGaps(){
+  if(!SHOW)return;
+  fetch('/api/live/gaps?show='+encodeURIComponent(SHOW)).then(function(r){return r.json()}).then(function(d){
+    if(!d||!d.ok)return;
+    var el=document.getElementById('gapsList');
+    document.getElementById('gapsN').textContent=d.total?('· '+d.total):'';
+    if(!d.gaps.length){el.innerHTML='<div class="empty">🎉 Nothing missing — all sold stickers are complete.</div>';return;}
+    var LBL={product:'needs product',cost:'needs cost',photo:'needs photo'};
+    el.innerHTML=d.gaps.map(function(g){
+      var pb=(g.part?('P'+g.part+'·'):'');
+      var tags=g.missing.map(function(m){return '<span style="font-size:10.5px;font-weight:800;background:#fef3c7;color:#92400e;border-radius:20px;padding:2px 8px;margin-left:4px">'+(LBL[m]||m)+'</span>'}).join('');
+      var thumb=g.photo_view_url?('<img src="'+g.photo_view_url+'" style="width:34px;height:34px;object-fit:cover;border-radius:7px;margin-right:8px">'):'<span style="display:inline-block;width:34px;height:34px;border-radius:7px;background:#f3f4f6;margin-right:8px;text-align:center;line-height:34px">📷</span>';
+      return '<div class="gaprow" data-s="'+esc(g.sticker)+'" data-p="'+(g.part||0)+'" style="display:flex;align-items:center;padding:8px 6px;border-bottom:1px solid rgba(17,24,39,.06);cursor:pointer">'+
+        thumb+'<b style="min-width:54px">'+pb+esc(g.sticker)+'</b>'+
+        '<span style="flex:1;font-size:13px;color:#374151">'+esc(g.product_name||'—')+'</span>'+tags+'</div>';
+    }).join('');
+    el.querySelectorAll('.gaprow').forEach(function(row){row.addEventListener('click',function(){
+      // jump the matcher to this sticker so the worker can scan/photo it now
+      var s=this.getAttribute('data-s');
+      if(typeof jumpToSticker==='function'){jumpToSticker(s,+this.getAttribute('data-p'));}
+      window.scrollTo({top:0,behavior:'smooth'});
+    });});
+  }).catch(function(){});
+}
+document.getElementById('gapsRefresh').onclick=loadGaps;
+setTimeout(loadGaps,800);
 
 // ---- Just matched · tap to fix: re-open a matched sticker; the next scan replaces its product ----
 function renderMatched(){
