@@ -43,6 +43,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
 from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
 from templates import COMBINE_HTML  # Combine & Labels screen
 from templates import SHOW_HEALTH_HTML  # Per-show fulfilment health screen
+from templates import RETURNS_HTML  # Returns module screen
 
 
 # Default (founding) tenant id. Multi-tenancy: every user belongs to an org;
@@ -8033,6 +8034,7 @@ PAGES = [
     ("inbound","/admin/inbound","Inbound Labels","Fulfillment"),
     ("customers","/customers","Customers","Fulfillment"),
     ("videos","/admin/videos","Packing Videos","Fulfillment"),
+    ("returns","/admin/returns","Returns","Fulfillment"),
     ("inventory","/admin/inventory","Inventory","Inventory"),
     ("productcleanup","/admin/product-cleanup","After-Live Cleanup","Inventory"),
     ("purchasing","/admin/purchasing","Purchasing","Inventory"),
@@ -20657,6 +20659,13 @@ load();
 _RET_STATUSES={"received","matched","decided","restocked","discarded","reshipped","closed","unmatched","hold","void"}
 _RET_DECISIONS={"restock","discard","reship","return_to_vendor","hold"}
 
+@app.route("/admin/returns")
+@req_role("admin","cs","worker","picker","manager")
+def returns_page():
+    return (RETURNS_HTML.replace("__NAME__",esc(session.get("name","")))
+            .replace("__ROLE__",session.get("role",""))
+            .replace("__NAVBAR__",_navbar("returns")).replace("__NAVBAR_CSS__",_NAVBAR_CSS))
+
 def _returns_ai_key():
     return (os.environ.get("RETURNS_AI_KEY","") or "").strip()
 
@@ -20884,6 +20893,27 @@ def api_returns_note(cid):
     c.execute("UPDATE return_cases SET updated_at=? WHERE id=?",(datetime.now().isoformat(timespec="seconds"),cid))
     c.commit(); c.close()
     return jsonify({"ok":True})
+
+@app.route("/api/returns/<int:cid>/items", methods=["POST"])
+@req_role("admin","cs","worker","picker","manager")
+def api_returns_items(cid):
+    """Replace a case's items with the worker's per-item condition / qty received (from Receive)."""
+    items=(request.get_json() or {}).get("items") or []
+    who=session.get("name","")
+    c=sdb()
+    if not c.execute("SELECT 1 FROM return_cases WHERE id=?",(cid,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    c.execute("DELETE FROM return_items WHERE case_id=?",(cid,))
+    for it in items:
+        c.execute("""INSERT INTO return_items(case_id,sku,product_name,qty_expected,qty_received,condition,note)
+                     VALUES(?,?,?,?,?,?,?)""",
+                  (cid,(it.get("sku") or "").strip() or None,(it.get("product_name") or "").strip() or None,
+                   int(it.get("qty_expected") or 0),int(it.get("qty_received") or 0),
+                   (it.get("condition") or "").strip() or None,(it.get("note") or "").strip() or None))
+    _ret_log(c, cid, who, "items_updated", "", "%d item(s)"%len(items))
+    c.execute("UPDATE return_cases SET updated_at=? WHERE id=?",(datetime.now().isoformat(timespec="seconds"),cid))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"count":len(items)})
 
 @app.route("/api/returns/<int:cid>/action", methods=["POST"])
 @req_role("admin","cs","worker","picker","manager")

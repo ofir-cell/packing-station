@@ -125,6 +125,7 @@ def _navbar(active_page=""):
             ("inbound", "/admin/inbound", "Inbound Labels") if has("admin","cs") else None,
             ("customers", "/customers", "Customers") if has("admin","cs") else None,
             ("videos", "/admin/videos", "Packing Videos") if has("admin","cs") else None,
+            ("returns", "/admin/returns", "Returns") if has("admin","cs","manager","worker","picker") else None,
           ])),
           ("Inventory", "📥", _vis([
             ("inventory", "/admin/inventory", "Inventory") if has("admin","cs") else None,
@@ -14975,5 +14976,214 @@ function load(){
 }
 function bar(lbl,pct,col){return '<div class="barline"><div class="barlbl"><span>'+lbl+'</span><span>'+pct+'%</span></div><div class="track"><div class="fill" style="width:'+pct+'%;background:'+col+'"></div></div></div>';}
 load();
+</script>
+</body></html>'''
+
+
+RETURNS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Returns</title>
+__NAVBAR_CSS__
+<style>
+body{margin:0;background:var(--bg,#f5f3ff);font-family:'DM Sans',-apple-system,Segoe UI,Roboto,sans-serif;color:var(--text,#1a2130)}
+.wrap{max-width:920px;margin:0 auto;padding:18px 14px 70px}
+h1{font-size:22px;font-weight:900;margin:0 0 10px}
+.tabs{display:flex;gap:8px;margin-bottom:14px}
+.tab{padding:10px 16px;border:1.5px solid var(--border,#e4e7ec);border-radius:12px;background:#fff;font-weight:800;font-size:15px;cursor:pointer}
+.tab.on{background:#eef2ff;border-color:#c7d2fe;color:#4338ca}
+.card{background:#fff;border:1px solid var(--border,#e4e7ec);border-radius:16px;padding:16px;margin-bottom:14px}
+label{font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
+.scan{display:flex;gap:8px;align-items:center;border:2px solid #4f46e5;border-radius:14px;padding:12px 14px;margin:6px 0 12px}
+.scan input{flex:1;border:0;outline:0;font-size:18px;font-weight:800;color:#4f46e5;font-family:'SF Mono',Menlo,monospace;background:transparent}
+.kv{display:flex;justify-content:space-between;font-size:13.5px;padding:3px 0}
+.pill{display:inline-block;font-size:11px;font-weight:800;border-radius:20px;padding:2px 9px}
+.pill.tiktok{background:#fde68a;color:#92400e}.pill.whatnot{background:#e9d5ff;color:#6b21a8}
+.chips{display:flex;gap:7px;flex-wrap:wrap;margin:6px 0 12px}
+.chip{font-weight:800;font-size:13px;border:1.5px solid var(--border,#e4e7ec);border-radius:11px;padding:9px 13px;background:#fff;cursor:pointer}
+.chip.on{background:#eef2ff;border-color:#c7d2fe;color:#4338ca}
+.photos{display:flex;gap:9px;flex-wrap:wrap;margin:8px 0}
+.ph{width:78px;height:78px;border-radius:12px;border:2px dashed #cbbfe6;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#8b7fb0;background:#faf8ff;text-align:center;cursor:pointer;overflow:hidden}
+.ph.filled{border-style:solid;border-color:#059669}
+.ph img{width:100%;height:100%;object-fit:cover}
+.item{display:flex;align-items:center;gap:10px;border-top:1px solid var(--border,#eee);padding:9px 0;font-size:13.5px}
+.item .sk{font-weight:900;min-width:46px}.item .nm{flex:1}
+.item select,.item input{border:1.5px solid var(--border,#e4e7ec);border-radius:9px;padding:6px 8px;font-size:12.5px;font-family:inherit}
+.btn{width:100%;padding:15px;border:0;border-radius:14px;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;font-weight:900;font-size:17px;cursor:pointer;margin-top:8px}
+.btn.sec{background:#fff;border:1.5px solid var(--border,#e4e7ec);color:#1a2130}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.filters select,.filters input{border:1.5px solid var(--border,#e4e7ec);border-radius:10px;padding:8px 10px;font-size:13px;font-family:inherit}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.4px;padding:8px;border-bottom:1px solid var(--border,#e4e7ec)}
+td{padding:9px 8px;border-bottom:1px solid #f0edf6}
+tr.row{cursor:pointer}tr.row:hover td{background:#faf8ff}tr.urgent td{background:#fef2f2}
+.st{font-size:11px;font-weight:800;border-radius:20px;padding:2px 9px;white-space:nowrap}
+.st.received,.st.matched{background:#e0e7ff;color:#3730a3}.st.hold{background:#fef3c7;color:#92400e}
+.st.restocked,.st.closed,.st.discarded,.st.reshipped{background:#dcfce7;color:#166534}.st.unmatched{background:#fee2e2;color:#b91c1c}
+.gal{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.gal img{width:92px;height:92px;object-fit:cover;border-radius:12px;border:1px solid var(--border,#e4e7ec)}
+.block{border:1px solid var(--border,#e4e7ec);border-radius:14px;padding:13px 15px;margin-bottom:12px}
+.block h3{font-size:12px;font-weight:900;color:#4f46e5;text-transform:uppercase;letter-spacing:.5px;margin:0 0 9px}
+.block.ai{background:#f5f3ff;border-color:#ddd6fe}.block.ai h3{color:#6d28d9}
+.log{font-size:12.5px;color:#374151;border-left:2px solid #e9d5ff;padding:3px 0 3px 12px;margin-bottom:6px}
+.log .who{color:#6d28d9;font-weight:800}
+.acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.acts button{flex:1;min-width:120px;padding:12px;border:1.5px solid var(--border,#e4e7ec);border-radius:12px;background:#fff;font-weight:800;font-size:14px;cursor:pointer}
+.acts .green{border-color:#a7f3d0;color:#166534;background:#ecfdf5}
+.muted{color:#6b7280}.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#111827;color:#fff;padding:12px 20px;border-radius:12px;font-weight:700;display:none;z-index:50}
+.hidden{display:none}
+</style></head><body>
+__NAVBAR__
+<div class="wrap">
+  <h1>↩︎ Returns</h1>
+  <div class="tabs"><button class="tab on" id="tabRec">↩︎ Receive</button><button class="tab" id="tabQ">📦 Queue</button></div>
+
+  <!-- RECEIVE -->
+  <div id="vRec">
+    <div class="card">
+      <label>Scan or type the tracking on the box</label>
+      <div class="scan"><span style="font-size:20px">🔳</span><input id="recTrk" placeholder="Scan / type tracking…" autocomplete="off"></div>
+      <div id="recMatch"></div>
+    </div>
+  </div>
+
+  <!-- QUEUE -->
+  <div id="vQ" class="hidden">
+    <div class="filters">
+      <select id="fStatus"><option value="">All statuses</option><option>matched</option><option>received</option><option>hold</option><option>unmatched</option><option>restocked</option><option>closed</option></select>
+      <input id="fSearch" placeholder="Search tracking / order / customer">
+      <button class="chip" id="fGo">Search</button>
+    </div>
+    <div class="card" style="padding:4px 8px"><table><thead><tr><th>Case</th><th>Received</th><th>Tracking</th><th>Platform</th><th>Customer</th><th>Items</th><th>📷</th><th>Status</th></tr></thead><tbody id="qrows"><tr><td colspan="8" class="muted" style="padding:14px">Loading…</td></tr></tbody></table></div>
+  </div>
+
+  <!-- DETAIL -->
+  <div id="vDet" class="hidden"></div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+function esc(s){return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function toast(m){var t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(function(){t.style.display='none'},2200)}
+function show(v){['vRec','vQ','vDet'].forEach(function(x){document.getElementById(x).classList.add('hidden')});document.getElementById(v).classList.remove('hidden');}
+document.getElementById('tabRec').onclick=function(){this.classList.add('on');document.getElementById('tabQ').classList.remove('on');show('vRec');};
+document.getElementById('tabQ').onclick=function(){this.classList.add('on');document.getElementById('tabRec').classList.remove('on');show('vQ');loadQueue();};
+
+// ---- RECEIVE ----
+var CUR=null, CUR_TYPE='customer_return';
+var CONDS=['Sealed — resellable','Opened — resellable','Damaged','Empty','Wrong item'];
+document.getElementById('recTrk').addEventListener('keydown',function(e){
+  if(e.key!=='Enter')return; e.preventDefault();
+  var trk=this.value.trim(); if(!trk)return;
+  fetch('/api/returns',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tracking_in:trk})})
+   .then(function(r){return r.json()}).then(function(d){
+     if(d.duplicate){ if(confirm(d.error+' Open it?')){openCase(d.existing_id);} return; }
+     if(!d.ok){toast(d.error||'Failed');return;}
+     CUR=d.id; loadRecCase(d.id);
+   });
+});
+function loadRecCase(id){
+  fetch('/api/returns/'+id).then(function(r){return r.json()}).then(function(d){
+    var c=d.case; CUR_TYPE=c.return_type||'customer_return';
+    var pl=(c.platform||'').toLowerCase();
+    var head=c.outbound_shipment_id?
+      ('<div class="kv"><span>Platform</span><b><span class="pill '+esc(pl)+'">'+esc(c.platform||'?')+'</span></b></div>'+
+       '<div class="kv"><span>Order</span><b>'+esc(c.order_id||'—')+'</b></div>'+
+       '<div class="kv"><span>Customer</span><b>'+esc((c.customer_username||'')+' · '+(c.customer_name||''))+'</b></div>'+
+       '<div class="kv"><span>Live</span><b>'+esc(c.import_label||'—')+'</b></div>')
+      :'<div class="kv" style="color:#b91c1c;font-weight:800">⚠ No matching outbound shipment — you can still save this return.</div>';
+    var types=[['customer_return','Customer return'],['rts','RTS'],['refused','Refused'],['unknown','Unknown']];
+    var tChips=types.map(function(t){return '<span class="chip'+(t[0]===CUR_TYPE?' on':'')+'" data-t="'+t[0]+'">'+t[1]+'</span>'}).join('');
+    var labels=['outside','contents','damage'];
+    var pmap={}; (c.photos||[]).forEach(function(p){pmap[p.label]=p.view_url;});
+    var phHtml=labels.map(function(l){var u=pmap[l];
+      return '<label class="ph'+(u?' filled':'')+'">'+(u?('<img src="'+u+'">'):('📷<br>'+l))+'<input type="file" accept="image/*" capture="environment" data-label="'+l+'" style="display:none"></label>';
+    }).join('')+'<label class="ph">＋<input type="file" accept="image/*" capture="environment" data-label="other" style="display:none"></label>';
+    var items=(c.items||[]).map(function(it,i){
+      var opts=CONDS.map(function(x){return '<option'+((it.condition===x)?' selected':'')+'>'+x+'</option>'}).join('');
+      return '<div class="item"><span class="sk">'+esc(it.sku||'#')+'</span><span class="nm">'+esc(it.product_name||'')+'</span>'+
+        '<input type="number" class="rqty" data-i="'+i+'" value="'+(it.qty_received||it.qty_expected||1)+'" style="width:52px" title="qty received">'+
+        '<select class="rcond" data-i="'+i+'">'+opts+'</select></div>';
+    }).join('')||'<div class="muted" style="padding:8px">No items linked — add via the detail screen.</div>';
+    document.getElementById('recMatch').innerHTML=
+      '<div style="margin-top:6px">'+head+'</div>'+
+      '<label style="margin-top:12px;display:block">Return type</label><div class="chips" id="recTypes">'+tChips+'</div>'+
+      '<label>Photos · min 2</label><div class="photos" id="recPhotos">'+phHtml+'</div>'+
+      '<label>Items — qty received + condition</label>'+items+
+      '<button class="btn" id="recSave">✓ Save return → next package</button>';
+    // wire
+    document.querySelectorAll('#recTypes .chip').forEach(function(ch){ch.onclick=function(){
+      CUR_TYPE=this.getAttribute('data-t');document.querySelectorAll('#recTypes .chip').forEach(function(x){x.classList.remove('on')});this.classList.add('on');};});
+    document.querySelectorAll('#recPhotos input[type=file]').forEach(function(inp){inp.onchange=function(){
+      var f=this.files[0]; if(!f)return; var lab=this.getAttribute('data-label'); var box=this.parentNode;
+      var fd=new FormData();fd.append('file',f);fd.append('label',lab);
+      fetch('/api/returns/'+CUR+'/photo',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(x){
+        if(x.ok){box.classList.add('filled');box.innerHTML='<img src="'+x.view_url+'">';toast('Photo added');}else toast(x.error||'Failed');});
+    };});
+    document.getElementById('recSave').onclick=function(){
+      var its=(c.items||[]).map(function(it,i){var q=document.querySelector('.rqty[data-i="'+i+'"]'),cd=document.querySelector('.rcond[data-i="'+i+'"]');
+        return {sku:it.sku,product_name:it.product_name,qty_expected:it.qty_expected,qty_received:q?+q.value:0,condition:cd?cd.value:''};});
+      var p1=fetch('/api/returns/'+CUR+'/items',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:its})});
+      var p2=fetch('/api/returns/'+CUR,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({return_type:CUR_TYPE,status:'received'})});
+      Promise.all([p1,p2]).then(function(){toast('✓ Saved return #'+CUR);document.getElementById('recTrk').value='';document.getElementById('recMatch').innerHTML='';CUR=null;document.getElementById('recTrk').focus();});
+    };
+  });
+}
+
+// ---- QUEUE ----
+function loadQueue(){
+  var st=document.getElementById('fStatus').value, q=document.getElementById('fSearch').value.trim();
+  var url=q?('/api/returns/search?q='+encodeURIComponent(q)):('/api/returns'+(st?('?status='+encodeURIComponent(st)):''));
+  fetch(url).then(function(r){return r.json()}).then(function(d){
+    var rows=(d.returns||[]);
+    document.getElementById('qrows').innerHTML=rows.length?rows.map(function(c){
+      var pl=(c.platform||'').toLowerCase();
+      return '<tr class="row" data-id="'+c.id+'"><td><b>#'+c.id+'</b></td><td class="muted">'+esc((c.created_at||'').replace('T',' ').slice(5,16))+'</td>'+
+        '<td class="muted">…'+esc((c.tracking_in||'').slice(-6))+'</td><td>'+(c.platform?('<span class="pill '+esc(pl)+'">'+esc(c.platform)+'</span>'):'—')+'</td>'+
+        '<td>'+esc(c.customer_username||c.customer_name||'—')+'</td><td>'+(c.item_count||'')+'</td><td>'+(c.photo_count||0)+'</td>'+
+        '<td><span class="st '+esc(c.status)+'">'+esc(c.status)+'</span></td></tr>';
+    }).join(''):'<tr><td colspan="8" class="muted" style="padding:14px">No returns yet</td></tr>';
+    document.querySelectorAll('#qrows .row').forEach(function(tr){tr.onclick=function(){openCase(+this.getAttribute('data-id'))};});
+  });
+}
+document.getElementById('fGo').onclick=loadQueue;
+document.getElementById('fStatus').onchange=loadQueue;
+document.getElementById('fSearch').addEventListener('keydown',function(e){if(e.key==='Enter')loadQueue();});
+
+// ---- DETAIL ----
+var DEC=['restock','discard','reship','return_to_vendor','hold'];
+function openCase(id){
+  fetch('/api/returns/'+id).then(function(r){return r.json()}).then(function(d){
+    var c=d.case;
+    var gal=(c.photos||[]).map(function(p){return '<img src="'+p.view_url+'" title="'+esc(p.label)+'">'}).join('')||'<span class="muted">No photos</span>';
+    var decChips=DEC.map(function(x){return '<span class="chip'+(c.decision===x?' on':'')+'" data-d="'+x+'">'+x.replace(/_/g,' ')+'</span>'}).join('');
+    var log=(c.log||[]).map(function(l){return '<div class="log"><span class="who">'+esc(l.actor)+'</span> '+esc(l.action)+(l.new_value?(' → <b>'+esc(l.new_value)+'</b>'):'')+' <span class="muted">· '+esc((l.at||'').replace('T',' ').slice(5,16))+'</span></div>'}).join('');
+    var items=(c.items||[]).map(function(it){return '<div class="kv"><span>'+esc((it.sku||'')+' '+(it.product_name||''))+'</span><b>'+esc(it.condition||'—')+' · ×'+(it.qty_received||0)+'</b></div>'}).join('');
+    document.getElementById('vDet').innerHTML=
+      '<button class="chip" id="backBtn" style="margin-bottom:10px">← Queue</button>'+
+      '<div class="card"><h1 style="font-size:19px">Case #'+c.id+' <span class="st '+esc(c.status)+'">'+esc(c.status)+'</span></h1>'+
+        '<div class="muted" style="font-size:13px">'+esc((c.customer_username||'')+' · '+(c.platform||'')+' · order '+(c.order_id||'—')+' · '+(c.import_label||''))+'</div>'+
+        '<div class="gal">'+gal+'</div></div>'+
+      '<div class="block"><h3>Items returned</h3>'+(items||'<span class="muted">—</span>')+'</div>'+
+      '<div class="block ai"><h3>🤖 AI Chief of Staff</h3>'+
+        '<div class="kv"><span>Platform request</span><b>'+esc(c.platform_request_id||'—')+'</b></div>'+
+        '<div class="kv"><span>Refund · deadline</span><b>'+esc((c.refund_amount?('$'+c.refund_amount):'—')+' · '+(c.platform_deadline||'—'))+'</b></div>'+
+        '<div class="kv"><span>Summary</span><b style="max-width:62%;text-align:right">'+esc(c.ai_summary||'(awaiting AI)')+'</b></div></div>'+
+      '<div class="block"><h3>Decision</h3><div class="chips" id="decChips">'+decChips+'</div></div>'+
+      '<div class="block"><h3>Timeline</h3>'+(log||'<span class="muted">—</span>')+
+        '<div style="display:flex;gap:8px;margin-top:8px"><input id="noteIn" placeholder="Add a note…" style="flex:1;border:1.5px solid var(--border,#e4e7ec);border-radius:10px;padding:8px"><button class="chip" id="noteBtn">Add</button></div></div>'+
+      '<label>Warehouse action</label><div class="acts"><button class="green" data-a="restocked">✓ Restocked</button><button data-a="discarded">🗑 Discarded</button><button data-a="reshipped">📮 Reshipped</button></div>';
+    show('vDet');
+    document.getElementById('backBtn').onclick=function(){document.getElementById('tabQ').click();};
+    document.querySelectorAll('#decChips .chip').forEach(function(ch){ch.onclick=function(){
+      var dec=this.getAttribute('data-d');
+      fetch('/api/returns/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision:dec})})
+       .then(function(r){return r.json()}).then(function(x){if(x.ok){toast('Decision: '+dec);openCase(id);}else toast(x.error||'Failed');});};});
+    document.getElementById('noteBtn').onclick=function(){var n=document.getElementById('noteIn').value.trim();if(!n)return;
+      fetch('/api/returns/'+id+'/notes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({note:n})}).then(function(){openCase(id);});};
+    document.querySelectorAll('.acts button').forEach(function(b){b.onclick=function(){var a=this.getAttribute('data-a');
+      if(!confirm('Mark as '+a+'?'))return;
+      fetch('/api/returns/'+id+'/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:a})})
+       .then(function(r){return r.json()}).then(function(x){if(x.ok){toast('✓ '+a);openCase(id);}else toast(x.error||'Failed');});};});
+  });
+}
+document.getElementById('recTrk').focus();
 </script>
 </body></html>'''
