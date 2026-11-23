@@ -14299,8 +14299,9 @@ document.getElementById('bApply').onclick=function(){
       }).then(function(){n++;});
   });});
   seq.then(function(){btn.disabled=false;btn.textContent='Apply to range';document.getElementById('bulkPanel').style.display='none';
+    START=to+1;   // continue AFTER the range (1–10 → next is ≥11), not back to the start
     loadQueue(function(){render();focusScan();});
-    var e=document.getElementById('errBox');e.textContent='✓ Applied to '+n+' sticker(s)';e.style.display='block';e.style.background='#ecfdf5';e.style.color='#065f46';
+    var e=document.getElementById('errBox');e.textContent='✓ Applied to '+n+' sticker(s) · next ≥ '+START;e.style.display='block';e.style.background='#ecfdf5';e.style.color='#065f46';
     setTimeout(function(){e.style.display='none';e.style.background='';e.style.color='';},2600);
   });
 };
@@ -14372,8 +14373,10 @@ function uploadRangePhoto(blob,targets){
   fetch('/api/live/sticker-photo-range',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
     if(!d.ok){alert(d.error||'Failed');return;}
     document.getElementById('bulkPanel').style.display='none';
+    var mx=Math.max.apply(null,targets.map(function(w){return numOf(w.sticker);}));
+    if(isFinite(mx))START=mx+1;   // continue AFTER the photographed range
     loadGaps();loadQueue(function(){render();focusScan();});
-    var e=document.getElementById('errBox');e.textContent='✓ Photo applied to '+d.count+' sticker(s)';e.style.display='block';e.style.background='#ecfdf5';e.style.color='#065f46';
+    var e=document.getElementById('errBox');e.textContent='✓ Photo applied to '+d.count+' sticker(s) · next ≥ '+START;e.style.display='block';e.style.background='#ecfdf5';e.style.color='#065f46';
     setTimeout(function(){e.style.display='none';e.style.background='';e.style.color='';},2600);
   }).catch(function(){alert('Network error');});
 }
