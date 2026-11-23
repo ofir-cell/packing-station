@@ -21168,21 +21168,50 @@ _TK_AI_STATUSES={"ai_ready","waiting_customer","on_hold","customer_replied","don
 _TK_STAFF_FIELDS=_TK_AI_FIELDS|{"status","assigned_to","instruction_to_ai","lane","deadline",
                                 "decision","decision_amount","type","platform_order_no"}
 
-def _ticket_webhook(org, event, ticket):
-    """Best-effort signed outbound webhook (fire-and-forget, short timeout). Lets the AI act the
-    moment a ticket is decided, instead of polling. Configured via env; silently no-ops if unset."""
-    url=(os.environ.get("TICKETS_WEBHOOK_URL","") or "").strip()
-    if not url: return
+def _hdr_clean(v):
+    """Strip CR/LF and surrounding whitespace from a header value — a stray newline in a Railway
+    variable makes urllib raise ValueError('Invalid header value'), which is the usual webhook fail."""
+    return re.sub(r"[\r\n]+","",str(v or "")).strip()
+
+def _ticket_webhook_env():
+    """Read + sanitize the webhook env vars. Returns (url, auth_header_or_None, secret_bytes)."""
+    url=_hdr_clean(os.environ.get("TICKETS_WEBHOOK_URL",""))
+    auth=_hdr_clean(os.environ.get("TICKETS_WEBHOOK_AUTH",""))
     secret=(os.environ.get("TICKETS_WEBHOOK_SECRET","") or "").strip()
-    body=json.dumps({"event":event,"org":org,"ticket":ticket},ensure_ascii=False).encode()
-    sig=hmac.new(secret.encode(),body,hashlib.sha256).hexdigest() if secret else ""
-    headers={"Content-Type":"application/json","X-GWN-Event":event,"X-GWN-Signature":sig}
-    # Optional Authorization header the receiver (the AI endpoint) verifies on every POST. Set the
-    # FULL header value in TICKETS_WEBHOOK_AUTH (e.g. "Bearer abc123"); sent verbatim if it already
-    # names a scheme, otherwise wrapped as a bearer token.
-    auth=(os.environ.get("TICKETS_WEBHOOK_AUTH","") or "").strip()
+    auth_hdr=None
     if auth:
-        headers["Authorization"]=auth if (" " in auth) else ("Bearer "+auth)
+        auth_hdr=auth if (" " in auth) else ("Bearer "+auth)   # sent exactly as stored
+    return url, auth_hdr, secret.encode("utf-8")
+
+def _ticket_webhook_post(url, body, headers, retries=3):
+    """One webhook delivery with up to `retries` attempts and 1s/2s/4s backoff.
+    Returns (ok, detail_string). Never raises."""
+    last=""
+    for i in range(max(1,retries)):
+        try:
+            req=_urlreq.Request(url,data=body,method="POST",headers=headers)
+            r=_urlreq.urlopen(req,timeout=5)
+            return True,"→ %d"%r.getcode()
+        except _urlerr.HTTPError as e:
+            last="→ HTTP %d"%e.code
+            if 400<=e.code<500 and e.code!=429: return False,last   # client error: don't retry
+        except Exception as e:
+            last="→ failed: %s: %s"%(type(e).__name__, str(e)[:200])
+            print("ticket webhook attempt %d failed:"%(i+1), repr(e), flush=True)
+        if i<retries-1: time.sleep(2**i)
+    return False,last
+
+def _ticket_webhook(org, event, ticket, retries=3):
+    """Best-effort signed outbound webhook (fire-and-forget). Lets the AI act the moment a ticket is
+    decided, instead of polling. Configured via env; silently no-ops if no URL is set. Logs the full
+    result (status or exception message) to the ticket timeline."""
+    url, auth_hdr, secret_bytes = _ticket_webhook_env()
+    if not url:
+        return
+    body=json.dumps({"event":event,"org":org,"ticket":ticket},ensure_ascii=False).encode("utf-8")
+    sig=hmac.new(secret_bytes,body,hashlib.sha256).hexdigest() if secret_bytes else ""
+    headers={"Content-Type":"application/json","X-GWN-Event":_hdr_clean(event),"X-GWN-Signature":sig}
+    if auth_hdr: headers["Authorization"]=auth_hdr
     tid=ticket.get("id")
     def _logcode(txt):
         if not tid: return
@@ -21190,14 +21219,8 @@ def _ticket_webhook(org, event, ticket):
             cc=sdb(org); _tk_log(cc,tid,"system","webhook",event,txt); cc.commit(); cc.close()
         except Exception: pass
     def _go():
-        try:
-            req=_urlreq.Request(url,data=body,method="POST",headers=headers)
-            r=_urlreq.urlopen(req,timeout=5)
-            _logcode("→ %d"%r.getcode())
-        except _urlerr.HTTPError as e:
-            _logcode("→ %d"%e.code); print("ticket webhook HTTP",e.code,flush=True)
-        except Exception as e:
-            _logcode("→ failed (%s)"%type(e).__name__); print("ticket webhook failed:",e,flush=True)
+        ok,detail=_ticket_webhook_post(url,body,headers,retries=retries)
+        _logcode(detail)
     threading.Thread(target=_go,daemon=True).start()
 
 def _tickets_actor():
@@ -21702,6 +21725,28 @@ def api_cshub_refill(tid):
         c.commit()
     c.close()
     return jsonify({"ok":True,"matched":matched,"filled":[s.split("=")[0] for s in sets if "=" in s]})
+
+@app.route("/api/tickets/<int:tid>/resend-webhook", methods=["POST"])
+@req_role("admin","manager")
+def api_cshub_resend_webhook(tid):
+    """Re-fire the ticket.decided webhook for a decided ticket, without re-deciding it. Owner/manager
+    only. Runs synchronously so the caller gets the delivery result (status or full error)."""
+    who=session.get("name") or session.get("user") or ""
+    c=sdb(); row=c.execute("SELECT * FROM tickets WHERE id=?",(tid,)).fetchone()
+    if not row: c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    if not row["decision"]:
+        c.close(); return jsonify({"ok":False,"error":"Ticket has no decision to send"})
+    payload=dict(row)
+    url,auth_hdr,secret_bytes=_ticket_webhook_env()
+    if not url:
+        c.close(); return jsonify({"ok":False,"error":"TICKETS_WEBHOOK_URL is not set"})
+    body=json.dumps({"event":"ticket.decided","org":current_org(),"ticket":payload},ensure_ascii=False).encode("utf-8")
+    sig=hmac.new(secret_bytes,body,hashlib.sha256).hexdigest() if secret_bytes else ""
+    headers={"Content-Type":"application/json","X-GWN-Event":"ticket.decided","X-GWN-Signature":sig}
+    if auth_hdr: headers["Authorization"]=auth_hdr
+    ok,detail=_ticket_webhook_post(url,body,headers,retries=3)
+    _tk_log(c,tid,who,"webhook resend",("ok" if ok else "fail"),detail); c.commit(); c.close()
+    return jsonify({"ok":ok,"detail":detail})
 
 @app.route("/api/tickets/<int:tid>/take", methods=["POST"])
 @req_role("admin","cs","manager")

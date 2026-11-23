@@ -15362,6 +15362,7 @@ function openT(id){
     document.getElementById("vTicket").innerHTML=
       '<button class="btn g" onclick="show(\\'inbox\\');loadInbox()">← Inbox</button> '+
       '<button class="btn g" onclick="refill('+t.id+')" title="Re-run auto-fill from the imported show">↻ Re-match order</button>'+
+      ((MONEY_ROLE&&t.decision)?(' <button class="btn g" onclick="resendHook('+t.id+')" title="Re-send the decided webhook to the AI">📡 Resend webhook</button>'):"")+
       '<h1 style="margin-top:10px">Ticket #'+t.id+' <span class="st '+esc(t.status)+'">'+esc(stLabel(t.status))+'</span> <span class="dot '+(t.risk||"green")+'"></span></h1>'+
       '<div class="sub">'+platPill(t.platform)+' · '+esc(t.customer_name||t.username||"")+' · '+esc(t.import_label||"")+' · assignee: '+esc(t.assigned_to||"—")+'</div>'+
       warns+
@@ -15428,6 +15429,7 @@ function trOne(el,cb){var orig=el.getAttribute("data-orig");if(orig!=null){el.te
 function tr(id){var el=document.getElementById(id);if(el)trOne(el);}
 function trAll(id){var c=document.getElementById(id);if(!c)return;var els=c.querySelectorAll(".tx");els.forEach(function(el){trOne(el);});}
 function refill(id){J("/api/tickets/"+id+"/refill",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}).then(function(d){if(!d.ok){alert(d.error||"error");return;}alert(d.matched?("Filled: "+(d.filled.join(", ")||"nothing new")):"No matching shipment found");openT(id);});}
+function resendHook(id){J("/api/tickets/"+id+"/resend-webhook",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}).then(function(d){alert((d.ok?"Webhook sent ":"Webhook failed ")+(d.detail||d.error||""));openT(id);});}
 
 function loadDash(){
   J("/api/tickets?limit=500").then(function(d){

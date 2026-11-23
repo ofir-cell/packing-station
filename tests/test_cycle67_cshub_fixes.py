@@ -135,6 +135,31 @@ def test_buyer_box_orders_and_shipments(appmod, client):
     assert b["orders"] == 8 and b["shipments"] == 2 and b["spent"] == 40
 
 
+def test_webhook_env_sanitized(appmod, monkeypatch):
+    A = appmod
+    # Values arrive from Railway with trailing newlines/spaces — must be stripped so urllib doesn't
+    # raise ValueError('Invalid header value').
+    monkeypatch.setenv("TICKETS_WEBHOOK_URL", "https://hook.example.com/x\n")
+    monkeypatch.setenv("TICKETS_WEBHOOK_AUTH", "  Bearer tok123\n")
+    monkeypatch.setenv("TICKETS_WEBHOOK_SECRET", " s3cret\n")
+    url, auth, secret = A._ticket_webhook_env()
+    assert url == "https://hook.example.com/x" and "\n" not in url
+    assert auth == "Bearer tok123" and "\n" not in auth
+    assert secret == b"s3cret"
+    # a bare token (no scheme) is wrapped as Bearer
+    monkeypatch.setenv("TICKETS_WEBHOOK_AUTH", "tok999")
+    assert A._ticket_webhook_env()[1] == "Bearer tok999"
+
+
+def test_resend_webhook_requires_decision(appmod, client):
+    A = appmod
+    hdr = _admin(client, A)
+    tid = client.post("/api/tickets", json={"platform": "whatnot", "username": "noa", "inbound_text": "q"},
+                      headers=hdr).get_json()["id"]
+    r = client.post("/api/tickets/%d/resend-webhook" % tid, json={}, headers=hdr).get_json()
+    assert r["ok"] is False and "no decision" in r["error"].lower()
+
+
 def test_returns_read_with_returns_scope(appmod, client):
     A = appmod
     key = _key(client, A, scopes=["returns:read"])
