@@ -92,8 +92,8 @@ def test_box_label_stops_and_another_label_moves_to_the_next_box(appmod, client,
     hdr = _as(client, appmod); trk = box["trk"]
     _begin(client, hdr, trk)
     assert _scan(client, hdr, trk, trk)["result"] == "stop"
-    assert _scan(client, hdr, trk, box["trk2"])["result"] == "next_label"
-    assert _scan(client, hdr, trk, "9400111122223333444455")["result"] == "next_label"   # unknown label: never a product
+    assert _scan(client, hdr, trk, box["trk2"])["result"] == "other_label"   # cycle-70: a different label must NOT close the video
+    assert _scan(client, hdr, trk, "9400111122223333444455")["result"] == "other_label"  # unknown label: warn, never close
     c = appmod.sdb(appmod.DEFAULT_ORG)
     assert not c.execute("SELECT 1 FROM products WHERE barcode='9400111122223333444455'").fetchone()
     c.close()
@@ -184,7 +184,7 @@ def test_box_not_in_the_system_never_stops_on_a_product(appmod, client, box):
     hdr = _as(client, appmod)
     ghost = "9400" + "7" * 18
     assert _scan(client, hdr, ghost, box["bc"]["1"])["result"] == "wrong"        # product: keep recording
-    assert _scan(client, hdr, ghost, box["trk"])["result"] == "next_label"       # a real label moves on
+    assert _scan(client, hdr, ghost, box["trk"])["result"] == "other_label"      # a different label warns, never closes
     assert _scan(client, hdr, ghost, ghost)["result"] == "stop"
 
 
@@ -199,7 +199,7 @@ def test_orders_without_tracking_still_move_to_the_next_box_by_order_id(appmod, 
     c = A.sdb(A.DEFAULT_ORG)
     c.execute("UPDATE shipments SET tracking_code=NULL WHERE shipment_id IN (?,?)", (box["sid"], "Q" + box["t"]))
     c.commit(); c.close()
-    assert _scan(client, hdr, box["sid"], "Q" + box["t"])["result"] == "next_label"
+    assert _scan(client, hdr, box["sid"], "Q" + box["t"])["result"] == "other_label"
 
 
 def test_a_duplicate_barcode_in_the_catalog_still_matches_the_linked_product(appmod, client, box):

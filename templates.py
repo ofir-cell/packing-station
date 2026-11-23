@@ -1142,10 +1142,12 @@ document.getElementById('gvOk').addEventListener('click',function(){
 var PS=null, PSWAIT=false, PSMODE=false;
 var PST={en:{next:'Scan',done:'All products scanned ✓',donesub:'Scan the box label to finish',nonelinked:'No barcodes linked for this order yet — just pack',
   ok:'✓ Packed',already:'Already scanned',wrong:'✗ Not in this order',unknown:'✗ This barcode is not linked to this order',wrongexp:'Scan one of:',
-  offline:'Could not check this scan — scan again',missing:'Not scanned:',notlinked:'not linked yet'},
+  offline:'Could not check this scan — scan again',missing:'Not scanned:',notlinked:'not linked yet',
+  otherlabel:'✗ Different order — scan THIS box\\'s label to finish'},
  es:{next:'Escanea',done:'Todos los productos escaneados ✓',donesub:'Escanea la etiqueta de la caja para terminar',nonelinked:'Este pedido aún no tiene códigos vinculados — solo empaca',
   ok:'✓ Empacado',already:'Ya escaneado',wrong:'✗ No es de este pedido',unknown:'✗ Este código no está vinculado a este pedido',wrongexp:'Escanea uno de:',
-  offline:'No se pudo verificar — escanea de nuevo',missing:'Sin escanear:',notlinked:'sin vincular'}};
+  offline:'No se pudo verificar — escanea de nuevo',missing:'Sin escanear:',notlinked:'sin vincular',
+  otherlabel:'✗ Otro pedido — escanea la etiqueta de ESTA caja para terminar'}};
 function pt(k){return (PST[LANG]&&PST[LANG][k])||PST.en[k]}
 function pesc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function beep(ok){try{var a=window._ac||(window._ac=new (window.AudioContext||window.webkitAudioContext)());var o=a.createOscillator(),g=a.createGain();
@@ -1196,14 +1198,15 @@ function packScan(raw,t){
     if(!d.ok){psFb(d.error||pt('offline'),'bad');beep(false);return}
     var r=d.result;
     if(r==='stop'){finishBox();return}
-    if(r==='next_label'){nextBox(t);return}
+    // cycle-70: a different/unknown label must NOT close the video — warn and keep recording.
+    if(r==='other_label'||r==='next_label'){psFb(pt('otherlabel'),'bad');psFlash(false);beep(false);return}
     if(r==='ok'){if(d.items){if(!PS){PS={items:[]};document.body.classList.add('packscan');}PS.items=d.items;}psDraw();psFb(pt(r)+(d.product?' · '+d.product:''),'ok');psFlash(true);beep(true);return}
     if(r==='already'){psFb(pt('already')+(d.product?' · '+d.product:''),'mid');beep(false);return}
     var exp=(d.expected||[]).map(function(x){return '#'+x.sticker}).join(', ');
     psFb((d.product?pt('wrong')+' ('+d.product+')':pt('unknown'))+(exp?' — '+pt('wrongexp')+' '+exp:''),'bad');psFlash(false);beep(false);
   }).catch(function(){
     if(ct!==trk)return;
-    if(/^[0-9]{20,}$|^1Z|^TBA/i.test(t)){nextBox(t);return}   // offline: a label-looking code still moves on
+    // cycle-70: offline too — never auto-close on a label-looking code; require this box's own label.
     psFb(pt('offline'),'bad');beep(false);
   });
 }

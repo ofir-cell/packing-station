@@ -7080,8 +7080,10 @@ def api_pack_begin():
 @req_login
 def api_pack_scan():
     """One scan while the video records. Returns what the screen should do:
-    ok / learned (counted) · already · wrong · stop (it's this box's label) ·
-    next_label (another box's label: finish this one, start that one). Never links anything."""
+    ok / learned (counted) · already · wrong · stop (it's THIS box's own label → close+save) ·
+    other_label (a different/unknown label → warn, do NOT close). Never links anything.
+    Policy (cycle-70): ONLY the current box's own label closes the video, so a stray or wrong
+    scan can't save/close an order prematurely."""
     d=request.get_json() or {}
     trk=_normalize_tracking(d.get("tracking") or "")
     raw=(d.get("code") or "").strip()
@@ -7101,9 +7103,9 @@ def api_pack_scan():
         row=_resolve_shipment_by_code(c, trk)
         if nc==trk or (row and nc==(row["tracking_code"] or "")):
             return jsonify({"ok":True,"result":"stop"})
-        if not row:   # this box isn't in the system: only a label can move on, nothing else stops the video
+        if not row:   # this box isn't in the system: only ITS OWN label (== trk, handled above) closes it
             if other_box(None,"") or _looks_like_tracking(code):
-                return jsonify({"ok":True,"result":"next_label"})
+                return jsonify({"ok":True,"result":"other_label","expected_label":trk})
             return jsonify({"ok":True,"result":"wrong","product":None,"expected":[]})
         items=_pack_box(c,row)
         def log(result, item=None, psku=None):
@@ -7126,11 +7128,13 @@ def api_pack_scan():
                 log("already",mine[0],mine[0]["product"]["sku"]); c.commit()
                 return jsonify({"ok":True,"result":"already","item_id":mine[0]["id"],"product":mine[0]["product"]["name"]})
         prod=prods[0] if prods else None
-        # another box's label -> finish this box and start that one
+        # A different box's label, or an unknown tracking-looking code, must NOT close this video
+        # (cycle-70): warn and keep recording — only THIS box's own label (handled above) closes it.
+        cur_label=(row["tracking_code"] or "").strip() or trk
         if other_box(row["shipment_id"], (row["tracking_code"] or "").strip()):
-            return jsonify({"ok":True,"result":"next_label"})
+            return jsonify({"ok":True,"result":"other_label","expected_label":cur_label})
         if not prod and _looks_like_tracking(code):
-            return jsonify({"ok":True,"result":"next_label"})
+            return jsonify({"ok":True,"result":"other_label","expected_label":cur_label})
         log("wrong",None,prod["sku"] if prod else None); c.commit()
         expected=[{"sticker":it["sku"],"name":(it["product"] or {}).get("name") or it["product_name"]}
                   for it in items if it["product"] and it["scanned"]<it["quantity"]]
