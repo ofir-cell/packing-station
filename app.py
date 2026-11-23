@@ -42,6 +42,7 @@ from templates import (_navbar, _NAVBAR_CSS, _FONT,
     PRODUCT_CLEANUP_HTML)
 from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
 from templates import COMBINE_HTML  # Combine & Labels screen
+from templates import SHOW_HEALTH_HTML  # Per-show fulfilment health screen
 
 
 # Default (founding) tenant id. Multi-tenancy: every user belongs to an org;
@@ -4687,7 +4688,8 @@ def api_today():
                             SUM(CASE WHEN status='picked' THEN 1 ELSE 0 END) picked,
                             SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending,
                             MIN(CASE WHEN status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 THEN ship_by END) due_ts,
-                            SUM(CASE WHEN status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 AND ship_by<? THEN 1 ELSE 0 END) overdue
+                            SUM(CASE WHEN status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 AND ship_by<? THEN 1 ELSE 0 END) overdue,
+                            MIN(COALESCE(NULLIF(pick_started_at,''),NULLIF(picked_at,''))) first_act
                           FROM shipments
                           WHERE import_label IS NOT NULL AND import_label!=''
                             AND status NOT IN ('cancelled','giveaway')
@@ -4700,9 +4702,18 @@ def api_today():
             if age>BACKLOG_DAYS: stale+=1; continue   # drop ancient leftovers
             tot=r["total"] or 1
             ful_p+=r["packed"] or 0; ful_k+=r["picked"] or 0; ful_e+=r["pending"] or 0
+            # picked progress = anything that's been picked at least (picked + already packed/shipped).
+            _done=(r["packed"] or 0); _pickprog=_done+(r["picked"] or 0)
+            # wall-clock worked: from the first pick/pack activity to now (the show is still open).
+            _worked=0
+            _fdt=_parse_dt(r.get("first_act")) if r.get("first_act") else None
+            if _fdt:
+                try: _worked=max(0,_now_ts-int(_fdt.timestamp()))
+                except Exception: _worked=0
             shows.append({"name":r["lbl"],"date":(r["sd"] or "")[:10],"age_days":max(0,age),"total":r["total"],
-                          "packed":r["packed"] or 0,"pending":r["pending"] or 0,
-                          "pct":round(100*(r["packed"] or 0)/tot),
+                          "packed":_done,"picked":_pickprog,"pending":r["pending"] or 0,
+                          "pct":round(100*_done/tot),"pct_picked":round(100*_pickprog/tot),
+                          "worked_sec":_worked,
                           "due_ts":r["due_ts"] or 0,"overdue":r["overdue"] or 0})
         # WHAT NEXT order: most overdue first, then nearest ship-by deadline, then oldest live.
         _FAR=9999999999
@@ -7878,6 +7889,58 @@ def api_home_fulfillment():
         "shows_remaining": len(shows),
         "shows": shows,
     })
+
+@app.route("/admin/show")
+@req_role("admin","cs")
+def show_health_page():
+    return (SHOW_HEALTH_HTML.replace("__NAVBAR__", _navbar("shows")).replace("__NAVBAR_CSS__", _NAVBAR_CSS))
+
+@app.route("/api/show/health")
+@req_role("admin","cs")
+def api_show_health():
+    """One live's fulfilment health: status counts, % picked/packed, wall-clock worked, and the four
+    'stuck' buckets — overdue, picked-but-not-packed-too-long, abandoned picks, flagged issues —
+    each with sample rows, so a manager sees exactly what isn't moving. ?show=<label>."""
+    label=(request.args.get("show") or "").strip()
+    if not label: return jsonify({"ok":False,"error":"show required"})
+    now=int(time.time())
+    try: stale_h=max(1,int(request.args.get("stale_h") or 6))
+    except Exception: stale_h=6
+    c=sdb()
+    a=dict(c.execute("""SELECT COUNT(*) total,
+            SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending,
+            SUM(CASE WHEN status='picked' THEN 1 ELSE 0 END) picked,
+            SUM(CASE WHEN status IN ('packed','shipped') THEN 1 ELSE 0 END) packed,
+            SUM(CASE WHEN status='shipped' THEN 1 ELSE 0 END) shipped,
+            SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) cancelled,
+            SUM(CASE WHEN status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 AND ship_by<? THEN 1 ELSE 0 END) overdue,
+            MIN(COALESCE(NULLIF(pick_started_at,''),NULLIF(picked_at,''))) first_act,
+            MIN(CASE WHEN status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 THEN ship_by END) due_ts
+        FROM shipments WHERE import_label=?""",(now,label)).fetchone() or {})
+    tot=(a.get("total") or 0) or 1
+    _done=a.get("packed") or 0; _pick=_done+(a.get("picked") or 0)
+    worked=0; _fdt=_parse_dt(a.get("first_act"))
+    if _fdt:
+        try: worked=max(0,now-int(_fdt.timestamp()))
+        except Exception: worked=0
+    def _rows(where,args,limit=100):
+        q=("SELECT shipment_id,buyer_name,tracking_code,status,ship_by,pick_started_by,picked_at,flag_reason "
+           "FROM shipments WHERE import_label=? AND ("+where+") ORDER BY COALESCE(ship_by,9000000000) LIMIT ?")
+        return [dict(r) for r in c.execute(q,[label]+args+[limit]).fetchall()]
+    stale_cut=(datetime.now()-timedelta(hours=stale_h)).isoformat(timespec='seconds')
+    buckets={
+      "overdue":_rows("status NOT IN ('packed','shipped','cancelled','giveaway') AND ship_by>0 AND ship_by<?",[now]),
+      "picked_stale":_rows("status='picked' AND COALESCE(picked_at,'')<>'' AND picked_at<?",[stale_cut]),
+      "abandoned":_rows("status='pending' AND COALESCE(pick_started_by,'')<>''",[]),
+      "issues":_rows("status='issue' OR COALESCE(flag_reason,'')<>''",[]),
+    }
+    c.close()
+    return jsonify({"ok":True,"show":label,
+        "counts":{"total":a.get("total") or 0,"pending":a.get("pending") or 0,"picked":a.get("picked") or 0,
+                  "packed":_done,"shipped":a.get("shipped") or 0,"cancelled":a.get("cancelled") or 0},
+        "pct_packed":round(100*_done/tot),"pct_picked":round(100*_pick/tot),
+        "worked_sec":worked,"due_ts":a.get("due_ts") or 0,"overdue":a.get("overdue") or 0,"stale_h":stale_h,
+        "stuck":{k:{"count":len(v),"rows":v} for k,v in buckets.items()}})
 
 # ── Settings / Manager PIN / Permissions ───────────────────────────
 _DEFAULT_PERMS={

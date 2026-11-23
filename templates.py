@@ -3104,13 +3104,16 @@ function dueBadge(s){
     return '<span class="age'+(soon?' soon':'')+'" title="ship by">⏰ '+d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+'</span>';}
   var a=s.age_days;return '<span class="age'+(a>=2?' old':'')+'">'+(a===0?'Today':(a+(a===1?' day':' days')))+'</span>';
 }
+function _fmtWorked(sec){sec=sec||0;if(sec<60)return '';var h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60);return h>=1?('🕒 '+h+'h '+m+'m'):('🕒 '+m+'m');}
 function backlogBlock(d){var b=d.backlog;if(!b.lives)return '<div class="sec">What’s next</div><div class="card"><b>All caught up 🎉</b><div class="s">No open shows waiting to pack.</div></div>';
  var od=0;b.shows.forEach(function(s){od+=(s.overdue||0)});
  var sub=od?('<b style="color:#b91c1c">'+od+' order'+(od===1?'':'s')+' past their ship-by deadline</b> — work these first.'):('Ordered by urgency — nearest ship-by deadline first.');
  var h='<div class="sec">What’s next — work on these first</div><div class="backlog"><div class="big">'+b.lives+(b.lives===1?' live':' lives')+'</div><div><b>'+b.orders+' orders still to pack</b><small>'+sub+'</small></div></div>';
  var LIMIT=2;
  h+='<div class="queue" id="blq">';b.shows.forEach(function(s,i){var moreCls=i>=LIMIT?' qr-more':'';
-  h+='<a class="qr'+moreCls+'" href="/admin/shipments?show='+encodeURIComponent(s.name)+'"><span class="rank">'+(i+1)+'</span>'+dueBadge(s)+'<span class="nm"><b>'+esc(s.name)+'</b><small>'+esc(s.date||'')+'</small></span><span class="prog"><span class="bar"><i style="width:'+s.pct+'%"></i></span><small>'+s.pct+'% packed</small></span><span class="left">'+s.pending+'</span></a>';});
+  var _pk=(s.pct_picked!=null?s.pct_picked:s.pct), _wk=_fmtWorked(s.worked_sec||0);
+  var _sub=s.pct+'% packed · '+_pk+'% picked'+(_wk?(' · '+_wk):'');
+  h+='<a class="qr'+moreCls+'" href="/admin/show?show='+encodeURIComponent(s.name)+'"><span class="rank">'+(i+1)+'</span>'+dueBadge(s)+'<span class="nm"><b>'+esc(s.name)+'</b><small>'+esc(s.date||'')+'</small></span><span class="prog"><span class="bar"><i style="width:'+s.pct+'%"></i></span><small>'+_sub+'</small></span><span class="left">'+s.pending+'</span></a>';});
  h+='</div>';
  if(b.shows.length>LIMIT)h+='<button class="seemore" data-n="'+(b.shows.length-LIMIT)+'" onclick="toggleBacklog(this)">See '+(b.shows.length-LIMIT)+' more open show'+((b.shows.length-LIMIT)===1?'':'s')+' ▾</button>';
  if(b.stale)h+='<div class="subt" style="margin:8px 2px 0">+ '+b.stale+' older show'+(b.stale===1?'':'s')+' (45+ days) hidden — close them under Shows if already done.</div>';return h;}
@@ -14869,5 +14872,92 @@ function wire(el){
   });
 }
 loadShows();
+</script>
+</body></html>'''
+
+
+SHOW_HEALTH_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Show health</title>
+__NAVBAR_CSS__
+<style>
+body{margin:0;background:var(--bg,#f5f3ff);font-family:'DM Sans',-apple-system,Segoe UI,Roboto,sans-serif;color:var(--text,#1a2130)}
+.wrap{max-width:960px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:22px;font-weight:900;margin:0 0 2px}
+.sub{color:var(--text-muted,#6b7280);font-size:13px;margin-bottom:16px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+@media(max-width:620px){.kpis{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:#fff;border:1px solid var(--border,#e4e7ec);border-radius:14px;padding:12px 14px}
+.kpi .v{font-size:24px;font-weight:900}.kpi .l{font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
+.kpi.good .v{color:#059669}.kpi.pick .v{color:#4f46e5}.kpi.time .v{color:#b45309}.kpi.over .v{color:#dc2626}
+.bars{background:#fff;border:1px solid var(--border,#e4e7ec);border-radius:14px;padding:14px;margin-bottom:16px}
+.barline{margin-bottom:10px}.barline:last-child{margin-bottom:0}
+.barlbl{font-size:12px;font-weight:800;color:#6b7280;margin-bottom:5px;display:flex;justify-content:space-between}
+.track{height:12px;background:#f0e9ec;border-radius:7px;overflow:hidden}.fill{height:100%;border-radius:7px}
+.card{background:#fff;border:1px solid var(--border,#e4e7ec);border-radius:14px;margin-bottom:14px;overflow:hidden}
+.ch{display:flex;align-items:center;gap:10px;padding:12px 14px;font-weight:900;font-size:15px;border-bottom:1px solid var(--border,#eee)}
+.ch .cnt{margin-left:auto;font-size:13px;font-weight:800;background:#fef3c7;color:#92400e;border-radius:20px;padding:2px 10px}
+.ch.red .cnt{background:#fee2e2;color:#b91c1c}
+.row{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid rgba(17,24,39,.05);font-size:13px}
+.row:last-child{border-bottom:0}.row .sk{font-weight:800;min-width:120px}.row .by{flex:1;color:#374151}
+.row .st{font-size:11px;font-weight:800;border-radius:20px;padding:2px 9px;background:#f3f4f6;color:#374151}
+.row .ag{font-size:12px;color:#9aa1ab}
+.empty{padding:14px;color:#9aa1ab;font-size:13px}
+.ok{padding:14px;color:#059669;font-weight:700}
+a.full{display:inline-block;margin-top:4px;color:#4f46e5;font-weight:800;font-size:13px;text-decoration:none}
+.back{display:inline-block;margin-bottom:10px;color:#6b7280;font-weight:800;font-size:13px;text-decoration:none}
+</style></head><body>
+__NAVBAR__
+<div class="wrap">
+  <a class="back" href="/home">← Back to What's next</a>
+  <h1 id="title">Show health</h1>
+  <div class="sub" id="sub">Loading…</div>
+  <div class="kpis" id="kpis"></div>
+  <div class="bars" id="bars"></div>
+  <div id="stuck"></div>
+  <a class="full" id="fullLink" href="#">Open full shipments for this show ›</a>
+</div>
+<script>
+function esc(s){return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function qs(k){return new URLSearchParams(location.search).get(k)||''}
+function fmtDur(sec){sec=sec||0;var h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60);if(h>=1)return h+'h '+m+'m';return m+'m';}
+function dueAgo(ts){if(!ts)return '';var d=ts*1000-Date.now();var past=d<0;var h=Math.round(Math.abs(d)/3600000);
+  return past?('⚠ '+h+'h overdue'):('due in '+h+'h');}
+var SHOW=qs('show');
+document.getElementById('fullLink').href='/admin/shipments?show='+encodeURIComponent(SHOW);
+function load(){
+  fetch('/api/show/health?show='+encodeURIComponent(SHOW)).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){document.getElementById('sub').textContent=d.error||'Could not load';return;}
+    document.getElementById('title').textContent=d.show;
+    var c=d.counts;
+    document.getElementById('sub').textContent=c.total+' orders · '+c.pending+' pending · '+c.picked+' picked · '+c.packed+' packed'+(c.cancelled?(' · '+c.cancelled+' cancelled'):'');
+    document.getElementById('kpis').innerHTML=
+      '<div class="kpi good"><div class="v">'+d.pct_packed+'%</div><div class="l">Packed</div></div>'+
+      '<div class="kpi pick"><div class="v">'+d.pct_picked+'%</div><div class="l">Picked</div></div>'+
+      '<div class="kpi time"><div class="v">'+fmtDur(d.worked_sec)+'</div><div class="l">Time worked</div></div>'+
+      '<div class="kpi over"><div class="v">'+(d.overdue||0)+'</div><div class="l">Overdue'+(d.due_ts?(' · '+dueAgo(d.due_ts)):'')+'</div></div>';
+    document.getElementById('bars').innerHTML=
+      bar('Picked',d.pct_picked,'#4f46e5')+bar('Packed',d.pct_packed,'#059669');
+    var S=d.stuck, defs=[
+      ['overdue','⏰ Past ship-by deadline',true],
+      ['picked_stale','📦 Picked but not packed ('+d.stale_h+'h+)',false],
+      ['abandoned','🫥 Pulled then abandoned',false],
+      ['issues','⚠️ Flagged issues',false]];
+    var html='';
+    defs.forEach(function(def){var b=S[def[0]]||{count:0,rows:[]};
+      html+='<div class="card"><div class="ch'+(def[2]?' red':'')+'">'+def[1]+'<span class="cnt">'+b.count+'</span></div>';
+      if(!b.count){html+='<div class="ok">✓ None</div>';}
+      else{html+=b.rows.map(function(r){
+        var ag=r.ship_by?dueAgo(r.ship_by):'';
+        return '<div class="row"><span class="sk">'+esc(r.tracking_code||r.shipment_id)+'</span>'+
+          '<span class="by">'+esc(r.buyer_name||'')+(r.pick_started_by?(' · '+esc(r.pick_started_by)):'')+(r.flag_reason?(' · '+esc(r.flag_reason)):'')+'</span>'+
+          '<span class="st">'+esc(r.status||'')+'</span><span class="ag">'+esc(ag)+'</span></div>';
+      }).join('');}
+      html+='</div>';
+    });
+    document.getElementById('stuck').innerHTML=html;
+  }).catch(function(){document.getElementById('sub').textContent='Could not load';});
+}
+function bar(lbl,pct,col){return '<div class="barline"><div class="barlbl"><span>'+lbl+'</span><span>'+pct+'%</span></div><div class="track"><div class="fill" style="width:'+pct+'%;background:'+col+'"></div></div></div>';}
+load();
 </script>
 </body></html>'''
