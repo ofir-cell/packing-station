@@ -3111,8 +3111,8 @@ function backlogBlock(d){var b=d.backlog;if(!b.lives)return '<div class="sec">Wh
  var h='<div class="sec">What’s next — work on these first</div><div class="backlog"><div class="big">'+b.lives+(b.lives===1?' live':' lives')+'</div><div><b>'+b.orders+' orders still to pack</b><small>'+sub+'</small></div></div>';
  var LIMIT=2;
  h+='<div class="queue" id="blq">';b.shows.forEach(function(s,i){var moreCls=i>=LIMIT?' qr-more':'';
-  var _pk=(s.pct_picked!=null?s.pct_picked:s.pct), _wk=_fmtWorked(s.worked_sec||0);
-  var _sub=s.pct+'% packed · '+_pk+'% picked'+(_wk?(' · '+_wk):'');
+  var _pk=(s.pct_picked!=null?s.pct_picked:s.pct);
+  var _sub=s.pct+'% packed · '+_pk+'% picked';
   h+='<a class="qr'+moreCls+'" href="/admin/show?show='+encodeURIComponent(s.name)+'"><span class="rank">'+(i+1)+'</span>'+dueBadge(s)+'<span class="nm"><b>'+esc(s.name)+'</b><small>'+esc(s.date||'')+'</small></span><span class="prog"><span class="bar"><i style="width:'+s.pct+'%"></i></span><small>'+_sub+'</small></span><span class="left">'+s.pending+'</span></a>';});
  h+='</div>';
  if(b.shows.length>LIMIT)h+='<button class="seemore" data-n="'+(b.shows.length-LIMIT)+'" onclick="toggleBacklog(this)">See '+(b.shows.length-LIMIT)+' more open show'+((b.shows.length-LIMIT)===1?'':'s')+' ▾</button>';
@@ -10539,6 +10539,12 @@ __NAVBAR__
   <table><thead><tr><th>Worker</th><th>Packages</th><th>Items</th><th>Avg / package</th><th>Avg / item</th><th>Pkgs / hr</th><th>Active hrs</th></tr></thead>
   <tbody id="wrows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody></table>
 </div>
+<div class="card">
+  <h2>📺 By show <span class="muted" id="livesNote"></span></h2>
+  <table><thead><tr><th>Live</th><th>Packed (range)</th><th>Items</th><th>Show complete</th><th>Avg / package</th><th>Pkgs / hr</th></tr></thead>
+  <tbody id="shrows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody></table>
+  <div style="font-size:12px;color:#6b7280;margin-top:8px">"Show complete" = how much of the whole live is packed; a live counts as closed at 100% or when marked DONE.</div>
+</div>
 <div class="secLabel">🧺 Picking</div>
 <div class="cards" id="kpisPick"></div>
 <div class="card">
@@ -10589,6 +10595,16 @@ function load(){
         '<td class="'+cls+'">'+secFmt(w.avg_sec_pkg)+'</td><td>'+secFmt(w.avg_sec_item)+'</td>'+
         '<td>'+w.pkgs_per_hr+'</td><td>'+w.active_hours+'</td></tr>';
     }).join(''):'<tr><td colspan="7" class="muted">No packing records for this filter</td></tr>');
+    // By show: which lives were packed in the range + how 'closed' each one is.
+    var shs=d.shows||[], lv=d.lives||{touched:0,closed:0,pct_closed:0};
+    document.getElementById('livesNote').textContent=lv.touched?(lv.closed+' of '+lv.touched+' lives closed · '+lv.pct_closed+'%'):'';
+    document.getElementById('shrows').innerHTML=(shs.length?shs.map(function(s){
+      var pc=s.pct_complete||0, col=(s.closed?'#059669':(pc>=50?'#b45309':'#b91c1c'));
+      var badge=s.closed?'<span style="font-size:11px;font-weight:800;background:#dcfce7;color:#166534;border-radius:20px;padding:2px 9px;margin-left:6px">✓ closed</span>':'';
+      return '<tr><td><b>'+esc(s.label)+'</b></td><td>'+s.packages+'</td><td>'+s.items+'</td>'+
+        '<td><b style="color:'+col+'">'+pc+'%</b> <span class="muted">('+s.show_packed+'/'+s.show_total+')</span>'+badge+'</td>'+
+        '<td>'+secFmt(s.avg_sec_pkg)+'</td><td>'+s.pkgs_per_hr+'</td></tr>';
+    }).join(''):'<tr><td colspan="6" class="muted">No shows packed in this range</td></tr>');
     renderTeam(d.workers,'worker','packages','pkgs','pkgs_per_hr','fWorker');
     renderChart(d.days);
     renderShift(d.shift, document.getElementById('fWorker').value);
@@ -14933,7 +14949,7 @@ function load(){
     document.getElementById('kpis').innerHTML=
       '<div class="kpi good"><div class="v">'+d.pct_packed+'%</div><div class="l">Packed</div></div>'+
       '<div class="kpi pick"><div class="v">'+d.pct_picked+'%</div><div class="l">Picked</div></div>'+
-      '<div class="kpi time"><div class="v">'+fmtDur(d.worked_sec)+'</div><div class="l">Time worked</div></div>'+
+      '<div class="kpi time"><div class="v">'+fmtDur(d.worked_sec)+'</div><div class="l">Pack time (actual)</div></div>'+
       '<div class="kpi over"><div class="v">'+(d.overdue||0)+'</div><div class="l">Overdue'+(d.due_ts?(' · '+dueAgo(d.due_ts)):'')+'</div></div>';
     document.getElementById('bars').innerHTML=
       bar('Picked',d.pct_picked,'#4f46e5')+bar('Packed',d.pct_packed,'#059669');

@@ -4704,16 +4704,9 @@ def api_today():
             ful_p+=r["packed"] or 0; ful_k+=r["picked"] or 0; ful_e+=r["pending"] or 0
             # picked progress = anything that's been picked at least (picked + already packed/shipped).
             _done=(r["packed"] or 0); _pickprog=_done+(r["picked"] or 0)
-            # wall-clock worked: from the first pick/pack activity to now (the show is still open).
-            _worked=0
-            _fdt=_parse_dt(r.get("first_act")) if r.get("first_act") else None
-            if _fdt:
-                try: _worked=max(0,_now_ts-int(_fdt.timestamp()))
-                except Exception: _worked=0
             shows.append({"name":r["lbl"],"date":(r["sd"] or "")[:10],"age_days":max(0,age),"total":r["total"],
                           "packed":_done,"picked":_pickprog,"pending":r["pending"] or 0,
                           "pct":round(100*_done/tot),"pct_picked":round(100*_pickprog/tot),
-                          "worked_sec":_worked,
                           "due_ts":r["due_ts"] or 0,"overdue":r["overdue"] or 0})
         # WHAT NEXT order: most overdue first, then nearest ship-by deadline, then oldest live.
         _FAR=9999999999
@@ -7890,6 +7883,30 @@ def api_home_fulfillment():
         "shows": shows,
     })
 
+def _show_pack_labor_seconds(label):
+    """REAL packing labor for a show (sum of pack durations from the pack log) — not wall-clock,
+    so it never counts overnight idle hours. Bounded: one show's tracking codes + one log read."""
+    if not label: return 0
+    secs=0
+    try:
+        if not os.path.exists(log_file()): return 0
+        c=sdb()
+        trks=set()
+        for r in c.execute("SELECT tracking_code,shipment_id FROM shipments WHERE import_label=?",(label,)).fetchall():
+            if r["tracking_code"]: trks.add(r["tracking_code"])
+            if r["shipment_id"]: trks.add(r["shipment_id"])
+        c.close()
+        if not trks: return 0
+        with open(log_file()) as f:
+            for row in csv.DictReader(f):
+                if (row.get("tracking_number","") or "") in trks:
+                    try: dur=float(row.get("duration_seconds","0") or 0)
+                    except Exception: dur=0
+                    if 0<dur<=3600: secs+=dur
+    except Exception as e:
+        print("show pack labor failed for %r: %s"%(label,e),flush=True)
+    return int(secs)
+
 @app.route("/admin/show")
 @req_role("admin","cs")
 def show_health_page():
@@ -7919,10 +7936,7 @@ def api_show_health():
         FROM shipments WHERE import_label=?""",(now,label)).fetchone() or {})
     tot=(a.get("total") or 0) or 1
     _done=a.get("packed") or 0; _pick=_done+(a.get("picked") or 0)
-    worked=0; _fdt=_parse_dt(a.get("first_act"))
-    if _fdt:
-        try: worked=max(0,now-int(_fdt.timestamp()))
-        except Exception: worked=0
+    worked=_show_pack_labor_seconds(label)   # real pack labor from the log, not wall-clock
     def _rows(where,args,limit=100):
         q=("SELECT shipment_id,buyer_name,tracking_code,status,ship_by,pick_started_by,picked_at,flag_reason "
            "FROM shipments WHERE import_label=? AND ("+where+") ORDER BY COALESCE(ship_by,9000000000) LIMIT ?")
@@ -11176,11 +11190,11 @@ def api_packer_analytics():
     station=(request.args.get("station") or "").strip()
     frm=(request.args.get("from") or "").strip(); to=(request.args.get("to") or "").strip()
     c=sdb()
-    tmap={}
-    for r in c.execute("SELECT tracking_code,shipment_id,total_items FROM shipments").fetchall():
-        ti=r["total_items"] or 0
-        if r["tracking_code"]: tmap[r["tracking_code"]]=ti
-        if r["shipment_id"]: tmap.setdefault(r["shipment_id"],ti)
+    tmap={}; tlabel={}
+    for r in c.execute("SELECT tracking_code,shipment_id,total_items,import_label FROM shipments").fetchall():
+        ti=r["total_items"] or 0; lbl=r["import_label"] or ""
+        if r["tracking_code"]: tmap[r["tracking_code"]]=ti; tlabel[r["tracking_code"]]=lbl
+        if r["shipment_id"]: tmap.setdefault(r["shipment_id"],ti); tlabel.setdefault(r["shipment_id"],lbl)
     c.close()
     rows=[]; all_workers=set(); all_stations=set()
     if os.path.exists(log_file()):
@@ -11197,8 +11211,9 @@ def api_packer_analytics():
                 try: dur=float(row.get("duration_seconds","0") or 0)
                 except Exception: dur=0
                 if dur<=0 or dur>3600: continue   # ignore bogus durations
+                _trk=row.get("tracking_number","") or ""
                 rows.append({"worker":wk,"date":d,"station":stn,"dur":dur,
-                             "items":tmap.get(row.get("tracking_number","") or "",0)})
+                             "items":tmap.get(_trk,0),"label":tlabel.get(_trk,"")})
     def agg(items):
         pk=len(items); sec=sum(x["dur"] for x in items); it=sum(x["items"] for x in items)
         return {"packages":pk,"items":it,"avg_sec_pkg":round(sec/pk,1) if pk else 0,
@@ -11221,7 +11236,38 @@ def api_packer_analytics():
     D={}
     for r in rows: D.setdefault(r["date"],[]).append(r)
     days=[dict({"date":d},**agg(v)) for d,v in sorted(D.items())]
-    return jsonify({"ok":True,"overall":agg(rows),"workers":workers,"days":days,
+    # ── BY SHOW: which lives were packed in this window, and how 'closed' each one is ──
+    SH={}
+    for r in rows:
+        if r.get("label"): SH.setdefault(r["label"],[]).append(r)
+    show_rows=[]; closed=0
+    if SH:
+        c2=sdb()
+        qm=",".join("?"*len(SH))
+        totals={}
+        for tr in c2.execute("""SELECT import_label lbl, COUNT(*) total,
+                                 SUM(CASE WHEN status IN ('packed','shipped') THEN 1 ELSE 0 END) packed
+                                 FROM shipments WHERE import_label IN (%s) GROUP BY import_label"""%qm,
+                              list(SH.keys())).fetchall():
+            totals[tr["lbl"]]={"total":tr["total"] or 0,"packed":tr["packed"] or 0}
+        done=set()
+        try:
+            for dr in c2.execute("SELECT import_label FROM show_state WHERE done=1").fetchall():
+                done.add(dr["import_label"])
+        except Exception: pass
+        c2.close()
+        for lbl,items in SH.items():
+            t=totals.get(lbl,{"total":0,"packed":0}); tot=t["total"] or 0
+            pct=round(100*(t["packed"] or 0)/tot) if tot else 0
+            is_closed=(lbl in done) or (tot>0 and (t["packed"] or 0)>=tot)
+            if is_closed: closed+=1
+            show_rows.append(dict({"label":lbl,"show_total":tot,"show_packed":t["packed"] or 0,
+                                   "pct_complete":pct,"closed":is_closed},**agg(items)))
+        show_rows.sort(key=lambda x:x["packages"],reverse=True)
+    lives_touched=len(show_rows)
+    lives={"touched":lives_touched,"closed":closed,
+           "pct_closed":round(100*closed/lives_touched) if lives_touched else 0}
+    return jsonify({"ok":True,"overall":agg(rows),"workers":workers,"days":days,"shows":show_rows,"lives":lives,
                     "worker_list":sorted(all_workers),"station_list":sorted(all_stations),
                     "shift":_worker_shift_days(worker,frm,to)})
 

@@ -45,7 +45,7 @@ def test_show_health_buckets(appmod, client):
     assert d["stuck"]["overdue"]["count"] == 1
     assert d["stuck"]["issues"]["count"] == 1
     assert d["pct_packed"] == 20                                       # 1 of 5
-    assert d["worked_sec"] > 0                                         # wall-clock since first activity
+    assert "worked_sec" in d                                           # real pack labor (0 without a pack log)
 
 
 def test_today_backlog_has_picked_and_worked(appmod, client):
@@ -58,4 +58,3 @@ def test_today_backlog_has_picked_and_worked(appmod, client):
     row = next((s for s in d["backlog"]["shows"] if s["name"] == L), None)
     assert row is not None
     assert "pct_picked" in row and row["pct_picked"] == 50            # 1 picked of 2
-    assert row["worked_sec"] > 0
