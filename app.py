@@ -21186,17 +21186,21 @@ def _ticket_webhook_env():
 def _ticket_webhook_post(url, body, headers, retries=3):
     """One webhook delivery with up to `retries` attempts and 1s/2s/4s backoff.
     Returns (ok, detail_string). Never raises."""
+    # A common misconfig is pasting a token into TICKETS_WEBHOOK_URL. Catch it with a clear message
+    # instead of urllib's cryptic "unknown url type".
+    if not re.match(r"^https?://", url or "", re.I):
+        return False, "invalid TICKETS_WEBHOOK_URL (must start with https://): %r" % (url[:60] if url else "")
     last=""
     for i in range(max(1,retries)):
         try:
             req=_urlreq.Request(url,data=body,method="POST",headers=headers)
             r=_urlreq.urlopen(req,timeout=5)
-            return True,"→ %d"%r.getcode()
+            return True,"%d"%r.getcode()
         except _urlerr.HTTPError as e:
-            last="→ HTTP %d"%e.code
+            last="HTTP %d"%e.code
             if 400<=e.code<500 and e.code!=429: return False,last   # client error: don't retry
         except Exception as e:
-            last="→ failed: %s: %s"%(type(e).__name__, str(e)[:200])
+            last="failed: %s: %s"%(type(e).__name__, str(e)[:200])
             print("ticket webhook attempt %d failed:"%(i+1), repr(e), flush=True)
         if i<retries-1: time.sleep(2**i)
     return False,last
