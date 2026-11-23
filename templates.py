@@ -15062,6 +15062,12 @@ __NAVBAR__
 <script>
 function esc(s){return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function toast(m){var t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(function(){t.style.display='none'},2200)}
+function fmtTags(v){ // ai_tags may arrive as a JSON-string array, a real array, or a comma string
+  if(!v)return ''; var arr=v;
+  if(typeof v==='string'){ var t=v.trim(); if(t.charAt(0)==='['){try{arr=JSON.parse(t)}catch(e){arr=t.split(',')}}else{arr=t.split(',')} }
+  if(!Array.isArray(arr))arr=[arr];
+  return arr.map(function(x){x=String(x).trim();return x?('<span style="display:inline-block;font-size:11px;font-weight:800;background:#ede9fe;color:#6d28d9;border-radius:20px;padding:2px 9px;margin:2px">'+esc(x)+'</span>'):''}).join('');
+}
 function show(v){['vRec','vQ','vDet'].forEach(function(x){document.getElementById(x).classList.add('hidden')});document.getElementById(v).classList.remove('hidden');}
 document.getElementById('tabRec').onclick=function(){this.classList.add('on');document.getElementById('tabQ').classList.remove('on');show('vRec');};
 document.getElementById('tabQ').onclick=function(){this.classList.add('on');document.getElementById('tabRec').classList.remove('on');show('vQ');loadQueue();};
@@ -15159,12 +15165,15 @@ function openCase(id){
     document.getElementById('vDet').innerHTML=
       '<button class="chip" id="backBtn" style="margin-bottom:10px">← Queue</button>'+
       '<div class="card"><h1 style="font-size:19px">Case #'+c.id+' <span class="st '+esc(c.status)+'">'+esc(c.status)+'</span></h1>'+
-        '<div class="muted" style="font-size:13px">'+esc((c.customer_username||'')+' · '+(c.platform||'')+' · order '+(c.order_id||'—')+' · '+(c.import_label||''))+'</div>'+
+        '<div class="muted" style="font-size:13px">'+esc((c.customer_username||'')+' · '+(c.platform||'')+' · order '+(c.platform_order_no||c.order_id||'—')+' · '+(c.import_label||''))+'</div>'+
         '<div class="gal">'+gal+'</div></div>'+
       '<div class="block"><h3>Items returned</h3>'+(items||'<span class="muted">—</span>')+'</div>'+
       '<div class="block ai"><h3>🤖 AI Chief of Staff</h3>'+
+        '<div class="kv"><span>Order #</span><b>'+esc(c.platform_order_no||'—')+'</b></div>'+
         '<div class="kv"><span>Platform request</span><b>'+esc(c.platform_request_id||'—')+'</b></div>'+
         '<div class="kv"><span>Refund · deadline</span><b>'+esc((c.refund_amount?('$'+c.refund_amount):'—')+' · '+(c.platform_deadline||'—'))+'</b></div>'+
+        (c.rts_reason?('<div class="kv"><span>RTS reason</span><b style="max-width:62%;text-align:right">'+esc(c.rts_reason)+'</b></div>'):'')+
+        (fmtTags(c.ai_tags)?('<div class="kv" style="align-items:center"><span>AI tags</span><span>'+fmtTags(c.ai_tags)+'</span></div>'):'')+
         '<div class="kv"><span>Summary</span><b style="max-width:62%;text-align:right">'+esc(c.ai_summary||'(awaiting AI)')+'</b></div></div>'+
       '<div class="block"><h3>Decision</h3><div class="chips" id="decChips">'+decChips+'</div></div>'+
       '<div class="block"><h3>Timeline</h3>'+(log||'<span class="muted">—</span>')+
