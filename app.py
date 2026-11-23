@@ -1699,6 +1699,10 @@ def sdb_init(org):
     c.execute("""CREATE TABLE IF NOT EXISTS return_log(
         id INTEGER PRIMARY KEY AUTOINCREMENT, case_id INTEGER, actor TEXT, action TEXT,
         old_value TEXT, new_value TEXT, at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    # order_id holds the platform's INTERNAL id; platform_order_no is the human order number the
+    # buyer/CS sees (e.g. Whatnot 1509039434). Separate so the AI can fill/correct it.
+    try: c.execute("ALTER TABLE return_cases ADD COLUMN platform_order_no TEXT")
+    except Exception: pass
     c.execute("CREATE INDEX IF NOT EXISTS idx_return_tracking ON return_cases(tracking_in)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_return_status ON return_cases(status)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_return_items_case ON return_items(case_id)")
@@ -20849,7 +20853,7 @@ def api_returns_get(cid):
 
 _RET_PATCH_FIELDS={"status","decision","decision_by","platform_request_id","platform_deadline",
                    "refund_amount","refund_status","reship_tracking","ai_summary","ai_tags",
-                   "assigned_to","return_type","rts_reason","import_label"}
+                   "assigned_to","return_type","rts_reason","import_label","platform_order_no"}
 
 @app.route("/api/returns/<int:cid>", methods=["PATCH","POST"])
 def api_returns_patch(cid):
@@ -20871,9 +20875,12 @@ def api_returns_patch(cid):
     sets=[]; args=[]
     for f in _RET_PATCH_FIELDS:
         if f in d:
-            sets.append(f+"=?"); args.append(d[f])
-            if str(old.get(f) or "")!=str(d[f] or ""):
-                _ret_log(c, cid, actor, "set "+f, old.get(f), d[f])
+            v=d[f]
+            # SQLite can't bind a list/dict — JSON-encode them (ai_tags is often an array).
+            if isinstance(v,(list,dict)): v=json.dumps(v, ensure_ascii=False)
+            sets.append(f+"=?"); args.append(v)
+            if str(old.get(f) or "")!=str(v or ""):
+                _ret_log(c, cid, actor, "set "+f, old.get(f), v)
     if "decision" in d:
         sets.append("decision_by=?"); args.append(actor)
         sets.append("decision_at=?"); args.append(datetime.now().isoformat(timespec="seconds"))

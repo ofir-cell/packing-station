@@ -67,11 +67,15 @@ def test_ai_bearer_key_patch_is_audited(appmod, client, monkeypatch):
     # fresh client with NO session — only the bearer key
     import flask
     aic = A.app.test_client()
-    r = aic.patch("/api/returns/%d" % cid, json={"decision": "restock", "ai_summary": "matched to TT request"},
+    # ai_tags as a JSON array must NOT 500 (it's stored JSON-encoded); platform_order_no is patchable.
+    r = aic.patch("/api/returns/%d" % cid, json={"decision": "restock", "ai_summary": "matched to TT request",
+                                                 "ai_tags": ["damaged", "wrong_shade"], "platform_order_no": "1509039434"},
                   headers={"Authorization": "Bearer secret-ai-key"}).get_json()
     assert r["ok"] is True
     g = client.get("/api/returns/%d" % cid).get_json()["case"]
     assert g["decision"] == "restock" and g["decision_by"] == "AI"
+    assert g["platform_order_no"] == "1509039434"
+    assert "damaged" in g["ai_tags"]              # stored as JSON, round-trips with the tag inside
     actions = [l["action"] for l in g["log"]]
     assert any(a.startswith("set decision") for a in actions)      # the AI change is in the audit log
     # a wrong key is rejected
