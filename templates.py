@@ -13963,6 +13963,7 @@ __NAVBAR__
       <button class="btn btn-ghost" id="kitBtn">🧩 This sticker is a bundle (scan several)</button>
       <button class="btn btn-ghost" id="costBtn">💲 No barcode — add cost only</button>
       <button class="btn btn-ghost" id="photoBtn">📷 No barcode — take a photo</button>
+      <button class="btn btn-ghost" id="bulkBtn2" style="border-color:#ddd6fe;color:#6b21a8;background:#faf5ff">⇄ Bulk — same product/photo for a range (e.g. #8–#12)</button>
       <div class="kitwrap" id="photoWrap" style="display:none;border-color:#bfdbfe;background:#eff6ff">
         <div style="font-size:13px;font-weight:800;color:#1e40af;margin-bottom:8px">Photograph the physical item for this sticker — so it can be identified and completed later, even without a barcode.</div>
         <input id="photoInp" type="file" accept="image/*" capture="environment" style="width:100%">
@@ -14273,9 +14274,12 @@ function bRender(){var el=document.getElementById('bChips');
 }
 function bPush(){var inp=document.getElementById('bScan');var v=inp.value.trim();inp.value='';
   if(v){bCodes.push(v);bRender();} inp.focus();}
-document.getElementById('bulkBtn').onclick=function(){kitExit();bCodes=[];bRender();
+function openBulk(){kitExit();costExit();bCodes=[];bRender();
   document.getElementById('bFrom').value='';document.getElementById('bTo').value='';document.getElementById('bErr').style.display='none';
-  document.getElementById('bulkPanel').style.display='block';document.getElementById('bFrom').focus();};
+  var p=document.getElementById('bulkPanel');p.style.display='block';
+  p.scrollIntoView({behavior:'smooth',block:'center'});document.getElementById('bFrom').focus();}
+document.getElementById('bulkBtn').onclick=openBulk;
+var _bb2=document.getElementById('bulkBtn2'); if(_bb2)_bb2.onclick=openBulk;
 document.getElementById('bCancel').onclick=function(){document.getElementById('bulkPanel').style.display='none';focusScan();};
 document.getElementById('bAdd').onclick=bPush;
 document.getElementById('bScan').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();bPush();}});
