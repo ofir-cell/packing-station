@@ -15196,3 +15196,194 @@ function openCase(id){
 document.getElementById('recTrk').focus();
 </script>
 </body></html>'''
+
+
+# ── CS Hub (cycle-66d) — Inbox + Ticket page + Dashboard in one screen ─────────
+CS_HUB_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>CS Hub</title>
+__NAVBAR_CSS__
+<style>
+:root{--brand:#4f46e5;--brand2:#7c3aed;--ink:#1a2130;--mut:#6b7280;--bd:#e4e7ec;--bg:#f6f7fb;--good:#059669;--red:#dc2626;--amber:#b45309}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink)}
+.wrap{max-width:1180px;margin:0 auto;padding:16px 14px 70px}
+h1{font-size:21px;font-weight:900;margin:0 0 2px}.sub{color:var(--mut);font-size:13px;margin-bottom:14px}
+.tabs{display:flex;gap:8px;margin-bottom:14px}
+.tab{padding:8px 14px;border:1px solid var(--bd);border-radius:11px;background:#fff;font-weight:800;font-size:13px;cursor:pointer;color:#475569}
+.tab.on{background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff;border-color:transparent}
+.cnt{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.cc{flex:1;min-width:150px;background:#fff;border:1px solid var(--bd);border-radius:14px;padding:12px 14px}
+.cc .v{font-size:24px;font-weight:900}.cc .l{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.4px;font-weight:800}
+.cc.red .v{color:var(--red)}.cc.amber .v{color:var(--amber)}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+.filters select,.filters input{border:1.5px solid var(--bd);border-radius:10px;padding:8px 10px;font-size:13px;font-family:inherit;background:#fff}
+table{width:100%;border-collapse:collapse;font-size:13px;background:#fff;border-radius:14px;overflow:hidden}
+th{text-align:left;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.4px;padding:9px 10px;border-bottom:1px solid var(--bd)}
+td{padding:10px;border-bottom:1px solid #f0edf6;vertical-align:middle}
+tr.row{cursor:pointer}tr.row:hover td{background:#faf9ff}tr.urgent td{background:#fef2f2}
+.dot{display:inline-block;width:11px;height:11px;border-radius:50%}
+.dot.green{background:var(--good)}.dot.amber{background:var(--amber)}.dot.red{background:var(--red)}
+.pill{display:inline-block;font-size:11px;font-weight:800;border-radius:20px;padding:2px 9px}
+.pill.tt{background:#fde68a;color:#92400e}.pill.wn{background:#e9d5ff;color:#6b21a8}
+.st{font-size:11px;font-weight:800;border-radius:20px;padding:2px 9px;white-space:nowrap;background:#e0e7ff;color:#3730a3}
+.st.new{background:#dbeafe;color:#1e40af}.st.ai_ready{background:#ede9fe;color:#6d28d9}.st.decided_wait_ai{background:#fef3c7;color:#92400e}
+.st.done{background:#dcfce7;color:#166534}.st.needs_owner{background:#fee2e2;color:#b91c1c}.st.customer_replied{background:#cffafe;color:#155e75}
+.who{font-size:12px;font-weight:700}.mut{color:var(--mut)}
+.btn{padding:8px 12px;border:0;border-radius:11px;background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff;font-weight:800;font-size:13px;cursor:pointer}
+.btn.g{background:#f1f5f9;color:#475569}
+.take{padding:5px 10px;border:1.5px solid #c7d2fe;border-radius:9px;background:#eef2ff;color:#4338ca;font-weight:800;font-size:12px;cursor:pointer}
+.warn{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;border-radius:10px;padding:9px 12px;font-size:12.5px;font-weight:600;margin-bottom:8px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:800px){.grid{grid-template-columns:1fr}}
+.box{background:#fff;border:1px solid var(--bd);border-radius:14px;padding:13px 15px;margin-bottom:12px}
+.box h3{font-size:12px;font-weight:900;color:var(--brand);text-transform:uppercase;letter-spacing:.5px;margin:0 0 9px}
+.box.ai{background:#f5f3ff;border-color:#ddd6fe}.box.ai h3{color:#6d28d9}
+.kv{display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:3px 0}.kv b{font-weight:800;text-align:right}
+.chip{font-weight:800;font-size:13px;border:1.5px solid var(--bd);border-radius:11px;padding:9px 12px;background:#fff;cursor:pointer}
+.chip.on{background:#eef2ff;border-color:#c7d2fe;color:#4338ca}.chip.money{border-color:#fbcfe8;color:#9d174d;background:#fdf2f8}
+.chips{display:flex;gap:7px;flex-wrap:wrap;margin:4px 0}
+.msg{border-left:2px solid #e9d5ff;padding:4px 0 4px 12px;margin-bottom:7px;font-size:13px}
+.msg .m{color:var(--mut);font-size:11px}.msg.inn{border-color:#93c5fd}.msg.out{border-color:#6ee7b7}.msg.internal{border-color:#fcd34d}
+textarea{width:100%;border:1.5px solid var(--bd);border-radius:10px;padding:9px;font-size:13px;font-family:inherit;min-height:60px}
+.tagc{font-size:11px;font-weight:800;border-radius:9px;padding:2px 8px;background:#ede9fe;color:#6d28d9}
+.acct{font-weight:800;color:var(--brand)}
+</style></head><body>__NAVBAR__
+<div class="wrap">
+  <h1>💬 CS Hub <span class="acct" id="acct"></span></h1>
+  <div class="sub">One shared queue of customer requests. Take a ticket, decide, the AI prepares and executes. Phase 1 — money actions are owner/manager only.</div>
+  <div class="tabs"><div class="tab on" data-v="inbox" id="tInbox">Inbox</div><div class="tab" data-v="dash" id="tDash">Dashboard</div></div>
+
+  <div id="vInbox">
+    <div class="cnt" id="counters"></div>
+    <div class="filters">
+      <select id="fStatus"><option value="">All statuses</option><option value="new">New</option><option value="ai_ready">AI ready</option><option value="decided_wait_ai">Waiting for AI</option><option value="customer_replied">Customer replied</option><option value="needs_owner">Needs owner</option><option value="done">Done</option></select>
+      <select id="fPlatform"><option value="">All platforms</option><option value="whatnot">Whatnot</option><option value="tiktok">TikTok</option></select>
+      <select id="fType"><option value="">All types</option><option value="refund_return">Refund / return</option><option value="where_order">Where is my order</option><option value="damaged_missing">Damaged / missing</option><option value="question">Question</option><option value="cancel">Cancel</option></select>
+      <select id="fAssigned"><option value="">Anyone</option><option value="me">Me</option><option value="unassigned">Unassigned</option></select>
+      <button class="btn g" id="reload">↻</button>
+    </div>
+    <table><thead><tr><th>Risk</th><th>Platform</th><th>Buyer</th><th>Issue</th><th>Type</th><th>Status</th><th>Handling</th><th>Deadline</th><th></th></tr></thead>
+    <tbody id="rows"><tr><td colspan="9" class="mut">Loading…</td></tr></tbody></table>
+  </div>
+
+  <div id="vTicket" style="display:none"></div>
+  <div id="vDash" style="display:none"></div>
+</div>
+<script>
+var ROLE="__ROLE__", ME="__NAME__";
+var MONEY_ROLE=(ROLE==="admin"||ROLE==="manager");
+function esc(s){return (s==null?"":String(s)).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c];});}
+function J(u,o){return fetch(u,o).then(function(r){return r.json();});}
+function platPill(p){p=(p||"").toLowerCase();if(p==="tiktok")return '<span class="pill tt">TikTok</span>';if(p==="whatnot")return '<span class="pill wn">Whatnot</span>';return '<span class="pill" style="background:#e5e7eb;color:#374151">'+esc(p||"—")+'</span>';}
+function stLabel(s){return (s||"").replace(/_/g," ");}
+function hoursLeft(dl){if(!dl)return null;var t=new Date((dl.length<=10?dl+"T23:59:59":dl)).getTime();if(isNaN(t))return null;return (t-Date.now())/3600000;}
+function dlBadge(dl){var h=hoursLeft(dl);if(h==null)return '<span class="mut">—</span>';if(h<0)return '<span style="color:var(--red);font-weight:800">overdue</span>';if(h<24)return '<span style="color:var(--red);font-weight:800">'+Math.round(h)+'h</span>';return '<span>'+Math.round(h/24)+'d</span>';}
+
+var VIEW="inbox";
+function show(v){VIEW=v;document.getElementById("vInbox").style.display=(v==="inbox")?"":"none";document.getElementById("vTicket").style.display=(v==="ticket")?"":"none";document.getElementById("vDash").style.display=(v==="dash")?"":"none";document.getElementById("tInbox").classList.toggle("on",v==="inbox");document.getElementById("tDash").classList.toggle("on",v==="dash");}
+document.getElementById("tInbox").onclick=function(){show("inbox");loadInbox();};
+document.getElementById("tDash").onclick=function(){show("dash");loadDash();};
+
+function loadInbox(){
+  var q=[];var s=document.getElementById("fStatus").value;if(s)q.push("status="+s);
+  var p=document.getElementById("fPlatform").value;if(p)q.push("platform="+p);
+  var t=document.getElementById("fType").value;if(t)q.push("type="+t);
+  var a=document.getElementById("fAssigned").value;if(a)q.push("assigned="+a);
+  J("/api/tickets"+(q.length?"?"+q.join("&"):"")).then(function(d){
+    if(!d.ok){document.getElementById("rows").innerHTML='<tr><td colspan="9" class="mut">'+esc(d.error||"error")+'</td></tr>';return;}
+    var c=d.counters||{};
+    document.getElementById("counters").innerHTML=
+      cc("New",c.new,"")+cc("Waiting for AI",c.waiting_ai,"")+cc("Needs owner",c.needs_owner,"red")+cc("Deadline today",c.deadline_today,"amber");
+    var rows=d.tickets.map(function(t){
+      var urgent=(hoursLeft(t.deadline)!=null&&hoursLeft(t.deadline)<24&&t.status!=="done");
+      var handling=t.assigned_to?('<span class="who">'+esc(t.assigned_to)+'</span>'):('<button class="take" onclick="takeT(event,'+t.id+')">Take it</button>');
+      var issue=esc((t.inbound_text||"").slice(0,60))||'<span class="mut">—</span>';
+      return '<tr class="row'+(urgent?' urgent':'')+'" onclick="openT('+t.id+')">'+
+        '<td><span class="dot '+(t.risk||"green")+'"></span></td>'+
+        '<td>'+platPill(t.platform)+'</td>'+
+        '<td><b>'+esc(t.customer_name||t.username||"—")+'</b><div class="mut">@'+esc(t.username||"")+'</div></td>'+
+        '<td>'+issue+'</td>'+
+        '<td>'+esc(stLabel(t.type))+'</td>'+
+        '<td><span class="st '+esc(t.status)+'">'+esc(stLabel(t.status))+'</span></td>'+
+        '<td>'+handling+'</td>'+
+        '<td>'+dlBadge(t.deadline)+'</td>'+
+        '<td class="mut">#'+t.id+'</td></tr>';
+    }).join("");
+    document.getElementById("rows").innerHTML=rows||'<tr><td colspan="9" class="mut">No tickets.</td></tr>';
+  });
+}
+function cc(l,v,cls){return '<div class="cc '+cls+'"><div class="v">'+(v||0)+'</div><div class="l">'+l+'</div></div>';}
+function takeT(e,id){e.stopPropagation();J("/api/tickets/"+id+"/take",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}).then(function(d){if(!d.ok){alert(d.error||"taken");}loadInbox();});}
+
+function openT(id){
+  J("/api/tickets/"+id).then(function(d){
+    if(!d.ok){alert(d.error||"error");return;}
+    var t=d.ticket;show("ticket");
+    var warns=(t.warnings||[]).map(function(w){return '<div class="warn">⚠ '+esc(w)+'</div>';}).join("");
+    var tags=(t.buyer_tags||[]).map(function(x){return '<span class="tagc">'+esc(x)+'</span>';}).join(" ");
+    var notes=(t.buyer_notes||[]).map(function(n){return '<div class="msg internal"><div>'+esc(n.note)+'</div><div class="m">'+esc(n.author||"")+' · '+esc((n.created_at||"").slice(0,16))+'</div></div>';}).join("")||'<span class="mut">No notes.</span>';
+    var msgs=(t.messages||[]).map(function(m){var cl=m.direction==="in"?"inn":m.direction;return '<div class="msg '+cl+'"><div>'+esc(m.body)+'</div><div class="m">'+esc(m.direction)+' · '+esc(m.actor||"")+' · '+esc((m.at||"").slice(0,16))+'</div></div>';}).join("")||'<span class="mut">No messages.</span>';
+    var tl=(t.log||[]).map(function(l){return '<div class="msg"><span class="m">'+esc((l.at||"").slice(0,16))+'</span> <b>'+esc(l.actor||"")+'</b> '+esc(l.action)+(l.new_value?(' → '+esc(String(l.new_value).slice(0,60))):"")+'</div>';}).join("");
+    var decisions=[["send_reply","Send reply",0],["ask_photo","Ask for photo",0],["reject","Reject",0],["partial_refund","Partial refund",1],["full_refund","Full refund",1],["refund_with_return","Refund w/ return",1],["reship","Reship",1],["cancel","Cancel",1]];
+    var decBtns=decisions.map(function(x){var money=x[2];var dis=(money&&!MONEY_ROLE);return '<span class="chip'+(money?" money":"")+(t.decision===x[0]?" on":"")+'" '+(dis?'style="opacity:.45;cursor:not-allowed" title="owner/manager only"':'onclick="setDecision('+t.id+",'"+x[0]+'\\')"')+'>'+x[1]+(money?" 💲":"")+'</span>';}).join("");
+    var vid=t.shipment_id?('<a href="/media/video/" onclick="return false" class="mut">video via order</a>'):"";
+    document.getElementById("vTicket").innerHTML=
+      '<button class="btn g" onclick="show(\\'inbox\\');loadInbox()">← Inbox</button>'+
+      '<h1 style="margin-top:10px">Ticket #'+t.id+' <span class="st '+esc(t.status)+'">'+esc(stLabel(t.status))+'</span> <span class="dot '+(t.risk||"green")+'"></span></h1>'+
+      '<div class="sub">'+platPill(t.platform)+' · '+esc(t.customer_name||t.username||"")+' · '+esc(t.import_label||"")+' · assignee: '+esc(t.assigned_to||"—")+'</div>'+
+      warns+
+      '<div class="grid">'+
+        '<div class="box"><h3>Buyer</h3>'+
+          '<div class="kv"><span>Flag</span><b>'+esc(t.buyer_flag||"—")+'</b></div>'+
+          '<div class="chips">'+tags+'</div>'+
+          '<div style="margin-top:6px"><b>Notes</b></div>'+notes+
+          '<div style="margin-top:8px"><textarea id="noteBox" placeholder="Add a buyer note…"></textarea><button class="btn" style="margin-top:6px" onclick="addNote(\\''+esc(t.username||"")+'\\')">Add note</button></div>'+
+        '</div>'+
+        '<div class="box"><h3>Order</h3>'+
+          '<div class="kv"><span>Order #</span><b>'+esc(t.platform_order_no||t.order_id||"—")+'</b></div>'+
+          '<div class="kv"><span>Show</span><b>'+esc(t.import_label||"—")+'</b></div>'+
+          '<div class="kv"><span>Shipment</span><b>'+esc(t.shipment_id||"—")+'</b></div>'+
+          '<div class="kv"><span>Return case</span><b>'+(t.return_case_id?('<a href="/admin/returns">#'+t.return_case_id+'</a>'):"—")+'</b></div>'+
+        '</div>'+
+      '</div>'+
+      '<div class="box ai"><h3>🤖 AI Chief of Staff (Hebrew)</h3>'+
+        '<div dir="rtl" style="white-space:pre-wrap;font-size:13.5px">'+(esc(t.ai_summary_he||"")||'<span class="mut">No AI summary yet.</span>')+'</div>'+
+        (t.ai_recommendation?('<div class="kv" style="margin-top:8px"><span>Recommends</span><b>'+esc(t.ai_recommendation)+(t.ai_amount?(" · $"+t.ai_amount):"")+'</b></div>'):"")+
+      '</div>'+
+      '<div class="box"><h3>Decision (human)</h3><div class="chips">'+decBtns+'</div>'+
+        (MONEY_ROLE?('<div style="margin-top:8px"><input id="decAmt" type="number" step="0.01" placeholder="amount $" style="border:1.5px solid var(--bd);border-radius:10px;padding:8px;width:140px"> <span class="mut">for refunds</span></div>'):'<div class="mut" style="margin-top:6px">Money actions need owner/manager.</div>')+
+        '<div style="margin-top:10px"><b>Instruction to AI</b><textarea id="instr" dir="auto" placeholder="לדוגמה: תציע 50% זיכוי · ask for a photo">'+esc(t.instruction_to_ai||"")+'</textarea></div>'+
+        '<div style="margin-top:8px"><b>Reply to customer (English)</b><textarea id="reply">'+esc(t.final_reply_en||t.draft_reply_en||"")+'</textarea><button class="btn" style="margin-top:6px" onclick="saveReply('+t.id+')">Save instruction + reply</button></div>'+
+      '</div>'+
+      '<div class="box"><h3>Conversation</h3>'+msgs+
+        '<div style="margin-top:8px"><textarea id="intNote" placeholder="Internal note to the team…"></textarea><button class="btn" style="margin-top:6px" onclick="addInternal('+t.id+')">Add internal note</button></div>'+
+      '</div>'+
+      '<div class="box"><h3>Timeline</h3>'+(tl||'<span class="mut">—</span>')+'</div>';
+  });
+}
+function setDecision(id,dec){var amt=document.getElementById("decAmt");var body={decision:dec};if(amt&&amt.value)body.decision_amount=parseFloat(amt.value);J("/api/tickets/"+id,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(d){if(!d.ok){alert(d.error||"error");return;}openT(id);});}
+function saveReply(id){var body={instruction_to_ai:document.getElementById("instr").value,final_reply_en:document.getElementById("reply").value};J("/api/tickets/"+id,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(){openT(id);});}
+function addInternal(id){var b=document.getElementById("intNote").value.trim();if(!b)return;J("/api/tickets/"+id+"/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({direction:"internal",body:b})}).then(function(){openT(id);});}
+function addNote(u){var b=document.getElementById("noteBox").value.trim();if(!b||!u)return;J("/api/customers/"+encodeURIComponent(u)+"/notes",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({note:b})}).then(function(){alert("Saved");});}
+
+function loadDash(){
+  J("/api/tickets?limit=500").then(function(d){
+    if(!d.ok)return;var ts=d.tickets,c=d.counters||{};
+    var byStatus={},byPerson={},risky={},refWeek=0,refCnt=0;
+    var weekAgo=Date.now()-7*864e5;
+    ts.forEach(function(t){byStatus[t.status]=(byStatus[t.status]||0)+1;if(t.assigned_to)byPerson[t.assigned_to]=(byPerson[t.assigned_to]||0)+1;if(t.risk==="red")risky[t.username]=(risky[t.username]||0)+1;if(t.decision_amount&&t.decided_at&&new Date(t.decided_at).getTime()>weekAgo){refWeek+=t.decision_amount;refCnt++;}});
+    function tbl(o,h){var k=Object.keys(o);if(!k.length)return '<span class="mut">—</span>';return '<table><thead><tr><th>'+h+'</th><th>#</th></tr></thead><tbody>'+k.map(function(x){return '<tr><td>'+esc(stLabel(x)||"—")+'</td><td>'+o[x]+'</td></tr>';}).join("")+'</tbody></table>';}
+    document.getElementById("vDash").innerHTML=
+      '<div class="cnt">'+cc("New",c.new,"")+cc("Waiting for AI",c.waiting_ai,"")+cc("Needs owner",c.needs_owner,"red")+cc("Deadline today",c.deadline_today,"amber")+'</div>'+
+      '<div class="grid">'+
+        '<div class="box"><h3>Open by status</h3>'+tbl(byStatus,"Status")+'</div>'+
+        '<div class="box"><h3>By person</h3>'+tbl(byPerson,"Person")+'</div>'+
+        '<div class="box"><h3>Refunds this week</h3><div class="cc"><div class="v">$'+refWeek.toFixed(2)+'</div><div class="l">'+refCnt+' ticket(s)</div></div></div>'+
+        '<div class="box"><h3>Top risky buyers</h3>'+tbl(risky,"Buyer")+'</div>'+
+      '</div>';
+  });
+}
+["fStatus","fPlatform","fType","fAssigned"].forEach(function(id){document.getElementById(id).onchange=loadInbox;});
+document.getElementById("reload").onclick=loadInbox;
+loadInbox();
+</script>
+</body></html>'''

@@ -44,6 +44,7 @@ from guide_content import GUIDE_ASSETS, GUIDE_SEEDS
 from templates import COMBINE_HTML  # Combine & Labels screen
 from templates import SHOW_HEALTH_HTML  # Per-show fulfilment health screen
 from templates import RETURNS_HTML  # Returns module screen
+from templates import CS_HUB_HTML  # CS Hub (tickets) screen
 
 
 # Default (founding) tenant id. Multi-tenancy: every user belongs to an org;
@@ -583,9 +584,71 @@ def pdb_init():
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY(org_id, session_id)
     )""")
+    # Scoped, revocable API keys (cycle-66a). Each key is bound to ONE org (account) and a
+    # comma-separated scope list. The raw key is shown ONCE at creation; only its SHA-256 is
+    # stored. This generalizes the single RETURNS_AI_KEY env var so the AI Chief of Staff can be
+    # given narrow, revocable access (e.g. "tickets:write,customers:read" but never money/send).
+    c.execute("""CREATE TABLE IF NOT EXISTS api_keys(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key_hash TEXT NOT NULL UNIQUE,
+        prefix TEXT,                       -- first chars, for display only
+        label TEXT,
+        org TEXT NOT NULL,                 -- the single account this key acts on
+        scopes TEXT DEFAULT '',            -- comma list, e.g. "tickets:write,customers:read"
+        revoked INTEGER DEFAULT 0,
+        created_by TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        last_used_at TEXT
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_apikey_hash ON api_keys(key_hash)")
     c.commit(); c.close()
 
 pdb_init()
+
+# ── Scoped API keys (cycle-66a) ───────────────────────────────────────────────
+# Bearer-token identity for machine callers (the AI Chief of Staff). Keys live in the
+# platform DB, each bound to one org + a scope list. hmac/sha256, constant-time compare.
+_APIKEY_PREFIX="ghk_"            # getwhatnot key
+_apikey_lastuse={}               # throttle last_used_at writes (hash -> ts)
+
+def _apikey_hash(raw):
+    return hashlib.sha256(("gwn-apikey:"+(raw or "")).encode()).hexdigest()
+
+def _apikey_identity():
+    """Resolve the Authorization: Bearer <key> header to a live api_keys row.
+    Returns dict {id,label,org,scopes:set} or None. Never raises."""
+    sig=(request.headers.get("Authorization","") or "").strip()
+    if not sig.lower().startswith("bearer "): return None
+    raw=sig[7:].strip()
+    if not raw: return None
+    h=_apikey_hash(raw)
+    try:
+        c=pdb()
+        row=c.execute("SELECT * FROM api_keys WHERE key_hash=? AND COALESCE(revoked,0)=0",(h,)).fetchone()
+        if not row: c.close(); return None
+        # Throttle the last_used write to at most once / 60s per key (avoid a write per request).
+        now=time.time()
+        if now-_apikey_lastuse.get(h,0)>60:
+            _apikey_lastuse[h]=now
+            try: c.execute("UPDATE api_keys SET last_used_at=? WHERE id=?",
+                           (datetime.now().isoformat(timespec="seconds"),row["id"])); c.commit()
+            except Exception: pass
+        c.close()
+        return {"id":row["id"],"label":row["label"],"org":row["org"],
+                "scopes":set(s.strip() for s in (row["scopes"] or "").split(",") if s.strip())}
+    except Exception:
+        return None
+
+def _apikey_has(ident, scope):
+    """True if the key carries the scope (or a '*' wildcard family like 'tickets:*')."""
+    if not ident: return False
+    sc=ident.get("scopes") or set()
+    if scope in sc or "*" in sc: return True
+    fam=scope.split(":")[0]+":*"
+    return fam in sc
+
+def _gen_apikey():
+    return _APIKEY_PREFIX+secrets.token_urlsafe(32)
 
 def plog(actor,action,org_id="",detail=""):
     """Append a row to the platform audit trail. Best-effort (never raises)."""
@@ -1706,6 +1769,54 @@ def sdb_init(org):
     c.execute("CREATE INDEX IF NOT EXISTS idx_return_tracking ON return_cases(tracking_in)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_return_status ON return_cases(status)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_return_items_case ON return_items(case_id)")
+    # ── CS Hub tickets (cycle-66b) ────────────────────────────────────────────
+    # One shared queue of customer requests/messages per account. The AI Chief of Staff
+    # creates/updates tickets via the scoped API key; staff take and decide; the AI executes the
+    # HUMAN decision on the platform and records the result. Money decisions are owner/manager
+    # only (CS limit 0 in Phase 1); the AI can never set a decision.
+    c.execute("""CREATE TABLE IF NOT EXISTS tickets(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT, account TEXT,               -- account = store name (HERA / 5SEC / Peach)
+        username TEXT, customer_name TEXT,
+        platform_order_no TEXT, order_id TEXT, shipment_id TEXT, return_case_id INTEGER,
+        import_label TEXT,                          -- show/live name
+        platform_conversation_key TEXT,             -- platform+account+username[+order]; for reopen-on-reply
+        type TEXT DEFAULT 'question',               -- refund_return / where_order / damaged_missing / question / cancel
+        status TEXT DEFAULT 'new',                  -- see _TK_STATUSES
+        lane TEXT DEFAULT 'team',                   -- team / owner / auto (auto reserved for Phase 3)
+        assigned_to TEXT, deadline TEXT,
+        inbound_text TEXT, inbound_photos TEXT,     -- photos = JSON list of view urls/keys
+        last_customer_msg_at TEXT,
+        ai_summary_he TEXT, ai_recommendation TEXT, ai_amount REAL,
+        draft_reply_en TEXT,
+        decision TEXT, decision_amount REAL, instruction_to_ai TEXT, final_reply_en TEXT,
+        decided_by TEXT, decided_at TEXT,
+        executed_at TEXT, execution_result TEXT,
+        risk TEXT, risk_reasons TEXT,
+        created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP, voided INTEGER DEFAULT 0
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS ticket_messages(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ticket_id INTEGER,
+        direction TEXT,                              -- in / out / internal
+        actor TEXT, body TEXT, photos TEXT,
+        at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS ticket_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ticket_id INTEGER, actor TEXT, action TEXT,
+        old_value TEXT, new_value TEXT, at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    # Buyer-level notes (append log) + one flag/tags row per username.
+    c.execute("""CREATE TABLE IF NOT EXISTS customer_notes(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, note TEXT,
+        author TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS customer_flags(
+        username TEXT PRIMARY KEY, flag TEXT DEFAULT '',   -- '' / watch / vip / blocked
+        tags TEXT DEFAULT '',                              -- JSON list
+        updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_status ON tickets(status)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_conv ON tickets(platform_conversation_key)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_updated ON tickets(updated_at)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_msgs ON ticket_messages(ticket_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cnotes_user ON customer_notes(username)")
     # Inbound shipments — labels bought for supplier → warehouse shipments.
     c.execute("""CREATE TABLE IF NOT EXISTS inbound_shipments(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3961,6 +4072,10 @@ def _csrf_protect():
         k=_returns_ai_key()
         if k and sig.lower().startswith("bearer ") and hmac.compare_digest(sig[7:].strip(), k):
             return
+    # The CS Hub tickets API is bearer-key authenticated for the AI (no ambient cookie), so CSRF
+    # doesn't apply. Bypass ONLY for a valid scoped key; a cookie session still needs the token.
+    if request.path.startswith("/api/tickets") and _apikey_identity():
+        return
     ck=request.cookies.get(CSRF_COOKIE)
     hd=request.headers.get(CSRF_HEADER) or (request.form.get("_csrf") if request.form else None)
     if not ck or not hd or not secrets.compare_digest(str(ck),str(hd)):
@@ -8039,6 +8154,7 @@ PAGES = [
     ("customers","/customers","Customers","Fulfillment"),
     ("videos","/admin/videos","Packing Videos","Fulfillment"),
     ("returns","/admin/returns","Returns","Fulfillment"),
+    ("cshub","/admin/cs","CS Hub","Fulfillment"),
     ("inventory","/admin/inventory","Inventory","Inventory"),
     ("productcleanup","/admin/product-cleanup","After-Live Cleanup","Inventory"),
     ("purchasing","/admin/purchasing","Purchasing","Inventory"),
@@ -20670,6 +20786,13 @@ def returns_page():
             .replace("__ROLE__",session.get("role",""))
             .replace("__NAVBAR__",_navbar("returns")).replace("__NAVBAR_CSS__",_NAVBAR_CSS))
 
+@app.route("/admin/cs")
+@req_role("admin","cs","manager")
+def cs_hub_page():
+    return (CS_HUB_HTML.replace("__NAME__",esc(session.get("name","")))
+            .replace("__ROLE__",session.get("role",""))
+            .replace("__NAVBAR__",_navbar("cshub")).replace("__NAVBAR_CSS__",_NAVBAR_CSS))
+
 def _returns_ai_key():
     return (os.environ.get("RETURNS_AI_KEY","") or "").strip()
 
@@ -20948,6 +21071,507 @@ def api_returns_action(cid):
     _ret_log(c, cid, who, act, row["status"], _MAP[act])
     c.commit(); c.close()
     return jsonify({"ok":True,"status":_MAP[act]})
+
+# ══════════════════════════════════════════════════════════
+# CS HUB — tickets (cycle-66, Phase 1)
+# One shared queue of customer requests across Whatnot (HERA, 5SEC) and TikTok (Peach), one per
+# account. The AI Chief of Staff creates/updates tickets via a scoped API key, prepares a Hebrew
+# summary + English draft, and — after a HUMAN decides — executes the decision on the platform and
+# records the result. Guardrails: the AI can never set a decision; money decisions are owner/
+# manager only (CS limit 0 in Phase 1); every change is audited; a webhook fires when a ticket is
+# decided so the AI acts without polling. Built on the same bearer-key + audit pattern as Returns.
+# ══════════════════════════════════════════════════════════
+_TK_STATUSES={"new","ai_ready","decided_wait_ai","done",
+              "customer_replied","waiting_customer","on_hold","needs_owner"}
+_TK_TYPES={"refund_return","where_order","damaged_missing","question","cancel"}
+_TK_DECISIONS={"send_reply","partial_refund","full_refund","refund_with_return",
+               "ask_photo","reship","cancel","reject"}
+# Decisions that move money or buy a label → owner/manager only, and the AI may never set them.
+_TK_MONEY_DECISIONS={"partial_refund","full_refund","refund_with_return","reship","cancel"}
+# Fields the AI key may write (never a decision, assignment, money, or lane=auto).
+_TK_AI_FIELDS={"ai_summary_he","ai_recommendation","ai_amount","draft_reply_en","final_reply_en",
+               "execution_result","executed_at","type","platform_order_no","order_id",
+               "shipment_id","deadline","last_customer_msg_at","risk","risk_reasons"}
+# Statuses the AI may move a ticket into (it executes + closes; it never self-assigns a decision).
+_TK_AI_STATUSES={"ai_ready","waiting_customer","on_hold","customer_replied","done"}
+# Fields a staff session may write.
+_TK_STAFF_FIELDS=_TK_AI_FIELDS|{"status","assigned_to","instruction_to_ai","lane","deadline",
+                                "decision","decision_amount","type","platform_order_no"}
+
+def _ticket_webhook(org, event, ticket):
+    """Best-effort signed outbound webhook (fire-and-forget, short timeout). Lets the AI act the
+    moment a ticket is decided, instead of polling. Configured via env; silently no-ops if unset."""
+    url=(os.environ.get("TICKETS_WEBHOOK_URL","") or "").strip()
+    if not url: return
+    secret=(os.environ.get("TICKETS_WEBHOOK_SECRET","") or "").strip()
+    body=json.dumps({"event":event,"org":org,"ticket":ticket},ensure_ascii=False).encode()
+    sig=hmac.new(secret.encode(),body,hashlib.sha256).hexdigest() if secret else ""
+    def _go():
+        try:
+            req=_urlreq.Request(url,data=body,method="POST",
+                headers={"Content-Type":"application/json","X-GWN-Event":event,"X-GWN-Signature":sig})
+            _urlreq.urlopen(req,timeout=5)
+        except Exception as e:
+            print("ticket webhook failed:",e,flush=True)
+    threading.Thread(target=_go,daemon=True).start()
+
+def _tickets_actor():
+    """Who is calling: a scoped API key (the AI) or a logged-in staff member.
+    Returns (actor_label, is_ai, ident_or_None). ident carries the key's org + scopes."""
+    ident=_apikey_identity()
+    if ident:
+        return ("AI:"+(ident.get("label") or "key"), True, ident)
+    if session.get("user"):
+        return (session.get("name") or session.get("user") or "staff", False, None)
+    return (None, False, None)
+
+def _tdb(ident):
+    """DB for the tickets API: the AI key → its bound org; a staff session → their org."""
+    return sdb(ident["org"] if ident else None)
+
+def _req_tickets(scope):
+    """Gate a tickets request. AI key needs `scope`; a staff session needs an admin/cs/manager role.
+    Returns (actor,is_ai,ident) or (None,None,None) for the caller to 401/403."""
+    actor,is_ai,ident=_tickets_actor()
+    if is_ai:
+        return (actor,True,ident) if _apikey_has(ident,scope) else (None,None,None)
+    if actor and session.get("role") in ("admin","cs","manager"):
+        return (actor,False,None)
+    return (None,None,None)
+
+def _tk_log(c,tid,actor,action,old="",new=""):
+    c.execute("INSERT INTO ticket_log(ticket_id,actor,action,old_value,new_value) VALUES(?,?,?,?,?)",
+              (tid,actor or "?",action,str(old or "")[:400],str(new or "")[:400]))
+
+def _tk_has_video(row):
+    """Does the outbound order have a packing video? (missing-item claim + video = red flag.)"""
+    trk=(row.get("shipment_id") or "")+"|"+(row.get("order_id") or "")
+    codes={x for x in [row.get("shipment_id"),row.get("order_id")] if x}
+    if not codes or not os.path.exists(log_file()): return False
+    try:
+        with open(log_file()) as f:
+            for r in csv.DictReader(f):
+                if (r.get("tracking_number","") in codes) and (r.get("video_file") or "").strip():
+                    return True
+    except Exception: pass
+    return False
+
+def _ticket_risk(c, username, row=None):
+    """Compute the buyer's risk dot from existing data (per account). Returns (level, [reasons]).
+    Thresholds per the owner's spec; tunable later in Settings."""
+    reasons=[]; level="green"
+    if not username: return ("green",[])
+    cutoff=(datetime.now()-timedelta(days=60)).isoformat()
+    try:
+        flag=c.execute("SELECT flag FROM customer_flags WHERE username=?",(username,)).fetchone()
+        flag=(flag["flag"] if flag else "") or ""
+    except Exception: flag=""
+    # refunds / returns in 60d (return cases + money-decided tickets)
+    rr60=0; rts=0; refund_total=0.0
+    try:
+        rr60+=c.execute("SELECT COUNT(*) n FROM return_cases WHERE customer_username=? AND created_at>=?",
+                        (username,cutoff)).fetchone()["n"]
+        rts=c.execute("SELECT COUNT(*) n FROM return_cases WHERE customer_username=? AND LOWER(COALESCE(return_type,'')) LIKE 'rts%'",
+                      (username,)).fetchone()["n"]
+        refund_total+=c.execute("SELECT COALESCE(SUM(refund_amount),0) s FROM return_cases WHERE customer_username=?",
+                                (username,)).fetchone()["s"] or 0
+    except Exception: pass
+    try:
+        rr60+=c.execute("""SELECT COUNT(*) n FROM tickets WHERE username=? AND decided_at>=?
+                           AND decision IN ('partial_refund','full_refund','refund_with_return','cancel')""",
+                        (username,cutoff)).fetchone()["n"]
+        refund_total+=c.execute("""SELECT COALESCE(SUM(decision_amount),0) s FROM tickets WHERE username=?
+                                   AND decision IN ('partial_refund','full_refund','refund_with_return','cancel')""",
+                                (username,)).fetchone()["s"] or 0
+    except Exception: pass
+    # lifetime spend + order count
+    spend=0.0; orders=0
+    try:
+        spend=c.execute("""SELECT COALESCE(SUM(i.revenue),0) s FROM shipment_items i
+                           JOIN shipments s ON s.shipment_id=i.shipment_id WHERE s.buyer_username=?""",
+                        (username,)).fetchone()["s"] or 0
+        orders=c.execute("SELECT COUNT(*) n FROM shipments WHERE buyer_username=?",(username,)).fetchone()["n"]
+    except Exception: pass
+    ttype=(row or {}).get("type") or ""
+    # RED
+    if flag=="blocked": reasons.append("buyer is blocked"); level="red"
+    if rr60>=3: reasons.append("%d refunds/returns in 60d"%rr60); level="red"
+    if ttype=="damaged_missing" and row and _tk_has_video(row):
+        reasons.append("missing/damaged claim but packing video shows the items"); level="red"
+    if spend>0 and refund_total>0.30*spend:
+        reasons.append("refunds are %.0f%% of lifetime spend"%(100.0*refund_total/spend)); level="red"
+    if level!="red":
+        # AMBER
+        if 1<=rr60<=2: reasons.append("%d refund(s) in 60d"%rr60); level="amber"
+        if rts>=1: reasons.append("%d RTS on record"%rts); level="amber"
+        if flag=="watch": reasons.append("on watch list"); level="amber"
+        if orders<=1 and ttype in ("refund_return","damaged_missing"):
+            reasons.append("first-time buyer with a claim"); level="amber"
+    if flag=="vip" and not reasons: reasons.append("VIP")
+    return (level,reasons)
+
+def _ticket_warnings(c,row):
+    """Server-side policy warnings shown on the ticket (not just UI text)."""
+    w=[]
+    plat=(row.get("platform") or "").lower()
+    if plat=="whatnot":
+        w.append("Live auction sales are final — no exchanges on Whatnot.")
+    # RTS buyer not refunded yet → don't message
+    rcid=row.get("return_case_id")
+    if rcid:
+        rc=c.execute("SELECT return_type,refund_status FROM return_cases WHERE id=?",(rcid,)).fetchone()
+        if rc and (rc["return_type"] or "").lower().startswith("rts") and (rc["refund_status"] or "").lower() not in ("refunded","done"):
+            w.append("RTS buyer not refunded yet — don't message the customer.")
+    # no acceptance scan → don't share tracking
+    sid=row.get("shipment_id")
+    if sid:
+        sh=c.execute("SELECT delivery_status FROM shipments WHERE shipment_id=?",(sid,)).fetchone()
+        ds=(sh["delivery_status"] if sh else "") or ""
+        if ds in ("","UNKNOWN","PRE_TRANSIT"):
+            w.append("No real acceptance scan yet — don't share tracking as proof of shipment.")
+    # money above limit / red risk → needs owner
+    amt=row.get("decision_amount") or row.get("ai_amount") or 0
+    if (row.get("risk")=="red") or (amt and amt>0 and row.get("decision") in _TK_MONEY_DECISIONS):
+        w.append("Refund/compensation or red risk — needs owner/manager approval.")
+    return w
+
+def _ticket_autofill(c,d):
+    """Resolve buyer/order/show/tracking/return from existing data. Mutates and returns a dict of
+    the fields we can fill. Safe when nothing matches (an unmatched ticket is still valid)."""
+    out={}
+    code=(d.get("tracking") or d.get("tracking_in") or "").strip()
+    sh=_resolve_shipment_by_code(c,code) if code else None
+    uname=(d.get("username") or "").strip()
+    if not sh and uname:
+        oid=(d.get("platform_order_no") or d.get("order_id") or "").strip()
+        if oid:
+            sh=c.execute("""SELECT s.* FROM shipments s JOIN shipment_items i ON i.shipment_id=s.shipment_id
+                            WHERE s.buyer_username=? AND i.order_id=? LIMIT 1""",(uname,oid)).fetchone()
+        if not sh:
+            sh=c.execute("SELECT * FROM shipments WHERE buyer_username=? ORDER BY imported_at DESC LIMIT 1",(uname,)).fetchone()
+    if sh:
+        out["shipment_id"]=sh["shipment_id"]; out["platform"]=sh["platform"]
+        out["import_label"]=sh["import_label"]; out["customer_name"]=sh["buyer_name"]
+        if not uname and sh["buyer_username"]: out["username"]=sh["buyer_username"]
+        oi=c.execute("SELECT order_id FROM shipment_items WHERE shipment_id=? AND COALESCE(order_id,'')<>'' LIMIT 1",(sh["shipment_id"],)).fetchone()
+        if oi and not d.get("order_id"): out["order_id"]=oi["order_id"]
+        if sh["ship_by"]:
+            try: out["deadline"]=datetime.utcfromtimestamp(int(sh["ship_by"])).isoformat()
+            except Exception: pass
+        rc=c.execute("SELECT id FROM return_cases WHERE outbound_shipment_id=? AND COALESCE(voided,0)=0 ORDER BY id DESC LIMIT 1",(sh["shipment_id"],)).fetchone()
+        if rc: out["return_case_id"]=rc["id"]
+    return out
+
+def _tk_dict(c,row,full=False):
+    d=dict(row)
+    if full:
+        d["messages"]=[dict(r) for r in c.execute(
+            "SELECT direction,actor,body,photos,at FROM ticket_messages WHERE ticket_id=? ORDER BY id",(row["id"],)).fetchall()]
+        d["log"]=[dict(r) for r in c.execute(
+            "SELECT actor,action,old_value,new_value,at FROM ticket_log WHERE ticket_id=? ORDER BY id",(row["id"],)).fetchall()]
+        d["warnings"]=_ticket_warnings(c,dict(row))
+        # Buyer box
+        if row["username"]:
+            fl=c.execute("SELECT flag,tags FROM customer_flags WHERE username=?",(row["username"],)).fetchone()
+            d["buyer_flag"]=(fl["flag"] if fl else "") or ""
+            d["buyer_tags"]=json.loads(fl["tags"]) if (fl and fl["tags"]) else []
+            d["buyer_notes"]=[dict(r) for r in c.execute(
+                "SELECT note,author,created_at FROM customer_notes WHERE username=? ORDER BY id DESC LIMIT 20",(row["username"],)).fetchall()]
+    return d
+
+@app.route("/api/tickets", methods=["POST"])
+def api_cshub_create():
+    """Create (or reopen) a ticket. AI key (tickets:write) or staff session. Auto-fills buyer/order/
+    show/tracking/return + risk. Reopens on platform_conversation_key when the customer replies."""
+    actor,is_ai,ident=_req_tickets("tickets:write")
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    d=request.get_json() or {}
+    c=_tdb(ident)
+    org=ident["org"] if ident else current_org()
+    key=(d.get("platform_conversation_key") or "").strip()
+    inbound=(d.get("inbound_text") or "").strip()
+    photos=d.get("inbound_photos") or []
+    now=datetime.now().isoformat(timespec="seconds")
+    # Reopen-on-reply: match the stable conversation key to the latest live ticket.
+    if key:
+        ex=c.execute("SELECT * FROM tickets WHERE platform_conversation_key=? AND COALESCE(voided,0)=0 ORDER BY id DESC LIMIT 1",(key,)).fetchone()
+        if ex:
+            reopened=(ex["status"]=="done")
+            if inbound:
+                c.execute("INSERT INTO ticket_messages(ticket_id,direction,actor,body,photos) VALUES(?,?,?,?,?)",
+                          (ex["id"],"in",actor,inbound,json.dumps(photos,ensure_ascii=False)))
+            newst="customer_replied" if reopened else ex["status"]
+            c.execute("UPDATE tickets SET status=?,last_customer_msg_at=?,updated_at=? WHERE id=?",
+                      (newst,d.get("last_customer_msg_at") or now,now,ex["id"]))
+            _tk_log(c,ex["id"],actor,"customer_replied" if reopened else "message_in","",inbound[:120])
+            c.commit(); c.close()
+            return jsonify({"ok":True,"id":ex["id"],"reopened":reopened})
+    af=_ticket_autofill(c,d)
+    uname=af.get("username") or (d.get("username") or "").strip()
+    ttype=(d.get("type") or "question").strip()
+    if ttype not in _TK_TYPES: ttype="question"
+    base={"platform":af.get("platform") or (d.get("platform") or "").strip(),
+          "account":(d.get("account") or org),"username":uname,
+          "customer_name":af.get("customer_name") or (d.get("customer_name") or "").strip(),
+          "platform_order_no":(d.get("platform_order_no") or "").strip(),
+          "order_id":af.get("order_id") or (d.get("order_id") or "").strip(),
+          "shipment_id":af.get("shipment_id"),"return_case_id":af.get("return_case_id"),
+          "import_label":af.get("import_label"),"platform_conversation_key":key or None,
+          "type":ttype,"status":"new","deadline":af.get("deadline") or d.get("deadline"),
+          "inbound_text":inbound or None,"inbound_photos":json.dumps(photos,ensure_ascii=False),
+          "last_customer_msg_at":d.get("last_customer_msg_at") or now,"created_by":actor}
+    risk,reasons=_ticket_risk(c,uname,{"type":ttype,"shipment_id":base["shipment_id"],"order_id":base["order_id"]})
+    base["risk"]=risk; base["risk_reasons"]=json.dumps(reasons,ensure_ascii=False)
+    cols=",".join(base.keys()); qs=",".join("?" for _ in base)
+    tid=c.execute("INSERT INTO tickets(%s) VALUES(%s)"%(cols,qs),list(base.values())).lastrowid
+    if inbound:
+        c.execute("INSERT INTO ticket_messages(ticket_id,direction,actor,body,photos) VALUES(?,?,?,?,?)",
+                  (tid,"in",actor,inbound,json.dumps(photos,ensure_ascii=False)))
+    _tk_log(c,tid,actor,"created","",ttype)
+    c.commit(); c.close()
+    return jsonify({"ok":True,"id":tid,"reopened":False,"risk":risk})
+
+def _tk_counts(c):
+    r=lambda q,*a:c.execute(q,a).fetchone()["n"]
+    today=datetime.now().date().isoformat()
+    return {"new":r("SELECT COUNT(*) n FROM tickets WHERE status='new' AND COALESCE(voided,0)=0"),
+            "waiting_ai":r("SELECT COUNT(*) n FROM tickets WHERE status='decided_wait_ai' AND COALESCE(voided,0)=0"),
+            "needs_owner":r("SELECT COUNT(*) n FROM tickets WHERE status='needs_owner' AND COALESCE(voided,0)=0"),
+            "deadline_today":r("SELECT COUNT(*) n FROM tickets WHERE COALESCE(voided,0)=0 AND status NOT IN ('done') AND deadline IS NOT NULL AND substr(deadline,1,10)<=?",today)}
+
+@app.route("/api/tickets")
+def api_cshub_list():
+    """Inbox list with filters + counters. AI key (tickets:read) or staff session."""
+    actor,is_ai,ident=_req_tickets("tickets:read")
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    status=(request.args.get("status") or "").strip()
+    platform=(request.args.get("platform") or "").strip()
+    ttype=(request.args.get("type") or "").strip()
+    assigned=(request.args.get("assigned") or "").strip()   # me / unassigned / <name>
+    since=(request.args.get("updated_since") or request.args.get("since") or "").strip()
+    try: limit=max(1,min(500,int(request.args.get("limit") or 100)))
+    except Exception: limit=100
+    where=["COALESCE(voided,0)=0"]; args=[]
+    if status: where.append("status=?"); args.append(status)
+    if platform: where.append("platform=?"); args.append(platform)
+    if ttype: where.append("type=?"); args.append(ttype)
+    if since: where.append("updated_at>=?"); args.append(since)
+    if assigned=="me": where.append("assigned_to=?"); args.append(session.get("name") or session.get("user") or "")
+    elif assigned=="unassigned": where.append("COALESCE(assigned_to,'')=''")
+    elif assigned: where.append("assigned_to=?"); args.append(assigned)
+    c=_tdb(ident)
+    rows=c.execute("SELECT * FROM tickets WHERE %s ORDER BY id DESC LIMIT ?"%(" AND ".join(where)),args+[limit]).fetchall()
+    out=[dict(r) for r in rows]; counts=_tk_counts(c); c.close()
+    return jsonify({"ok":True,"count":len(out),"tickets":out,"counters":counts})
+
+@app.route("/api/tickets/<int:tid>")
+def api_cshub_get(tid):
+    actor,is_ai,ident=_req_tickets("tickets:read")
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    c=_tdb(ident); row=c.execute("SELECT * FROM tickets WHERE id=?",(tid,)).fetchone()
+    if not row: c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    out=_tk_dict(c,row,full=True); c.close()
+    return jsonify({"ok":True,"ticket":out})
+
+@app.route("/api/tickets/search")
+def api_cshub_search():
+    actor,is_ai,ident=_req_tickets("tickets:read")
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    q=(request.args.get("q") or "").strip()
+    if not q: return jsonify({"ok":True,"tickets":[]})
+    like="%"+q+"%"; c=_tdb(ident)
+    rows=c.execute("""SELECT * FROM tickets WHERE COALESCE(voided,0)=0 AND
+                      (username LIKE ? OR customer_name LIKE ? OR platform_order_no LIKE ? OR order_id LIKE ?)
+                      ORDER BY id DESC LIMIT 100""",(like,like,like,like)).fetchall()
+    out=[dict(r) for r in rows]; c.close()
+    return jsonify({"ok":True,"tickets":out})
+
+@app.route("/api/tickets/<int:tid>", methods=["PATCH","POST"])
+def api_cshub_patch(tid):
+    """Update a ticket. Field access depends on the caller:
+      • AI key  → AI fields + a limited set of statuses; NEVER a decision/assignment/money/lane.
+      • Staff   → everything, but money decisions (refund/reship/cancel or any amount) are
+                  owner/manager only (CS limit 0 in Phase 1).
+    When a human sets a decision the ticket moves to 'decided_wait_ai' and a webhook fires so the
+    AI acts at once. Every change is logged with the actor."""
+    actor,is_ai,ident=_req_tickets("tickets:write")
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    d=request.get_json() or {}
+    c=_tdb(ident); row=c.execute("SELECT * FROM tickets WHERE id=?",(tid,)).fetchone()
+    if not row: c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    old=dict(row)
+    allowed=_TK_AI_FIELDS if is_ai else _TK_STAFF_FIELDS
+    role=session.get("role","")
+    # Guardrails
+    if is_ai and "decision" in d:
+        c.close(); return jsonify({"ok":False,"error":"The AI cannot decide — a human must set the decision"}),403
+    if "decision" in d:
+        dec=(d.get("decision") or "").strip()
+        if dec and dec not in _TK_DECISIONS:
+            c.close(); return jsonify({"ok":False,"error":"bad decision"})
+        amt=0
+        try: amt=float(d.get("decision_amount") or 0)
+        except Exception: amt=0
+        is_money=(dec in _TK_MONEY_DECISIONS) or (amt>0)
+        if is_money and role not in ("admin","manager"):
+            c.close(); return jsonify({"ok":False,"error":"Money actions need owner/manager approval"}),403
+        if not is_money and role not in ("admin","cs","manager"):
+            c.close(); return jsonify({"ok":False,"error":"Not allowed"}),403
+    if "status" in d:
+        if d["status"] not in _TK_STATUSES:
+            c.close(); return jsonify({"ok":False,"error":"bad status"})
+        if is_ai and d["status"] not in _TK_AI_STATUSES:
+            c.close(); return jsonify({"ok":False,"error":"the AI cannot move a ticket into that status"}),403
+    if "lane" in d and d.get("lane")=="auto":
+        c.close(); return jsonify({"ok":False,"error":"Auto lane is not enabled (Phase 3)"}),403
+    sets=[]; args=[]; fired=False
+    for f in allowed:
+        if f in d:
+            v=d[f]
+            if isinstance(v,(list,dict)): v=json.dumps(v,ensure_ascii=False)
+            sets.append(f+"=?"); args.append(v)
+            if str(old.get(f) or "")!=str(v or ""): _tk_log(c,tid,actor,"set "+f,old.get(f),v)
+    now=datetime.now().isoformat(timespec="seconds")
+    if "decision" in d and d.get("decision"):
+        sets+=["decided_by=?","decided_at=?"]; args+=[actor,now]
+        # A fresh human decision queues the AI to execute it.
+        if old.get("status")!="done":
+            sets.append("status=?"); args.append("decided_wait_ai"); fired=True
+    if sets:
+        sets.append("updated_at=?"); args.append(now)
+        c.execute("UPDATE tickets SET %s WHERE id=?"%(", ".join(sets)),args+[tid])
+    c.commit()
+    payload=None
+    if fired:
+        r2row=c.execute("SELECT * FROM tickets WHERE id=?",(tid,)).fetchone()
+        payload=dict(r2row)
+    c.close()
+    if fired and payload is not None:
+        _ticket_webhook(ident["org"] if ident else current_org(),"ticket.decided",payload)
+    return jsonify({"ok":True,"id":tid})
+
+@app.route("/api/tickets/<int:tid>/messages", methods=["POST"])
+def api_cshub_message(tid):
+    """Append a message to the thread: in (customer), out (sent reply), internal (team only)."""
+    actor,is_ai,ident=_req_tickets("tickets:write")
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    d=request.get_json() or {}
+    direction=(d.get("direction") or "internal").strip()
+    if direction not in ("in","out","internal"): direction="internal"
+    body=(d.get("body") or "").strip()
+    if not body: return jsonify({"ok":False,"error":"empty message"})
+    photos=d.get("photos") or []
+    c=_tdb(ident)
+    if not c.execute("SELECT 1 FROM tickets WHERE id=?",(tid,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    c.execute("INSERT INTO ticket_messages(ticket_id,direction,actor,body,photos) VALUES(?,?,?,?,?)",
+              (tid,direction,actor,body,json.dumps(photos,ensure_ascii=False)))
+    upd={"updated_at":datetime.now().isoformat(timespec="seconds")}
+    if direction=="in": upd["status"]="customer_replied"; upd["last_customer_msg_at"]=upd["updated_at"]
+    c.execute("UPDATE tickets SET %s WHERE id=?"%(",".join(k+"=?" for k in upd)),list(upd.values())+[tid])
+    _tk_log(c,tid,actor,"message_"+direction,"",body[:120])
+    c.commit(); c.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/tickets/<int:tid>/take", methods=["POST"])
+@req_role("admin","cs","manager")
+def api_cshub_take(tid):
+    """Atomically claim a ticket so two people don't work it. ?release=1 drops the claim.
+    DB-based (no in-process state — we run several gunicorn workers)."""
+    me=session.get("name") or session.get("user") or ""
+    release=(request.get_json() or {}).get("release") if request.is_json else None
+    c=sdb()
+    if not c.execute("SELECT 1 FROM tickets WHERE id=?",(tid,)).fetchone():
+        c.close(); return jsonify({"ok":False,"error":"Not found"}),404
+    if release:
+        c.execute("UPDATE tickets SET assigned_to=NULL,updated_at=? WHERE id=? AND assigned_to=?",
+                  (datetime.now().isoformat(timespec="seconds"),tid,me))
+        _tk_log(c,tid,me,"released","",""); c.commit(); c.close()
+        return jsonify({"ok":True,"assigned_to":None})
+    n=c.execute("""UPDATE tickets SET assigned_to=?,updated_at=? WHERE id=? AND COALESCE(assigned_to,'')=''""",
+                (me,datetime.now().isoformat(timespec="seconds"),tid)).rowcount
+    if not n:
+        cur=c.execute("SELECT assigned_to FROM tickets WHERE id=?",(tid,)).fetchone()["assigned_to"]
+        c.close()
+        if cur==me: return jsonify({"ok":True,"assigned_to":me})
+        return jsonify({"ok":False,"error":"Already taken by %s"%cur,"assigned_to":cur}),409
+    _tk_log(c,tid,me,"took","",""); c.commit(); c.close()
+    return jsonify({"ok":True,"assigned_to":me})
+
+@app.route("/api/customers/<username>/notes", methods=["GET","POST"])
+@req_role("admin","cs","manager")
+def api_customer_notes(username):
+    """Buyer-level notes (append) + read the flag/tags. POST {note} adds a note."""
+    if not re.match(r'^[a-zA-Z0-9._\-]+$',username) or len(username)>64:
+        return jsonify({"ok":False,"error":"bad username"})
+    c=sdb()
+    if request.method=="POST":
+        note=((request.get_json() or {}).get("note") or "").strip()
+        if not note: c.close(); return jsonify({"ok":False,"error":"empty"})
+        c.execute("INSERT INTO customer_notes(username,note,author) VALUES(?,?,?)",
+                  (username,note,session.get("name","")))
+        c.commit()
+    notes=[dict(r) for r in c.execute("SELECT note,author,created_at FROM customer_notes WHERE username=? ORDER BY id DESC LIMIT 50",(username,)).fetchall()]
+    fl=c.execute("SELECT flag,tags FROM customer_flags WHERE username=?",(username,)).fetchone()
+    c.close()
+    return jsonify({"ok":True,"notes":notes,"flag":(fl["flag"] if fl else ""),
+                    "tags":(json.loads(fl["tags"]) if (fl and fl["tags"]) else [])})
+
+@app.route("/api/customers/<username>/flag", methods=["POST"])
+@req_role("admin","manager")
+def api_customer_flag(username):
+    """Set a buyer flag (watch / vip / blocked) + tags. Owner/manager only."""
+    if not re.match(r'^[a-zA-Z0-9._\-]+$',username) or len(username)>64:
+        return jsonify({"ok":False,"error":"bad username"})
+    d=request.get_json() or {}
+    flag=(d.get("flag") or "").strip()
+    if flag not in ("","watch","vip","blocked"): return jsonify({"ok":False,"error":"bad flag"})
+    tags=d.get("tags") or []
+    c=sdb()
+    c.execute("""INSERT INTO customer_flags(username,flag,tags,updated_by,updated_at)
+                 VALUES(?,?,?,?,?)
+                 ON CONFLICT(username) DO UPDATE SET flag=excluded.flag,tags=excluded.tags,
+                   updated_by=excluded.updated_by,updated_at=excluded.updated_at""",
+              (username,flag,json.dumps(tags,ensure_ascii=False),session.get("name",""),
+               datetime.now().isoformat(timespec="seconds")))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"flag":flag,"tags":tags})
+
+# ── Scoped API key management (cycle-66a) — true-admin only ────────────────────
+@app.route("/api/apikeys")
+@req_true_admin
+def api_apikeys_list():
+    c=pdb()
+    rows=c.execute("""SELECT id,prefix,label,org,scopes,revoked,created_by,created_at,last_used_at
+                      FROM api_keys ORDER BY id DESC""").fetchall()
+    c.close()
+    return jsonify({"ok":True,"keys":[dict(r) for r in rows]})
+
+@app.route("/api/apikeys", methods=["POST"])
+@req_true_admin
+def api_apikeys_create():
+    """Mint a scoped key. The raw key is returned ONCE — only its hash is stored."""
+    d=request.get_json() or {}
+    label=(d.get("label") or "").strip()[:80] or "AI key"
+    org=(d.get("org") or current_org()).strip()
+    scopes=d.get("scopes") or ["tickets:read","tickets:write","customers:read"]
+    if isinstance(scopes,str): scopes=[s.strip() for s in scopes.split(",") if s.strip()]
+    # Never let a key be minted with money/send powers — those stay human.
+    scopes=[s for s in scopes if s not in ("money","send","*") and not s.startswith("money:")]
+    raw=_gen_apikey()
+    c=pdb()
+    c.execute("""INSERT INTO api_keys(key_hash,prefix,label,org,scopes,created_by)
+                 VALUES(?,?,?,?,?,?)""",
+              (_apikey_hash(raw),raw[:12],label,org,",".join(scopes),session.get("name","")))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"key":raw,"label":label,"org":org,"scopes":scopes,
+                    "note":"Copy this key now — it is shown only once."})
+
+@app.route("/api/apikeys/<int:kid>/revoke", methods=["POST"])
+@req_true_admin
+def api_apikeys_revoke(kid):
+    c=pdb(); c.execute("UPDATE api_keys SET revoked=1 WHERE id=?",(kid,)); c.commit(); c.close()
+    return jsonify({"ok":True})
 
 # ══════════════════════════════════════════════════════════
 # MOBILE SCREENS (/m/...) — separate front end for the iPhone/iPad app, in mobile/.
