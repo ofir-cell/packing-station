@@ -159,6 +159,7 @@ def _navbar(active_page=""):
             ("settings", "/admin/settings", "Settings") if has("admin") else None,
             ("permissions", "/admin/permissions", "Permissions & PIN") if has("admin") else None,
             ("access", "/admin/access", "Access Management") if has("admin") else None,
+            ("apikeys", "/admin/api-keys", "API keys") if has("admin") else None,
             ("audit", "/admin/audit", "Audit log") if has("admin") else None,
             ("datacheck", "/admin/data-check", "Data check") if has("admin") else None,
           ])),
@@ -15385,5 +15386,83 @@ function loadDash(){
 ["fStatus","fPlatform","fType","fAssigned"].forEach(function(id){document.getElementById(id).onchange=loadInbox;});
 document.getElementById("reload").onclick=loadInbox;
 loadInbox();
+</script>
+</body></html>'''
+
+
+# ── API key management (cycle-66a) — true-admin only ───────────────────────────
+API_KEYS_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>API keys</title>
+__NAVBAR_CSS__
+<style>
+:root{--brand:#4f46e5;--brand2:#7c3aed;--ink:#1a2130;--mut:#6b7280;--bd:#e4e7ec;--bg:#f6f7fb;--good:#059669;--red:#dc2626}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink)}
+.wrap{max-width:900px;margin:0 auto;padding:16px 14px 70px}
+h1{font-size:21px;font-weight:900;margin:0 0 2px}.sub{color:var(--mut);font-size:13px;margin-bottom:14px}
+.box{background:#fff;border:1px solid var(--bd);border-radius:14px;padding:15px;margin-bottom:14px}
+label{font-size:11px;font-weight:800;color:var(--mut);text-transform:uppercase;letter-spacing:.4px;display:block;margin:8px 0 3px}
+input,select{width:100%;border:1.5px solid var(--bd);border-radius:10px;padding:9px;font-size:13px;font-family:inherit}
+.row{display:flex;gap:10px;flex-wrap:wrap}.row>div{flex:1;min-width:180px}
+.btn{padding:10px 14px;border:0;border-radius:11px;background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff;font-weight:800;font-size:14px;cursor:pointer;margin-top:10px}
+.btn.g{background:#f1f5f9;color:#475569}.btn.r{background:#fee2e2;color:#b91c1c}
+table{width:100%;border-collapse:collapse;font-size:13px;background:#fff;border-radius:14px;overflow:hidden}
+th{text-align:left;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.4px;padding:9px 10px;border-bottom:1px solid var(--bd)}
+td{padding:10px;border-bottom:1px solid #f0edf6}.mono{font-family:ui-monospace,Menlo,monospace}
+.reveal{background:#ecfdf5;border:1px solid #a7f3d0;border-radius:12px;padding:13px;margin-bottom:14px}
+.reveal .k{font-family:ui-monospace,Menlo,monospace;font-size:15px;font-weight:800;word-break:break-all;color:#065f46}
+.scope{display:inline-block;font-size:11px;font-weight:800;background:#eef2ff;color:#4338ca;border-radius:9px;padding:2px 8px;margin:1px}
+.rev{color:var(--red);font-weight:800;font-size:11px}
+.warn{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;border-radius:10px;padding:9px 12px;font-size:12.5px;font-weight:600;margin-bottom:12px}
+</style></head><body>__NAVBAR__
+<div class="wrap">
+  <h1>🔑 API keys</h1>
+  <div class="sub">Scoped, revocable keys for the AI Chief of Staff. One key per account. The key is shown once — copy it then.</div>
+  <div class="warn">Treat a key like a password. Give it to the AI over a secure channel, never paste it where others can read it. Revoke instantly if it leaks.</div>
+
+  <div id="revealWrap"></div>
+
+  <div class="box">
+    <b>Create a key</b>
+    <div class="row">
+      <div><label>Label</label><input id="label" placeholder="Grok — HERA CS"></div>
+      <div><label>Account (org)</label><select id="org"></select></div>
+    </div>
+    <label>Scopes</label>
+    <div class="row">
+      <div><label style="text-transform:none;color:#374151"><input type="checkbox" class="sc" value="tickets:read" checked style="width:auto"> tickets:read</label></div>
+      <div><label style="text-transform:none;color:#374151"><input type="checkbox" class="sc" value="tickets:write" checked style="width:auto"> tickets:write</label></div>
+      <div><label style="text-transform:none;color:#374151"><input type="checkbox" class="sc" value="customers:read" checked style="width:auto"> customers:read</label></div>
+    </div>
+    <button class="btn" id="create">Create key</button>
+  </div>
+
+  <table><thead><tr><th>Label</th><th>Account</th><th>Scopes</th><th>Prefix</th><th>Last used</th><th></th></tr></thead>
+  <tbody id="rows"><tr><td colspan="6" class="mut">Loading…</td></tr></tbody></table>
+</div>
+<script>
+function esc(s){return (s==null?"":String(s)).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c];});}
+function J(u,o){return fetch(u,o).then(function(r){return r.json();});}
+function loadOrgs(){J("/api/orgs").then(function(d){var orgs=(d&&d.orgs)||d||[];var sel=document.getElementById("org");var html="";(orgs||[]).forEach(function(o){var id=o.org_id||o.id||o;var nm=o.company_name||o.name||id;html+='<option value="'+esc(id)+'">'+esc(nm)+' ('+esc(id)+')</option>';});sel.innerHTML=html||'<option value="">(default)</option>';}).catch(function(){document.getElementById("org").innerHTML='<option value="">(current account)</option>';});}
+function load(){J("/api/apikeys").then(function(d){
+  if(!d.ok){document.getElementById("rows").innerHTML='<tr><td colspan="6" class="mut">'+esc(d.error||"error")+'</td></tr>';return;}
+  document.getElementById("rows").innerHTML=d.keys.map(function(k){
+    var sc=(k.scopes||"").split(",").filter(Boolean).map(function(s){return '<span class="scope">'+esc(s)+'</span>';}).join(" ");
+    var rev=k.revoked?'<span class="rev">revoked</span>':'<button class="btn r" style="margin:0;padding:5px 10px;font-size:12px" onclick="revoke('+k.id+')">Revoke</button>';
+    return '<tr'+(k.revoked?' style="opacity:.5"':'')+'><td><b>'+esc(k.label||"")+'</b></td><td>'+esc(k.org||"")+'</td><td>'+sc+'</td><td class="mono">'+esc(k.prefix||"")+'…</td><td class="mut">'+esc((k.last_used_at||"—"))+'</td><td>'+rev+'</td></tr>';
+  }).join("")||'<tr><td colspan="6" class="mut">No keys yet.</td></tr>';
+});}
+document.getElementById("create").onclick=function(){
+  var scopes=[].slice.call(document.querySelectorAll(".sc:checked")).map(function(x){return x.value;});
+  var body={label:document.getElementById("label").value.trim(),org:document.getElementById("org").value,scopes:scopes};
+  J("/api/apikeys",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(d){
+    if(!d.ok){alert(d.error||"error");return;}
+    document.getElementById("revealWrap").innerHTML='<div class="reveal"><div><b>New key for '+esc(d.label)+' · '+esc(d.org)+'</b> — copy it now, it will not be shown again.</div><div class="k" id="newkey">'+esc(d.key)+'</div><button class="btn" style="margin-top:8px" onclick="copyKey()">Copy</button></div>';
+    document.getElementById("label").value="";load();
+    window.scrollTo(0,0);
+  });
+};
+function copyKey(){var t=document.getElementById("newkey").textContent;navigator.clipboard.writeText(t).then(function(){alert("Copied");},function(){});}
+function revoke(id){if(!confirm("Revoke this key? The AI using it loses access immediately."))return;J("/api/apikeys/"+id+"/revoke",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}).then(function(){load();});}
+loadOrgs();load();
 </script>
 </body></html>'''

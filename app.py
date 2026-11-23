@@ -45,6 +45,7 @@ from templates import COMBINE_HTML  # Combine & Labels screen
 from templates import SHOW_HEALTH_HTML  # Per-show fulfilment health screen
 from templates import RETURNS_HTML  # Returns module screen
 from templates import CS_HUB_HTML  # CS Hub (tickets) screen
+from templates import API_KEYS_HTML  # Scoped API-key management screen
 
 
 # Default (founding) tenant id. Multi-tenancy: every user belongs to an org;
@@ -21538,6 +21539,11 @@ def api_customer_flag(username):
     return jsonify({"ok":True,"flag":flag,"tags":tags})
 
 # ── Scoped API key management (cycle-66a) — true-admin only ────────────────────
+@app.route("/admin/api-keys")
+@req_true_admin
+def api_keys_page():
+    return (API_KEYS_HTML.replace("__NAVBAR__",_navbar("apikeys")).replace("__NAVBAR_CSS__",_NAVBAR_CSS))
+
 @app.route("/api/apikeys")
 @req_true_admin
 def api_apikeys_list():
