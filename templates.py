@@ -15392,7 +15392,7 @@ function openT(id){
       '<div class="box"><h3>Decision (human)</h3><div class="chips">'+decBtns+'</div>'+
         (MONEY_ROLE?('<div style="margin-top:8px"><input id="decAmt" type="number" step="0.01" placeholder="amount $" style="border:1.5px solid var(--bd);border-radius:10px;padding:8px;width:140px"> <span class="mut">for refunds</span></div>'):'<div class="mut" style="margin-top:6px">Money actions need owner/manager.</div>')+
         '<div style="margin-top:10px"><b>Instruction to AI</b><textarea id="instr" dir="auto" placeholder="לדוגמה: תציע 50% זיכוי · ask for a photo">'+esc(t.instruction_to_ai||"")+'</textarea></div>'+
-        '<div style="margin-top:8px"><b>Reply to customer (English)</b><textarea id="reply" dir="auto">'+esc(t.final_reply_en||t.draft_reply_en||"")+'</textarea><button class="btn" style="margin-top:6px" onclick="saveReply('+t.id+')">Save instruction + reply</button></div>'+
+        '<div style="margin-top:8px"><b>Reply to customer (English)</b><textarea id="reply" dir="auto">'+esc(t.final_reply_en||t.draft_reply_en||"")+'</textarea><button class="btn" style="margin-top:6px" onclick="saveReply('+t.id+')">Save instruction + reply</button> <span id="saveMsg" style="font-weight:700;font-size:12.5px"></span></div>'+
       '</div>'+
       '<div class="box"><h3>Conversation '+trBtnAll("convBody")+'</h3><div id="convBody">'+msgs+'</div>'+
         '<div style="margin-top:8px"><textarea id="intNote" dir="auto" placeholder="Internal note to the team…"></textarea><button class="btn" style="margin-top:6px" onclick="addInternal('+t.id+')">Add internal note</button></div>'+
@@ -15401,7 +15401,20 @@ function openT(id){
   });
 }
 function setDecision(id,dec){var amt=document.getElementById("decAmt");var body={decision:dec};if(amt&&amt.value)body.decision_amount=parseFloat(amt.value);J("/api/tickets/"+id,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(d){if(!d.ok){alert(d.error||"error");return;}openT(id);});}
-function saveReply(id){var body={instruction_to_ai:document.getElementById("instr").value,final_reply_en:document.getElementById("reply").value};J("/api/tickets/"+id,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(){openT(id);});}
+function saveReply(id){
+  var body={instruction_to_ai:document.getElementById("instr").value,final_reply_en:document.getElementById("reply").value};
+  var s=document.getElementById("saveMsg");if(s){s.textContent="Saving…";s.style.color="#6b7280";}
+  fetch("/api/tickets/"+id,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
+    .then(function(r){return r.json().then(function(d){return {status:r.status,d:d};});})
+    .then(function(x){
+      if(!x.d.ok){if(s){s.textContent="Error "+x.status+": "+(x.d.error||"save failed");s.style.color="#dc2626";}return;}
+      var ch=(x.d.changed||[]);
+      if(s){s.textContent=ch.length?("Saved ✓ ("+ch.join(", ")+")"):"No changes";s.style.color=ch.length?"#059669":"#6b7280";}
+      // refresh the timeline/state without losing the message
+      openT(id);
+    })
+    .catch(function(e){if(s){s.textContent="Network error: "+e;s.style.color="#dc2626";}});
+}
 function addInternal(id){var b=document.getElementById("intNote").value.trim();if(!b)return;J("/api/tickets/"+id+"/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({direction:"internal",body:b})}).then(function(){openT(id);});}
 function addNote(u){var b=document.getElementById("noteBox").value.trim();if(!b||!u)return;J("/api/customers/"+encodeURIComponent(u)+"/notes",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({note:b})}).then(function(){alert("Saved");});}
 var CUR_TID=0;

@@ -21595,13 +21595,14 @@ def api_cshub_patch(tid):
             c.close(); return jsonify({"ok":False,"error":"the AI cannot move a ticket into that status"}),403
     if "lane" in d and d.get("lane")=="auto":
         c.close(); return jsonify({"ok":False,"error":"Auto lane is not enabled (Phase 3)"}),403
-    sets=[]; args=[]; fired=False
+    sets=[]; args=[]; fired=False; applied=[]; changed=[]
     for f in allowed:
         if f in d:
             v=d[f]
             if isinstance(v,(list,dict)): v=json.dumps(v,ensure_ascii=False)
-            sets.append(f+"=?"); args.append(v)
-            if str(old.get(f) or "")!=str(v or ""): _tk_log(c,tid,actor,"set "+f,old.get(f),v)
+            sets.append(f+"=?"); args.append(v); applied.append(f)
+            if str(old.get(f) or "")!=str(v or ""):
+                changed.append(f); _tk_log(c,tid,actor,"set "+f,old.get(f),v)
     now=datetime.now().isoformat(timespec="seconds")
     if "decision" in d and d.get("decision"):
         sets+=["decided_by=?","decided_at=?"]; args+=[actor,now]
@@ -21619,7 +21620,9 @@ def api_cshub_patch(tid):
     c.close()
     if fired and payload is not None:
         _ticket_webhook(ident["org"] if ident else current_org(),"ticket.decided",payload)
-    return jsonify({"ok":True,"id":tid})
+    # 'applied' = fields accepted; 'changed' = fields whose value actually differed. Lets the UI
+    # say "Saved ✓" vs "No changes", and reveals a field the caller tried to set that was ignored.
+    return jsonify({"ok":True,"id":tid,"applied":applied,"changed":changed})
 
 @app.route("/api/tickets/<int:tid>/messages", methods=["POST"])
 def api_cshub_message(tid):
