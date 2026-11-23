@@ -21107,10 +21107,16 @@ def _ticket_webhook(org, event, ticket):
     secret=(os.environ.get("TICKETS_WEBHOOK_SECRET","") or "").strip()
     body=json.dumps({"event":event,"org":org,"ticket":ticket},ensure_ascii=False).encode()
     sig=hmac.new(secret.encode(),body,hashlib.sha256).hexdigest() if secret else ""
+    headers={"Content-Type":"application/json","X-GWN-Event":event,"X-GWN-Signature":sig}
+    # Optional Authorization header the receiver (the AI endpoint) verifies on every POST. Set the
+    # FULL header value in TICKETS_WEBHOOK_AUTH (e.g. "Bearer abc123"); sent verbatim if it already
+    # names a scheme, otherwise wrapped as a bearer token.
+    auth=(os.environ.get("TICKETS_WEBHOOK_AUTH","") or "").strip()
+    if auth:
+        headers["Authorization"]=auth if (" " in auth) else ("Bearer "+auth)
     def _go():
         try:
-            req=_urlreq.Request(url,data=body,method="POST",
-                headers={"Content-Type":"application/json","X-GWN-Event":event,"X-GWN-Signature":sig})
+            req=_urlreq.Request(url,data=body,method="POST",headers=headers)
             _urlreq.urlopen(req,timeout=5)
         except Exception as e:
             print("ticket webhook failed:",e,flush=True)

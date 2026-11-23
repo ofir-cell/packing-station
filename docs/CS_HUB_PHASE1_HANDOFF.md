@@ -99,10 +99,14 @@ When a human sets a decision, the ticket moves to `decided_wait_ai` and the serv
 `TICKETS_WEBHOOK_URL`:
 ```
 POST <your endpoint>
+Authorization: <TICKETS_WEBHOOK_AUTH verbatim, e.g. "Bearer <your token>">   (only if the owner set it)
 X-GWN-Event: ticket.decided
 X-GWN-Signature: <hex HMAC-SHA256 of the raw body, key = TICKETS_WEBHOOK_SECRET>
 { "event":"ticket.decided", "org":"hera", "ticket": { …full ticket incl. decision, decision_amount, final_reply_en, instruction_to_ai… } }
 ```
+Two independent checks you can require: the `Authorization` header (a token your endpoint verifies —
+set by the owner in `TICKETS_WEBHOOK_AUTH`, sent verbatim) and the `X-GWN-Signature` HMAC. Use
+either or both.
 Verify the signature, read `decision` + `final_reply_en` + `instruction_to_ai`, execute it in the
 dashboard, then `PATCH` the result and set `status:"done"`. (You can also poll
 `GET /api/tickets?status=decided_wait_ai&updated_since=…` as a fallback.)
