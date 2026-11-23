@@ -126,6 +126,7 @@ def _navbar(active_page=""):
             ("customers", "/customers", "Customers") if has("admin","cs") else None,
             ("videos", "/admin/videos", "Packing Videos") if has("admin","cs") else None,
             ("returns", "/admin/returns", "Returns") if has("admin","cs","manager","worker","picker") else None,
+            ("cshub", "/admin/cs", "CS Hub") if has("admin","cs","manager") else None,
           ])),
           ("Inventory", "📥", _vis([
             ("inventory", "/admin/inventory", "Inventory") if has("admin","cs") else None,
