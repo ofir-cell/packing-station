@@ -7270,6 +7270,27 @@ def api_customers_search():
     if len(q) < 2:
         return jsonify([])
     c = sdb(org)
+    like = '%' + q + '%'
+    # Also resolve the buyer when the query is a platform order no. or a tracking number, so CS can
+    # paste either and land on the right customer (cycle-67 round-2, #2).
+    extra_users = set()
+    try:
+        for r in c.execute("""SELECT DISTINCT s.buyer_username FROM shipments s
+                              JOIN shipment_items i ON i.shipment_id = s.shipment_id
+                              WHERE s.buyer_username != '' AND LOWER(i.order_id) LIKE ? LIMIT 50""", (like,)).fetchall():
+            extra_users.add(r["buyer_username"])
+        for r in c.execute("""SELECT DISTINCT buyer_username FROM shipments
+                              WHERE buyer_username != '' AND
+                                    (LOWER(tracking_code) LIKE ? OR LOWER(shipment_id) LIKE ?) LIMIT 50""",
+                           (like, like)).fetchall():
+            extra_users.add(r["buyer_username"])
+    except Exception:
+        pass
+    where = "LOWER(buyer_username) LIKE ? OR LOWER(buyer_name) LIKE ?"
+    params = [like, like]
+    if extra_users:
+        where += " OR buyer_username IN (%s)" % ",".join("?" * len(extra_users))
+        params += list(extra_users)
     rows = c.execute("""
         SELECT buyer_username,
                MAX(buyer_name) AS buyer_name,
@@ -7279,12 +7300,11 @@ def api_customers_search():
                MAX(address_full) AS last_address,
                MAX(postal_code) AS last_postal
         FROM shipments
-        WHERE buyer_username != '' AND
-              (LOWER(buyer_username) LIKE ? OR LOWER(buyer_name) LIKE ?)
+        WHERE buyer_username != '' AND (%s)
         GROUP BY buyer_username
         ORDER BY shipments DESC, last_show DESC
         LIMIT 50
-    """, ('%' + q + '%', '%' + q + '%')).fetchall()
+    """ % where, params).fetchall()
     c.close()
     return jsonify([dict(r) for r in rows])
 

@@ -84,6 +84,20 @@ def test_customers_endpoint_accepts_key_and_json_401(appmod, client):
     assert noauth.status_code == 401
 
 
+def test_search_by_order_and_tracking(appmod, client):
+    A = appmod
+    trk = "9334" + uuid.uuid4().hex[:12]
+    order = "15" + uuid.uuid4().hex[:8]
+    _seed(A, trk, user="searchme", order=order)
+    hdr = _admin(client, A)
+    # by order no.
+    r1 = client.get("/api/customers/search?q=" + order, headers=hdr).get_json()
+    assert any(x["buyer_username"] == "searchme" for x in r1)        # #2
+    # by tracking
+    r2 = client.get("/api/customers/search?q=" + trk, headers=hdr).get_json()
+    assert any(x["buyer_username"] == "searchme" for x in r2)        # #2
+
+
 def test_returns_read_with_returns_scope(appmod, client):
     A = appmod
     key = _key(client, A, scopes=["returns:read"])
