@@ -20778,9 +20778,12 @@ def api_returns_photo(cid):
     return jsonify({"ok":True,"photo_id":pid,"view_url":_ret_photo_viewurl(pid)})
 
 @app.route("/return-photo/<int:pid>")
-@req_login
 def return_photo(pid):
-    c=sdb(); r=c.execute("SELECT photo_key FROM return_photos WHERE id=?",(pid,)).fetchone(); c.close()
+    # A logged-in user OR the Returns AI assistant (bearer key) may fetch — so the AI can see the
+    # photos, not just the metadata. Anyone else is rejected.
+    actor,is_ai=_returns_actor()
+    if not actor and "user" not in session: return ("",401)
+    c=_rdb(); r=c.execute("SELECT photo_key FROM return_photos WHERE id=?",(pid,)).fetchone(); c.close()
     key=r["photo_key"] if r else None
     if not key: return ("",404)
     if r2 and "/" in key:
