@@ -15261,6 +15261,20 @@ textarea{width:100%;border:1.5px solid var(--bd);border-radius:10px;padding:9px;
       <select id="fType"><option value="">All types</option><option value="refund_return">Refund / return</option><option value="where_order">Where is my order</option><option value="damaged_missing">Damaged / missing</option><option value="question">Question</option><option value="cancel">Cancel</option></select>
       <select id="fAssigned"><option value="">Anyone</option><option value="me">Me</option><option value="unassigned">Unassigned</option></select>
       <button class="btn g" id="reload">↻</button>
+      <button class="btn" id="newBtn">➕ New ticket</button>
+    </div>
+    <div id="newForm" class="box" style="display:none">
+      <b>New ticket</b>
+      <div class="row" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">
+        <div style="flex:1;min-width:150px"><label>Platform</label><select id="nPlatform" style="width:100%;border:1.5px solid var(--bd);border-radius:10px;padding:8px"><option value="whatnot">Whatnot</option><option value="tiktok">TikTok</option></select></div>
+        <div style="flex:1;min-width:150px"><label>Account</label><input id="nAccount" placeholder="HERA" style="width:100%;border:1.5px solid var(--bd);border-radius:10px;padding:8px"></div>
+        <div style="flex:1;min-width:150px"><label>Buyer username</label><input id="nUser" placeholder="username" style="width:100%;border:1.5px solid var(--bd);border-radius:10px;padding:8px"></div>
+        <div style="flex:1;min-width:150px"><label>Order # (optional)</label><input id="nOrder" style="width:100%;border:1.5px solid var(--bd);border-radius:10px;padding:8px"></div>
+        <div style="flex:1;min-width:150px"><label>Type</label><select id="nType" style="width:100%;border:1.5px solid var(--bd);border-radius:10px;padding:8px"><option value="question">Question</option><option value="refund_return">Refund / return</option><option value="where_order">Where is my order</option><option value="damaged_missing">Damaged / missing</option><option value="cancel">Cancel</option></select></div>
+      </div>
+      <label style="margin-top:8px">Customer message</label>
+      <textarea id="nMsg" placeholder="What the customer wrote…"></textarea>
+      <button class="btn" id="nSave">Create</button> <button class="btn g" id="nCancel">Cancel</button>
     </div>
     <table><thead><tr><th>Risk</th><th>Platform</th><th>Buyer</th><th>Issue</th><th>Type</th><th>Status</th><th>Handling</th><th>Deadline</th><th></th></tr></thead>
     <tbody id="rows"><tr><td colspan="9" class="mut">Loading…</td></tr></tbody></table>
@@ -15385,6 +15399,19 @@ function loadDash(){
 }
 ["fStatus","fPlatform","fType","fAssigned"].forEach(function(id){document.getElementById(id).onchange=loadInbox;});
 document.getElementById("reload").onclick=loadInbox;
+document.getElementById("newBtn").onclick=function(){var f=document.getElementById("newForm");f.style.display=(f.style.display==="none")?"":"none";};
+document.getElementById("nCancel").onclick=function(){document.getElementById("newForm").style.display="none";};
+document.getElementById("nSave").onclick=function(){
+  var body={platform:document.getElementById("nPlatform").value,account:document.getElementById("nAccount").value.trim(),
+            username:document.getElementById("nUser").value.trim(),platform_order_no:document.getElementById("nOrder").value.trim(),
+            type:document.getElementById("nType").value,inbound_text:document.getElementById("nMsg").value.trim()};
+  if(!body.username&&!body.inbound_text){alert("Add a buyer or a message");return;}
+  J("/api/tickets",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(d){
+    if(!d.ok){alert(d.error||"error");return;}
+    document.getElementById("newForm").style.display="none";document.getElementById("nMsg").value="";
+    openT(d.id);
+  });
+};
 loadInbox();
 </script>
 </body></html>'''
