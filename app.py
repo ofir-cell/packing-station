@@ -10954,6 +10954,39 @@ def api_live_sticker_photo():
     c.commit(); c.close()
     return jsonify({"ok":True,"photo_view_url":_sticker_photo_viewurl(show,sticker,part)})
 
+@app.route("/api/live/sticker-photo-range",methods=["POST"])
+@req_role("admin","cs","worker","picker")
+def api_live_sticker_photo_range():
+    """One photo applied to a RANGE of stickers (cycle-71): same no-barcode item sold on #from..#to.
+    Uploads the image once and stamps show_product_map.photo_url for every sticker in the list.
+    Photo-only — no product is bound and no stock moves (identify & complete later in 'Missing')."""
+    show=(request.form.get("show") or "").strip()
+    try: part=int(request.form.get("part") or 0)
+    except Exception: part=0
+    stickers=[s.strip() for s in (request.form.get("stickers") or "").split(",") if s.strip()][:500]
+    if not show or not stickers: return jsonify({"ok":False,"error":"show and stickers required"})
+    f=request.files.get("file")
+    if not f or not f.filename: return jsonify({"ok":False,"error":"Take a photo"})
+    ext=f.filename.rsplit(".",1)[-1].lower() if "." in f.filename else "jpg"
+    if ext not in _STICKER_IMG_EXT: return jsonify({"ok":False,"error":"Use a photo (JPG/PNG/HEIC)"})
+    org=current_org(); who=session.get("name","")[:60]
+    safe=secure_filename("%s-range-P%d-%d"%(show,part,int(time.time()))) or ("range"+str(int(time.time())))
+    key=f"{org}/stickers/{safe}.{ext}"
+    if r2:
+        r2.upload_fileobj(f.stream,R2_BUCKET,key,ExtraArgs={"ContentType":f.mimetype or "image/"+ext})
+    else:
+        dd=org_path(org,"stickers"); os.makedirs(dd,exist_ok=True)
+        f.save(os.path.join(dd,safe+"."+ext)); key=safe+"."+ext
+    now=datetime.now().isoformat(timespec='seconds'); c=sdb()
+    for st in stickers:
+        c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by,photo_url)
+                     VALUES(?,?,?,'',0,?,?,?)
+                     ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET photo_url=excluded.photo_url,
+                        mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
+                  (show,st,part,now,who,key))
+    c.commit(); c.close()
+    return jsonify({"ok":True,"count":len(stickers)})
+
 @app.route("/live-photo")
 @req_login
 def live_photo():

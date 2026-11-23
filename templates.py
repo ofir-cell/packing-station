@@ -14018,6 +14018,8 @@ __NAVBAR__
       <div class="mchips" id="bChips" style="margin-top:10px"><div class="empty">No products yet — scan or type a barcode, then + Add</div></div>
       <div class="err" id="bErr"></div>
       <button class="btn btn-dark" id="bApply" style="margin-top:12px">Apply to range</button>
+      <button class="btn btn-ghost" id="bPhoto" style="margin-top:8px;border-color:#bfdbfe;color:#1e40af">📷 Photo only — apply one photo to the whole range</button>
+      <input id="bPhotoInp" type="file" accept="image/*" capture="environment" style="display:none">
       <button class="btn btn-ghost" id="bCancel">Cancel</button>
     </div>
 
@@ -14026,6 +14028,17 @@ __NAVBAR__
       <button class="btn btn-ghost" id="bulkBtn" style="flex:1">⇄ Bulk range</button>
       <button class="btn btn-ghost" id="restart" style="flex:1">Change live / part</button>
     </div>
+  </div>
+</div>
+<div id="camOv" style="display:none;position:fixed;inset:0;background:#000;z-index:9999;flex-direction:column;align-items:center;justify-content:center;padding:14px">
+  <div id="camTitle" style="color:#fff;font-weight:800;margin-bottom:10px;text-align:center"></div>
+  <video id="camVid" autoplay playsinline muted style="max-width:100%;max-height:68vh;border-radius:14px;background:#111"></video>
+  <img id="camPrev" alt="" style="display:none;max-width:100%;max-height:68vh;border-radius:14px">
+  <div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;justify-content:center">
+    <button id="camShot" class="btn btn-dark" style="min-width:150px;font-size:17px">● Capture</button>
+    <button id="camSave" class="btn btn-dark" style="display:none;min-width:130px;background:#16a34a;font-size:17px">✓ Save</button>
+    <button id="camRetake" class="btn btn-ghost" style="display:none;color:#fff;border-color:#fff">↻ Retake</button>
+    <button id="camCancel" class="btn btn-ghost" style="color:#fff;border-color:#9ca3af">Cancel</button>
   </div>
 </div>
 <script>
@@ -14287,6 +14300,90 @@ document.getElementById('bApply').onclick=function(){
     setTimeout(function(){e.style.display='none';e.style.background='';e.style.color='';},2600);
   });
 };
+// ---- One-tap in-app camera (cycle-71): open → preview → Save/Retake. getUserMedia with a
+//      file-picker fallback so a device without camera access still works. ----
+var camStream=null,camOnSave=null,camFallback=null,camPrevBlob=null;
+function camStop(){try{if(camStream)camStream.getTracks().forEach(function(t){t.stop();});}catch(e){}camStream=null;}
+function camClose(){camStop();document.getElementById('camOv').style.display='none';document.getElementById('camPrev').src='';camPrevBlob=null;}
+function openCam(title,onSave,fallback){
+  camOnSave=onSave;camFallback=fallback||null;camPrevBlob=null;
+  var ov=document.getElementById('camOv'),vid=document.getElementById('camVid'),prev=document.getElementById('camPrev');
+  document.getElementById('camTitle').textContent=title||'';
+  prev.style.display='none';vid.style.display='block';
+  document.getElementById('camShot').style.display='';
+  document.getElementById('camSave').style.display='none';document.getElementById('camRetake').style.display='none';
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){if(camFallback)camFallback();return;}
+  navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false}).then(function(s){
+    camStream=s;vid.srcObject=s;ov.style.display='flex';
+  }).catch(function(){ if(camFallback)camFallback(); });
+}
+document.getElementById('camShot').onclick=function(){
+  var vid=document.getElementById('camVid'),prev=document.getElementById('camPrev');
+  var cv=document.createElement('canvas');cv.width=vid.videoWidth||720;cv.height=vid.videoHeight||1280;
+  cv.getContext('2d').drawImage(vid,0,0,cv.width,cv.height);
+  prev.src=cv.toDataURL('image/jpeg',0.85);prev.style.display='block';vid.style.display='none';
+  document.getElementById('camShot').style.display='none';
+  document.getElementById('camSave').style.display='';document.getElementById('camRetake').style.display='';
+  camStop();
+  cv.toBlob(function(b){camPrevBlob=b;},'image/jpeg',0.85);
+};
+document.getElementById('camRetake').onclick=function(){openCam(document.getElementById('camTitle').textContent,camOnSave,camFallback);};
+document.getElementById('camCancel').onclick=camClose;
+document.getElementById('camSave').onclick=function(){var b=camPrevBlob,cb=camOnSave;camClose();if(b&&cb)cb(b);};
+
+function liveOkBox(img,mt,nm){var ob=document.getElementById('okBox');document.getElementById('okImg').src=img||'';
+  document.getElementById('okMt').textContent=mt||'';document.getElementById('okNm').textContent=nm||'';ob.className='ok show';}
+
+function uploadStickerPhoto(blob){
+  if(!CUR||busy)return;busy=true;
+  var fd=new FormData();fd.append('show',SHOW);fd.append('sticker',CUR.sticker);fd.append('part',curPart());fd.append('file',blob,'s.jpg');
+  fetch('/api/live/sticker-photo',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){busy=false;
+    if(!d.ok){alert(d.error||'Failed');return;}
+    liveOkBox(d.photo_view_url||'','Sticker '+CUR.sticker+' · photo saved','Identify & complete it in "Missing · by sticker" later.');
+    loadGaps();loadQueue(function(){render();focusScan();});
+  }).catch(function(){busy=false;alert('Network error');});
+}
+// Rewire the single "take a photo" button to the one-tap camera (fallback = the old file panel).
+document.getElementById('photoBtn').onclick=function(){
+  if(!CUR)return; kitExit();costExit();
+  openCam('Photograph sticker '+CUR.sticker, uploadStickerPhoto, function(){
+    var w=document.getElementById('photoWrap');w.style.display='block';document.getElementById('photoInp').click();
+  });
+};
+
+// ---- Bulk: one photo for a whole range (photo-only, identify later) ----
+var bPhotoTargets=[];
+function bRangeTargets(){
+  var err=document.getElementById('bErr');err.style.display='none';
+  var from=parseInt(document.getElementById('bFrom').value,10),to=parseInt(document.getElementById('bTo').value,10);
+  if(isNaN(from)||isNaN(to)||to<from){err.textContent='Enter a valid from–to range';err.style.display='block';return null;}
+  var targets=poolAll().filter(function(w){var x=numOf(w.sticker);return x>=from&&x<=to;});
+  if(!targets.length){err.textContent='No sold stickers waiting between '+from+' and '+to+' in this part';err.style.display='block';return null;}
+  return targets;
+}
+function uploadRangePhoto(blob,targets){
+  var fd=new FormData();fd.append('show',SHOW);fd.append('part',(targets[0].part||0));
+  fd.append('stickers',targets.map(function(w){return String(w.sticker);}).join(','));
+  fd.append('file',blob,'range.jpg');
+  fetch('/api/live/sticker-photo-range',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+    if(!d.ok){alert(d.error||'Failed');return;}
+    document.getElementById('bulkPanel').style.display='none';
+    loadGaps();loadQueue(function(){render();focusScan();});
+    var e=document.getElementById('errBox');e.textContent='✓ Photo applied to '+d.count+' sticker(s)';e.style.display='block';e.style.background='#ecfdf5';e.style.color='#065f46';
+    setTimeout(function(){e.style.display='none';e.style.background='';e.style.color='';},2600);
+  }).catch(function(){alert('Network error');});
+}
+document.getElementById('bPhoto').onclick=function(){
+  var targets=bRangeTargets();if(!targets)return; bPhotoTargets=targets;
+  openCam('Photo for '+targets.length+' sticker(s)', function(blob){uploadRangePhoto(blob,targets);}, function(){
+    document.getElementById('bPhotoInp').click();
+  });
+};
+document.getElementById('bPhotoInp').addEventListener('change',function(e){
+  var f=e.target.files&&e.target.files[0];e.target.value='';
+  if(f&&bPhotoTargets.length)uploadRangePhoto(f,bPhotoTargets);
+});
+
 loadShows();show('s1');
 </script>
 </body></html>'''
