@@ -14892,14 +14892,19 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
 .empty{padding:40px;text-align:center;color:var(--text-muted);border:1px dashed var(--border);border-radius:16px}
 .nbsec{background:#eff6ff;border:1px solid #bfdbfe;border-radius:16px;padding:14px;margin-bottom:16px}
 .nbhd{font-weight:900;color:#1e40af;margin-bottom:10px}
+.nbbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+.nbbar input{border:1.5px solid var(--border);border-radius:8px;padding:9px 10px;font-size:14px;font-family:inherit}
+.nbbar #nbAssign{border:0;border-radius:8px;background:#2563eb;color:#fff;font-weight:800;padding:10px 14px;cursor:pointer;white-space:nowrap}
+.nbbar #nbAssign:disabled{opacity:.5;cursor:not-allowed}
+.nbhint{font-size:12px;color:#1e40af;margin-bottom:8px}
 .nbgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
-.nbcard{background:#fff;border:1px solid var(--border);border-radius:12px;padding:8px;display:flex;flex-direction:column;gap:6px}
+.nbcard{position:relative;background:#fff;border:2px solid var(--border);border-radius:12px;padding:8px;display:flex;flex-direction:column;gap:6px;cursor:pointer}
+.nbcard.sel{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.2)}
+.nbtick{position:absolute;top:12px;right:12px;width:26px;height:26px;border-radius:50%;background:#2563eb;color:#fff;font-weight:900;display:none;align-items:center;justify-content:center;font-size:15px;z-index:2}
+.nbcard.sel .nbtick{display:flex}
 .nbimg{width:100%;height:120px;object-fit:cover;border-radius:8px;background:#f3f4f6}
 .nbst{font-size:12px;font-weight:800;color:#374151}
-.nbname,.nbprice{border:1.5px solid var(--border);border-radius:8px;padding:7px 8px;font-size:13px;font-family:inherit;width:100%}
-.nbrow{display:flex;gap:6px}.nbrow .nbprice{flex:1}
-.nbassign{border:0;border-radius:8px;background:#2563eb;color:#fff;font-weight:800;padding:7px 12px;cursor:pointer;white-space:nowrap}
-.nbmsg{font-size:12px;font-weight:700;min-height:14px}.nbmsg.ok{color:#059669}.nbmsg.err{color:#dc2626}
+.nbmsg{font-size:12.5px;font-weight:700;min-height:14px}.nbmsg.ok{color:#059669}.nbmsg.err{color:#dc2626}
 @media (max-width:760px){.card{grid-template-columns:72px 1fr}.ph{width:72px;height:72px}.fields{grid-template-columns:1fr 1fr}.fields .f.name{grid-column:1/-1}.save{width:100%;padding:13px}}
 </style></head><body>
 __NAVBAR__
@@ -14948,37 +14953,50 @@ function render(){
   Array.prototype.forEach.call(m.querySelectorAll('.card'),wire);
   loadNB();
 }
-// No-barcode photos taken during the live: see the photo, give the product a name + price.
+// No-barcode photos taken during the live: see the photos, select the ones that are the SAME item,
+// then give them one name + our COST (the sale price comes from the CSV later).
+function nbSelCount(){return document.querySelectorAll('.nbcard.sel').length;}
+function nbUpdateBar(){var n=nbSelCount();var b=document.getElementById('nbAssign');if(b){b.textContent='Assign to selected ('+n+')';b.disabled=(n===0);}}
 function loadNB(){
   if(!SHOW)return;var w=document.getElementById('nbwrap');if(!w)return;
   fetch('/api/live/gaps?show='+encodeURIComponent(SHOW)).then(function(r){return r.json();}).then(function(d){
     if(!d||!d.ok){w.innerHTML='';return;}
     var ph=d.gaps.filter(function(g){return g.has_photo&&g.missing.indexOf('product')>=0;});
     if(!ph.length){w.innerHTML='';return;}
-    w.innerHTML='<div class="nbsec"><div class="nbhd">📷 No-barcode photos — give each a name &amp; price ('+ph.length+')</div>'+
+    w.innerHTML='<div class="nbsec"><div class="nbhd">📷 No-barcode photos — select the same item, then name + cost ('+ph.length+')</div>'+
+      '<div class="nbbar"><input id="nbName" placeholder="Product name" style="flex:2;min-width:150px">'+
+        '<input id="nbCost" inputmode="decimal" placeholder="$ our cost" style="flex:1;min-width:90px">'+
+        '<button id="nbAssign" disabled>Assign to selected (0)</button></div>'+
+      '<div class="nbhint">Tap the photos that are the same product, enter name + cost, then Assign — applies to all selected.</div>'+
+      '<div class="nbmsg" id="nbMsg"></div>'+
       '<div class="nbgrid">'+ph.map(function(g){var pb=(g.part?('P'+g.part+'·'):'');
         return '<div class="nbcard" data-s="'+esc(g.sticker)+'" data-p="'+(g.part||0)+'" data-q="'+(g.qty||1)+'">'+
-          '<a href="'+esc(g.photo_view_url)+'" target="_blank"><img src="'+esc(g.photo_view_url)+'" class="nbimg"></a>'+
-          '<div class="nbst">'+pb+'#'+esc(g.sticker)+' · '+(g.qty||1)+' sold</div>'+
-          '<input class="nbname" placeholder="Product name">'+
-          '<div class="nbrow"><input class="nbprice" inputmode="decimal" placeholder="$ price"><button class="nbassign">Assign</button></div>'+
-          '<div class="nbmsg"></div></div>';
+          '<div class="nbtick">✓</div>'+
+          '<img src="'+esc(g.photo_view_url)+'" class="nbimg">'+
+          '<div class="nbst">'+pb+'#'+esc(g.sticker)+' · '+(g.qty||1)+' sold</div></div>';
       }).join('')+'</div></div>';
     Array.prototype.forEach.call(w.querySelectorAll('.nbcard'),function(el){
-      var b=el.querySelector('.nbassign'),msg=el.querySelector('.nbmsg');
-      b.addEventListener('click',function(){
-        var name=el.querySelector('.nbname').value.trim();
-        if(!name){msg.textContent='Enter a name';msg.className='nbmsg err';return;}
-        var price=el.querySelector('.nbprice').value.trim();
-        b.disabled=true;msg.textContent='Saving…';msg.className='nbmsg';
-        fetch('/api/live/sticker-assign',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({show:SHOW,sticker:el.getAttribute('data-s'),part:+el.getAttribute('data-p'),
-            qty:+el.getAttribute('data-q'),name:name,price:price})}).then(function(r){return r.json();}).then(function(x){
-          b.disabled=false;
-          if(!x.ok){msg.textContent=x.error||'Failed';msg.className='nbmsg err';return;}
-          msg.textContent='✓ Assigned';msg.className='nbmsg ok';pick(SHOW);
-        }).catch(function(){b.disabled=false;msg.textContent='Network error';msg.className='nbmsg err';});
+      el.addEventListener('click',function(ev){
+        // tap the image to zoom (new tab) only via long-press is overkill; single tap toggles select
+        el.classList.toggle('sel');nbUpdateBar();
       });
+    });
+    document.getElementById('nbAssign').addEventListener('click',function(){
+      var sel=Array.prototype.slice.call(document.querySelectorAll('.nbcard.sel'));
+      if(!sel.length)return;
+      var name=document.getElementById('nbName').value.trim();
+      var cost=document.getElementById('nbCost').value.trim();
+      var msg=document.getElementById('nbMsg');
+      if(!name){msg.textContent='Enter a product name';msg.className='nbmsg err';return;}
+      var b=document.getElementById('nbAssign');b.disabled=true;msg.textContent='Saving…';msg.className='nbmsg';
+      var seq=Promise.resolve(),ok=0,fail=0;
+      sel.forEach(function(el){seq=seq.then(function(){
+        return fetch('/api/live/sticker-assign',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({show:SHOW,sticker:el.getAttribute('data-s'),part:+el.getAttribute('data-p'),
+            qty:+el.getAttribute('data-q'),name:name,cost:cost})}).then(function(r){return r.json();})
+          .then(function(x){if(x.ok)ok++;else fail++;});
+      });});
+      seq.then(function(){msg.textContent='✓ Assigned '+ok+(fail?(' · '+fail+' failed'):'');msg.className='nbmsg '+(fail?'err':'ok');pick(SHOW);});
     });
   });
 }

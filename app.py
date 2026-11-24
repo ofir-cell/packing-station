@@ -11019,8 +11019,10 @@ def api_live_sticker_assign():
     name=(d.get("name") or "").strip()
     try: qty=max(1,min(9999,int(d.get("qty") or 1)))
     except Exception: qty=1
-    try: price=float(d.get("price")) if d.get("price") not in (None,"") else None
-    except Exception: price=None
+    # We capture OUR COST here (for COGS/profit). The real sale price comes from the CSV later.
+    _cv=d.get("cost"); _cv=d.get("price") if _cv in (None,"") else _cv
+    try: cost=float(_cv) if _cv not in (None,"") else None
+    except Exception: cost=None
     if not show or not sticker or not name:
         return jsonify({"ok":False,"error":"show, sticker and name required"})
     who=session.get("name","")[:60]; c=sdb()
@@ -11032,17 +11034,17 @@ def api_live_sticker_assign():
     prod=c.execute("SELECT * FROM products WHERE LOWER(name)=LOWER(?) LIMIT 1",(name,)).fetchone()
     if prod:
         sku=prod["sku"]
-        if price is not None and not (prod["target_price"] or 0):
-            c.execute("UPDATE products SET target_price=? WHERE sku=?",(price,sku))
+        if cost is not None and not (prod["avg_cost"] or 0):
+            c.execute("UPDATE products SET avg_cost=? WHERE sku=?",(cost,sku))
     else:
         sku="NB-"+secrets.token_hex(5).upper()
-        c.execute("INSERT INTO products(sku,name,target_price,on_hand) VALUES(?,?,?,0)",
-                  (sku,name,price if price is not None else 0))
-    cost=(prod["avg_cost"] if prod else 0) or 0
-    if price is None: price=(prod["target_price"] if prod else 0) or 0
-    _live_record_sale(c, show, sticker, part, sku, qty, price, who, cost)
+        c.execute("INSERT INTO products(sku,name,avg_cost,on_hand) VALUES(?,?,?,0)",
+                  (sku,name,cost if cost is not None else 0))
+    unit_cost=cost if cost is not None else ((prod["avg_cost"] if prod else 0) or 0)
+    # Sale price unknown at this point → 0; the CSV reconcile fills the real unit_price.
+    _live_record_sale(c, show, sticker, part, sku, qty, 0, who, unit_cost)
     c.commit(); c.close()
-    return jsonify({"ok":True,"sku":sku,"name":name,"qty":qty,"price":price})
+    return jsonify({"ok":True,"sku":sku,"name":name,"qty":qty,"cost":unit_cost})
 
 @app.route("/live-photo")
 @req_login

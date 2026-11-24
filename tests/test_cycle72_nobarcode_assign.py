@@ -37,21 +37,21 @@ def test_photo_then_assign_name_price_records_once(appmod, client):
     row = [x for x in g["gaps"] if x["sticker"] == "77"][0]
     assert row["has_photo"] is True and "product" in row["missing"]
 
-    # assign name + price from the cleanup screen
+    # assign name + OUR COST from the cleanup screen (sale price comes from the CSV later)
     r = client.post("/api/live/sticker-assign",
                     json={"show": label, "sticker": "77", "part": 1, "qty": 3,
-                          "name": "Glow Serum", "price": 12.5}, headers=hdr).get_json()
-    assert r["ok"] is True and r["qty"] == 3
+                          "name": "Glow Serum", "cost": 4.0}, headers=hdr).get_json()
+    assert r["ok"] is True and r["qty"] == 3 and r["cost"] == 4.0
     sku = r["sku"]
 
     c = A.sdb(A.DEFAULT_ORG)
-    # product created, sticker bound, stock deducted exactly once (3 units -> on_hand -3)
-    p = c.execute("SELECT name, on_hand FROM products WHERE sku=?", (sku,)).fetchone()
-    assert p["name"] == "Glow Serum" and p["on_hand"] == -3
+    # product created with our cost, sticker bound, stock deducted exactly once (3 units -> on_hand -3)
+    p = c.execute("SELECT name, on_hand, avg_cost FROM products WHERE sku=?", (sku,)).fetchone()
+    assert p["name"] == "Glow Serum" and p["on_hand"] == -3 and p["avg_cost"] == 4.0
     moves = c.execute("SELECT COALESCE(SUM(qty),0) s, COUNT(*) n FROM stock_moves WHERE sku=?", (sku,)).fetchone()
     assert moves["s"] == -3 and moves["n"] == 1          # deducted once
-    ls = c.execute("SELECT SUM(qty) q, MAX(unit_price) pr FROM live_sales WHERE product_sku=?", (sku,)).fetchone()
-    assert ls["q"] == 3 and ls["pr"] == 12.5
+    ls = c.execute("SELECT SUM(qty) q, MAX(unit_cost) uc FROM live_sales WHERE product_sku=?", (sku,)).fetchone()
+    assert ls["q"] == 3 and ls["uc"] == 4.0              # our cost recorded; sale price filled by CSV
     c.close()
 
     # no longer a product-gap
