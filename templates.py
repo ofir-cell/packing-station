@@ -5598,7 +5598,9 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
       <button class="scan-skip" id="mmRetry" style="margin-bottom:6px;border-color:#86efac;color:#166534">🔁 Scan the right product</button>
       <button class="scan-skip" id="mmOverride" style="border-color:#fca5a5;color:#b91c1c">Pick it anyway (override)</button>
     </div>
+    <button class="scan-skip" id="pickPhotoBtn" style="display:none;border-color:#93c5fd;color:#1e40af;background:#eff6ff">📷 No barcode — take a photo</button>
     <button class="scan-skip" id="pickSkipBtn" style="display:none"></button>
+    <input id="pickPhotoInp" type="file" accept="image/*" capture="environment" style="display:none">
     <div class="scan-alldone" id="scanAllDone" style="display:none"></div>
     <div class="items-list" id="itemsList"></div>
   </div>
@@ -5610,6 +5612,16 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 </div>
 
 <!-- Issue report modal -->
+<div id="pkCamOv" style="display:none;position:fixed;inset:0;background:#000;z-index:10000;flex-direction:column;align-items:center;justify-content:center;padding:14px">
+  <video id="pkVid" autoplay playsinline muted style="max-width:100%;max-height:68vh;border-radius:14px;background:#111"></video>
+  <img id="pkPrev" alt="" style="display:none;max-width:100%;max-height:68vh;border-radius:14px">
+  <div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;justify-content:center">
+    <button id="pkShot" class="btn-submit" style="min-width:150px;font-size:17px">● Capture</button>
+    <button id="pkSave" class="btn-submit" style="display:none;min-width:130px;background:#16a34a;font-size:17px">✓ Save</button>
+    <button id="pkRetake" class="scan-skip" style="display:none;color:#fff;border-color:#fff;width:auto">↻ Retake</button>
+    <button id="pkCancel" class="scan-skip" style="color:#fff;border-color:#9ca3af;width:auto">Cancel</button>
+  </div>
+</div>
 <div class="issue-modal" id="issueModal" style="display:none">
   <div class="issue-card">
     <h3 data-i18n="problemtitle">Problem with this order</h3>
@@ -5656,7 +5668,7 @@ var T={en:{
  tableset:'TABLE SET',giveaway:'GIVEAWAY',gotomanager:'GO TO MANAGER TO GET IT',alreadypicked:'Already picked by',
  clearcancelled:'Clear cancelled items off the table first',noshipment:'No shipment for',lookupfailed:'Lookup failed',
  scanhint:"Scan each product's barcode to pick it. No barcode? Tap Skip.",scanproduct:'Scan the product barcode…',
- skipnobarcode:'⤼ Skip — no barcode on this product',pickedsofar:'Picked so far',scannedw:'Scanned',leftw:'left',
+ skipnobarcode:'⤼ Skip — no barcode on this product',photonobarcode:'📷 No barcode — take a photo',pickedsofar:'Picked so far',scannedw:'Scanned',leftw:'left',
  needscost:'skipped · needs product & cost',addcostt:'add cost',instockt:'✓ in stock',newprod:'new product',
  allscanned:'All items scanned ✓',costonfile:'cost on file',matchedw:'matched',notrecognized:'Not a known barcode — try again',
  rescanbtn:'✎ Re-scan',fixingnow:'Re-scan this one — the next scan replaces its product'
@@ -5676,7 +5688,7 @@ var T={en:{
  tableset:'SET DE MESAS',giveaway:'REGALO',gotomanager:'VE AL GERENTE POR ESTE REGALO',alreadypicked:'Ya recolectado por',
  clearcancelled:'Primero retira los artículos cancelados de la mesa',noshipment:'No hay envío para',lookupfailed:'Búsqueda fallida',
  scanhint:'Escanea el código de cada producto para recolectarlo. ¿Sin código? Toca Saltar.',scanproduct:'Escanea el código del producto…',
- skipnobarcode:'⤼ Saltar — este producto no tiene código',pickedsofar:'Recolectados',scannedw:'Escaneados',leftw:'restantes',
+ skipnobarcode:'⤼ Saltar — este producto no tiene código',photonobarcode:'📷 Sin código — toma una foto',pickedsofar:'Recolectados',scannedw:'Escaneados',leftw:'restantes',
  needscost:'saltado · falta producto y costo',addcostt:'agregar costo',instockt:'✓ en stock',newprod:'producto nuevo',
  allscanned:'Todos escaneados ✓',costonfile:'costo registrado',matchedw:'vinculado',notrecognized:'Código no reconocido — intenta de nuevo',
  rescanbtn:'✎ Re-escanear',fixingnow:'Re-escanea este — el próximo escaneo reemplaza su producto'
@@ -6019,9 +6031,11 @@ function renderItems(){
         _hint.textContent=(fixItemId!=null)?t('fixingnow'):t('scanhint'); _hint.style.display='block';
         _curCard.style.display='block'; _row.style.display='flex';
         _skip.textContent=t('skipnobarcode'); _skip.style.display='block';
+        var _pph=document.getElementById('pickPhotoBtn'); if(_pph){_pph.textContent=t('photonobarcode');_pph.style.display='block';}
         _all.style.display='none';
     } else {
         curItemId=null;
+        var _pph2=document.getElementById('pickPhotoBtn'); if(_pph2)_pph2.style.display='none';
         _curCard.style.display='none'; _row.style.display='none'; _skip.style.display='none'; _hint.style.display='none';
         if(arr.length){ _all.textContent=t('allscanned'); _all.style.display='block'; } else { _all.style.display='none'; }
     }
@@ -6128,6 +6142,45 @@ function doSkipPick(itemId){
         fixItemId=null; sndClick(); renderItems();
      });
 }
+// cycle-74: collect the product PHOTO on the move during picking (no-barcode items). One tap opens
+// the camera; Save uploads + marks picked. Falls back to the file picker if the camera is blocked.
+var _pkStream=null,_pkBlob=null,_pkItem=null;
+function pkCamStop(){try{if(_pkStream)_pkStream.getTracks().forEach(function(t){t.stop();});}catch(e){}_pkStream=null;}
+function pkCamClose(){pkCamStop();var o=document.getElementById('pkCamOv');if(o)o.style.display='none';var p=document.getElementById('pkPrev');if(p)p.src='';_pkBlob=null;}
+function doPhotoPick(itemId){
+    _pkItem=itemId;_pkBlob=null;
+    var ov=document.getElementById('pkCamOv'),vid=document.getElementById('pkVid'),prev=document.getElementById('pkPrev');
+    prev.style.display='none';vid.style.display='block';
+    document.getElementById('pkShot').style.display='';document.getElementById('pkSave').style.display='none';document.getElementById('pkRetake').style.display='none';
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){document.getElementById('pickPhotoInp').click();return;}
+    navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false}).then(function(s){
+        _pkStream=s;vid.srcObject=s;ov.style.display='flex';
+    }).catch(function(){document.getElementById('pickPhotoInp').click();});
+}
+function pkUpload(blob,itemId){
+    var fd=new FormData();fd.append('file',blob,'pick.jpg');
+    fetch('/api/pick/item/'+itemId+'/photo',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+        if(!d.ok){ sndError(); showToast(d.error||'Error',true); return; }
+        var it=currentItems.find(function(x){return x.id===itemId});
+        if(it){ it.picked=1; it._skipped=true; it._prod=null; it._photo=true; }
+        sndClick(); renderItems();
+    }).catch(function(){ sndError(); showToast('Upload failed',true); });
+}
+(function(){
+  var sh=document.getElementById('pkShot'); if(sh)sh.addEventListener('click',function(){
+    var vid=document.getElementById('pkVid'),prev=document.getElementById('pkPrev');
+    var cv=document.createElement('canvas');cv.width=vid.videoWidth||720;cv.height=vid.videoHeight||1280;
+    cv.getContext('2d').drawImage(vid,0,0,cv.width,cv.height);
+    prev.src=cv.toDataURL('image/jpeg',0.85);prev.style.display='block';vid.style.display='none';
+    document.getElementById('pkShot').style.display='none';document.getElementById('pkSave').style.display='';document.getElementById('pkRetake').style.display='';
+    pkCamStop();cv.toBlob(function(b){_pkBlob=b;},'image/jpeg',0.85);
+  });
+  var rt=document.getElementById('pkRetake'); if(rt)rt.addEventListener('click',function(){doPhotoPick(_pkItem);});
+  var cc=document.getElementById('pkCancel'); if(cc)cc.addEventListener('click',pkCamClose);
+  var sv=document.getElementById('pkSave'); if(sv)sv.addEventListener('click',function(){var b=_pkBlob,it=_pkItem;pkCamClose();if(b&&it)pkUpload(b,it);});
+  var inp=document.getElementById('pickPhotoInp'); if(inp)inp.addEventListener('change',function(e){var f=e.target.files&&e.target.files[0];e.target.value='';if(f&&_pkItem)pkUpload(f,_pkItem);});
+  var pb=document.getElementById('pickPhotoBtn'); if(pb)pb.addEventListener('click',function(){ if(curItemId)doPhotoPick(curItemId); });
+})();
 function toggleGiveaway(gid){
     var g=(currentGiveaways||[]).find(function(x){return x.id===gid});
     if(!g)return;

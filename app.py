@@ -7740,6 +7740,48 @@ def api_pick_item_scan(item_id):
                                "in_stock":(pr.get("on_hand") or 0)>0,
                                "cost":(round(pr["avg_cost"],2) if (is_admin and (pr.get("avg_cost") or 0)) else None)}})
 
+@app.route("/api/pick/item/<int:item_id>/photo", methods=["POST"])
+@req_role("picker","worker","admin","cs")
+def api_pick_item_photo(item_id):
+    """No-barcode item during picking (cycle-74): photograph it ON THE MOVE. Stores the photo keyed
+    by the item's live sticker (show/sticker/part, resolved server-side) — the SAME data the live
+    'Match Products' step collected — and marks the item picked. The photo then shows up in After-
+    Live Cleanup to get a name + cost. No product is bound and no stock moves."""
+    f=request.files.get("file")
+    if not f or not f.filename: return jsonify({"ok":False,"error":"Take a photo"})
+    ext=f.filename.rsplit(".",1)[-1].lower() if "." in f.filename else "jpg"
+    if ext not in _STICKER_IMG_EXT: return jsonify({"ok":False,"error":"Use a photo (JPG/PNG/HEIC)"})
+    c=sdb()
+    row=c.execute("""SELECT i.id,i.sku,i.product_name,i.shipment_id,s.status ship_status,s.import_label
+                     FROM shipment_items i JOIN shipments s ON s.shipment_id=i.shipment_id WHERE i.id=?""",
+                  (item_id,)).fetchone()
+    if not row: c.close(); return jsonify({"ok":False,"error":"Item not found"})
+    if (row["ship_status"] or "")=="cancelled":
+        c.close(); return jsonify({"ok":False,"error":"This order was cancelled"})
+    show=row["import_label"]; sticker=(row["sku"] or "").strip(); part=_part_num(row["product_name"] or "")
+    org=current_org(); who=session.get("name","")[:60]
+    safe=secure_filename("%s-%s-P%d"%(show,sticker,part)) or ("s"+sticker)
+    key=f"{org}/stickers/{safe}.{ext}"
+    if r2:
+        r2.upload_fileobj(f.stream,R2_BUCKET,key,ExtraArgs={"ContentType":f.mimetype or "image/"+ext})
+    else:
+        dd=org_path(org,"stickers"); os.makedirs(dd,exist_ok=True)
+        f.save(os.path.join(dd,safe+"."+ext)); key=safe+"."+ext
+    now=datetime.now().isoformat(timespec='seconds')
+    if show and sticker:
+        c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by,photo_url)
+                     VALUES(?,?,?,'',0,?,?,?)
+                     ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET photo_url=excluded.photo_url,
+                        mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
+                  (show,sticker,part,now,who,key))
+    c.execute("UPDATE shipment_items SET picked=1, picked_at=CURRENT_TIMESTAMP WHERE id=?",(item_id,))
+    c.execute("""UPDATE shipments SET pick_started_by=?, pick_started_at=CURRENT_TIMESTAMP
+                 WHERE shipment_id=? AND COALESCE(pick_started_by,'')=''""",(who,row["shipment_id"]))
+    _oev(c, row["shipment_id"], "item_photo", ("#"+sticker+" " if sticker else "")+"photo (no barcode)", actor=who)
+    c.commit(); c.close()
+    return jsonify({"ok":True,"picked":1,
+                    "photo_view_url":(_sticker_photo_viewurl(show,sticker,part) if (show and sticker) else None)})
+
 @app.route("/api/pick/item/<int:item_id>/skip", methods=["POST"])
 @req_role("picker","worker","admin","cs")
 def api_pick_item_skip(item_id):
