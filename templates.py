@@ -14890,6 +14890,16 @@ body{font-family:'DM Sans',-apple-system,sans-serif;background:#ffffff;color:var
 .msg{font-size:12px;margin-top:6px;min-height:16px}
 .msg.ok{color:#059669}.msg.err{color:#e11d48}
 .empty{padding:40px;text-align:center;color:var(--text-muted);border:1px dashed var(--border);border-radius:16px}
+.nbsec{background:#eff6ff;border:1px solid #bfdbfe;border-radius:16px;padding:14px;margin-bottom:16px}
+.nbhd{font-weight:900;color:#1e40af;margin-bottom:10px}
+.nbgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.nbcard{background:#fff;border:1px solid var(--border);border-radius:12px;padding:8px;display:flex;flex-direction:column;gap:6px}
+.nbimg{width:100%;height:120px;object-fit:cover;border-radius:8px;background:#f3f4f6}
+.nbst{font-size:12px;font-weight:800;color:#374151}
+.nbname,.nbprice{border:1.5px solid var(--border);border-radius:8px;padding:7px 8px;font-size:13px;font-family:inherit;width:100%}
+.nbrow{display:flex;gap:6px}.nbrow .nbprice{flex:1}
+.nbassign{border:0;border-radius:8px;background:#2563eb;color:#fff;font-weight:800;padding:7px 12px;cursor:pointer;white-space:nowrap}
+.nbmsg{font-size:12px;font-weight:700;min-height:14px}.nbmsg.ok{color:#059669}.nbmsg.err{color:#dc2626}
 @media (max-width:760px){.card{grid-template-columns:72px 1fr}.ph{width:72px;height:72px}.fields{grid-template-columns:1fr 1fr}.fields .f.name{grid-column:1/-1}.save{width:100%;padding:13px}}
 </style></head><body>
 __NAVBAR__
@@ -14930,12 +14940,47 @@ function render(){
   if(!d||!d.ok){m.innerHTML='<div class="empty">Could not load this show.</div>';return;}
   var pct=d.total?Math.round(100*d.done/d.total):100;
   var rows=d.items.filter(function(x){return !ONLY_TODO||!x.done;});
-  m.innerHTML='<div class="bar-row"><div class="bar"><i style="width:'+pct+'%"></i></div>'+
+  m.innerHTML='<div id="nbwrap"></div><div class="bar-row"><div class="bar"><i style="width:'+pct+'%"></i></div>'+
     '<div class="bar-txt" id="bartxt">'+d.done+' of '+d.total+' done</div>'+
     '<label class="tgl"><input type="checkbox" id="onlytodo"'+(ONLY_TODO?' checked':'')+'> Only what needs work</label></div>'+
     (rows.length?'<div class="list">'+rows.map(card).join('')+'</div>':'<div class="empty">Everything from this live is done.</div>');
   document.getElementById('onlytodo').addEventListener('change',function(e){ONLY_TODO=e.target.checked;render();});
   Array.prototype.forEach.call(m.querySelectorAll('.card'),wire);
+  loadNB();
+}
+// No-barcode photos taken during the live: see the photo, give the product a name + price.
+function loadNB(){
+  if(!SHOW)return;var w=document.getElementById('nbwrap');if(!w)return;
+  fetch('/api/live/gaps?show='+encodeURIComponent(SHOW)).then(function(r){return r.json();}).then(function(d){
+    if(!d||!d.ok){w.innerHTML='';return;}
+    var ph=d.gaps.filter(function(g){return g.has_photo&&g.missing.indexOf('product')>=0;});
+    if(!ph.length){w.innerHTML='';return;}
+    w.innerHTML='<div class="nbsec"><div class="nbhd">📷 No-barcode photos — give each a name &amp; price ('+ph.length+')</div>'+
+      '<div class="nbgrid">'+ph.map(function(g){var pb=(g.part?('P'+g.part+'·'):'');
+        return '<div class="nbcard" data-s="'+esc(g.sticker)+'" data-p="'+(g.part||0)+'" data-q="'+(g.qty||1)+'">'+
+          '<a href="'+esc(g.photo_view_url)+'" target="_blank"><img src="'+esc(g.photo_view_url)+'" class="nbimg"></a>'+
+          '<div class="nbst">'+pb+'#'+esc(g.sticker)+' · '+(g.qty||1)+' sold</div>'+
+          '<input class="nbname" placeholder="Product name">'+
+          '<div class="nbrow"><input class="nbprice" inputmode="decimal" placeholder="$ price"><button class="nbassign">Assign</button></div>'+
+          '<div class="nbmsg"></div></div>';
+      }).join('')+'</div></div>';
+    Array.prototype.forEach.call(w.querySelectorAll('.nbcard'),function(el){
+      var b=el.querySelector('.nbassign'),msg=el.querySelector('.nbmsg');
+      b.addEventListener('click',function(){
+        var name=el.querySelector('.nbname').value.trim();
+        if(!name){msg.textContent='Enter a name';msg.className='nbmsg err';return;}
+        var price=el.querySelector('.nbprice').value.trim();
+        b.disabled=true;msg.textContent='Saving…';msg.className='nbmsg';
+        fetch('/api/live/sticker-assign',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({show:SHOW,sticker:el.getAttribute('data-s'),part:+el.getAttribute('data-p'),
+            qty:+el.getAttribute('data-q'),name:name,price:price})}).then(function(r){return r.json();}).then(function(x){
+          b.disabled=false;
+          if(!x.ok){msg.textContent=x.error||'Failed';msg.className='nbmsg err';return;}
+          msg.textContent='✓ Assigned';msg.className='nbmsg ok';pick(SHOW);
+        }).catch(function(){b.disabled=false;msg.textContent='Network error';msg.className='nbmsg err';});
+      });
+    });
+  });
 }
 function card(x){
   var nm=x.placeholder_name?'':(x.name||'');

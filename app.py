@@ -10987,6 +10987,63 @@ def api_live_sticker_photo_range():
     c.commit(); c.close()
     return jsonify({"ok":True,"count":len(stickers)})
 
+def _live_record_sale(c, show, sticker, part, sku, qty, price, who, cost=0):
+    """Bind a sticker to a product and record the live sale ONCE: deplete stock by qty, write the
+    stock move and the live_sales row. Keeps any existing sticker photo (the map upsert touches
+    product_sku, not photo_url). Shared by the no-barcode 'assign from photo' flow."""
+    now=datetime.now().isoformat(timespec='seconds')
+    c.execute("""INSERT INTO show_product_map(import_label,sticker_sku,part,product_sku,depleted_qty,mapped_at,mapped_by)
+                 VALUES(?,?,?,?,0,?,?)
+                 ON CONFLICT(import_label,sticker_sku,part) DO UPDATE SET
+                    product_sku=excluded.product_sku,mapped_at=excluded.mapped_at,mapped_by=excluded.mapped_by""",
+              (show,sticker,part,sku,now,who))
+    c.execute("UPDATE products SET on_hand=on_hand-? WHERE sku=?",(qty,sku))
+    c.execute("INSERT INTO stock_moves(sku,qty,unit_cost,note,moved_at,moved_by) VALUES(?,?,?,?,?,?)",
+              (sku,-qty,cost,"live sale ("+show+")",now,who))
+    c.execute("""INSERT INTO live_sales(import_label,sticker_sku,part,product_sku,qty,unit_cost,unit_price,sold_at,sold_by)
+                 VALUES(?,?,?,?,?,?,?,?,?)""",(show,sticker,part,sku,qty,cost,price,now,who))
+
+@app.route("/api/live/sticker-assign",methods=["POST"])
+@req_role("admin","cs","worker","picker")
+def api_live_sticker_assign():
+    """Give a no-barcode photographed sticker its product name + price (from the After-Live Cleanup
+    screen). Finds the catalog product by exact name or creates a new one, binds the sticker, and
+    records the sale once (the sticker was sold in the live but never matched, so stock had not been
+    deducted for it yet). The product is the shared catalog entity, so the name/price now applies
+    everywhere that product is used."""
+    d=request.get_json() or {}
+    show=(d.get("show") or "").strip()
+    sticker=(d.get("sticker") or "").strip()
+    try: part=int(d.get("part") or 0)
+    except Exception: part=0
+    name=(d.get("name") or "").strip()
+    try: qty=max(1,min(9999,int(d.get("qty") or 1)))
+    except Exception: qty=1
+    try: price=float(d.get("price")) if d.get("price") not in (None,"") else None
+    except Exception: price=None
+    if not show or not sticker or not name:
+        return jsonify({"ok":False,"error":"show, sticker and name required"})
+    who=session.get("name","")[:60]; c=sdb()
+    # Guard: if this sticker already has a product, don't double-record (stock was already deducted).
+    ex=c.execute("SELECT product_sku FROM show_product_map WHERE import_label=? AND sticker_sku=? AND part=?",
+                 (show,sticker,part)).fetchone()
+    if ex and (ex["product_sku"] or "").strip():
+        c.close(); return jsonify({"ok":False,"error":"This sticker is already matched to a product"})
+    prod=c.execute("SELECT * FROM products WHERE LOWER(name)=LOWER(?) LIMIT 1",(name,)).fetchone()
+    if prod:
+        sku=prod["sku"]
+        if price is not None and not (prod["target_price"] or 0):
+            c.execute("UPDATE products SET target_price=? WHERE sku=?",(price,sku))
+    else:
+        sku="NB-"+secrets.token_hex(5).upper()
+        c.execute("INSERT INTO products(sku,name,target_price,on_hand) VALUES(?,?,?,0)",
+                  (sku,name,price if price is not None else 0))
+    cost=(prod["avg_cost"] if prod else 0) or 0
+    if price is None: price=(prod["target_price"] if prod else 0) or 0
+    _live_record_sale(c, show, sticker, part, sku, qty, price, who, cost)
+    c.commit(); c.close()
+    return jsonify({"ok":True,"sku":sku,"name":name,"qty":qty,"price":price})
+
 @app.route("/live-photo")
 @req_login
 def live_photo():
