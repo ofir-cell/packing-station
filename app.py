@@ -1827,6 +1827,9 @@ def sdb_init(org):
     # cycle-67: store the tracking number the ticket was matched on.
     try: c.execute("ALTER TABLE tickets ADD COLUMN tracking TEXT")
     except Exception: pass
+    # cycle-73: reason captured when a ticket is voided.
+    try: c.execute("ALTER TABLE tickets ADD COLUMN void_reason TEXT")
+    except Exception: pass
     c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_status ON tickets(status)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_conv ON tickets(platform_conversation_key)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_updated ON tickets(updated_at)")
@@ -21643,9 +21646,13 @@ def api_cshub_list():
     ttype=(request.args.get("type") or "").strip()
     assigned=(request.args.get("assigned") or "").strip()   # me / unassigned / <name>
     since=(request.args.get("updated_since") or request.args.get("since") or "").strip()
+    voided=(request.args.get("voided") or "").strip().lower()   # "1"=only voided, "all"=both, else active
     try: limit=max(1,min(500,int(request.args.get("limit") or 100)))
     except Exception: limit=100
-    where=["COALESCE(voided,0)=0"]; args=[]
+    if voided in ("1","true","yes"): where=["COALESCE(voided,0)=1"]
+    elif voided=="all": where=["1=1"]
+    else: where=["COALESCE(voided,0)=0"]
+    args=[]
     if status: where.append("status=?"); args.append(status)
     if platform: where.append("platform=?"); args.append(platform)
     if ttype: where.append("type=?"); args.append(ttype)
@@ -21695,6 +21702,27 @@ def api_cshub_patch(tid):
     c=_tdb(ident); row=c.execute("SELECT * FROM tickets WHERE id=?",(tid,)).fetchone()
     if not row: c.close(); return jsonify({"ok":False,"error":"Not found"}),404
     old=dict(row)
+    # ── Void / restore (cycle-73) ─────────────────────────────────────────────
+    # PATCH {"status":"void","void_reason":"…"} → hide from the queue + counters (stays searchable
+    # under ?voided=1, restorable). Never fires the decided webhook. AI key or staff.
+    _st=(d.get("status") or "").strip().lower()
+    if _st in ("void","voided","cancel_ticket"):
+        reason=(d.get("void_reason") or d.get("reason") or "").strip()
+        if not reason:
+            c.close(); return jsonify({"ok":False,"error":"void_reason required"}),400
+        now=datetime.now().isoformat(timespec="seconds")
+        c.execute("UPDATE tickets SET voided=1,void_reason=?,updated_at=? WHERE id=?",(reason,now,tid))
+        _tk_log(c,tid,actor,"voided",old.get("status"),reason)
+        c.commit(); c.close()
+        return jsonify({"ok":True,"id":tid,"applied":["voided","void_reason"],
+                        "changed":(["voided"] if not old.get("voided") else [])})
+    if _st in ("restore","unvoid","active","reopen_void"):
+        now=datetime.now().isoformat(timespec="seconds")
+        c.execute("UPDATE tickets SET voided=0,updated_at=? WHERE id=?",(now,tid))
+        _tk_log(c,tid,actor,"restored",old.get("void_reason") or "","")
+        c.commit(); c.close()
+        return jsonify({"ok":True,"id":tid,"applied":["voided"],
+                        "changed":(["voided"] if old.get("voided") else [])})
     allowed=_TK_AI_FIELDS if is_ai else _TK_STAFF_FIELDS
     role=session.get("role","")
     # Guardrails
@@ -21826,6 +21854,30 @@ def api_cshub_refill(tid):
         c.commit()
     c.close()
     return jsonify({"ok":True,"matched":matched,"filled":[s.split("=")[0] for s in sets if "=" in s]})
+
+@app.route("/api/tickets/bulk-void", methods=["POST"])
+def api_cshub_bulk_void():
+    """Void many tickets at once (cycle-73): {"ids":[...],"void_reason":"…"}. Each is hidden from the
+    queue + counters, logged with the reason, and stays searchable (?voided=1) / restorable. No
+    webhook. AI key (tickets:write) or staff."""
+    actor,is_ai,ident=_req_tickets("tickets:write")
+    if not actor: return jsonify({"ok":False,"error":"auth required"}),401
+    d=request.get_json() or {}
+    ids=d.get("ids") or []
+    reason=(d.get("void_reason") or d.get("reason") or "").strip()
+    if not isinstance(ids,list) or not ids: return jsonify({"ok":False,"error":"ids required"})
+    if not reason: return jsonify({"ok":False,"error":"void_reason required"}),400
+    now=datetime.now().isoformat(timespec="seconds"); c=_tdb(ident)
+    done=[]; skipped=[]
+    for raw in ids[:1000]:
+        try: tid=int(raw)
+        except Exception: skipped.append(raw); continue
+        n=c.execute("UPDATE tickets SET voided=1,void_reason=?,updated_at=? WHERE id=? AND COALESCE(voided,0)=0",
+                    (reason,now,tid)).rowcount
+        if n: _tk_log(c,tid,actor,"voided","",reason); done.append(tid)
+        else: skipped.append(tid)
+    c.commit(); c.close()
+    return jsonify({"ok":True,"voided":done,"count":len(done),"skipped":skipped})
 
 @app.route("/api/tickets/<int:tid>/resend-webhook", methods=["POST"])
 @req_role("admin","manager")

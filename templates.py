@@ -15427,7 +15427,7 @@ textarea{width:100%;border:1.5px solid var(--bd);border-radius:10px;padding:9px;
   <div id="vInbox">
     <div class="cnt" id="counters"></div>
     <div class="filters">
-      <select id="fStatus"><option value="">All statuses</option><option value="new">New</option><option value="ai_ready">AI ready</option><option value="decided_wait_ai">Waiting for AI</option><option value="customer_replied">Customer replied</option><option value="needs_owner">Needs owner</option><option value="done">Done</option></select>
+      <select id="fStatus"><option value="">All statuses</option><option value="new">New</option><option value="ai_ready">AI ready</option><option value="decided_wait_ai">Waiting for AI</option><option value="customer_replied">Customer replied</option><option value="needs_owner">Needs owner</option><option value="done">Done</option><option value="__voided__">🗑 Voided</option></select>
       <select id="fPlatform"><option value="">All platforms</option><option value="whatnot">Whatnot</option><option value="tiktok">TikTok</option></select>
       <select id="fType"><option value="">All types</option><option value="refund_return">Refund / return</option><option value="where_order">Where is my order</option><option value="damaged_missing">Damaged / missing</option><option value="question">Question</option><option value="cancel">Cancel</option></select>
       <select id="fAssigned"><option value="">Anyone</option><option value="me">Me</option><option value="unassigned">Unassigned</option></select>
@@ -15470,7 +15470,7 @@ document.getElementById("tInbox").onclick=function(){show("inbox");loadInbox();}
 document.getElementById("tDash").onclick=function(){show("dash");loadDash();};
 
 function loadInbox(){
-  var q=[];var s=document.getElementById("fStatus").value;if(s)q.push("status="+s);
+  var q=[];var s=document.getElementById("fStatus").value;if(s==="__voided__")q.push("voided=1");else if(s)q.push("status="+s);
   var p=document.getElementById("fPlatform").value;if(p)q.push("platform="+p);
   var t=document.getElementById("fType").value;if(t)q.push("type="+t);
   var a=document.getElementById("fAssigned").value;if(a)q.push("assigned="+a);
@@ -15533,6 +15533,7 @@ function openT(id){
       '<button class="btn g" onclick="show(\\'inbox\\');loadInbox()">← Inbox</button> '+
       '<button class="btn g" onclick="refill('+t.id+')" title="Re-run auto-fill from the imported show">↻ Re-match order</button>'+
       ((MONEY_ROLE&&t.decision)?(' <button class="btn g" onclick="resendHook('+t.id+')" title="Re-send the decided webhook to the AI">📡 Resend webhook</button>'):"")+
+      (t.voided?(' <button class="btn g" onclick="restoreT('+t.id+')">♻ Restore</button>'):(' <button class="btn g" onclick="voidT('+t.id+')">🗑 Void</button>'))+
       '<h1 style="margin-top:10px">Ticket #'+t.id+' <span class="st '+esc(t.status)+'">'+esc(stLabel(t.status))+'</span> <span class="dot '+(t.risk||"green")+'"></span></h1>'+
       '<div class="sub">'+platPill(t.platform)+' · '+esc(t.customer_name||t.username||"")+' · '+esc(t.import_label||"")+' · assignee: '+esc(t.assigned_to||"—")+'</div>'+
       warns+
@@ -15600,6 +15601,8 @@ function tr(id){var el=document.getElementById(id);if(el)trOne(el);}
 function trAll(id){var c=document.getElementById(id);if(!c)return;var els=c.querySelectorAll(".tx");els.forEach(function(el){trOne(el);});}
 function refill(id){J("/api/tickets/"+id+"/refill",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}).then(function(d){if(!d.ok){alert(d.error||"error");return;}alert(d.matched?("Filled: "+(d.filled.join(", ")||"nothing new")):"No matching shipment found");openT(id);});}
 function resendHook(id){J("/api/tickets/"+id+"/resend-webhook",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}).then(function(d){alert((d.ok?"Webhook sent ":"Webhook failed ")+(d.detail||d.error||""));openT(id);});}
+function voidT(id){var r=prompt("Void this ticket — reason?");if(r==null||!r.trim())return;J("/api/tickets/"+id,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:"void",void_reason:r.trim()})}).then(function(d){if(!d.ok){alert(d.error||"error");return;}show("inbox");loadInbox();});}
+function restoreT(id){J("/api/tickets/"+id,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:"restore"})}).then(function(){openT(id);});}
 
 function loadDash(){
   J("/api/tickets?limit=500").then(function(d){
