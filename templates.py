@@ -70,6 +70,9 @@ def _navbar(active_page=""):
     _rr=set(session.get("roles") or [role])
     def has(*rs):
         return any(r in _rr for r in rs)
+    from flask import g as _ag
+    _allowset=getattr(_ag,'allowed_pages',None)
+    def _allowed(k): return (k in _allowset) if (_allowset is not None) else True
     brand=_brand()
     initials=str(_e(_initials(raw_name)))
 
@@ -104,69 +107,69 @@ def _navbar(active_page=""):
         today = ("home", "/home", "🏠 Today")
         groups = [
           ("Live & orders", "🔴", _vis([
-            ("live", "/admin/live", "Live Mode") if has("admin","cs","worker","picker","manager") else None,
+            ("live", "/admin/live", "Live Mode") if _allowed("live") else None,
             # Match Live hidden from the menu — the guided Live Mode replaces it (route still reachable by URL).
-            ("matchlog", "/admin/match-log", "Match Log") if has("admin","cs") else None,
-            ("scanit", "/scanit", "Scanit") if has("admin","cs","host","manager") else None,
-            ("preshow", "/admin/preshow", "Match Products") if has("worker","picker","manager") else None,
-            ("pack", "/", "Pack station") if has("worker","manager") else None,
-            ("pick", "/pick", "Picking") if has("worker","picker","manager") else None,
-            ("shows", "/admin/shows", "Shows & orders") if has("admin","cs") else None,
-            ("combine", "/admin/combine", "Combine & Labels") if has("admin","cs") else None,
-            ("tiktok", "/admin/tiktok", "TikTok Shop") if has("admin") else None,
+            ("matchlog", "/admin/match-log", "Match Log") if _allowed("matchlog") else None,
+            ("scanit", "/scanit", "Scanit") if _allowed("scanit") else None,
+            ("preshow", "/admin/preshow", "Match Products") if _allowed("preshow") else None,
+            ("pack", "/", "Pack station") if _allowed("pack") else None,
+            ("pick", "/pick", "Picking") if _allowed("pick") else None,
+            ("shows", "/admin/shows", "Shows & orders") if _allowed("shows") else None,
+            ("combine", "/admin/combine", "Combine & Labels") if _allowed("combine") else None,
+            ("tiktok", "/admin/tiktok", "TikTok Shop") if _allowed("tiktok") else None,
           ])),
           ("Fulfillment", "📦", _vis([
-            ("shipments", "/admin/shipments", "Shipments") if has("admin","cs") else None,
-            ("shipstatus", "/shipping-status", "Shipment Health") if has("admin","cs") else None,
-            ("track", "/admin/track", "Track") if has("admin","cs","worker","picker") else None,
-            ("cleanup", "/admin/cleanup", "Table Cleanup") if has("admin","cs","worker") else None,
-            ("issues", "/admin/issues", "Picking / Packing Issues") if has("admin","cs") else None,
-            ("giveaway", "/giveaway", "Giveaways") if has("admin","cs") else None,
-            ("inbound", "/admin/inbound", "Inbound Labels") if has("admin","cs") else None,
-            ("customers", "/customers", "Customers") if has("admin","cs") else None,
-            ("videos", "/admin/videos", "Packing Videos") if has("admin","cs") else None,
-            ("returns", "/admin/returns", "Returns") if has("admin","cs","manager","worker","picker") else None,
-            ("cshub", "/admin/cs", "CS Hub") if has("admin","cs","manager") else None,
+            ("shipments", "/admin/shipments", "Shipments") if _allowed("shipments") else None,
+            ("shipstatus", "/shipping-status", "Shipment Health") if _allowed("shipstatus") else None,
+            ("track", "/admin/track", "Track") if _allowed("track") else None,
+            ("cleanup", "/admin/cleanup", "Table Cleanup") if _allowed("cleanup") else None,
+            ("issues", "/admin/issues", "Picking / Packing Issues") if _allowed("issues") else None,
+            ("giveaway", "/giveaway", "Giveaways") if _allowed("giveaway") else None,
+            ("inbound", "/admin/inbound", "Inbound Labels") if _allowed("inbound") else None,
+            ("customers", "/customers", "Customers") if _allowed("customers") else None,
+            ("videos", "/admin/videos", "Packing Videos") if _allowed("videos") else None,
+            ("returns", "/admin/returns", "Returns") if _allowed("returns") else None,
+            ("cshub", "/admin/cs", "CS Hub") if _allowed("cshub") else None,
           ])),
           ("Inventory", "📥", _vis([
-            ("inventory", "/admin/inventory", "Inventory") if has("admin","cs") else None,
-            ("productcleanup", "/admin/product-cleanup", "After-Live Cleanup") if has("admin","cs") else None,
-            ("purchasing", "/admin/purchasing", "Purchasing") if has("admin","manager") else None,
-            ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation") if has("admin","cs") else None,
-            ("reprint", "/admin/reprint", "Reprint Label") if has("admin","cs","manager") else None,
-            ("stocktake", "/admin/stocktake", "Stock Take") if has("admin","cs") else None,
+            ("inventory", "/admin/inventory", "Inventory") if _allowed("inventory") else None,
+            ("productcleanup", "/admin/product-cleanup", "After-Live Cleanup") if _allowed("productcleanup") else None,
+            ("purchasing", "/admin/purchasing", "Purchasing") if _allowed("purchasing") else None,
+            ("sku_lookup", "/admin/sku-lookup", "SKU Reconciliation") if _allowed("sku_lookup") else None,
+            ("reprint", "/admin/reprint", "Reprint Label") if _allowed("reprint") else None,
+            ("stocktake", "/admin/stocktake", "Stock Take") if _allowed("stocktake") else None,
           ])),
           ("Analytics", "📊", _vis([
-            ("packer", "/admin/packer-analytics", "Warehouse Analytics") if has("admin","cs") else None,
-            ("hosts", "/admin/hosts", "Host Analytics") if has("admin") else None,
-            ("profit", "/admin/profit", "Profit") if has("admin") else None,
-            ("geo", "/admin/geo-analytics", "Geography") if has("admin","cs") else None,
-            ("analytics", "/analytics", "Analytics") if has("admin","cs") else None,
-            ("repeat", "/admin/repeat-customers", "Repeat Customers") if has("admin","cs") else None,
+            ("packer", "/admin/packer-analytics", "Warehouse Analytics") if _allowed("packer") else None,
+            ("hosts", "/admin/hosts", "Host Analytics") if _allowed("hosts") else None,
+            ("profit", "/admin/profit", "Profit") if _allowed("profit") else None,
+            ("geo", "/admin/geo-analytics", "Geography") if _allowed("geo") else None,
+            ("analytics", "/analytics", "Analytics") if _allowed("analytics") else None,
+            ("repeat", "/admin/repeat-customers", "Repeat Customers") if _allowed("repeat") else None,
           ])),
           ("Team", "🧑‍💼", _vis([
-            ("users", "/users", "Users") if has("admin") else None,
-            ("hires", "/admin/hires", "New Hires") if has("admin","cs") else None,
-            ("badges", "/users/badges", "Badges") if has("admin") else None,
+            ("users", "/users", "Users") if _allowed("users") else None,
+            ("hires", "/admin/hires", "New Hires") if _allowed("hires") else None,
+            ("badges", "/users/badges", "Badges") if _allowed("badges") else None,
           ])),
           ("Resources", "📚", _vis([
             ("announcements", "/announcements", "News"),
-            ("guides", "/guides", "Guides") if has("admin","cs","worker","picker") else None,
-            ("support", "/support", "Support") if has("admin","cs") else None,
-            ("equipment", "/admin/equipment", "Equipment") if has("admin","cs") else None,
+            ("guides", "/guides", "Guides") if _allowed("guides") else None,
+            ("support", "/support", "Support") if _allowed("support") else None,
+            ("equipment", "/admin/equipment", "Equipment") if _allowed("equipment") else None,
           ])),
           ("Settings", "⚙️", _vis([
-            ("setup", "/setup", "Company setup") if has("admin") else None,
-            ("settings", "/admin/settings", "Settings") if has("admin") else None,
-            ("permissions", "/admin/permissions", "Permissions & PIN") if has("admin") else None,
-            ("access", "/admin/access", "Access Management") if has("admin") else None,
-            ("apikeys", "/admin/api-keys", "API keys") if has("admin") else None,
-            ("audit", "/admin/audit", "Audit log") if has("admin") else None,
-            ("datacheck", "/admin/data-check", "Data check") if has("admin") else None,
+            ("setup", "/setup", "Company setup") if _allowed("setup") else None,
+            ("settings", "/admin/settings", "Settings") if _allowed("settings") else None,
+            ("permissions", "/admin/permissions", "Permissions & PIN") if _allowed("permissions") else None,
+            ("access", "/admin/access", "Access Management") if _allowed("access") else None,
+            ("apikeys", "/admin/api-keys", "API keys") if _allowed("apikeys") else None,
+            ("audit", "/admin/audit", "Audit log") if _allowed("audit") else None,
+            ("datacheck", "/admin/data-check", "Data check") if _allowed("datacheck") else None,
           ])),
           ("Me", "👤", _vis([
             ("me", "/me", "My Profile"),
-            ("leaderboard", "/leaderboard", "Leaderboard") if has("admin","cs","worker","picker") else None,
+            ("leaderboard", "/leaderboard", "Leaderboard") if _allowed("leaderboard") else None,
             ("onboarding", "/onboarding", "Onboarding"),
             ("documents", "/documents", "Documents"),
           ])),
@@ -8264,9 +8267,9 @@ __NAVBAR__
 <script>
 function esc(s){return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function toast(m){var t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(function(){t.style.display='none'},2200)}
-var DATA=null, CUR=null, BLOCKED={};
+var DATA=null, CUR=null, BLOCKED={}, ALLOW={};
 function load(){fetch('/api/access').then(function(r){return r.json()}).then(function(d){
-  DATA=d; BLOCKED=JSON.parse(JSON.stringify(d.blocked||{}));
+  DATA=d; BLOCKED=JSON.parse(JSON.stringify(d.blocked||{})); ALLOW=JSON.parse(JSON.stringify(d.allowed||{}));
   var bs=document.getElementById('nrBase'); bs.innerHTML=d.base_roles.map(function(b){return '<option value="'+b.key+'">'+esc(b.label)+'</option>'}).join('');
   if(!CUR){ var firstNon=d.roles.filter(function(r){return r.key!=='admin'})[0]; CUR=firstNon?firstNon.key:d.roles[0].key; }
   renderTabs(); renderPane();
@@ -8289,13 +8292,13 @@ function renderPane(){
   var role=DATA.roles.find(function(r){return r.key===CUR}); if(!role){document.getElementById('pane').innerHTML='';return;}
   var base=role.custom?role.base:role.key;
   if(base==='admin'){ document.getElementById('pane').innerHTML='<div class="note">👑 Admin sees every screen — nothing to restrict here.</div>'; return; }
-  var bl=BLOCKED[CUR]||[];
+  var al=ALLOW[CUR]||{};
   var groups=[]; DATA.pages.forEach(function(p){ if(groups.indexOf(p.group)<0)groups.push(p.group); });
-  var html='<div class="note">Checked = this role can open the screen. Unchecked = hidden & blocked. (Only screens the base tier already allows are enforceable.)</div>';
+  var html='<div class="note">✓ = this role can open the screen (granted). Empty = hidden & blocked. Check any screen to grant it — including Team &amp; Settings. (Billing &amp; platform stay owner-only.)</div>';
   groups.forEach(function(g){
     html+='<div class="grp">'+esc(g)+'</div><div class="pgs">';
     DATA.pages.filter(function(p){return p.group===g}).forEach(function(p){
-      var on=bl.indexOf(p.key)<0;
+      var on=!!al[p.key];
       html+='<label class="pg"><input type="checkbox" data-pg="'+esc(p.key)+'"'+(on?' checked':'')+'><span>'+esc(p.label)+'</span></label>';
     });
     html+='</div>';
@@ -8303,12 +8306,14 @@ function renderPane(){
   html+='<div class="savebar"><button class="btn" id="saveBtn">Save access for '+esc(role.label)+'</button></div>';
   document.getElementById('pane').innerHTML=html;
   document.querySelectorAll('#pane input[data-pg]').forEach(function(cb){cb.addEventListener('change',function(){
-    var pg=cb.getAttribute('data-pg'); var arr=BLOCKED[CUR]||[];
-    if(cb.checked){ arr=arr.filter(function(x){return x!==pg}); } else if(arr.indexOf(pg)<0){ arr.push(pg); }
-    BLOCKED[CUR]=arr;
+    if(!ALLOW[CUR])ALLOW[CUR]={}; ALLOW[CUR][cb.getAttribute('data-pg')]=cb.checked;
   });});
   document.getElementById('saveBtn').addEventListener('click',function(){
-    fetch('/api/access/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({blocked:BLOCKED})})
+    // Send the CHECKED screens per role; the server derives grants/blocks from the defaults.
+    var allow={}; Object.keys(ALLOW).forEach(function(role){
+      allow[role]=Object.keys(ALLOW[role]||{}).filter(function(k){return ALLOW[role][k];});
+    });
+    fetch('/api/access/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({allow:allow})})
       .then(function(r){return r.json()}).then(function(d){ toast(d.ok?'✓ Saved':(d.error||'Failed')); });
   });
 }

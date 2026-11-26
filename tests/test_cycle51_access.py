@@ -18,16 +18,21 @@ def test_page_blocked_rules(appmod):
     A._access_save(A.DEFAULT_ORG, {"packer_lead": {"base": "manager", "label": "PL"}},
                    {"packer_lead": ["profit", "shows"]})
     assert A._page_blocked("packer_lead", "profit", A.DEFAULT_ORG) is True    # explicitly blocked
-    assert A._page_blocked("packer_lead", "pick", A.DEFAULT_ORG) is False     # not blocked
+    assert A._page_blocked("packer_lead", "pick", A.DEFAULT_ORG) is False     # manager default allows pick
     # admin is never blocked, even if somehow listed
     A._access_save(A.DEFAULT_ORG, {}, {"admin": ["profit"]})
     assert A._page_blocked("admin", "profit", A.DEFAULT_ORG) is False
-    # core screens are never blockable
-    A._access_save(A.DEFAULT_ORG, {}, {"cs": ["settings"]})
-    assert A._page_blocked("cs", "settings", A.DEFAULT_ORG) is False
-    # default (nothing configured) → nothing blocked (today's behavior preserved)
+    # always-pages (personal) are never blockable
+    A._access_save(A.DEFAULT_ORG, {}, {"cs": ["me"]})
+    assert A._page_blocked("cs", "me", A.DEFAULT_ORG) is False
+    # cycle-76: a screen outside the role's default is blocked UNLESS granted
     A._access_save(A.DEFAULT_ORG, {}, {})
-    assert A._page_blocked("worker", "profit", A.DEFAULT_ORG) is False
+    assert A._page_blocked("worker", "profit", A.DEFAULT_ORG) is True         # not in worker default
+    A._access_save(A.DEFAULT_ORG, {}, {}, {"worker": ["profit"]})             # grant it
+    assert A._page_allowed("worker", "profit", A.DEFAULT_ORG) is True
+    # a block beats a grant
+    A._access_save(A.DEFAULT_ORG, {}, {"worker": ["profit"]}, {"worker": ["profit"]})
+    assert A._page_allowed("worker", "profit", A.DEFAULT_ORG) is False
 
 
 def test_blocked_page_returns_403(appmod, client):
@@ -65,5 +70,5 @@ def test_access_survives_missing_file(appmod, tmp_path, monkeypatch):
     A = appmod
     monkeypatch.setattr(A, "ACCESS_FILE", str(tmp_path / "does_not_exist.json"))
     cfg = A._access(A.DEFAULT_ORG)
-    assert cfg == {"roles": {}, "blocked": {}}
+    assert cfg == {"roles": {}, "blocked": {}, "granted": {}}
     assert "worker" in A._all_role_keys(A.DEFAULT_ORG)   # base roles still list

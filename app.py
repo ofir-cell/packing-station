@@ -4193,10 +4193,15 @@ def _page_access_gate():
         p=request.path or "/"
         if p.startswith(("/static/","/guide-asset/","/api/")): return
         org=session.get("org",DEFAULT_ORG)
-        blocked=set(k for (k,u,l,grp) in PAGES if _page_blocked(role,k,org))
-        g.blocked_pages=blocked
+        roles=session_roles()
+        # Nav visibility (cycle-76): a page shows if ANY of the user's roles may open it (default OR grant, minus block).
+        allowed=set(k for (k,u,l,grp) in PAGES if any(_page_allowed(r,k,org) for r in roles))
+        g.allowed_pages=allowed
+        g.blocked_pages=set(k for (k,u,l,grp) in PAGES if k not in allowed)
+        # Route 403 is DENY-ONLY: block a direct hit only when the screen is explicitly denied for
+        # every one of the user's roles — never stricter than the route's own @req_role.
         pk=_PATH_TO_PAGE.get(p)
-        if pk and pk in blocked:
+        if pk and roles and all(_page_denied(r,pk,org) for r in roles):
             return _role_fail()
     except Exception as _e:
         print("page access gate skipped:",_e,flush=True)
@@ -4393,18 +4398,40 @@ def req_role(*roles):
             # Warehouse Manager acts as an admin everywhere except the blocklist above.
             if ("manager" in ur) and ("admin" in roles) and not _manager_blocked(request.path):
                 return f(*a,**k)
+            # cycle-76: honor an explicit access-matrix GRANT of this screen (and its own APIs).
+            pk = _PATH_TO_PAGE.get(request.path or "") or _api_admin_page(request.path or "")
+            if pk:
+                org = session.get("org", DEFAULT_ORG)
+                if any(_page_granted(r, pk, org) for r in ur):
+                    return f(*a,**k)
             return _role_fail()
         return d
     return w
+
+def _api_admin_page(path):
+    """Grantable screen whose grant also opens its admin APIs (cycle-76). e.g. granting 'users'
+    lets the role use /api/users*. Billing / org / platform APIs are never mapped here."""
+    p = path or ""
+    for pref, page in _API_ADMIN_PAGE.items():
+        if p == pref or p.startswith(pref + "/") or p.startswith(pref):
+            return page
+    return None
+
 def req_true_admin(f):
     """Strict server-side admin gate for user-, role-, permission- and credential-management.
     Requires the caller's ACTUAL roles to include 'admin' — the manager->admin elevation in
-    req_role does NOT apply here. Independent of any route-prefix blocklist (defense in depth)."""
+    req_role does NOT apply here. A role the admin EXPLICITLY granted the matching screen
+    (cycle-76, e.g. 'users') may use that screen's own APIs; nothing else widens this gate."""
     @wraps(f)
     def d(*a,**k):
         if "user" not in session: return _auth_fail()
-        if "admin" not in session_roles(): return _role_fail()
-        return f(*a,**k)
+        if "admin" in session_roles(): return f(*a,**k)
+        pg = _api_admin_page(request.path or "") or _PATH_TO_PAGE.get(request.path or "")
+        if pg:
+            org = session.get("org", DEFAULT_ORG)
+            if any(_page_granted(r, pg, org) for r in session_roles()):
+                return f(*a,**k)
+        return _role_fail()
     return d
 
 def req_super(f):
@@ -8269,10 +8296,48 @@ PAGES = [
     ("guides","/guides","Guides","Resources"),
     ("support","/support","Support","Resources"),
     ("leaderboard","/leaderboard","Leaderboard","Me"),
+    # Team & Settings — grantable in the access matrix (cycle-76). Default admin-only; the admin can
+    # grant any of these to another role. Billing / org / platform stay owner-only (not listed here).
+    ("users","/users","Users / Team","Team"),
+    ("badges","/users/badges","Badges","Team"),
+    ("setup","/setup","Company setup","Settings"),
+    ("settings","/admin/settings","Settings","Settings"),
+    ("permissions","/admin/permissions","Permissions & PIN","Settings"),
+    ("access","/admin/access","Access Management","Settings"),
+    ("apikeys","/admin/api-keys","API keys","Settings"),
+    ("audit","/admin/audit","Audit log","Settings"),
+    ("datacheck","/admin/data-check","Data check","Settings"),
 ]
+# Default access per screen (cycle-76) — the baseline the access matrix starts from. A role sees a
+# screen if it's in this default set, OR the admin explicitly GRANTED it, and it isn't blocked.
+# Admin always sees everything regardless. Transcribed from the navbar role gates so defaults are
+# unchanged; the Team/Settings screens default to admin-only (grant to open them for others).
+PAGE_DEFAULTS = {
+    "live":{"admin","cs","worker","picker","manager"}, "matchlog":{"admin","cs"},
+    "scanit":{"admin","cs","host","manager"}, "preshow":{"worker","picker","manager"},
+    "pack":{"worker","manager"}, "pick":{"worker","picker","manager"},
+    "shows":{"admin","cs"}, "combine":{"admin","cs"}, "tiktok":{"admin"},
+    "shipments":{"admin","cs"}, "shipstatus":{"admin","cs"}, "track":{"admin","cs","worker","picker"},
+    "cleanup":{"admin","cs","worker"}, "issues":{"admin","cs"}, "giveaway":{"admin","cs"},
+    "inbound":{"admin","cs"}, "customers":{"admin","cs"}, "videos":{"admin","cs"},
+    "returns":{"admin","cs","manager","worker","picker"}, "cshub":{"admin","cs","manager"},
+    "inventory":{"admin","cs"}, "productcleanup":{"admin","cs"}, "purchasing":{"admin","manager"},
+    "sku_lookup":{"admin","cs"}, "reprint":{"admin","cs","manager"}, "stocktake":{"admin","cs"},
+    "packer":{"admin","cs"}, "hosts":{"admin"}, "profit":{"admin"}, "geo":{"admin","cs"},
+    "analytics":{"admin","cs"}, "repeat":{"admin","cs"}, "hires":{"admin","cs"},
+    "equipment":{"admin","cs"}, "guides":{"admin","cs","worker","picker"}, "support":{"admin","cs"},
+    "leaderboard":{"admin","cs","worker","picker"},
+    "users":{"admin"}, "badges":{"admin"}, "setup":{"admin"}, "settings":{"admin"},
+    "permissions":{"admin"}, "access":{"admin"}, "apikeys":{"admin"}, "audit":{"admin"}, "datacheck":{"admin"},
+}
+# Screens that are always reachable (personal / never-lockout) — never in the matrix.
+PAGE_ALWAYS = {"home","me","onboarding","documents","announcements"}
+# API path prefix → the grantable screen whose grant also opens that screen's admin APIs (cycle-76).
+_API_ADMIN_PAGE = {"/api/users":"users","/api/permissions":"permissions","/api/badge":"users"}
 # Screens that must never be blocked (self-management, user/role admin, lock-out risks).
-_PAGE_NEVER_BLOCK = {"me","onboarding","documents","announcements","home","users","badges",
-                     "setup","settings","permissions","access","audit","datacheck"}
+# Never hidden/blocked (personal + lock-out-safe). Team/Settings screens are NOW grantable (cycle-76)
+# so they're no longer here; the admin is always allowed everything, so the owner can't be locked out.
+_PAGE_NEVER_BLOCK = set(PAGE_ALWAYS)
 _PATH_TO_PAGE = {url: key for (key, url, label, grp) in PAGES}
 
 def _access(org=None):
@@ -8286,11 +8351,14 @@ def _access(org=None):
     except Exception:
         d = {}
     a = d.get(org) or {}
-    return {"roles": a.get("roles") or {}, "blocked": a.get("blocked") or {}}
+    return {"roles": a.get("roles") or {}, "blocked": a.get("blocked") or {},
+            "granted": a.get("granted") or {}}
 
-def _access_save(org, roles, blocked):
+def _access_save(org, roles, blocked, granted=None):
     with update_json(ACCESS_FILE, {}) as d:
-        d[org] = {"roles": roles, "blocked": blocked}
+        prev = d.get(org) or {}
+        d[org] = {"roles": roles, "blocked": blocked,
+                  "granted": (granted if granted is not None else (prev.get("granted") or {}))}
 
 def _role_base(role_key, org=None):
     """The base security tier a role maps to (a base role → itself; a custom role → its base)."""
@@ -8302,17 +8370,45 @@ def _all_role_keys(org=None):
     """Base roles + this org's custom roles, for the matrix UI."""
     return BASE_ROLES + [k for k in _access(org)["roles"].keys() if k not in BASE_ROLES]
 
-def _page_blocked(role_key, page_key, org=None):
-    """True if this role may NOT open this screen. Admin is never blocked; core screens never
-    blocked. Everything else: blocked only if the admin explicitly put it on the role's deny-list
-    (or its base role's deny-list, which a custom role inherits)."""
+def _page_granted(role_key, page_key, org=None):
+    """True if the admin EXPLICITLY granted this role (or its base) this screen in the matrix."""
+    gr = _access(org).get("granted") or {}
+    base = _role_base(role_key, org)
+    if page_key in (gr.get(role_key) or []): return True
+    if role_key != base and page_key in (gr.get(base) or []): return True
+    return False
+
+def _page_allowed(role_key, page_key, org=None):
+    """Effective access (cycle-76): may this role open this screen?
+    admin → always · always-pages → yes · explicit block → no · explicit grant → yes ·
+    otherwise the screen's default role set decides. The source of truth for nav + route gating."""
+    if not page_key or page_key in _PAGE_NEVER_BLOCK: return True
+    base = _role_base(role_key, org)
+    if base == "admin" or role_key == "admin": return True
+    a = _access(org); bl = a["blocked"]; gr = a.get("granted") or {}
+    if page_key in (bl.get(role_key) or []) or (role_key != base and page_key in (bl.get(base) or [])):
+        return False
+    if page_key in (gr.get(role_key) or []) or (role_key != base and page_key in (gr.get(base) or [])):
+        return True
+    defs = PAGE_DEFAULTS.get(page_key)
+    if defs is None: return False
+    return (base in defs) or (role_key in defs)
+
+def _page_denied(role_key, page_key, org=None):
+    """EXPLICIT deny only (for the 403 route-gate): the admin put this screen on the role's (or its
+    base's) block-list and didn't grant it. Unlike _page_allowed, a screen merely absent from the
+    role's default set is NOT denied here — the route's own @req_role stays the authority, so the
+    gate never blocks access that req_role allows (e.g. cs on /pick)."""
     if not page_key or page_key in _PAGE_NEVER_BLOCK: return False
     base = _role_base(role_key, org)
-    if base == "admin": return False
+    if base == "admin" or role_key == "admin": return False
+    if _page_granted(role_key, page_key, org): return False
     bl = _access(org)["blocked"]
-    if page_key in (bl.get(role_key) or []): return True
-    if role_key != base and page_key in (bl.get(base) or []): return True
-    return False
+    return page_key in (bl.get(role_key) or []) or (role_key != base and page_key in (bl.get(base) or []))
+
+def _page_blocked(role_key, page_key, org=None):
+    """Back-compat shim: a page is 'blocked' (hidden) when it's not effectively allowed."""
+    return not _page_allowed(role_key, page_key, org)
 def _get_setting(key, default=None):
     c=sdb(); r=c.execute("SELECT value FROM settings WHERE key=?",(key,)).fetchone(); c.close()
     return r["value"] if r else default
@@ -8691,21 +8787,44 @@ def api_access_get():
         else:
             r=a["roles"].get(k) or {}
             roles.append({"key":k,"label":r.get("label") or k,"base":r.get("base") or "worker","custom":True})
+    # Effective "can open" per role per page — the checkbox state (cycle-76: grant OR default, minus block).
+    allowed={}
+    for rk in _all_role_keys(org):
+        allowed[rk]={k: _page_allowed(rk,k,org) for (k,u,l,grp) in PAGES}
     return jsonify({"ok":True,"roles":roles,
                     "pages":[{"key":k,"label":l,"group":grp} for (k,u,l,grp) in PAGES],
-                    "blocked":a["blocked"],
+                    "blocked":a["blocked"],"granted":a.get("granted") or {},"allowed":allowed,
+                    "defaults":{k:sorted(list(v)) for k,v in PAGE_DEFAULTS.items()},
                     "base_roles":[{"key":k,"label":ROLE_LABELS.get(k,k)} for k in BASE_ROLES]})
 
 @app.route("/api/access/save",methods=["POST"])
 @req_true_admin
 def api_access_save():
     org=current_org(); d=request.get_json() or {}
-    inb=d.get("blocked") or {}; pagekeys={k for (k,u,l,grp) in PAGES}; clean={}
-    for role,lst in inb.items():
-        if role=="admin": continue                      # admin is never blockable
-        pk=[p for p in (lst or []) if p in pagekeys and p not in _PAGE_NEVER_BLOCK]
-        if pk: clean[role]=pk
-    a=_access(org); _access_save(org, a["roles"], clean)
+    pagekeys={k for (k,u,l,grp) in PAGES}
+    a=_access(org)
+    # New grant model (cycle-76): the client sends `allow` = the CHECKED screens per role. We derive
+    # grants (checked beyond the role's default) and blocks (default screen unchecked) from it, so a
+    # check truly GRANTS access and an uncheck truly removes it. Falls back to the legacy `blocked`.
+    allow=d.get("allow")
+    if isinstance(allow, dict):
+        granted={}; blocked={}
+        for role,checked in allow.items():
+            if role=="admin": continue                   # admin always full
+            chk=set(p for p in (checked or []) if p in pagekeys)
+            defs=set(p for p in pagekeys if role in (PAGE_DEFAULTS.get(p) or set())
+                     or _role_base(role,org) in (PAGE_DEFAULTS.get(p) or set()))
+            g=sorted(chk - defs); b=sorted((defs - chk))
+            if g: granted[role]=g
+            if b: blocked[role]=b
+        _access_save(org, a["roles"], blocked, granted)
+    else:
+        inb=d.get("blocked") or {}; clean={}
+        for role,lst in inb.items():
+            if role=="admin": continue
+            pk=[p for p in (lst or []) if p in pagekeys and p not in _PAGE_NEVER_BLOCK]
+            if pk: clean[role]=pk
+        _access_save(org, a["roles"], clean, a.get("granted") or {})
     alog("access.save","per-screen access updated")
     return jsonify({"ok":True})
 
