@@ -104,13 +104,13 @@ def _navbar(active_page=""):
         today = ("home", "/home", "🏠 Today")
         groups = [
           ("Live & orders", "🔴", _vis([
-            ("live", "/admin/live", "Live Mode") if has("admin","cs","worker","picker") else None,
+            ("live", "/admin/live", "Live Mode") if has("admin","cs","worker","picker","manager") else None,
             # Match Live hidden from the menu — the guided Live Mode replaces it (route still reachable by URL).
             ("matchlog", "/admin/match-log", "Match Log") if has("admin","cs") else None,
             ("scanit", "/scanit", "Scanit") if has("admin","cs","host","manager") else None,
-            ("preshow", "/admin/preshow", "Match Products") if has("worker","picker") else None,
-            ("pack", "/", "Pack station") if has("worker") else None,
-            ("pick", "/pick", "Picking") if has("worker","picker") else None,
+            ("preshow", "/admin/preshow", "Match Products") if has("worker","picker","manager") else None,
+            ("pack", "/", "Pack station") if has("worker","manager") else None,
+            ("pick", "/pick", "Picking") if has("worker","picker","manager") else None,
             ("shows", "/admin/shows", "Shows & orders") if has("admin","cs") else None,
             ("combine", "/admin/combine", "Combine & Labels") if has("admin","cs") else None,
             ("tiktok", "/admin/tiktok", "TikTok Shop") if has("admin") else None,
