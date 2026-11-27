@@ -5970,6 +5970,18 @@ function openDetail(sid){
             else { lbl=t('alreadypicked'); who=d.picked_by||s.picked_by||'someone'; }
             var when=(d.picked_at||s.picked_at||s.packed_at||'').replace('T',' ').slice(0,16);
             showToast(lbl+(who?(' '+who):'')+(when?(' · '+when):''),false);
+            // cycle-80b: a manager/admin standing at the station can revert a wrongly-"packed" order
+            // back to pending on the spot (e.g. a combined order that inherited a stale packed flag).
+            var _role=document.body.dataset.role||'';
+            if((_role==='admin'||_role==='manager') && (stt==='packed'||stt==='shipped')){
+                if(confirm('This order is marked '+stt.toUpperCase()+' but not picked.\\nRevert it to pending so it can be picked?')){
+                    fetch('/api/shipment/'+encodeURIComponent(s.shipment_id)+'/revert',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:'pending',force:1})})
+                      .then(function(r){return r.json()}).then(function(x){
+                        if(x.ok){showToast('✓ Reverted to pending — scan the label again to pick it.',false);}
+                        else{alert(x.error||'Revert failed');}
+                      }).catch(function(){alert('Revert failed');});
+                }
+            }
             return;
         }
         // The scanned tracking number uniquely identifies this exact order in the
