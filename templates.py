@@ -130,6 +130,7 @@ def _navbar(active_page=""):
             ("videos", "/admin/videos", "Packing Videos") if _allowed("videos") else None,
             ("returns", "/admin/returns", "Returns") if _allowed("returns") else None,
             ("cshub", "/admin/cs", "CS Hub") if _allowed("cshub") else None,
+            ("control", "/admin/control", "Warehouse Control") if _allowed("control") else None,
           ])),
           ("Inventory", "📥", _vis([
             ("inventory", "/admin/inventory", "Inventory") if _allowed("inventory") else None,
@@ -1008,6 +1009,7 @@ function loadChecklist(tracking){
     ov.classList.add('on');
 
     fetch('/api/shipment/'+encodeURIComponent(tracking)).then(function(r){return r.json()}).then(function(d){
+        if(d.held){ ov.classList.remove('on'); showHoldFlash(d.hold, tracking); return; }   // cycle-78: held → DO NOT PACK
         if(!d.ok){
             // Order not in system — still show the overlay so the packer knows to verify manually
             document.getElementById('countBuyer').textContent=t('ordernotfound');
@@ -1246,6 +1248,37 @@ function loadMyStats(){fetch('/api/pack/mystats').then(function(r){return r.json
   if(d.rank&&d.total>1){t+=' · #'+d.rank+'/'+d.total;}
   el.textContent=t;}).catch(function(){});}
 loadMyStats();setInterval(loadMyStats,120000);
+// ── cycle-78: Warehouse Control — DO-NOT-PACK flash + broadcast popup ──
+function _be(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+function showHoldFlash(hold,trk){
+  hold=hold||{};
+  if(!document.getElementById('_holdKf')){var st=document.createElement('style');st.id='_holdKf';st.textContent='@keyframes holdfl{0%,100%{background:#7f1d1d}50%{background:#dc2626}}';document.head.appendChild(st);}
+  var ov=document.getElementById('_holdFlash');
+  if(!ov){ov=document.createElement('div');ov.id='_holdFlash';ov.style.cssText='position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;text-align:center;padding:24px;animation:holdfl .7s infinite';document.body.appendChild(ov);}
+  ov.innerHTML='<div style="font-size:60px">✋</div><div style="font-size:32px;font-weight:900;margin:6px 0">DO NOT PACK</div>'+
+    '<div style="font-size:18px;font-weight:800">Bring this order to the warehouse manager</div>'+
+    (trk?('<div style="margin-top:14px;font-family:monospace;font-size:13px;background:rgba(0,0,0,.25);border-radius:10px;padding:6px 12px">'+_be(trk)+'</div>'):'')+
+    (hold.reason?('<div style="margin-top:10px;font-size:14px;font-weight:700">Reason: '+_be(hold.reason)+'</div>'):'')+
+    '<button style="margin-top:20px;background:#fff;color:#b91c1c;border:0;border-radius:12px;padding:12px 22px;font-weight:900;font-size:15px" onclick="document.getElementById(\\'_holdFlash\\').style.display=\\'none\\'">OK — taking it to the manager</button>';
+  ov.style.display='flex';
+  try{if(navigator.vibrate)navigator.vibrate([200,100,200]);}catch(e){}
+}
+(function(){
+  var seen=0; try{seen=parseInt(localStorage.getItem('bcastSeen')||'0',10)||0;}catch(e){}
+  function pop(b){
+    var ov=document.createElement('div');var secs=10;
+    ov.style.cssText='position:fixed;inset:0;z-index:99998;background:rgba(79,70,229,.97);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:28px';
+    ov.innerHTML='<div style="font-size:46px">📣</div><div style="font-size:24px;font-weight:900;line-height:1.3;margin:10px 0 14px;max-width:720px">'+_be(b.message)+'</div>'+
+      '<div style="font-size:13px;opacity:.85;font-weight:700">— '+_be(b.created_by||'')+'</div>'+
+      '<div id="_bcSecs" style="margin-top:18px;font-size:12px;opacity:.7;font-weight:800;letter-spacing:1px">closing in '+secs+'s…</div>';
+    ov.onclick=function(){clearInterval(iv);if(ov.parentNode)ov.remove();};
+    document.body.appendChild(ov);
+    try{if(navigator.vibrate)navigator.vibrate(300);}catch(e){}
+    var iv=setInterval(function(){secs--;var e=document.getElementById('_bcSecs');if(e)e.textContent='closing in '+secs+'s…';if(secs<=0){clearInterval(iv);if(ov.parentNode)ov.remove();}},1000);
+  }
+  function poll(){fetch('/api/control/broadcast/latest').then(function(r){return r.json()}).then(function(d){var b=d&&d.broadcast;if(b&&b.id>seen){seen=b.id;try{localStorage.setItem('bcastSeen',String(seen));}catch(e){}pop(b);}}).catch(function(){});}
+  setInterval(poll,6000); setTimeout(poll,1500);
+})();
 </script></body></html>'''
 
 # ── DASHBOARD ─────────────────────────────────────────────
@@ -5953,6 +5986,8 @@ function openDetail(sid){
             document.getElementById('cancelOverlay').classList.add('on');
             return;
         }
+        // cycle-78: held with scope 'both' → block picking too (DO NOT TOUCH — bring to manager).
+        if(d.held){ sndError(); showHoldFlash(d.hold, s.tracking_code||''); return; }
         // Server is the source of truth: blocks picked / packed / shipped orders.
         if(d.already_picked || s.status==='picked'){
             sndError();
@@ -6353,6 +6388,37 @@ refreshMachineMode();
 refreshMyStats();
 // Periodically refresh personal stats — picks made on other devices show up too
 setInterval(refreshMyStats,30000);
+// ── cycle-78: Warehouse Control — DO-NOT-TOUCH flash + broadcast popup (same as Pack) ──
+function _be(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+function showHoldFlash(hold,trk){
+  hold=hold||{};
+  if(!document.getElementById('_holdKf')){var st=document.createElement('style');st.id='_holdKf';st.textContent='@keyframes holdfl{0%,100%{background:#7f1d1d}50%{background:#dc2626}}';document.head.appendChild(st);}
+  var ov=document.getElementById('_holdFlash');
+  if(!ov){ov=document.createElement('div');ov.id='_holdFlash';ov.style.cssText='position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;text-align:center;padding:24px;animation:holdfl .7s infinite';document.body.appendChild(ov);}
+  ov.innerHTML='<div style="font-size:60px">✋</div><div style="font-size:32px;font-weight:900;margin:6px 0">DO NOT TOUCH</div>'+
+    '<div style="font-size:18px;font-weight:800">Bring this order to the warehouse manager</div>'+
+    (trk?('<div style="margin-top:14px;font-family:monospace;font-size:13px;background:rgba(0,0,0,.25);border-radius:10px;padding:6px 12px">'+_be(trk)+'</div>'):'')+
+    (hold.reason?('<div style="margin-top:10px;font-size:14px;font-weight:700">Reason: '+_be(hold.reason)+'</div>'):'')+
+    '<button style="margin-top:20px;background:#fff;color:#b91c1c;border:0;border-radius:12px;padding:12px 22px;font-weight:900;font-size:15px" onclick="document.getElementById(\\'_holdFlash\\').style.display=\\'none\\'">OK — taking it to the manager</button>';
+  ov.style.display='flex';
+  try{if(navigator.vibrate)navigator.vibrate([200,100,200]);}catch(e){}
+}
+(function(){
+  var seen=0; try{seen=parseInt(localStorage.getItem('bcastSeen')||'0',10)||0;}catch(e){}
+  function pop(b){
+    var ov=document.createElement('div');var secs=10;
+    ov.style.cssText='position:fixed;inset:0;z-index:99998;background:rgba(79,70,229,.97);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:28px';
+    ov.innerHTML='<div style="font-size:46px">📣</div><div style="font-size:24px;font-weight:900;line-height:1.3;margin:10px 0 14px;max-width:720px">'+_be(b.message)+'</div>'+
+      '<div style="font-size:13px;opacity:.85;font-weight:700">— '+_be(b.created_by||'')+'</div>'+
+      '<div id="_bcSecs" style="margin-top:18px;font-size:12px;opacity:.7;font-weight:800;letter-spacing:1px">closing in '+secs+'s…</div>';
+    ov.onclick=function(){clearInterval(iv);if(ov.parentNode)ov.remove();};
+    document.body.appendChild(ov);
+    try{if(navigator.vibrate)navigator.vibrate(300);}catch(e){}
+    var iv=setInterval(function(){secs--;var e=document.getElementById('_bcSecs');if(e)e.textContent='closing in '+secs+'s…';if(secs<=0){clearInterval(iv);if(ov.parentNode)ov.remove();}},1000);
+  }
+  function poll(){fetch('/api/control/broadcast/latest').then(function(r){return r.json()}).then(function(d){var b=d&&d.broadcast;if(b&&b.id>seen){seen=b.id;try{localStorage.setItem('bcastSeen',String(seen));}catch(e){}pop(b);}}).catch(function(){});}
+  setInterval(poll,6000); setTimeout(poll,1500);
+})();
 </script>
 </body></html>'''
 
@@ -15779,5 +15845,129 @@ document.getElementById("create").onclick=function(){
 function copyKey(){var t=document.getElementById("newkey").textContent;navigator.clipboard.writeText(t).then(function(){alert("Copied");},function(){});}
 function revoke(id){if(!confirm("Revoke this key? The AI using it loses access immediately."))return;J("/api/apikeys/"+id+"/revoke",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}).then(function(){load();});}
 loadOrgs();load();
+</script>
+</body></html>'''
+
+
+# ── Warehouse Control (cycle-78) — broadcast + hold-a-shipment ─────────────────
+CONTROL_HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Warehouse Control</title>
+__NAVBAR_CSS__
+<style>
+:root{--brand:#4f46e5;--brand2:#7c3aed;--ink:#1a2130;--mut:#6b7280;--bd:#e4e7ec;--bg:#f6f7fb;--red:#dc2626}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink)}
+.wrap{max-width:820px;margin:0 auto;padding:16px 14px 70px}
+h1{font-size:21px;font-weight:900;margin:0 0 2px}.sub{color:var(--mut);font-size:13px;margin-bottom:16px}
+.tool{background:#fff;border:1px solid var(--bd);border-radius:16px;padding:16px;margin-bottom:16px}
+.tool h3{margin:0 0 10px;font-size:15px;font-weight:900}
+label{font-size:11px;font-weight:800;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px}
+textarea,input{width:100%;border:1.5px solid var(--bd);border-radius:12px;padding:12px;font-size:15px;font-family:inherit}
+textarea{min-height:70px;resize:vertical}
+.btn{border:0;border-radius:12px;padding:13px 18px;font-weight:900;font-size:15px;cursor:pointer}
+.btn.send{background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff;width:100%;margin-top:12px}
+.btn.find{background:#eef2ff;color:#4338ca;border:1.5px solid #c7d2fe;white-space:nowrap}
+.btn.stop{background:var(--red);color:#fff;width:100%;margin-top:12px}
+.btn.rel{background:#f1f5f9;color:#475569;font-size:13px;padding:7px 12px}
+.row{display:flex;gap:10px;align-items:flex-end}
+.card2{border:1px solid var(--bd);border-radius:12px;padding:14px;background:#fbfaff;margin-top:14px}
+.kv{display:flex;justify-content:space-between;gap:10px;font-size:13.5px;padding:3px 0}.kv b{font-weight:800;text-align:right}
+.pill{display:inline-block;font-size:11px;font-weight:800;border-radius:20px;padding:2px 9px}
+.pill.tt{background:#fde68a;color:#92400e}.pill.wn{background:#e9d5ff;color:#6b21a8}
+.scope{display:flex;gap:10px;margin:12px 0}
+.scope .opt{flex:1;border:2px solid var(--bd);border-radius:12px;padding:11px;text-align:center;font-weight:800;font-size:13px;cursor:pointer}
+.scope .opt.on{border-color:var(--red);background:#fef2f2;color:#b91c1c}
+.holdrow{display:flex;align-items:center;gap:10px;border-top:1px solid var(--bd);padding:10px 0;font-size:13px}
+.holdrow .t{font-family:ui-monospace,Menlo,monospace;font-weight:800}
+.msg{font-size:12.5px;font-weight:700;margin-top:8px;min-height:14px}.msg.ok{color:#059669}.msg.err{color:#dc2626}
+.mut{color:var(--mut)}
+</style></head><body>__NAVBAR__
+<div class="wrap">
+  <h1>🛠️ Warehouse control</h1>
+  <div class="sub">Broadcast a message to the floor, or stop a shipment before it ships.</div>
+
+  <div class="tool">
+    <h3>📣 Broadcast to the floor</h3>
+    <label>Message to all Pack &amp; Pick iPads</label>
+    <textarea id="bMsg" placeholder="e.g. Break in 10 minutes · Stop packing HERA · Maria come to the office"></textarea>
+    <button class="btn send" id="bSend">📣 Send — pops up on every Pack &amp; Pick iPad for 10 seconds</button>
+    <div class="msg" id="bOut"></div>
+  </div>
+
+  <div class="tool">
+    <h3>🛑 Stop a shipment (hold from packing)</h3>
+    <label>Tracking number</label>
+    <div class="row">
+      <input id="hTrk" placeholder="Scan or type the tracking number" autocomplete="off">
+      <button class="btn find" id="hFind">Find order</button>
+    </div>
+    <div class="msg" id="hFindMsg"></div>
+    <div id="hCard"></div>
+  </div>
+
+  <div class="tool">
+    <h3>⏸️ Currently on hold <span class="mut" id="hN"></span> <button class="btn rel" id="hRefresh" style="float:right">↻</button></h3>
+    <div id="hList"><div class="mut">—</div></div>
+  </div>
+</div>
+<script>
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+function J(u,o){return fetch(u,o).then(function(r){return r.json();});}
+function platPill(p){p=(p||'').toLowerCase();if(p==='tiktok')return '<span class="pill tt">TikTok</span>';if(p==='whatnot')return '<span class="pill wn">Whatnot</span>';return '<span class="pill" style="background:#e5e7eb;color:#374151">'+esc(p||'—')+'</span>';}
+// Broadcast
+document.getElementById('bSend').onclick=function(){
+  var m=document.getElementById('bMsg').value.trim();var out=document.getElementById('bOut');
+  if(!m){out.textContent='Type a message';out.className='msg err';return;}
+  J('/api/control/broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:m})}).then(function(d){
+    if(!d.ok){out.textContent=d.error||'Failed';out.className='msg err';return;}
+    out.textContent='✓ Sent to the floor';out.className='msg ok';document.getElementById('bMsg').value='';
+  });
+};
+// Find + hold
+var HSCOPE='pack';
+document.getElementById('hFind').onclick=findOrder;
+document.getElementById('hTrk').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();findOrder();}});
+function findOrder(){
+  var trk=document.getElementById('hTrk').value.trim();var fm=document.getElementById('hFindMsg');fm.textContent='';
+  if(!trk){fm.textContent='Enter a tracking number';fm.className='msg err';return;}
+  J('/api/control/shipment?trk='+encodeURIComponent(trk)).then(function(d){
+    if(!d.ok){document.getElementById('hCard').innerHTML='';fm.textContent=d.error||'Not found';fm.className='msg err';return;}
+    var s=d.shipment;HSCOPE='pack';
+    var items=(s.items||[]).filter(function(i){return !i.cancelled;}).map(function(i){return '#'+esc(i.sku)+' '+esc(i.product_name||'');}).join(' · ');
+    var already=s.hold?('<div class="msg err">Already on hold ('+esc(s.hold_scope||'pack')+')'+(s.hold_reason?(' — '+esc(s.hold_reason)):'')+'</div>'):'';
+    document.getElementById('hCard').innerHTML='<div class="card2">'+
+      '<div class="kv"><span>Platform · show</span><b>'+platPill(s.platform)+' '+esc(s.import_label||'—')+'</b></div>'+
+      '<div class="kv"><span>Buyer</span><b>'+esc(s.buyer_name||s.buyer_username||'—')+'</b></div>'+
+      '<div class="kv"><span>Items</span><b style="max-width:62%">'+(items||'—')+'</b></div>'+
+      '<div class="kv"><span>Status</span><b>'+esc(s.status||'—')+'</b></div>'+already+
+      '<label style="margin-top:12px">Block scope</label>'+
+      '<div class="scope"><div class="opt on" data-s="pack">🛑 Pack only</div><div class="opt" data-s="both">🛑 Pack + Pick</div></div>'+
+      '<label>Reason (shown to the worker)</label>'+
+      '<input id="hReason" placeholder="e.g. Address change — hold for the manager">'+
+      '<button class="btn stop" id="hStop" data-sid="'+esc(s.shipment_id)+'" data-trk="'+esc(s.tracking||trk)+'">🛑 Stop this shipment</button>'+
+      '<div class="msg" id="hStopMsg"></div></div>';
+    document.querySelectorAll('#hCard .opt').forEach(function(o){o.onclick=function(){HSCOPE=o.getAttribute('data-s');document.querySelectorAll('#hCard .opt').forEach(function(x){x.classList.toggle('on',x===o);});};});
+    document.getElementById('hStop').onclick=function(){
+      var trk=this.getAttribute('data-trk');var reason=document.getElementById('hReason').value.trim();
+      J('/api/control/hold',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trk:trk,scope:HSCOPE,reason:reason})}).then(function(d){
+        var m=document.getElementById('hStopMsg');
+        if(!d.ok){m.textContent=d.error||'Failed';m.className='msg err';return;}
+        m.textContent='🛑 Stopped ('+d.scope+'). Packers are now blocked.';m.className='msg ok';loadHolds();
+      });
+    };
+  });
+}
+function loadHolds(){
+  J('/api/control/holds').then(function(d){
+    if(!d.ok)return;document.getElementById('hN').textContent='· '+d.holds.length;
+    document.getElementById('hList').innerHTML=d.holds.length?d.holds.map(function(h){
+      return '<div class="holdrow"><span class="t">…'+esc((h.tracking_code||'').slice(-7))+'</span>'+platPill(h.platform)+
+        '<span style="flex:1">'+esc(h.buyer_name||h.buyer_username||'—')+' · '+esc(h.import_label||'')+' · <b style="color:#b91c1c">'+(h.hold_scope==='both'?'Pack + Pick':'Pack only')+'</b>'+(h.hold_reason?(' · '+esc(h.hold_reason)):'')+'</span>'+
+        '<button class="btn rel" onclick="releaseHold(\\''+esc(h.shipment_id)+'\\')">Release</button></div>';
+    }).join(''):'<div class="mut">Nothing on hold.</div>';
+  });
+}
+function releaseHold(sid){J('/api/control/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({shipment_id:sid})}).then(function(){loadHolds();});}
+document.getElementById('hRefresh').onclick=loadHolds;
+loadHolds();
 </script>
 </body></html>'''

@@ -46,6 +46,7 @@ from templates import SHOW_HEALTH_HTML  # Per-show fulfilment health screen
 from templates import RETURNS_HTML  # Returns module screen
 from templates import CS_HUB_HTML  # CS Hub (tickets) screen
 from templates import API_KEYS_HTML  # Scoped API-key management screen
+from templates import CONTROL_HTML  # Warehouse Control (broadcast + hold) screen
 
 
 # Default (founding) tenant id. Multi-tenancy: every user belongs to an org;
@@ -1428,6 +1429,12 @@ def sdb_init(org):
         # printable sheet (slip+label or bare label); manifest_url = the combined slip+label.
         "ALTER TABLE shipments ADD COLUMN label_url TEXT",
         "ALTER TABLE shipments ADD COLUMN manifest_url TEXT",
+        # Warehouse Control hold (cycle-78): stop a shipment from packing (and optionally picking).
+        "ALTER TABLE shipments ADD COLUMN hold INTEGER DEFAULT 0",
+        "ALTER TABLE shipments ADD COLUMN hold_scope TEXT",      # 'pack' | 'both'
+        "ALTER TABLE shipments ADD COLUMN hold_reason TEXT",
+        "ALTER TABLE shipments ADD COLUMN held_by TEXT",
+        "ALTER TABLE shipments ADD COLUMN held_at TEXT",
         # Bilingual onboarding — Spanish translations live in *_es columns
         # alongside the English originals. NULL ES → frontend falls back to EN.
         "ALTER TABLE onboarding_steps ADD COLUMN title_es TEXT",
@@ -1835,6 +1842,10 @@ def sdb_init(org):
     c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_updated ON tickets(updated_at)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_ticket_msgs ON ticket_messages(ticket_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_cnotes_user ON customer_notes(username)")
+    # Warehouse Control broadcasts (cycle-78): a short message that pops up on the Pack/Pick iPads.
+    c.execute("""CREATE TABLE IF NOT EXISTS broadcasts(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT, created_by TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
     # Inbound shipments — labels bought for supplier → warehouse shipments.
     c.execute("""CREATE TABLE IF NOT EXISTS inbound_shipments(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -6974,6 +6985,11 @@ def api_shipment_lookup(code):
         return jsonify({"ok": False, "error": "Invalid code"})
     c = sdb()
     row = _resolve_shipment_by_code(c, code)
+    # cycle-78: a held shipment must NOT be packed — flash a block on the packer's screen.
+    if row and row["hold"] and (row["hold_scope"] or "pack") in ("pack","both"):
+        held=_hold_dict(row); c.close()
+        return jsonify({"ok":False,"held":True,"hold":held,
+                        "error":"⛔ DO NOT PACK — bring this order to the warehouse manager"})
     if not row:
         c.close()
         # Standalone giveaway with its own label? Make it packable/filmable by tracking.
@@ -7671,6 +7687,9 @@ def api_pick_get(sid):
         "picked_by": s["picked_by"],
         "picked_at": s["picked_at"],
         "pick_started_by": _claimed_by,
+        # cycle-78: a shipment held with scope 'both' is blocked from picking too.
+        "held": bool(s["hold"] and (s["hold_scope"] or "pack") == "both"),
+        "hold": (_hold_dict(s) if s["hold"] else None),
         "giveaways": _pending_giveaways_for(s["shipment_id"], s["tracking_code"]),
     })
 
@@ -8279,6 +8298,7 @@ PAGES = [
     ("videos","/admin/videos","Packing Videos","Fulfillment"),
     ("returns","/admin/returns","Returns","Fulfillment"),
     ("cshub","/admin/cs","CS Hub","Fulfillment"),
+    ("control","/admin/control","Warehouse Control","Fulfillment"),
     ("inventory","/admin/inventory","Inventory","Inventory"),
     ("productcleanup","/admin/product-cleanup","After-Live Cleanup","Inventory"),
     ("purchasing","/admin/purchasing","Purchasing","Inventory"),
@@ -8321,6 +8341,7 @@ PAGE_DEFAULTS = {
     "cleanup":{"admin","cs","worker"}, "issues":{"admin","cs"}, "giveaway":{"admin","cs"},
     "inbound":{"admin","cs"}, "customers":{"admin","cs"}, "videos":{"admin","cs"},
     "returns":{"admin","cs","manager","worker","picker"}, "cshub":{"admin","cs","manager"},
+    "control":{"admin","manager","cs"},
     "inventory":{"admin","cs"}, "productcleanup":{"admin","cs"}, "purchasing":{"admin","manager"},
     "sku_lookup":{"admin","cs"}, "reprint":{"admin","cs","manager"}, "stocktake":{"admin","cs"},
     "packer":{"admin","cs"}, "hosts":{"admin"}, "profit":{"admin"}, "geo":{"admin","cs"},
@@ -22166,6 +22187,103 @@ def api_apikeys_create():
 def api_apikeys_revoke(kid):
     c=pdb(); c.execute("UPDATE api_keys SET revoked=1 WHERE id=?",(kid,)); c.commit(); c.close()
     return jsonify({"ok":True})
+
+# ══════════════════════════════════════════════════════════
+# WAREHOUSE CONTROL (cycle-78) — admin/manager/CS tools:
+#  1) broadcast a message that pops up on every Pack/Pick iPad for 10s;
+#  2) stop a shipment by tracking (hold from packing, optionally picking too).
+# ══════════════════════════════════════════════════════════
+@app.route("/admin/control")
+@req_role("admin","manager","cs")
+def control_page():
+    return (CONTROL_HTML.replace("__NAME__",esc(session.get("name","")))
+            .replace("__NAVBAR__",_navbar("control")).replace("__NAVBAR_CSS__",_NAVBAR_CSS))
+
+@app.route("/api/control/broadcast", methods=["POST"])
+@req_role("admin","manager","cs")
+def api_control_broadcast():
+    msg=((request.get_json() or {}).get("message") or "").strip()
+    if not msg: return jsonify({"ok":False,"error":"Type a message"})
+    if len(msg)>400: msg=msg[:400]
+    who=session.get("name") or session.get("user") or ""
+    c=sdb(); bid=c.execute("INSERT INTO broadcasts(message,created_by) VALUES(?,?)",(msg,who)).lastrowid
+    c.commit(); c.close()
+    return jsonify({"ok":True,"id":bid})
+
+@app.route("/api/control/broadcast/latest")
+@req_login
+def api_control_broadcast_latest():
+    """The most recent broadcast in the last few minutes — the Pack/Pick iPads poll this and show a
+    10s popup when they see an id they haven't shown yet."""
+    c=sdb()
+    r=c.execute("""SELECT id,message,created_by,created_at FROM broadcasts
+                   WHERE created_at >= datetime('now','-5 minutes') ORDER BY id DESC LIMIT 1""").fetchone()
+    c.close()
+    return jsonify({"ok":True,"broadcast":(dict(r) if r else None)})
+
+def _hold_dict(s):
+    return {"shipment_id":s["shipment_id"],"tracking":s["tracking_code"],
+            "scope":s["hold_scope"] or "pack","reason":s["hold_reason"] or "",
+            "by":s["held_by"] or "","at":s["held_at"]}
+
+@app.route("/api/control/shipment")
+@req_role("admin","manager","cs")
+def api_control_shipment():
+    """Pull a whole order by tracking (or shipment id) for the Stop-a-shipment tool."""
+    code=(request.args.get("trk") or request.args.get("code") or "").strip()
+    if not code: return jsonify({"ok":False,"error":"Enter a tracking number"})
+    c=sdb(); s=_resolve_shipment_by_code(c,code)
+    if not s: c.close(); return jsonify({"ok":False,"error":"No order found for that tracking"})
+    items=[dict(i) for i in c.execute(
+        "SELECT sku,product_name,quantity,COALESCE(cancelled,0) cancelled FROM shipment_items WHERE shipment_id=?",
+        (s["shipment_id"],)).fetchall()]
+    c.close()
+    return jsonify({"ok":True,"shipment":{"shipment_id":s["shipment_id"],"tracking":s["tracking_code"],
+        "buyer_name":s["buyer_name"],"buyer_username":s["buyer_username"],"platform":s["platform"],
+        "import_label":s["import_label"],"status":s["status"],"address":s["address_full"],
+        "hold":bool(s["hold"]),"hold_scope":s["hold_scope"],"hold_reason":s["hold_reason"],"items":items}})
+
+@app.route("/api/control/hold", methods=["POST"])
+@req_role("admin","manager","cs")
+def api_control_hold():
+    d=request.get_json() or {}
+    code=(d.get("trk") or d.get("shipment_id") or "").strip()
+    scope=(d.get("scope") or "pack").strip()
+    if scope not in ("pack","both"): scope="pack"
+    reason=(d.get("reason") or "").strip()[:200]
+    if not code: return jsonify({"ok":False,"error":"tracking required"})
+    who=session.get("name") or session.get("user") or ""
+    c=sdb(); s=_resolve_shipment_by_code(c,code)
+    if not s: c.close(); return jsonify({"ok":False,"error":"No order found"})
+    c.execute("""UPDATE shipments SET hold=1,hold_scope=?,hold_reason=?,held_by=?,held_at=CURRENT_TIMESTAMP
+                 WHERE shipment_id=?""",(scope,reason,who,s["shipment_id"]))
+    _oev(c,s["shipment_id"],"hold","held ("+scope+") — "+(reason or "no reason"),actor=who)
+    c.commit(); c.close()
+    return jsonify({"ok":True,"shipment_id":s["shipment_id"],"scope":scope})
+
+@app.route("/api/control/release", methods=["POST"])
+@req_role("admin","manager","cs")
+def api_control_release():
+    d=request.get_json() or {}
+    code=(d.get("trk") or d.get("shipment_id") or "").strip()
+    if not code: return jsonify({"ok":False,"error":"tracking required"})
+    who=session.get("name") or session.get("user") or ""
+    c=sdb(); s=_resolve_shipment_by_code(c,code)
+    if not s: c.close(); return jsonify({"ok":False,"error":"No order found"})
+    c.execute("UPDATE shipments SET hold=0 WHERE shipment_id=?",(s["shipment_id"],))
+    _oev(c,s["shipment_id"],"hold_release","hold released",actor=who)
+    c.commit(); c.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/control/holds")
+@req_role("admin","manager","cs")
+def api_control_holds():
+    c=sdb()
+    rows=c.execute("""SELECT shipment_id,tracking_code,hold_scope,hold_reason,held_by,held_at,
+                             buyer_name,buyer_username,platform,import_label
+                      FROM shipments WHERE COALESCE(hold,0)=1 ORDER BY held_at DESC LIMIT 200""").fetchall()
+    c.close()
+    return jsonify({"ok":True,"holds":[dict(r) for r in rows]})
 
 # ══════════════════════════════════════════════════════════
 # MOBILE SCREENS (/m/...) — separate front end for the iPhone/iPad app, in mobile/.
