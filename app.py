@@ -20032,6 +20032,14 @@ def _tt_merge_into_package(c, new_pid, order_ids, packages=None):
     c.execute("UPDATE shipment_items SET shipment_id=? WHERE order_id IN (%s) AND shipment_id IN (%s)"
               % (",".join("?" * len(order_ids)), ",".join("?" * len(olds))), [new_pid] + list(order_ids) + olds)
     c.execute("UPDATE shipments SET status=? WHERE shipment_id=?", (merged_status, new_pid))
+    # cycle-80: the merged row was copied from the first package, so it can inherit that part's
+    # pack/hold stamps. Normalize them to the combined box's real stage, or a combined TikTok order
+    # shows up as "already PACKED" / held on the floor when it was never packed.
+    if merged_status != "packed":
+        c.execute("UPDATE shipments SET packed_at=NULL, packed_by=NULL WHERE shipment_id=?", (new_pid,))
+    if merged_status == "pending":
+        c.execute("UPDATE shipments SET picked_at=NULL, picked_by=NULL WHERE shipment_id=?", (new_pid,))
+    c.execute("UPDATE shipments SET hold=0 WHERE shipment_id=?", (new_pid,))   # never inherit a hold
     for o in olds:
         if o == new_pid: continue
         if not c.execute("SELECT 1 FROM shipment_items WHERE shipment_id=?", (o,)).fetchone():
