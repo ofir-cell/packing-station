@@ -955,7 +955,16 @@ function onDocCam(e){var m=document.getElementById('camMenu'),c=document.getElem
 initCam();
 function pickMime(){var c=['video/webm;codecs=vp8','video/webm;codecs=vp9','video/webm','video/mp4'];
   for(var i=0;i<c.length;i++){try{if(window.MediaRecorder&&MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(c[i]))return c[i]}catch(e){}}return '';}
-function startRec(trk){if(!sm){alert(t('nocamera'));return}ct=trk;ch=[];
+function startRec(trk){if(!sm){alert(t('nocamera'));return}
+  // cycle-81: a HELD order must never open the camera or record. Check BEFORE recording —
+  // the old flow started the recorder first and only showed the flash afterwards, so the
+  // packer could still finish the video and mark it PACKED under the alert. Stop here instead.
+  fetch('/api/shipment/'+encodeURIComponent(trk)).then(function(r){return r.json()}).then(function(d){
+    if(d&&d.held){ showHoldFlash(d.hold, trk); go('r'); return; }   // DO NOT PACK — no camera, stay on ready
+    _beginRec(trk, d);
+  }).catch(function(){ _beginRec(trk, null); });   // network hiccup → don't block the floor; loadChecklist re-checks
+}
+function _beginRec(trk, pre){if(!sm){alert(t('nocamera'));return}ct=trk;ch=[];
   // Match bitrate to the ACTUAL capture resolution — a fixed rate starves VP8 at
   // 720p/1080p and the picture pixelates on motion with no keyframe to recover.
   // Target ~0.15 bit/pixel, clamped 1.5–6 Mbps (short clips stay small).
@@ -968,7 +977,7 @@ function startRec(trk){if(!sm){alert(t('nocamera'));return}ct=trk;ch=[];
   try{console.log('[rec] '+w+'x'+h+'@'+fps+'fps '+Math.round(br/1000)+'kbps '+(mime||'default'))}catch(e){}
   mr.ondataavailable=function(e){if(e.data.size>0)ch.push(e.data)};
   mr.start();  // no timeslice → one complete blob on stop (no chunk-join risk)
-  t0=Date.now();startTmr();document.getElementById('rk').textContent=trk;go('c');loadChecklist(trk);packBegin(trk)}
+  t0=Date.now();startTmr();document.getElementById('rk').textContent=trk;go('c');loadChecklist(trk,pre);packBegin(trk)}
 
 // ─── Packer item-count reminder (NO touch / NO buttons) ───
 // After each scan we look up the shipment and:
@@ -994,7 +1003,7 @@ function hideReminder(){
     if(countTimer){clearTimeout(countTimer);countTimer=null}
 }
 
-function loadChecklist(tracking){
+function loadChecklist(tracking,pre){
     // Clear any leftover reminder from a previous scan
     hideReminder();
     var ov=document.getElementById('countOverlay');
@@ -1008,7 +1017,7 @@ function loadChecklist(tracking){
     document.getElementById('countFoot').className='count-foot';
     ov.classList.add('on');
 
-    fetch('/api/shipment/'+encodeURIComponent(tracking)).then(function(r){return r.json()}).then(function(d){
+    var _got=function(d){
         if(d.held){ ov.classList.remove('on'); showHoldFlash(d.hold, tracking); return; }   // cycle-78: held → DO NOT PACK
         if(!d.ok){
             // Order not in system — still show the overlay so the packer knows to verify manually
@@ -1099,7 +1108,8 @@ function loadChecklist(tracking){
             ov.classList.remove('on');
             if(!PS)side.classList.add('on');     // the scan panel replaces the side card
         },PS?2500:8000);
-    }).catch(function(){
+    };
+    var _fail=function(){
         document.getElementById('countBuyer').textContent='—';
         document.getElementById('countBig').textContent='?';
         document.getElementById('countLabel').textContent='lookup failed';
@@ -1107,7 +1117,10 @@ function loadChecklist(tracking){
         document.getElementById('countFoot').textContent='⚠️ Could not reach server — record anyway';
         document.getElementById('countFoot').className='count-foot warn';
         countTimer=setTimeout(function(){ov.classList.remove('on')},8000);
-    });
+    };
+    // Reuse the shipment data startRec() already fetched for the held-check (cycle-81); else fetch now.
+    if(pre){ _got(pre); }
+    else fetch('/api/shipment/'+encodeURIComponent(tracking)).then(function(r){return r.json()}).then(_got).catch(_fail);
 }
 
 function showCancelAlert(buyer,reason){

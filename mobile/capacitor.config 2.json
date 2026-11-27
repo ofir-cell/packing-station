@@ -1,0 +1,10 @@
+{
+  "appId": "com.btrade.liveopshub",
+  "appName": "Live Ops Hub",
+  "webDir": "www",
+  "server": { "iosScheme": "https", "androidScheme": "https" },
+  "ios": { "contentInset": "always", "limitsNavigationsToAppBoundDomains": false },
+  "plugins": {
+    "PushNotifications": { "presentationOptions": ["badge", "sound", "alert"] }
+  }
+}
