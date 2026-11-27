@@ -13902,20 +13902,47 @@ def api_user_roles():
     alog("user.roles",u+" -> "+role+("+"+",".join(extra) if extra else ""))
     return jsonify({"ok":True})
 
+_USER_REF_TABLES=("availability","scanit_favorites","scanit_recent","scanit_scans")
+
 @app.route("/api/users/name",methods=["POST"])
 @req_true_admin
 def api_user_name():
-    """Update a user's display name."""
+    """Update a user's display name AND keep their login username in sync with it (cycle-79):
+    the username becomes a slug of the name (claudiasmith), so the two never drift. 'admin' is never
+    renamed; collisions get a numeric suffix; the user's own data, availability/scanit rows and live
+    session are carried over to the new handle."""
     d=request.get_json() or {}
     u=(d.get("username") or "").strip().lower()
     name=(d.get("name") or "").strip()[:60]
     if not name: return jsonify({"ok":False,"error":"Enter a name"})
+    renamed_to=None
     with update_json(USERS_FILE) as users:
         if u not in users or not _same_org_user(users,u):
             return jsonify({"ok":False,"error":"User not found"}),404
         users[u]["name"]=name
-    alog("user.rename", u+" -> "+name)
-    return jsonify({"ok":True,"name":name})
+        # Keep the login username aligned with the name (not for admin).
+        if u!="admin":
+            new_u=_slug_username(name)
+            if new_u and new_u!=u and re.match(r'^[a-z0-9_\-]{2,32}$',new_u):
+                base=new_u; i=2
+                while new_u in users:            # collision → append a number
+                    new_u=(base[:30]+str(i)); i+=1
+                users[new_u]=users.pop(u); users[new_u]["name"]=name
+                renamed_to=new_u
+    if renamed_to:
+        # Move the worker's rows + their live session to the new handle.
+        try:
+            c=sdb()
+            for t in _USER_REF_TABLES:
+                try: c.execute("UPDATE %s SET username=? WHERE username=?"%t,(renamed_to,u))
+                except Exception: pass
+            c.commit(); c.close()
+        except Exception: pass
+        if session.get("user")==u: session["user"]=renamed_to
+        alog("user.rename", u+" -> "+renamed_to+" ("+name+")")
+    else:
+        alog("user.rename", u+" -> "+name)
+    return jsonify({"ok":True,"name":name,"username":renamed_to or u,"renamed":bool(renamed_to)})
 
 @app.route("/api/users/delete",methods=["POST"])
 @req_true_admin

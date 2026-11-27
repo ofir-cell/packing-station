@@ -1558,7 +1558,8 @@ function editName(u,cur){
     if(nn===null)return;nn=nn.trim();if(!nn||nn===cur)return;
     fetch('/api/users/name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,name:nn})})
       .then(function(r){return r.json()}).then(function(d){
-        if(d.ok){loadUsers();}else{alert(d.error||'Failed')}
+        if(d.ok){ if(d.renamed){alert('Saved. Login username is now "'+d.username+'" (kept in sync with the name).');} loadUsers();}
+        else{alert(d.error||'Failed')}
       }).catch(function(){alert('Request failed')});
 }
 ['uSearch','uRole','uActive'].forEach(function(id){
