@@ -1248,37 +1248,7 @@ function loadMyStats(){fetch('/api/pack/mystats').then(function(r){return r.json
   if(d.rank&&d.total>1){t+=' · #'+d.rank+'/'+d.total;}
   el.textContent=t;}).catch(function(){});}
 loadMyStats();setInterval(loadMyStats,120000);
-// ── cycle-78: Warehouse Control — DO-NOT-PACK flash + broadcast popup ──
-function _be(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
-function showHoldFlash(hold,trk){
-  hold=hold||{};
-  if(!document.getElementById('_holdKf')){var st=document.createElement('style');st.id='_holdKf';st.textContent='@keyframes holdfl{0%,100%{background:#7f1d1d}50%{background:#dc2626}}';document.head.appendChild(st);}
-  var ov=document.getElementById('_holdFlash');
-  if(!ov){ov=document.createElement('div');ov.id='_holdFlash';ov.style.cssText='position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;text-align:center;padding:24px;animation:holdfl .7s infinite';document.body.appendChild(ov);}
-  ov.innerHTML='<div style="font-size:60px">✋</div><div style="font-size:32px;font-weight:900;margin:6px 0">DO NOT PACK</div>'+
-    '<div style="font-size:18px;font-weight:800">Bring this order to the warehouse manager</div>'+
-    (trk?('<div style="margin-top:14px;font-family:monospace;font-size:13px;background:rgba(0,0,0,.25);border-radius:10px;padding:6px 12px">'+_be(trk)+'</div>'):'')+
-    (hold.reason?('<div style="margin-top:10px;font-size:14px;font-weight:700">Reason: '+_be(hold.reason)+'</div>'):'')+
-    '<button style="margin-top:20px;background:#fff;color:#b91c1c;border:0;border-radius:12px;padding:12px 22px;font-weight:900;font-size:15px" onclick="document.getElementById(\\'_holdFlash\\').style.display=\\'none\\'">OK — taking it to the manager</button>';
-  ov.style.display='flex';
-  try{if(navigator.vibrate)navigator.vibrate([200,100,200]);}catch(e){}
-}
-(function(){
-  var seen=0; try{seen=parseInt(localStorage.getItem('bcastSeen')||'0',10)||0;}catch(e){}
-  function pop(b){
-    var ov=document.createElement('div');var secs=10;
-    ov.style.cssText='position:fixed;inset:0;z-index:99998;background:rgba(79,70,229,.97);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:28px';
-    ov.innerHTML='<div style="font-size:46px">📣</div><div style="font-size:24px;font-weight:900;line-height:1.3;margin:10px 0 14px;max-width:720px">'+_be(b.message)+'</div>'+
-      '<div style="font-size:13px;opacity:.85;font-weight:700">— '+_be(b.created_by||'')+'</div>'+
-      '<div id="_bcSecs" style="margin-top:18px;font-size:12px;opacity:.7;font-weight:800;letter-spacing:1px">closing in '+secs+'s…</div>';
-    ov.onclick=function(){clearInterval(iv);if(ov.parentNode)ov.remove();};
-    document.body.appendChild(ov);
-    try{if(navigator.vibrate)navigator.vibrate(300);}catch(e){}
-    var iv=setInterval(function(){secs--;var e=document.getElementById('_bcSecs');if(e)e.textContent='closing in '+secs+'s…';if(secs<=0){clearInterval(iv);if(ov.parentNode)ov.remove();}},1000);
-  }
-  function poll(){fetch('/api/control/broadcast/latest').then(function(r){return r.json()}).then(function(d){var b=d&&d.broadcast;if(b&&b.id>seen){seen=b.id;try{localStorage.setItem('bcastSeen',String(seen));}catch(e){}pop(b);}}).catch(function(){});}
-  setInterval(poll,6000); setTimeout(poll,1500);
-})();
+// showHoldFlash() + the broadcast popup are injected globally into every page (see _BROADCAST_SHIM).
 </script></body></html>'''
 
 # ── DASHBOARD ─────────────────────────────────────────────
@@ -6388,37 +6358,7 @@ refreshMachineMode();
 refreshMyStats();
 // Periodically refresh personal stats — picks made on other devices show up too
 setInterval(refreshMyStats,30000);
-// ── cycle-78: Warehouse Control — DO-NOT-TOUCH flash + broadcast popup (same as Pack) ──
-function _be(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
-function showHoldFlash(hold,trk){
-  hold=hold||{};
-  if(!document.getElementById('_holdKf')){var st=document.createElement('style');st.id='_holdKf';st.textContent='@keyframes holdfl{0%,100%{background:#7f1d1d}50%{background:#dc2626}}';document.head.appendChild(st);}
-  var ov=document.getElementById('_holdFlash');
-  if(!ov){ov=document.createElement('div');ov.id='_holdFlash';ov.style.cssText='position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;text-align:center;padding:24px;animation:holdfl .7s infinite';document.body.appendChild(ov);}
-  ov.innerHTML='<div style="font-size:60px">✋</div><div style="font-size:32px;font-weight:900;margin:6px 0">DO NOT TOUCH</div>'+
-    '<div style="font-size:18px;font-weight:800">Bring this order to the warehouse manager</div>'+
-    (trk?('<div style="margin-top:14px;font-family:monospace;font-size:13px;background:rgba(0,0,0,.25);border-radius:10px;padding:6px 12px">'+_be(trk)+'</div>'):'')+
-    (hold.reason?('<div style="margin-top:10px;font-size:14px;font-weight:700">Reason: '+_be(hold.reason)+'</div>'):'')+
-    '<button style="margin-top:20px;background:#fff;color:#b91c1c;border:0;border-radius:12px;padding:12px 22px;font-weight:900;font-size:15px" onclick="document.getElementById(\\'_holdFlash\\').style.display=\\'none\\'">OK — taking it to the manager</button>';
-  ov.style.display='flex';
-  try{if(navigator.vibrate)navigator.vibrate([200,100,200]);}catch(e){}
-}
-(function(){
-  var seen=0; try{seen=parseInt(localStorage.getItem('bcastSeen')||'0',10)||0;}catch(e){}
-  function pop(b){
-    var ov=document.createElement('div');var secs=10;
-    ov.style.cssText='position:fixed;inset:0;z-index:99998;background:rgba(79,70,229,.97);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:28px';
-    ov.innerHTML='<div style="font-size:46px">📣</div><div style="font-size:24px;font-weight:900;line-height:1.3;margin:10px 0 14px;max-width:720px">'+_be(b.message)+'</div>'+
-      '<div style="font-size:13px;opacity:.85;font-weight:700">— '+_be(b.created_by||'')+'</div>'+
-      '<div id="_bcSecs" style="margin-top:18px;font-size:12px;opacity:.7;font-weight:800;letter-spacing:1px">closing in '+secs+'s…</div>';
-    ov.onclick=function(){clearInterval(iv);if(ov.parentNode)ov.remove();};
-    document.body.appendChild(ov);
-    try{if(navigator.vibrate)navigator.vibrate(300);}catch(e){}
-    var iv=setInterval(function(){secs--;var e=document.getElementById('_bcSecs');if(e)e.textContent='closing in '+secs+'s…';if(secs<=0){clearInterval(iv);if(ov.parentNode)ov.remove();}},1000);
-  }
-  function poll(){fetch('/api/control/broadcast/latest').then(function(r){return r.json()}).then(function(d){var b=d&&d.broadcast;if(b&&b.id>seen){seen=b.id;try{localStorage.setItem('bcastSeen',String(seen));}catch(e){}pop(b);}}).catch(function(){});}
-  setInterval(poll,6000); setTimeout(poll,1500);
-})();
+// showHoldFlash() + the broadcast popup are injected globally into every page (see _BROADCAST_SHIM).
 </script>
 </body></html>'''
 

@@ -4240,6 +4240,35 @@ _CSRF_SHIM=("<script>(function(){function t(){var m=document.cookie.match(/(?:^|
     "XMLHttpRequest.prototype.send=function(){if(M.indexOf(this.__m)>=0&&this.__s){try{this.setRequestHeader('"
     +CSRF_HEADER+"',t());}catch(e){}}return os.apply(this,arguments);};})();</script>")
 
+# Global broadcast popup (cycle-78): injected into EVERY page so a Warehouse-Control message pops up
+# for 10s on every screen — desktops and the packers'/pickers' iPads alike — over whatever's open.
+# Also provides showHoldFlash() app-wide. Polls the latest broadcast every 6s; 401 on public pages
+# is caught and ignored.
+_BROADCAST_SHIM=("<script>(function(){if(window.__bcastOn)return;window.__bcastOn=1;"
+    "function be(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}"
+    "window.showHoldFlash=function(hold,trk){hold=hold||{};"
+    "if(!document.getElementById('_holdKf')){var st=document.createElement('style');st.id='_holdKf';"
+    "st.textContent='@keyframes holdfl{0%,100%{background:#7f1d1d}50%{background:#dc2626}}';document.head.appendChild(st);}"
+    "var ov=document.getElementById('_holdFlash');if(!ov){ov=document.createElement('div');ov.id='_holdFlash';"
+    "ov.style.cssText='position:fixed;inset:0;z-index:2147483646;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;text-align:center;padding:24px;animation:holdfl .7s infinite';document.body.appendChild(ov);}"
+    "ov.innerHTML='<div style=\"font-size:60px\">\\u270B</div><div style=\"font-size:32px;font-weight:900;margin:6px 0\">DO NOT PACK</div>'"
+    "+'<div style=\"font-size:18px;font-weight:800\">Bring this order to the warehouse manager</div>'"
+    "+(trk?('<div style=\"margin-top:14px;font-family:monospace;font-size:13px;background:rgba(0,0,0,.25);border-radius:10px;padding:6px 12px\">'+be(trk)+'</div>'):'')"
+    "+(hold.reason?('<div style=\"margin-top:10px;font-size:14px;font-weight:700\">Reason: '+be(hold.reason)+'</div>'):'')"
+    "+'<button style=\"margin-top:20px;background:#fff;color:#b91c1c;border:0;border-radius:12px;padding:12px 22px;font-weight:900;font-size:15px\" onclick=\"document.getElementById(&#39;_holdFlash&#39;).style.display=&#39;none&#39;\">OK</button>';"
+    "ov.style.display='flex';try{if(navigator.vibrate)navigator.vibrate([200,100,200]);}catch(e){}};"
+    "var seen=0;try{seen=parseInt(localStorage.getItem('bcastSeen')||'0',10)||0;}catch(e){}"
+    "function pop(b){var ov=document.createElement('div');var secs=10;"
+    "ov.style.cssText='position:fixed;inset:0;z-index:2147483645;background:rgba(79,70,229,.97);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:28px';"
+    "ov.innerHTML='<div style=\"font-size:46px\">\\uD83D\\uDCE3</div><div style=\"font-size:24px;font-weight:900;line-height:1.3;margin:10px 0 14px;max-width:720px\">'+be(b.message)+'</div>'"
+    "+'<div style=\"font-size:13px;opacity:.85;font-weight:700\">\\u2014 '+be(b.created_by||'')+'</div>'"
+    "+'<div id=\"_bcSecs\" style=\"margin-top:18px;font-size:12px;opacity:.7;font-weight:800;letter-spacing:1px\">closing in '+secs+'s\\u2026</div>';"
+    "ov.onclick=function(){clearInterval(iv);if(ov.parentNode)ov.remove();};document.body.appendChild(ov);"
+    "try{if(navigator.vibrate)navigator.vibrate(300);}catch(e){}"
+    "var iv=setInterval(function(){secs--;var e=document.getElementById('_bcSecs');if(e)e.textContent='closing in '+secs+'s\\u2026';if(secs<=0){clearInterval(iv);if(ov.parentNode)ov.remove();}},1000);}"
+    "function poll(){fetch('/api/control/broadcast/latest').then(function(r){return r.json();}).then(function(d){var b=d&&d.broadcast;if(b&&b.id>seen){seen=b.id;try{localStorage.setItem('bcastSeen',String(seen));}catch(e){}pop(b);}}).catch(function(){});}"
+    "setInterval(poll,6000);setTimeout(poll,1500);})();</script>")
+
 @app.teardown_request
 def _close_tracked_conns(exc):
     """Roll back + close any request-scoped DB connection still open at teardown.
@@ -4290,6 +4319,8 @@ def _security_headers(resp):
             body=resp.get_data(as_text=True)
             if "</body>" in body and "__m=" not in body:
                 body=body.replace("</body>",_CSRF_SHIM+"</body>",1)
+            if "</body>" in body and "__bcastOn" not in body:
+                body=body.replace("</body>",_BROADCAST_SHIM+"</body>",1)
             if "__BRAND" in body:
                 b=session.get("brand") or {}
                 mark=b.get("mark") or "LiveOpsHub"
