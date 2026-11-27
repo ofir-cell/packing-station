@@ -5956,9 +5956,14 @@ function openDetail(sid){
         // Server is the source of truth: blocks picked / packed / shipped orders.
         if(d.already_picked || s.status==='picked'){
             sndError();
-            var who=d.picked_by||s.picked_by||'someone';
-            var when=(d.picked_at||s.picked_at||'').replace('T',' ').slice(0,16);
-            showToast(t('alreadypicked')+' '+who+(when?(' · '+when):''),false);
+            // Show the REAL status so the floor isn't told "picked by someone" when the order was
+            // actually PACKED or SHIPPED (e.g. a label already made / imported fulfilled), not picked.
+            var stt=(s.status||'').toLowerCase(), who, lbl;
+            if(stt==='packed'){ lbl='Already PACKED'; who=s.packed_by||''; }
+            else if(stt==='shipped'){ lbl='Already SHIPPED'; who=s.packed_by||''; }
+            else { lbl=t('alreadypicked'); who=d.picked_by||s.picked_by||'someone'; }
+            var when=(d.picked_at||s.picked_at||s.packed_at||'').replace('T',' ').slice(0,16);
+            showToast(lbl+(who?(' '+who):'')+(when?(' · '+when):''),false);
             return;
         }
         // The scanned tracking number uniquely identifies this exact order in the
